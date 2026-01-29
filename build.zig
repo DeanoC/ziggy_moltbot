@@ -1,10 +1,13 @@
 const std = @import("std");
+const android = @import("android");
 const zemscripten_build = @import("zemscripten");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const build_wasm = b.option(bool, "wasm", "Build wasm target") orelse false;
+    const android_targets = android.standardTargets(b, target);
+    const build_android = android_targets.len > 0;
 
     const app_module = b.addModule("moltbot", .{
         .root_source_file = b.path("src/root.zig"),
@@ -240,5 +243,64 @@ pub fn build(b: *std.Build) void {
         emcc_step.dependOn(&chmod_emcc.step);
 
         b.getInstallStep().dependOn(emcc_step);
+    }
+
+    if (build_android) {
+        const android_sdk = android.Sdk.create(b, .{});
+        const build_tools_version = b.option(
+            []const u8,
+            "android-build-tools",
+            "Android build tools version (eg. 35.0.0)",
+        ) orelse "35.0.0";
+        const ndk_version = b.option(
+            []const u8,
+            "android-ndk",
+            "Android NDK version (eg. 27.0.12077973)",
+        ) orelse "27.0.12077973";
+        const api_level_value = b.option(
+            u32,
+            "android-api",
+            "Android API level (eg. 34)",
+        ) orelse 34;
+
+        const apk = android_sdk.createApk(.{
+            .build_tools_version = build_tools_version,
+            .ndk_version = ndk_version,
+            .api_level = @enumFromInt(api_level_value),
+        });
+
+        apk.setAndroidManifest(b.path("android/AndroidManifest.xml"));
+        apk.addResourceDirectory(b.path("android/res"));
+        apk.setKeyStore(android_sdk.createKeyStore(.example));
+
+        const glue_dir = b.fmt("{s}/sources/android/native_app_glue", .{apk.ndk.path});
+        const glue_file = b.fmt("{s}/android_native_app_glue.c", .{glue_dir});
+
+        for (android_targets) |android_target| {
+            const android_module = b.createModule(.{
+                .root_source_file = b.path("src/main_android.zig"),
+                .target = android_target,
+                .optimize = optimize,
+            });
+
+            const android_lib = b.addSharedLibrary(.{
+                .name = "moltbot-client",
+                .root_module = android_module,
+            });
+            android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
+            android_lib.root_module.addIncludePath(.{ .cwd_relative = glue_dir });
+            android_lib.root_module.addCSourceFile(.{
+                .file = .{ .cwd_relative = glue_file },
+                .flags = &.{},
+            });
+            android_lib.linkSystemLibrary("android", .{});
+            android_lib.linkSystemLibrary("log", .{});
+
+            apk.addArtifact(android_lib);
+        }
+
+        const apk_install = apk.addInstallApk();
+        const apk_step = b.step("apk", "Build Android APK");
+        apk_step.dependOn(&apk_install.step);
     }
 }

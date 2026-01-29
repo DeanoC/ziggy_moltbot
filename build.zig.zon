@@ -22,12 +22,17 @@
             .url = "https://github.com/zig-gamedev/zglfw/archive/refs/heads/main.zip",
             .hash = "zglfw-0.10.0-dev-zgVDNES4IQAAXAcsFiHfmadlpDCHhF2cUqWxBGIViyU6",
         },
+        .android = .{
+            .url = "https://github.com/silbinarywolf/zig-android-sdk/archive/refs/tags/v0.3.0.tar.gz",
+            .hash = "android-0.3.0-7iz7QuLTAQAvVw7BFyhlf4GsEjxrYGtMpcvGQRbZ6K9X",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
         "assets",
+        "android",
         "config",
         "docs",
         "examples",
