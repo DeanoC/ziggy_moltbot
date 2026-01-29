@@ -8,17 +8,16 @@ test "logger writes to file" {
     defer tmp.cleanup();
 
     const path = "test.log";
-    const full_path = try tmp.dir.realpathAlloc(std.testing.allocator, path);
-    defer std.testing.allocator.free(full_path);
 
     logger.setLevel(.debug);
-    try logger.initFile(full_path);
+    try logger.initFile(path);
     defer logger.deinit();
 
     logger.info("hello {d}", .{1});
 
-    const data = try tmp.dir.readFileAlloc(std.testing.allocator, path, 1024);
+    const data = try std.fs.cwd().readFileAlloc(std.testing.allocator, path, 1024);
     defer std.testing.allocator.free(data);
+    defer std.fs.cwd().deleteFile(path) catch {};
 
     try std.testing.expect(std.mem.indexOf(u8, data, "[INFO] hello 1") != null);
 }

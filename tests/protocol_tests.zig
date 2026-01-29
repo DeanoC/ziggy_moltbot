@@ -77,6 +77,6 @@ test "parse chat history payload" {
     var parsed = try messages.parsePayload(allocator, value.value, chat.ChatHistoryResult);
     defer parsed.deinit();
 
-    const msg = parsed.value.messages.?.[0];
+    const msg = parsed.value.messages.?[0];
     try std.testing.expectEqualStrings("user", msg.role);
 }
