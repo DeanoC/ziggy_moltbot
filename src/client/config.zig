@@ -37,7 +37,7 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
 }
 
 pub fn save(allocator: std.mem.Allocator, path: []const u8, cfg: Config) !void {
-    const json = try std.json.stringifyAlloc(allocator, cfg, .{});
+    const json = try std.json.Stringify.valueAlloc(allocator, cfg, .{});
     defer allocator.free(json);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });

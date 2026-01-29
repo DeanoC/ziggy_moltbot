@@ -46,7 +46,7 @@ pub fn draw(
         action.disconnect = settings_action.disconnect;
         action.save_config = settings_action.save;
         action.config_updated = settings_action.config_updated;
-        status_bar.draw(ctx.state, ctx.current_session, ctx.messages.items.len);
+        status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len);
     }
     zgui.end();
 

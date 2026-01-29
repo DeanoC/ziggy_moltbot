@@ -141,11 +141,11 @@ fn parseServerUrl(allocator: std.mem.Allocator, raw_url: []const u8) !ParsedUrl 
 }
 
 fn buildHeaders(allocator: std.mem.Allocator, host_header: []const u8, token: []const u8) ![]const u8 {
-    var list = std.ArrayList(u8).init(allocator);
-    const writer = list.writer();
+    var list = std.ArrayList(u8).empty;
+    const writer = list.writer(allocator);
     try writer.print("Host: {s}", .{host_header});
     if (token.len > 0) {
         try writer.print("\r\nAuthorization: Bearer {s}", .{token});
     }
-    return list.toOwnedSlice();
+    return list.toOwnedSlice(allocator);
 }

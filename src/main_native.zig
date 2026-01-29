@@ -106,7 +106,7 @@ pub fn main() !void {
         }
 
         imgui.beginFrame(win_width, win_height, fb_width, fb_height);
-        var ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
+        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected);
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
