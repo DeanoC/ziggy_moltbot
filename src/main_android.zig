@@ -1,41 +1,63 @@
 const std = @import("std");
 
 const c = @cImport({
-    @cInclude("android_native_app_glue.h");
-    @cInclude("android/log.h");
+    @cInclude("SDL.h");
+    @cInclude("SDL_opengles2.h");
 });
 
-const log_tag: [:0]const u8 = "MoltBot";
+pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
+    _ = argc;
+    _ = argv;
 
-fn logInfo(comptime fmt: []const u8, args: anytype) void {
-    var buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrintZ(&buf, fmt, args) catch return;
-    _ = c.__android_log_print(c.ANDROID_LOG_INFO, log_tag, "%s", msg.ptr);
-}
+    if (c.SDL_Init(c.SDL_INIT_VIDEO) != 0) {
+        c.SDL_Log("SDL_Init failed: %s", c.SDL_GetError());
+        return 1;
+    }
+    defer c.SDL_Quit();
 
-fn handleAppCmd(app: ?*c.android_app, cmd: c_int) callconv(.c) void {
-    _ = app;
-    logInfo("app cmd {d}", .{cmd});
-}
+    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_PROFILE_MASK, c.SDL_GL_CONTEXT_PROFILE_ES);
+    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    _ = c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    _ = c.SDL_GL_SetAttribute(c.SDL_GL_DOUBLEBUFFER, 1);
 
-pub export fn android_main(app: *c.android_app) callconv(.c) void {
-    c.app_dummy();
-    app.*.onAppCmd = handleAppCmd;
-    logInfo("android_main started", .{});
+    const window = c.SDL_CreateWindow(
+        "MoltBot Client",
+        c.SDL_WINDOWPOS_UNDEFINED,
+        c.SDL_WINDOWPOS_UNDEFINED,
+        1280,
+        720,
+        c.SDL_WINDOW_OPENGL | c.SDL_WINDOW_SHOWN | c.SDL_WINDOW_RESIZABLE,
+    );
+    if (window == null) {
+        c.SDL_Log("SDL_CreateWindow failed: %s", c.SDL_GetError());
+        return 1;
+    }
+    defer c.SDL_DestroyWindow(window);
 
-    while (true) {
-        var events: c_int = 0;
-        var source: ?*c.android_poll_source = null;
-        _ = c.ALooper_pollAll(-1, null, &events, @ptrCast(&source));
-        if (source) |src| {
-            if (src.process) |proc| {
-                proc(app, src);
+    const gl_ctx = c.SDL_GL_CreateContext(window);
+    if (gl_ctx == null) {
+        c.SDL_Log("SDL_GL_CreateContext failed: %s", c.SDL_GetError());
+        return 1;
+    }
+    defer c.SDL_GL_DeleteContext(gl_ctx);
+
+    _ = c.SDL_GL_SetSwapInterval(1);
+
+    var running = true;
+    var event: c.SDL_Event = undefined;
+    while (running) {
+        while (c.SDL_PollEvent(&event) != 0) {
+            if (event.type == c.SDL_QUIT) {
+                running = false;
             }
         }
-        if (app.destroyRequested != 0) {
-            break;
-        }
+
+        c.glClearColor(0.08, 0.08, 0.1, 1.0);
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+        c.SDL_GL_SwapWindow(window);
+
+        c.SDL_Delay(16);
     }
 
-    logInfo("android_main exiting", .{});
+    return 0;
 }

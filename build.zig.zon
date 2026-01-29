@@ -26,6 +26,10 @@
             .url = "https://github.com/silbinarywolf/zig-android-sdk/archive/refs/tags/v0.3.0.tar.gz",
             .hash = "android-0.3.0-7iz7QuLTAQAvVw7BFyhlf4GsEjxrYGtMpcvGQRbZ6K9X",
         },
+        .SDL = .{
+            .url = "https://github.com/allyourcodebase/SDL/archive/refs/heads/main.zip",
+            .hash = "SDL-2.32.10-JToi3yC3EgF2Z9jT2Zfq0y0xzmb0QxnaIfFDn0qPrzxB",
+        },
     },
     .paths = .{
         "build.zig",

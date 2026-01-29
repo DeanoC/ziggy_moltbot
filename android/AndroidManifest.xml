@@ -2,16 +2,12 @@
     package="com.deanoc.moltbot">
     <application
         android:label="@string/app_name"
-        android:hasCode="false"
         android:allowBackup="false">
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="org.libsdl.app.SDLActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:configChanges="orientation|keyboardHidden|screenSize">
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="main" />
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

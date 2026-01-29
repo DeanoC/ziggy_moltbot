@@ -273,8 +273,26 @@ pub fn build(b: *std.Build) void {
         apk.addResourceDirectory(b.path("android/res"));
         apk.setKeyStore(android_sdk.createKeyStore(.example));
 
-        const glue_dir = b.fmt("{s}/sources/android/native_app_glue", .{apk.ndk.path});
-        const glue_file = b.fmt("{s}/android_native_app_glue.c", .{glue_dir});
+        const sdl_java_root = b.dependency("SDL", .{
+            .target = target,
+            .optimize = optimize,
+            .use_hidapi = false,
+        }).path("android-project/app/src/main/java/org/libsdl/app");
+        const sdl_java_files = &[_][]const u8{
+            "SDL.java",
+            "SDLSurface.java",
+            "SDLActivity.java",
+            "SDLAudioManager.java",
+            "SDLControllerManager.java",
+            "HIDDevice.java",
+            "HIDDeviceUSB.java",
+            "HIDDeviceManager.java",
+            "HIDDeviceBLESteamController.java",
+        };
+        apk.addJavaSourceFiles(.{
+            .root = sdl_java_root,
+            .files = sdl_java_files,
+        });
 
         for (android_targets) |android_target| {
             const android_module = b.createModule(.{
@@ -289,13 +307,22 @@ pub fn build(b: *std.Build) void {
                 .linkage = .dynamic,
             });
             android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
-            android_lib.root_module.addIncludePath(.{ .cwd_relative = glue_dir });
             android_lib.root_module.addCSourceFile(.{
-                .file = .{ .cwd_relative = glue_file },
+                .file = b.path("src/android_hid_stub.c"),
                 .flags = &.{},
             });
-            android_lib.linkSystemLibrary("android");
-            android_lib.linkSystemLibrary("log");
+
+            const sdl_dep = b.dependency("SDL", .{
+                .target = android_target,
+                .optimize = optimize,
+                .use_hidapi = false,
+            });
+            const sdl_lib = sdl_dep.artifact("SDL2");
+            sdl_lib.root_module.addCMacro("SDL_HIDAPI_DISABLED", "1");
+            sdl_lib.root_module.addCMacro("SDL_JOYSTICK_HIDAPI", "0");
+            android_lib.root_module.addIncludePath(sdl_dep.path("include"));
+            android_lib.root_module.addIncludePath(sdl_dep.path("include-pregen"));
+            android_lib.linkLibrary(sdl_lib);
 
             apk.addArtifact(android_lib);
         }

@@ -1,6 +1,6 @@
 # Android build (WIP)
 
-This project now includes a minimal NativeActivity Android target that builds an APK and logs lifecycle events. It is a stub to validate the build pipeline; UI/rendering will be added later.
+This project now includes a minimal SDL2 + OpenGL ES Android target that builds an APK and clears the screen. It is a stub to validate the build pipeline; UI/rendering will be added later.
 
 ## Prerequisites
 
@@ -27,7 +27,7 @@ The APK will be written to:
 zig-out/bin/moltbot_android.apk
 ```
 
-Note: `zig-android-sdk` packages the native shared library as `libmain.so`, so the manifest uses `android.app.lib_name="main"`.
+Note: `zig-android-sdk` packages the native shared library as `libmain.so`. SDLActivity loads `libSDL2.so` then `libmain.so`.
 
 ## Install + Run (manual)
 
