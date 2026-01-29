@@ -14,6 +14,7 @@ pub const ClientContext = struct {
     state: ClientState,
     current_session: ?[]const u8,
     history_session: ?[]const u8,
+    stream_run_id: ?[]const u8,
     sessions: std.ArrayList(types.Session),
     messages: std.ArrayList(types.ChatMessage),
     users: std.ArrayList(types.User),
@@ -31,6 +32,7 @@ pub const ClientContext = struct {
             .state = .disconnected,
             .current_session = null,
             .history_session = null,
+            .stream_run_id = null,
             .sessions = std.ArrayList(types.Session).empty,
             .messages = std.ArrayList(types.ChatMessage).empty,
             .users = std.ArrayList(types.User).empty,
@@ -53,6 +55,7 @@ pub const ClientContext = struct {
             self.allocator.free(session);
             self.history_session = null;
         }
+        self.clearStreamRunId();
         self.clearStreamText();
         self.clearPendingRequests();
         self.clearError();
@@ -137,6 +140,18 @@ pub const ClientContext = struct {
         self.history_session = try self.allocator.dupe(u8, key);
     }
 
+    pub fn setStreamRunId(self: *ClientContext, run_id: []const u8) !void {
+        self.clearStreamRunId();
+        self.stream_run_id = try self.allocator.dupe(u8, run_id);
+    }
+
+    pub fn clearStreamRunId(self: *ClientContext) void {
+        if (self.stream_run_id) |run_id| {
+            self.allocator.free(run_id);
+            self.stream_run_id = null;
+        }
+    }
+
     pub fn setStreamText(self: *ClientContext, text: []const u8) !void {
         self.clearStreamText();
         self.stream_text = try self.allocator.dupe(u8, text);
@@ -147,6 +162,18 @@ pub const ClientContext = struct {
             self.allocator.free(text);
             self.stream_text = null;
         }
+    }
+
+    pub fn removeMessageById(self: *ClientContext, id: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.messages.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.messages.items[index].id, id)) {
+                var removed = self.messages.orderedRemove(index);
+                freeChatMessage(self.allocator, &removed);
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn setPendingSessionsRequest(self: *ClientContext, id: []const u8) void {

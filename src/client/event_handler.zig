@@ -70,7 +70,9 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         }
 
         if (std.mem.eql(u8, frame.value.event, "chat")) {
-            handleChatEvent(ctx, frame.value.payload);
+            handleChatEvent(ctx, frame.value.payload) catch |err| {
+                std.log.warn("Failed to handle chat event ({s})", .{@errorName(err)});
+            };
             return null;
         }
 
@@ -223,14 +225,12 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
         ctx.setHistorySession(session) catch {};
     }
     ctx.clearStreamText();
+    ctx.clearStreamRunId();
 }
 
-fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) void {
+fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
     const value = payload orelse return;
-    var parsed = messages.parsePayload(ctx.allocator, value, chat.ChatEventPayload) catch |err| {
-        std.log.warn("Failed to parse chat event ({s})", .{@errorName(err)});
-        return;
-    };
+    var parsed = try messages.parsePayload(ctx.allocator, value, chat.ChatEventPayload);
     defer parsed.deinit();
 
     const event = parsed.value;
@@ -239,15 +239,30 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) void {
     }
 
     if (std.mem.eql(u8, event.state, "delta")) {
-        if (event.message) |message_val| {
-            if (extractChatTextValue(ctx.allocator, message_val)) |text| {
-                defer ctx.allocator.free(text);
-                ctx.setStreamText(text) catch {};
-            }
+        const text = if (event.message) |message_val|
+            extractChatTextValue(ctx.allocator, message_val)
+        else
+            null;
+        defer if (text) |value_text| ctx.allocator.free(value_text);
+        if (text == null) return;
+
+        if (ctx.stream_run_id == null or !std.mem.eql(u8, ctx.stream_run_id.?, event.runId)) {
+            try ctx.setStreamRunId(event.runId);
         }
+
+        var msg = try buildStreamMessage(ctx.allocator, event.runId, text.?);
+        errdefer freeChatMessageOwned(ctx.allocator, &msg);
+        ctx.upsertMessageOwned(msg) catch |err| {
+            std.log.warn("Failed to upsert stream message ({s})", .{@errorName(err)});
+            freeChatMessageOwned(ctx.allocator, &msg);
+        };
         return;
     }
 
+    const had_stream = ctx.stream_run_id != null and std.mem.eql(u8, ctx.stream_run_id.?, event.runId);
+    if (had_stream) {
+        ctx.clearStreamRunId();
+    }
     ctx.clearStreamText();
 
     if (std.mem.eql(u8, event.state, "error")) {
@@ -267,6 +282,9 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) void {
             std.log.warn("Failed to build chat message ({s})", .{@errorName(err)});
             return;
         };
+        if (had_stream) {
+            _ = ctx.removeMessageById(event.runId);
+        }
         ctx.upsertMessageOwned(message) catch |err| {
             std.log.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &message);
@@ -331,6 +349,22 @@ fn buildChatMessage(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) 
         .role = role,
         .content = content,
         .timestamp = msg.timestamp orelse std.time.milliTimestamp(),
+        .attachments = null,
+    };
+}
+
+fn buildStreamMessage(allocator: std.mem.Allocator, run_id: []const u8, content: []const u8) !types.ChatMessage {
+    const id = try allocator.dupe(u8, run_id);
+    errdefer allocator.free(id);
+    const role = try allocator.dupe(u8, "assistant");
+    errdefer allocator.free(role);
+    const text = try allocator.dupe(u8, content);
+    errdefer allocator.free(text);
+    return .{
+        .id = id,
+        .role = role,
+        .content = text,
+        .timestamp = std.time.milliTimestamp(),
         .attachments = null,
     };
 }

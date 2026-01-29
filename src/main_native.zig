@@ -432,6 +432,7 @@ pub fn main() !void {
             ctx.state = .disconnected;
             ctx.clearPendingRequests();
             ctx.clearStreamText();
+            ctx.clearStreamRunId();
         }
 
         if (ui_action.refresh_sessions) {
@@ -445,6 +446,7 @@ pub fn main() !void {
             };
             ctx.clearMessages();
             ctx.clearStreamText();
+            ctx.clearStreamRunId();
             ctx.clearPendingHistoryRequest();
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
