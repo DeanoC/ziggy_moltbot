@@ -10,4 +10,5 @@ test "client context init" {
 
     try std.testing.expectEqual(state.ClientState.disconnected, ctx.state);
     try std.testing.expect(ctx.current_session == null);
+    try std.testing.expectEqual(@as(usize, 0), ctx.sessions.items.len);
 }

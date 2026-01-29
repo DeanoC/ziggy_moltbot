@@ -1,3 +1,5 @@
+const std = @import("std");
+
 pub const ChatAttachment = struct {
     kind: []const u8,
     url: []const u8,
@@ -27,7 +29,12 @@ pub const User = struct {
     name: []const u8,
 };
 
+pub const ErrorEvent = struct {
+    message: []const u8,
+    code: ?[]const u8 = null,
+};
+
 pub const MessageEnvelope = struct {
     kind: []const u8,
-    payload: []const u8,
+    payload: std.json.Value,
 };

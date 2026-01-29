@@ -12,3 +12,7 @@ pub fn serializeMessage(allocator: std.mem.Allocator, message: anytype) ![]u8 {
 pub fn deserializeMessage(allocator: std.mem.Allocator, json_data: []const u8, comptime T: type) !std.json.Parsed(T) {
     return try std.json.parseFromSlice(T, allocator, json_data, .{});
 }
+
+pub fn parsePayload(allocator: std.mem.Allocator, payload: std.json.Value, comptime T: type) !std.json.Parsed(T) {
+    return try std.json.parseFromValue(T, allocator, payload, .{});
+}
