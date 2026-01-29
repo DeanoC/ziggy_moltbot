@@ -30,7 +30,7 @@ pub fn main() !void {
     var cfg = try config.loadOrDefault(allocator, "moltbot_config.json");
     defer cfg.deinit(allocator);
 
-    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token);
+    var ws_client = websocket_client.WebSocketClient.init(allocator, cfg.server_url, cfg.token, cfg.insecure_tls);
     defer ws_client.deinit();
 
     _ = glfw.setErrorCallback(glfwErrorCallback);
@@ -111,6 +111,7 @@ pub fn main() !void {
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
+            ws_client.insecure_tls = cfg.insecure_tls;
         }
 
         if (ui_action.save_config) {
@@ -123,6 +124,7 @@ pub fn main() !void {
             ctx.state = .connecting;
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
+            ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect() catch |err| {
                 std.log.err("WebSocket connect failed: {}", .{err});
                 ctx.state = .error_state;

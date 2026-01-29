@@ -12,6 +12,7 @@ pub const SettingsAction = struct {
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var token_buf: [256:0]u8 = [_:0]u8{0} ** 256;
+var insecure_tls_value = false;
 var initialized = false;
 
 pub fn draw(
@@ -26,15 +27,18 @@ pub fn draw(
         syncBuffers(cfg.*);
     }
 
-    if (zgui.beginChild("Settings", .{ .h = 160.0, .child_flags = .{ .border = true } })) {
+    if (zgui.beginChild("Settings", .{ .h = 180.0, .child_flags = .{ .border = true } })) {
         zgui.text("Connection", .{});
 
         _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
         _ = zgui.inputText("Token", .{ .buf = token_buf[0.. :0], .flags = .{ .password = true } });
+        _ = zgui.checkbox("Insecure TLS (skip cert verification)", .{ .v = &insecure_tls_value });
 
         const server_text = std.mem.sliceTo(&server_buf, 0);
         const token_text = std.mem.sliceTo(&token_buf, 0);
-        const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or !std.mem.eql(u8, token_text, cfg.token);
+        const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
+            !std.mem.eql(u8, token_text, cfg.token) or
+            insecure_tls_value != cfg.insecure_tls;
 
         zgui.beginDisabled(.{ .disabled = !dirty });
         if (zgui.button("Apply", .{})) {
@@ -76,6 +80,7 @@ fn syncBuffers(cfg: config.Config) void {
     initialized = true;
     fillBuffer(&server_buf, cfg.server_url);
     fillBuffer(&token_buf, cfg.token);
+    insecure_tls_value = cfg.insecure_tls;
 }
 
 fn fillBuffer(buf: *[256:0]u8, value: []const u8) void {
@@ -104,6 +109,11 @@ fn applyConfig(
         const new_value = allocator.dupe(u8, token_text) catch return changed;
         allocator.free(cfg.token);
         cfg.token = new_value;
+        changed = true;
+    }
+
+    if (cfg.insecure_tls != insecure_tls_value) {
+        cfg.insecure_tls = insecure_tls_value;
         changed = true;
     }
 

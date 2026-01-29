@@ -4,3 +4,4 @@ zig-out/
 .DS_Store
 *.log
 imgui.ini
+moltbot_config.json

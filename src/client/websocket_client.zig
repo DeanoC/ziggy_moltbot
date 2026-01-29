@@ -5,14 +5,16 @@ pub const WebSocketClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
     token: []const u8,
+    insecure_tls: bool = false,
     is_connected: bool = false,
     client: ?ws.Client = null,
 
-    pub fn init(allocator: std.mem.Allocator, url: []const u8, token: []const u8) WebSocketClient {
+    pub fn init(allocator: std.mem.Allocator, url: []const u8, token: []const u8, insecure_tls: bool) WebSocketClient {
         return .{
             .allocator = allocator,
             .url = url,
             .token = token,
+            .insecure_tls = insecure_tls,
         };
     }
 
@@ -27,6 +29,7 @@ pub const WebSocketClient = struct {
             .port = parsed.port,
             .host = parsed.host,
             .tls = parsed.tls,
+            .verify_host = !self.insecure_tls,
             .max_size = 256 * 1024,
             .buffer_size = 8 * 1024,
         });
