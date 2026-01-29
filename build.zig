@@ -29,94 +29,96 @@ pub fn build(b: *std.Build) void {
     });
     const zglfw_native = zglfw_pkg.module("root");
 
-    const native_module = b.createModule(.{
-        .root_source_file = b.path("src/main_native.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "websocket", .module = ws_native },
-            .{ .name = "zgui", .module = zgui_native },
-            .{ .name = "zglfw", .module = zglfw_native },
-            .{ .name = "moltbot", .module = app_module },
-        },
-    });
-
-    const native_exe = b.addExecutable(.{
-        .name = "moltbot-client",
-        .root_module = native_module,
-    });
-
-    native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
-    native_exe.root_module.addCSourceFile(.{
-        .file = b.path("src/opengl_loader.c"),
-        .flags = &.{},
-    });
-
-    native_exe.linkLibrary(zgui_pkg.artifact("imgui"));
-    native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
-
-    switch (target.result.os.tag) {
-        .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
-        .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
-        .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
-        else => {},
-    }
-
-    b.installArtifact(native_exe);
-
-    const cli_module = b.createModule(.{
-        .root_source_file = b.path("src/main_cli.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "websocket", .module = ws_native },
-            .{ .name = "moltbot", .module = app_module },
-        },
-    });
-
-    const cli_exe = b.addExecutable(.{
-        .name = "moltbot-cli",
-        .root_module = cli_module,
-    });
-
-    b.installArtifact(cli_exe);
-
-    const run_cli_step = b.step("run-cli", "Run the CLI client");
-    const run_cli_cmd = b.addRunArtifact(cli_exe);
-    run_cli_step.dependOn(&run_cli_cmd.step);
-    run_cli_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cli_cmd.addArgs(args);
-    }
-
-    const run_step = b.step("run", "Run the native application");
-    const run_cmd = b.addRunArtifact(native_exe);
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
-
-    const test_step = b.step("test", "Run tests");
-    const test_files = [_][]const u8{
-        "tests/protocol_tests.zig",
-        "tests/client_tests.zig",
-        "tests/logger_tests.zig",
-        "tests/ui_tests.zig",
-    };
-
-    for (test_files) |test_path| {
-        const test_mod = b.createModule(.{
-            .root_source_file = b.path(test_path),
+    if (!build_wasm) {
+        const native_module = b.createModule(.{
+            .root_source_file = b.path("src/main_native.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+                .{ .name = "zgui", .module = zgui_native },
+                .{ .name = "zglfw", .module = zglfw_native },
                 .{ .name = "moltbot", .module = app_module },
             },
         });
-        const tests = b.addTest(.{ .root_module = test_mod });
-        const run_tests = b.addRunArtifact(tests);
-        test_step.dependOn(&run_tests.step);
+
+        const native_exe = b.addExecutable(.{
+            .name = "moltbot-client",
+            .root_module = native_module,
+        });
+
+        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
+        native_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/opengl_loader.c"),
+            .flags = &.{},
+        });
+
+        native_exe.linkLibrary(zgui_pkg.artifact("imgui"));
+        native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
+
+        switch (target.result.os.tag) {
+            .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
+            .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
+            .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
+            else => {},
+        }
+
+        b.installArtifact(native_exe);
+
+        const cli_module = b.createModule(.{
+            .root_source_file = b.path("src/main_cli.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+                .{ .name = "moltbot", .module = app_module },
+            },
+        });
+
+        const cli_exe = b.addExecutable(.{
+            .name = "moltbot-cli",
+            .root_module = cli_module,
+        });
+
+        b.installArtifact(cli_exe);
+
+        const run_cli_step = b.step("run-cli", "Run the CLI client");
+        const run_cli_cmd = b.addRunArtifact(cli_exe);
+        run_cli_step.dependOn(&run_cli_cmd.step);
+        run_cli_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cli_cmd.addArgs(args);
+        }
+
+        const run_step = b.step("run", "Run the native application");
+        const run_cmd = b.addRunArtifact(native_exe);
+        run_step.dependOn(&run_cmd.step);
+        run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| {
+            run_cmd.addArgs(args);
+        }
+
+        const test_step = b.step("test", "Run tests");
+        const test_files = [_][]const u8{
+            "tests/protocol_tests.zig",
+            "tests/client_tests.zig",
+            "tests/logger_tests.zig",
+            "tests/ui_tests.zig",
+        };
+
+        for (test_files) |test_path| {
+            const test_mod = b.createModule(.{
+                .root_source_file = b.path(test_path),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "moltbot", .module = app_module },
+                },
+            });
+            const tests = b.addTest(.{ .root_module = test_mod });
+            const run_tests = b.addRunArtifact(tests);
+            test_step.dependOn(&run_tests.step);
+        }
     }
 
     if (build_wasm) {
@@ -124,6 +126,15 @@ pub fn build(b: *std.Build) void {
             .cpu_arch = .wasm32,
             .os_tag = .emscripten,
         });
+        const emsdk = b.dependency("emsdk", .{});
+        const emsdk_sysroot = b.pathJoin(&.{
+            emsdk.path("").getPath(b),
+            "upstream",
+            "emscripten",
+            "cache",
+            "sysroot",
+        });
+        const emsdk_sysroot_include = b.pathJoin(&.{ emsdk_sysroot, "include" });
 
         const wasm_module = b.createModule(.{
             .root_source_file = b.path("src/main_wasm.zig"),
@@ -137,18 +148,75 @@ pub fn build(b: *std.Build) void {
             .linkage = .static,
         });
 
+        const zgui_wasm_pkg = b.dependency("zgui", .{
+            .target = wasm_target,
+            .optimize = optimize,
+            .backend = .no_backend,
+        });
+        const zglfw_wasm_pkg = b.dependency("zglfw", .{
+            .target = wasm_target,
+            .optimize = optimize,
+        });
+        wasm.root_module.addImport("zgui", zgui_wasm_pkg.module("root"));
+        wasm.root_module.addImport("zglfw", zglfw_wasm_pkg.module("root"));
+        wasm.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
+        wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs"));
+        wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui"));
+        wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui/backends"));
+        const imgui_backend_flags = &.{
+            "-DIMGUI_IMPL_OPENGL_ES3",
+            "-DIMGUI_IMPL_API=extern \"C\"",
+            "-fno-sanitize=undefined",
+            "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+        };
+        wasm.root_module.addCSourceFile(.{
+            .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_glfw.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_opengl3.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_clipboard.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_ws.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_storage.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
+        zgui_wasm_imgui.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
+        wasm.linkLibrary(zgui_wasm_imgui);
+
         const zemscripten = b.dependency("zemscripten", .{});
         wasm.root_module.addImport("zemscripten", zemscripten.module("root"));
 
-        const emcc_flags = zemscripten_build.emccDefaultFlags(b.allocator, .{
+        var emcc_flags = zemscripten_build.emccDefaultFlags(b.allocator, .{
             .optimize = optimize,
             .fsanitize = false,
         });
+        emcc_flags.put("-sUSE_GLFW=3", {}) catch unreachable;
+        emcc_flags.put("-sUSE_WEBGL2=1", {}) catch unreachable;
+        emcc_flags.put("-sFULL_ES3=1", {}) catch unreachable;
+        emcc_flags.put("-sGL_ENABLE_GET_PROC_ADDRESS=1", {}) catch unreachable;
         var emcc_settings = zemscripten_build.emccDefaultSettings(b.allocator, .{
             .optimize = optimize,
             .emsdk_allocator = .emmalloc,
         });
         emcc_settings.put("ALLOW_MEMORY_GROWTH", "1") catch unreachable;
+        emcc_settings.put(
+            "EXPORTED_FUNCTIONS",
+            "['_main','_malloc','_free','_molt_ws_on_open','_molt_ws_on_close','_molt_ws_on_error','_molt_ws_on_message']",
+        ) catch unreachable;
+        emcc_settings.put(
+            "EXPORTED_RUNTIME_METHODS",
+            "['UTF8ToString','stringToUTF8','lengthBytesUTF8']",
+        ) catch unreachable;
 
         const emcc_step = zemscripten_build.emccStep(
             b,

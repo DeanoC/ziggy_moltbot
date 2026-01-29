@@ -2,7 +2,7 @@
 #include "opengl-decls.h"
 #undef GLAPI
 
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
 #include <dlfcn.h>
 #endif
 
@@ -10,7 +10,7 @@
 extern void* glfwGetProcAddress(const char*);
 
 static void* zgui_fallback_sym(const char* name) {
-#if defined(__unix__) || defined(__APPLE__)
+#if (defined(__unix__) || defined(__APPLE__)) && !defined(__EMSCRIPTEN__)
     void* sym = dlsym(RTLD_DEFAULT, name);
     return sym;
 #else

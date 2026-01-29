@@ -8,6 +8,16 @@ pub fn init(allocator: std.mem.Allocator, window: *glfw.Window) void {
     zgui.backend.init(window);
 }
 
+pub fn initWithGlslVersion(
+    allocator: std.mem.Allocator,
+    window: *glfw.Window,
+    glsl_version: [:0]const u8,
+) void {
+    zgui.init(allocator);
+    zgui.styleColorsDark(zgui.getStyle());
+    zgui.backend.initWithGlSlVersion(window, glsl_version);
+}
+
 pub fn beginFrame(
     window_width: u32,
     window_height: u32,

@@ -27,7 +27,7 @@ pub fn draw(
         syncBuffers(cfg.*);
     }
 
-    if (zgui.beginChild("Settings", .{ .h = 180.0, .child_flags = .{ .border = true } })) {
+    if (zgui.beginChild("Settings", .{ .h = 0.0, .child_flags = .{ .border = true } })) {
         zgui.text("Connection", .{});
 
         _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
@@ -67,9 +67,7 @@ pub fn draw(
                 action.connect = true;
             }
         }
-
-        zgui.sameLine(.{});
-        zgui.text("State: {s}", .{@tagName(client_state)});
+        zgui.textWrapped("State: {s}", .{@tagName(client_state)});
     }
     zgui.endChild();
 
