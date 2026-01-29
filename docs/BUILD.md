@@ -3,7 +3,15 @@
 ## Requirements
 
 - Zig 0.15.2+
+- Linux native: OpenGL + X11 dev packages (see below)
 - For WASM: Emscripten SDK installed under `.tools/emsdk`
+
+### Linux system packages (Ubuntu/Debian)
+
+```bash
+sudo apt-get install -y \
+  libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+```
 
 ## Native Build
 

@@ -1,6 +1,11 @@
+const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
 
 pub fn draw(messages: []const types.ChatMessage) void {
-    _ = messages;
-    // TODO: render chat history with different message roles and attachments.
+    if (zgui.beginChild("ChatHistory", .{ .h = 300.0, .child_flags = .{ .border = true } })) {
+        for (messages) |msg| {
+            zgui.textWrapped("[{s}] {s}", .{ msg.role, msg.content });
+        }
+    }
+    zgui.endChild();
 }

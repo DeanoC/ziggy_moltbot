@@ -16,10 +16,18 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("websocket");
 
-    const zgui_native = b.dependency("zgui", .{
+    const zgui_pkg = b.dependency("zgui", .{
         .target = target,
         .optimize = optimize,
-    }).module("root");
+        .backend = .glfw_opengl3,
+    });
+    const zgui_native = zgui_pkg.module("root");
+
+    const zglfw_pkg = b.dependency("zglfw", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zglfw_native = zglfw_pkg.module("root");
 
     const native_module = b.createModule(.{
         .root_source_file = b.path("src/main_native.zig"),
@@ -28,6 +36,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "websocket", .module = ws_native },
             .{ .name = "zgui", .module = zgui_native },
+            .{ .name = "zglfw", .module = zglfw_native },
             .{ .name = "moltbot", .module = app_module },
         },
     });
@@ -36,6 +45,22 @@ pub fn build(b: *std.Build) void {
         .name = "moltbot-client",
         .root_module = native_module,
     });
+
+    native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
+    native_exe.root_module.addCSourceFile(.{
+        .file = b.path("src/opengl_loader.c"),
+        .flags = &.{},
+    });
+
+    native_exe.linkLibrary(zgui_pkg.artifact("imgui"));
+    native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
+
+    switch (target.result.os.tag) {
+        .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
+        .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
+        .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
+        else => {},
+    }
 
     b.installArtifact(native_exe);
 

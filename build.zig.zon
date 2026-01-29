@@ -19,12 +19,17 @@
         .emsdk = .{
             .path = ".tools/emsdk",
         },
+        .zglfw = .{
+            .url = "https://github.com/zig-gamedev/zglfw/archive/refs/heads/main.zip",
+            .hash = "zglfw-0.10.0-dev-zgVDNES4IQAAXAcsFiHfmadlpDCHhF2cUqWxBGIViyU6",
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
         "assets",
+        "config",
         "docs",
         "examples",
         "scripts",
