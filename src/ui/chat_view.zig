@@ -2,7 +2,12 @@ const std = @import("std");
 const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
 
-pub fn draw(messages: []const types.ChatMessage, stream_text: ?[]const u8, height: f32) void {
+pub fn draw(
+    allocator: std.mem.Allocator,
+    messages: []const types.ChatMessage,
+    stream_text: ?[]const u8,
+    height: f32,
+) void {
     const clamped = if (height > 60.0) height else 60.0;
     if (zgui.beginChild("ChatHistory", .{ .h = clamped, .child_flags = .{ .border = true } })) {
         const scroll_max = zgui.getScrollMaxY();
@@ -32,25 +37,69 @@ pub fn draw(messages: []const types.ChatMessage, stream_text: ?[]const u8, heigh
         last_last_len = last_len;
         last_stream_len = if (stream_text) |stream| stream.len else 0;
 
-        const now_ms = std.time.milliTimestamp();
-        var last_role: ?[]const u8 = null;
-
-        for (messages) |msg| {
-            if (last_role == null or !std.mem.eql(u8, last_role.?, msg.role)) {
-                if (last_role != null) {
-                    zgui.spacing();
-                }
-                renderGroupHeader(msg.role, now_ms, msg.timestamp);
-                zgui.separator();
-                last_role = msg.role;
-            }
-            zgui.textWrapped("{s}", .{msg.content});
+        if (zgui.checkbox("Select/Copy Mode", .{ .v = &select_mode })) {
+            content_changed = true;
         }
-        if (stream_text) |stream| {
-            zgui.separator();
-            zgui.textColored(.{ 0.6, 0.7, 1.0, 1.0 }, "[assistant]", .{});
-            zgui.sameLine(.{});
-            zgui.textWrapped("{s}", .{stream});
+        zgui.sameLine(.{});
+        if (zgui.button("Copy All", .{})) {
+            if (ensureChatBuffer(allocator, messages, stream_text)) {
+                const zbuf = bufferZ();
+                zgui.setClipboardText(zbuf);
+            }
+        }
+        zgui.separator();
+
+        if (select_mode) {
+            if (content_changed or chat_buffer.items.len == 0) {
+                _ = ensureChatBuffer(allocator, messages, stream_text);
+            }
+            const zbuf = bufferZ();
+            _ = zgui.inputTextMultiline("##chat_select", .{
+                .buf = zbuf,
+                .h = clamped - 60.0,
+                .flags = .{ .read_only = true },
+            });
+        } else {
+            const now_ms = std.time.milliTimestamp();
+            var last_role: ?[]const u8 = null;
+
+            for (messages, 0..) |msg, index| {
+                zgui.pushIntId(@intCast(index));
+                defer zgui.popId();
+                if (last_role == null or !std.mem.eql(u8, last_role.?, msg.role)) {
+                    if (last_role != null) {
+                        zgui.spacing();
+                    }
+                    renderGroupHeader(msg.role, now_ms, msg.timestamp);
+                    zgui.separator();
+                    last_role = msg.role;
+                }
+                const cursor = zgui.getCursorPos();
+                zgui.textWrapped("{s}", .{msg.content});
+                const after_text = zgui.getCursorPos();
+                const avail = zgui.getContentRegionAvail();
+                const item_height = after_text[1] - cursor[1];
+                zgui.setCursorPos(cursor);
+                _ = zgui.invisibleButton(zgui.formatZ("##msg{d}", .{index}), .{
+                    .w = avail[0],
+                    .h = item_height,
+                });
+                if (zgui.beginPopupContextItem()) {
+                    if (zgui.menuItem("Copy message", .{})) {
+                        const msg_z = zgui.formatZ("{s}", .{msg.content});
+                        zgui.setClipboardText(msg_z);
+                        zgui.closeCurrentPopup();
+                    }
+                    zgui.endPopup();
+                }
+                zgui.setCursorPos(after_text);
+            }
+            if (stream_text) |stream| {
+                zgui.separator();
+                zgui.textColored(.{ 0.6, 0.7, 1.0, 1.0 }, "[assistant]", .{});
+                zgui.sameLine(.{});
+                zgui.textWrapped("{s}", .{stream});
+            }
         }
 
         if (content_changed and was_at_bottom) {
@@ -101,3 +150,29 @@ var last_message_count: usize = 0;
 var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
+var select_mode: bool = false;
+var chat_buffer: std.ArrayList(u8) = .empty;
+
+fn ensureChatBuffer(
+    allocator: std.mem.Allocator,
+    messages: []const types.ChatMessage,
+    stream_text: ?[]const u8,
+) bool {
+    chat_buffer.clearRetainingCapacity();
+    var writer = chat_buffer.writer(allocator);
+    for (messages) |msg| {
+        writer.print("[{s}] {s}\n\n", .{ msg.role, msg.content }) catch return false;
+    }
+    if (stream_text) |stream| {
+        writer.print("[assistant] {s}\n", .{stream}) catch return false;
+    }
+    writer.writeByte(0) catch return false;
+    return true;
+}
+
+fn bufferZ() [:0]u8 {
+    if (chat_buffer.items.len == 0) return @constCast(empty_z[0.. :0]);
+    return chat_buffer.items[0.. :0];
+}
+
+const empty_z = [_:0]u8{};

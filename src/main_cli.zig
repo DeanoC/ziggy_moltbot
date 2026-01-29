@@ -3,6 +3,7 @@ const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const logger = @import("utils/logger.zig");
 
 const usage =
     \\MoltBot CLI (debug)
@@ -24,6 +25,9 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    try initLogging(allocator);
+    defer logger.deinit();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
@@ -60,7 +64,7 @@ pub fn main() !void {
             if (i >= args.len) return error.InvalidArguments;
             read_timeout_ms = try std.fmt.parseInt(u32, args[i], 10);
         } else {
-            std.log.warn("Unknown argument: {s}", .{arg});
+            logger.warn("Unknown argument: {s}", .{arg});
         }
     }
 
@@ -116,7 +120,7 @@ pub fn main() !void {
     }
 
     if (cfg.server_url.len == 0) {
-        std.log.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
+        logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
     }
 
@@ -125,27 +129,27 @@ pub fn main() !void {
     defer ws_client.deinit();
 
     try ws_client.connect();
-    std.log.info("CLI connected. Server: {s} (read timeout {}ms)", .{ cfg.server_url, read_timeout_ms });
+    logger.info("CLI connected. Server: {s} (read timeout {}ms)", .{ cfg.server_url, read_timeout_ms });
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
 
     while (true) {
         if (!ws_client.is_connected) {
-            std.log.warn("Disconnected.", .{});
+            logger.warn("Disconnected.", .{});
             break;
         }
 
         const payload = ws_client.receive() catch |err| {
-            std.log.err("WebSocket receive failed: {s}", .{@errorName(err)});
+            logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
             ws_client.disconnect();
             break;
         };
         if (payload) |text| {
             defer allocator.free(text);
-            std.log.info("recv: {s}", .{text});
+            logger.info("recv: {s}", .{text});
             const update = event_handler.handleRawMessage(&ctx, text) catch |err| blk: {
-                std.log.warn("Error handling message: {s}", .{@errorName(err)});
+                logger.warn("Error handling message: {s}", .{@errorName(err)});
                 break :blk null;
             };
             if (update) |auth_update| {
@@ -156,13 +160,45 @@ pub fn main() !void {
                     auth_update.scopes,
                     auth_update.issued_at_ms,
                 ) catch |err| {
-                    std.log.warn("Failed to store device token: {s}", .{@errorName(err)});
+                    logger.warn("Failed to store device token: {s}", .{@errorName(err)});
                 };
             }
         } else {
             std.Thread.sleep(100 * std.time.ns_per_ms);
         }
     }
+}
+
+fn initLogging(allocator: std.mem.Allocator) !void {
+    const env_level = std.process.getEnvVarOwned(allocator, "MOLT_LOG_LEVEL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    if (env_level) |value| {
+        defer allocator.free(value);
+        if (parseLogLevel(value)) |level| {
+            logger.setLevel(level);
+        }
+    }
+
+    const env_file = std.process.getEnvVarOwned(allocator, "MOLT_LOG_FILE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    if (env_file) |path| {
+        defer allocator.free(path);
+        logger.initFile(path) catch |err| {
+            logger.warn("Failed to open log file: {}", .{err});
+        };
+    }
+}
+
+fn parseLogLevel(value: []const u8) ?logger.Level {
+    if (std.ascii.eqlIgnoreCase(value, "debug")) return .debug;
+    if (std.ascii.eqlIgnoreCase(value, "info")) return .info;
+    if (std.ascii.eqlIgnoreCase(value, "warn") or std.ascii.eqlIgnoreCase(value, "warning")) return .warn;
+    if (std.ascii.eqlIgnoreCase(value, "error") or std.ascii.eqlIgnoreCase(value, "err")) return .err;
+    return null;
 }
 
 fn parseBool(value: []const u8) bool {

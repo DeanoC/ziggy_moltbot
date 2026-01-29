@@ -3,6 +3,9 @@ pub const protocol = struct {
     pub const messages = @import("protocol/messages.zig");
     pub const constants = @import("protocol/constants.zig");
     pub const gateway = @import("protocol/gateway.zig");
+    pub const requests = @import("protocol/requests.zig");
+    pub const sessions = @import("protocol/sessions.zig");
+    pub const chat = @import("protocol/chat.zig");
 };
 
 pub const client = struct {

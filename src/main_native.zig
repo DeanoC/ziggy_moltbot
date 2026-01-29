@@ -7,6 +7,7 @@ const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const logger = @import("utils/logger.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
@@ -19,9 +20,9 @@ extern fn zgui_glClear(mask: c_uint) void;
 
 fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) void {
     if (desc) |d| {
-        std.log.err("GLFW error {d}: {s}", .{ @as(i32, @intCast(code)), d });
+        logger.err("GLFW error {d}: {s}", .{ @as(i32, @intCast(code)), d });
     } else {
-        std.log.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
+        logger.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
     }
 }
 
@@ -77,14 +78,14 @@ fn readLoopMain(loop: *ReadLoop) void {
                 const now_ms = std.time.milliTimestamp();
                 const last_ms = loop.last_receive_ms;
                 const delta = if (last_ms > 0) now_ms - last_ms else -1;
-                std.log.warn(
+                logger.warn(
                     "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
                     .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
                 );
                 loop.ws_client.disconnect();
                 return;
             }
-            std.log.err("WebSocket receive failed (thread): {}", .{err});
+            logger.err("WebSocket receive failed (thread): {}", .{err});
             loop.ws_client.disconnect();
             return;
         } orelse continue;
@@ -133,7 +134,7 @@ fn sendSessionsListRequest(
     };
 
     const request = requests.buildRequestPayload(allocator, "sessions.list", params) catch |err| {
-        std.log.warn("Failed to build sessions.list request: {}", .{err});
+        logger.warn("Failed to build sessions.list request: {}", .{err});
         return;
     };
     errdefer {
@@ -142,7 +143,7 @@ fn sendSessionsListRequest(
     }
 
     ws_client.send(request.payload) catch |err| {
-        std.log.err("Failed to send sessions.list: {}", .{err});
+        logger.err("Failed to send sessions.list: {}", .{err});
         return;
     };
     allocator.free(request.payload);
@@ -165,7 +166,7 @@ fn sendChatHistoryRequest(
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
-        std.log.warn("Failed to build chat.history request: {}", .{err});
+        logger.warn("Failed to build chat.history request: {}", .{err});
         return;
     };
     errdefer {
@@ -174,7 +175,7 @@ fn sendChatHistoryRequest(
     }
 
     ws_client.send(request.payload) catch |err| {
-        std.log.err("Failed to send chat.history: {}", .{err});
+        logger.err("Failed to send chat.history: {}", .{err});
         return;
     };
     allocator.free(request.payload);
@@ -189,12 +190,12 @@ fn sendChatMessageRequest(
     message: []const u8,
 ) void {
     if (!ws_client.is_connected or ctx.state != .connected) {
-        std.log.warn("Cannot send chat message while disconnected", .{});
+        logger.warn("Cannot send chat message while disconnected", .{});
         return;
     }
 
     const idempotency = requests.makeRequestId(allocator) catch |err| {
-        std.log.warn("Failed to generate idempotency key: {}", .{err});
+        logger.warn("Failed to generate idempotency key: {}", .{err});
         return;
     };
     defer allocator.free(idempotency);
@@ -207,7 +208,7 @@ fn sendChatMessageRequest(
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.send", params) catch |err| {
-        std.log.warn("Failed to build chat.send request: {}", .{err});
+        logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
     errdefer {
@@ -216,16 +217,16 @@ fn sendChatMessageRequest(
     }
 
     var msg = buildUserMessage(allocator, idempotency, message) catch |err| {
-        std.log.warn("Failed to build user message: {}", .{err});
+        logger.warn("Failed to build user message: {}", .{err});
         return;
     };
     ctx.upsertMessageOwned(msg) catch |err| {
-        std.log.warn("Failed to append user message: {}", .{err});
+        logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
     };
 
     ws_client.send(request.payload) catch |err| {
-        std.log.err("Failed to send chat.send: {}", .{err});
+        logger.err("Failed to send chat.send: {}", .{err});
         return;
     };
     allocator.free(request.payload);
@@ -272,6 +273,9 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
+    try initLogging(allocator);
+    defer logger.deinit();
+
     var cfg = try config.loadOrDefault(allocator, "moltbot_config.json");
     defer cfg.deinit(allocator);
 
@@ -297,12 +301,12 @@ pub fn main() !void {
     glfw.makeContextCurrent(window);
     glfw.swapInterval(1);
     if (glfw.getCurrentContext() == null) {
-        std.log.err("OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.", .{});
+        logger.err("OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.", .{});
         return error.OpenGLContextUnavailable;
     }
     const missing = zgui_opengl_load();
     if (missing != 0) {
-        std.log.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
+        logger.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
         return error.OpenGLLoaderFailed;
     }
 
@@ -331,7 +335,7 @@ pub fn main() !void {
     var next_reconnect_at_ms: i64 = 0;
     var next_ping_at_ms: i64 = 0;
 
-    std.log.info("MoltBot client stub (native) loaded. Server: {s}", .{cfg.server_url});
+    logger.info("MoltBot client stub (native) loaded. Server: {s}", .{cfg.server_url});
 
     while (!window.shouldClose()) {
         glfw.pollEvents();
@@ -344,7 +348,7 @@ pub fn main() !void {
             if (should_reconnect and next_reconnect_at_ms == 0) {
                 const now_ms = std.time.milliTimestamp();
                 next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
-                std.log.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
             }
         }
 
@@ -369,7 +373,7 @@ pub fn main() !void {
         }
         for (drained.items) |payload| {
             const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
-                std.log.err("Failed to handle server message: {}", .{err});
+                logger.err("Failed to handle server message: {}", .{err});
                 break :blk null;
             };
             if (update) |auth_update| {
@@ -380,7 +384,7 @@ pub fn main() !void {
                     auth_update.scopes,
                     auth_update.issued_at_ms,
                 ) catch |err| {
-                    std.log.warn("Failed to store device token: {}", .{err});
+                    logger.warn("Failed to store device token: {}", .{err});
                 };
             }
         }
@@ -404,7 +408,7 @@ pub fn main() !void {
             const now_ms = std.time.milliTimestamp();
             if (next_ping_at_ms == 0 or now_ms >= next_ping_at_ms) {
                 ws_client.sendPing() catch |err| {
-                    std.log.warn("WebSocket ping failed: {}", .{err});
+                    logger.warn("WebSocket ping failed: {}", .{err});
                 };
                 next_ping_at_ms = now_ms + 10_000;
             }
@@ -423,7 +427,7 @@ pub fn main() !void {
 
         if (ui_action.save_config) {
             config.save(allocator, "moltbot_config.json", cfg) catch |err| {
-                std.log.err("Failed to save config: {}", .{err});
+                logger.err("Failed to save config: {}", .{err});
             };
         }
 
@@ -437,14 +441,14 @@ pub fn main() !void {
             reconnect_backoff_ms = 500;
             next_reconnect_at_ms = 0;
             ws_client.connect() catch |err| {
-                std.log.err("WebSocket connect failed: {}", .{err});
+                logger.err("WebSocket connect failed: {}", .{err});
                 ctx.state = .error_state;
             };
             if (ws_client.is_connected) {
                 ctx.state = .authenticating;
                 next_ping_at_ms = 0;
                 startReadThread(&read_loop, &read_thread) catch |err| {
-                    std.log.err("Failed to start read thread: {}", .{err});
+                    logger.err("Failed to start read thread: {}", .{err});
                 };
             }
         }
@@ -469,7 +473,7 @@ pub fn main() !void {
         if (ui_action.select_session) |session_key| {
             defer allocator.free(session_key);
             ctx.setCurrentSession(session_key) catch |err| {
-                std.log.warn("Failed to set session: {}", .{err});
+                logger.warn("Failed to set session: {}", .{err});
             };
             ctx.clearMessages();
             ctx.clearStreamText();
@@ -484,13 +488,13 @@ pub fn main() !void {
             defer allocator.free(message);
             if (ctx.current_session == null) {
                 ctx.setCurrentSession("main") catch |err| {
-                    std.log.warn("Failed to set default session: {}", .{err});
+                    logger.warn("Failed to set default session: {}", .{err});
                 };
             }
             if (ctx.current_session) |session_key| {
                 sendChatMessageRequest(allocator, &ctx, &ws_client, session_key, message);
             } else {
-                std.log.warn("Cannot send message without a session selected", .{});
+                logger.warn("Cannot send message without a session selected", .{});
             }
         }
 
@@ -502,7 +506,7 @@ pub fn main() !void {
                 ws_client.token = cfg.token;
                 ws_client.insecure_tls = cfg.insecure_tls;
                 ws_client.connect() catch |err| {
-                    std.log.err("WebSocket reconnect failed: {}", .{err});
+                    logger.err("WebSocket reconnect failed: {}", .{err});
                     ctx.state = .error_state;
                 };
                 if (ws_client.is_connected) {
@@ -512,13 +516,13 @@ pub fn main() !void {
                     next_reconnect_at_ms = 0;
                     next_ping_at_ms = 0;
                     startReadThread(&read_loop, &read_thread) catch |err| {
-                        std.log.err("Failed to start read thread: {}", .{err});
+                        logger.err("Failed to start read thread: {}", .{err});
                     };
                 } else {
                     next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
                     const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
                     reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
-                    std.log.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
                 }
             }
         }
@@ -527,4 +531,36 @@ pub fn main() !void {
 
         window.swapBuffers();
     }
+}
+
+fn initLogging(allocator: std.mem.Allocator) !void {
+    const env_level = std.process.getEnvVarOwned(allocator, "MOLT_LOG_LEVEL") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    if (env_level) |value| {
+        defer allocator.free(value);
+        if (parseLogLevel(value)) |level| {
+            logger.setLevel(level);
+        }
+    }
+
+    const env_file = std.process.getEnvVarOwned(allocator, "MOLT_LOG_FILE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => return err,
+    };
+    if (env_file) |path| {
+        defer allocator.free(path);
+        logger.initFile(path) catch |err| {
+            logger.warn("Failed to open log file: {}", .{err});
+        };
+    }
+}
+
+fn parseLogLevel(value: []const u8) ?logger.Level {
+    if (std.ascii.eqlIgnoreCase(value, "debug")) return .debug;
+    if (std.ascii.eqlIgnoreCase(value, "info")) return .info;
+    if (std.ascii.eqlIgnoreCase(value, "warn") or std.ascii.eqlIgnoreCase(value, "warning")) return .warn;
+    if (std.ascii.eqlIgnoreCase(value, "error") or std.ascii.eqlIgnoreCase(value, "err")) return .err;
+    return null;
 }

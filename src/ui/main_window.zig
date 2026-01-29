@@ -62,7 +62,7 @@ pub fn draw(
             const center_avail = zgui.getContentRegionAvail();
             const input_height: f32 = 96.0;
             const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
-            chat_view.draw(ctx.messages.items, ctx.stream_text, history_height);
+            chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
             zgui.separator();
             if (input_panel.draw(allocator)) |message| {
                 action.send_message = message;

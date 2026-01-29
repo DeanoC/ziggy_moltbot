@@ -3,6 +3,8 @@ const moltbot = @import("moltbot");
 
 const messages = moltbot.protocol.messages;
 const types = moltbot.protocol.types;
+const requests = moltbot.protocol.requests;
+const chat = moltbot.protocol.chat;
 
 test "serialize/deserialize chat message" {
     const allocator = std.testing.allocator;
@@ -44,4 +46,37 @@ test "parse message envelope payload" {
     try std.testing.expectEqualStrings("user", payload.value.role);
     try std.testing.expectEqualStrings("hello", payload.value.content);
     try std.testing.expectEqual(@as(i64, 1), payload.value.timestamp);
+}
+
+test "build request payload" {
+    const allocator = std.testing.allocator;
+    const params = chat.ChatHistoryParams{
+        .sessionKey = "main",
+        .limit = 2,
+    };
+    const req = try requests.buildRequestPayload(allocator, "chat.history", params);
+    defer allocator.free(req.payload);
+    defer allocator.free(req.id);
+
+    var parsed = try messages.deserializeMessage(allocator, req.payload, std.json.Value);
+    defer parsed.deinit();
+
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("req", obj.get("type").?.string);
+    try std.testing.expectEqualStrings("chat.history", obj.get("method").?.string);
+}
+
+test "parse chat history payload" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{"messages":[{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1}]}
+    ;
+    var value = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer value.deinit();
+
+    var parsed = try messages.parsePayload(allocator, value.value, chat.ChatHistoryResult);
+    defer parsed.deinit();
+
+    const msg = parsed.value.messages.?.[0];
+    try std.testing.expectEqualStrings("user", msg.role);
 }

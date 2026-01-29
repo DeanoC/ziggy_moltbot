@@ -6,6 +6,7 @@ const messages = @import("../protocol/messages.zig");
 const sessions = @import("../protocol/sessions.zig");
 const chat = @import("../protocol/chat.zig");
 const requests = @import("../protocol/requests.zig");
+const logger = @import("../utils/logger.zig");
 
 pub const AuthUpdate = struct {
     device_token: []const u8,
@@ -29,24 +30,24 @@ pub const AuthUpdate = struct {
 
 pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate {
     var parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, raw, .{}) catch |err| {
-        std.log.warn("Unparsed server message ({s}): {s}", .{ @errorName(err), raw });
+        logger.warn("Unparsed server message ({s}): {s}", .{ @errorName(err), raw });
         return null;
     };
     defer parsed.deinit();
 
     const value = parsed.value;
     if (value != .object) {
-        std.log.warn("Unexpected server message (non-object): {s}", .{raw});
+        logger.warn("Unexpected server message (non-object): {s}", .{raw});
         return null;
     }
 
     const obj = value.object;
     const type_value = obj.get("type") orelse {
-        std.log.warn("Server message missing type: {s}", .{raw});
+        logger.warn("Server message missing type: {s}", .{raw});
         return null;
     };
     if (type_value != .string) {
-        std.log.warn("Server message has non-string type: {s}", .{raw});
+        logger.warn("Server message has non-string type: {s}", .{raw});
         return null;
     }
 
@@ -54,35 +55,35 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
     if (std.mem.eql(u8, frame_type, "event")) {
         var frame = messages.parsePayload(ctx.allocator, value, gateway.GatewayEventFrame) catch |err| {
-            std.log.warn("Unparsed event frame ({s}): {s}", .{ @errorName(err), raw });
+            logger.warn("Unparsed event frame ({s}): {s}", .{ @errorName(err), raw });
             return null;
         };
         defer frame.deinit();
 
         if (std.mem.eql(u8, frame.value.event, "connect.challenge")) {
-            std.log.info("Gateway connect challenge received", .{});
+            logger.info("Gateway connect challenge received", .{});
             return null;
         }
 
         if (std.mem.eql(u8, frame.value.event, "device.pair.requested")) {
-            std.log.warn("Gateway pairing required: {s}", .{raw});
+            logger.warn("Gateway pairing required: {s}", .{raw});
             return null;
         }
 
         if (std.mem.eql(u8, frame.value.event, "chat")) {
             handleChatEvent(ctx, frame.value.payload) catch |err| {
-                std.log.warn("Failed to handle chat event ({s})", .{@errorName(err)});
+                logger.warn("Failed to handle chat event ({s})", .{@errorName(err)});
             };
             return null;
         }
 
-        std.log.debug("Gateway event: {s}", .{frame.value.event});
+        logger.debug("Gateway event: {s}", .{frame.value.event});
         return null;
     }
 
     if (std.mem.eql(u8, frame_type, "res")) {
         var frame = messages.parsePayload(ctx.allocator, value, gateway.GatewayResponseFrame) catch |err| {
-            std.log.warn("Unparsed response frame ({s}): {s}", .{ @errorName(err), raw });
+            logger.warn("Unparsed response frame ({s}): {s}", .{ @errorName(err), raw });
             return null;
         };
         defer frame.deinit();
@@ -101,19 +102,19 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             if (is_send) ctx.clearPendingSendRequest();
 
             if (frame.value.@"error") |err| {
-                std.log.err("Gateway request failed ({s}): {s}", .{ err.code, err.message });
+                logger.err("Gateway request failed ({s}): {s}", .{ err.code, err.message });
                 ctx.setError(err.message) catch {};
                 if (err.details) |details| {
                     if (details == .object) {
                         if (details.object.get("requestId")) |request_id| {
                             if (request_id == .string) {
-                                std.log.warn("Pairing request id: {s}", .{request_id.string});
+                                logger.warn("Pairing request id: {s}", .{request_id.string});
                             }
                         }
                     }
                 }
             } else {
-                std.log.err("Gateway request failed: {s}", .{raw});
+                logger.err("Gateway request failed: {s}", .{raw});
             }
             ctx.state = .error_state;
             return null;
@@ -126,7 +127,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                     std.mem.eql(u8, payload_type.?.string, "hello-ok"))
                 {
                     ctx.state = .connected;
-                    std.log.info("Gateway connected", .{});
+                    logger.info("Gateway connected", .{});
                     if (try extractAuthUpdate(ctx.allocator, payload)) |update| {
                         return update;
                     }
@@ -136,7 +137,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             if (is_sessions) {
                 ctx.clearPendingSessionsRequest();
                 handleSessionsList(ctx, payload) catch |err| {
-                    std.log.warn("sessions.list handling failed ({s})", .{@errorName(err)});
+                    logger.warn("sessions.list handling failed ({s})", .{@errorName(err)});
                 };
                 return null;
             }
@@ -144,7 +145,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             if (is_history) {
                 ctx.clearPendingHistoryRequest();
                 handleChatHistory(ctx, payload) catch |err| {
-                    std.log.warn("chat.history handling failed ({s})", .{@errorName(err)});
+                    logger.warn("chat.history handling failed ({s})", .{@errorName(err)});
                 };
                 return null;
             }
@@ -157,7 +158,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         return null;
     }
 
-    std.log.debug("Unhandled gateway frame: {s}", .{raw});
+    logger.debug("Unhandled gateway frame: {s}", .{raw});
     return null;
 }
 
@@ -170,7 +171,7 @@ fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void 
     defer parsed.deinit();
 
     const rows = parsed.value.sessions orelse {
-        std.log.warn("sessions.list payload missing sessions", .{});
+        logger.warn("sessions.list payload missing sessions", .{});
         return;
     };
 
@@ -203,7 +204,7 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
     defer parsed.deinit();
 
     const items = parsed.value.messages orelse {
-        std.log.warn("chat.history payload missing messages", .{});
+        logger.warn("chat.history payload missing messages", .{});
         return;
     };
 
@@ -245,8 +246,8 @@ fn selectPreferredSession(ctx: *state.ClientContext) void {
     }
 
     const chosen = ctx.sessions.items[best_index].key;
-    ctx.setCurrentSession(chosen) catch |err| {
-        std.log.warn("Failed to select session: {}", .{err});
+        ctx.setCurrentSession(chosen) catch |err| {
+        logger.warn("Failed to select session: {}", .{err});
         return;
     };
     ctx.clearMessages();
@@ -281,7 +282,7 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
         var msg = try buildStreamMessage(ctx.allocator, event.runId, text.?);
         errdefer freeChatMessageOwned(ctx.allocator, &msg);
         ctx.upsertMessageOwned(msg) catch |err| {
-            std.log.warn("Failed to upsert stream message ({s})", .{@errorName(err)});
+            logger.warn("Failed to upsert stream message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &msg);
         };
         return;
@@ -302,12 +303,12 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
 
     if (event.message) |message_val| {
         var parsed_msg = messages.parsePayload(ctx.allocator, message_val, chat.ChatHistoryMessage) catch |err| {
-            std.log.warn("Failed to parse chat message ({s})", .{@errorName(err)});
+            logger.warn("Failed to parse chat message ({s})", .{@errorName(err)});
             return;
         };
         defer parsed_msg.deinit();
         var message = buildChatMessage(ctx.allocator, parsed_msg.value) catch |err| {
-            std.log.warn("Failed to build chat message ({s})", .{@errorName(err)});
+            logger.warn("Failed to build chat message ({s})", .{@errorName(err)});
             return;
         };
         if (had_stream) {
@@ -316,7 +317,7 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
             _ = ctx.removeMessageById(stream_id);
         }
         ctx.upsertMessageOwned(message) catch |err| {
-            std.log.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
+            logger.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &message);
         };
     }

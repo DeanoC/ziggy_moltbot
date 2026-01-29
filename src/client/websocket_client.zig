@@ -4,6 +4,7 @@ const messages = @import("../protocol/messages.zig");
 const gateway = @import("../protocol/gateway.zig");
 const identity = @import("device_identity.zig");
 const requests = @import("../protocol/requests.zig");
+const logger = @import("../utils/logger.zig");
 const builtin = @import("builtin");
 
 pub const WebSocketClient = struct {
@@ -132,9 +133,9 @@ pub const WebSocketClient = struct {
                     if (message.data.len >= 2) {
                         const code = (@as(u16, message.data[0]) << 8) | message.data[1];
                         const reason = message.data[2..];
-                        std.log.warn("WebSocket closed by server code={} reason={s}", .{ code, reason });
+                        logger.warn("WebSocket closed by server code={} reason={s}", .{ code, reason });
                     } else {
-                        std.log.warn("WebSocket closed by server (no close payload)", .{});
+                        logger.warn("WebSocket closed by server (no close payload)", .{});
                     }
                     try client.close(.{});
                     self.is_connected = false;
@@ -144,9 +145,9 @@ pub const WebSocketClient = struct {
 
             if (payload) |text| {
                 if (message.type == .text) {
-                    std.log.debug("WebSocket text frame len={d}", .{text.len});
+                    logger.debug("WebSocket text frame len={d}", .{text.len});
                 } else if (message.type == .binary) {
-                    std.log.debug("WebSocket binary frame len={d}", .{text.len});
+                    logger.debug("WebSocket binary frame len={d}", .{text.len});
                 }
                 handleConnectChallenge(self, text) catch {};
                 return text;
@@ -224,7 +225,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         defer self.allocator.free(payload);
         signature_buf = try identity.signPayload(self.allocator, ident, payload);
         const signature = signature_buf.?;
-        std.log.debug(
+        logger.debug(
             "Device signature utf8={} len={} bytes[0..4]={d} {d} {d} {d}",
             .{
                 std.unicode.utf8ValidateSlice(signature),
@@ -249,7 +250,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         if (ident.device_token != null and std.mem.eql(u8, auth_token, ident.device_token.?)) "device" else "shared"
     else
         "shared";
-    std.log.info(
+    logger.info(
         "Sending connect request id={s} device_id={s} nonce={s} token={s}",
         .{
             request_id,
@@ -287,9 +288,9 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     if (auth_token.len > 0) {
         const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, auth_token, "<redacted>");
         defer self.allocator.free(redacted);
-        std.log.debug("Connect request payload: {s}", .{redacted});
+        logger.debug("Connect request payload: {s}", .{redacted});
     } else {
-        std.log.debug("Connect request payload: {s}", .{payload});
+        logger.debug("Connect request payload: {s}", .{payload});
     }
 
     if (self.client) |*client| {
@@ -358,7 +359,7 @@ fn handleConnectChallenge(self: *WebSocketClient, raw: []const u8) !void {
     const nonce = try parseConnectNonce(self.allocator, raw) orelse return;
     clearConnectNonce(self);
     self.connect_nonce = nonce;
-    std.log.info("Connect challenge nonce received: {s}", .{nonce});
+    logger.info("Connect challenge nonce received: {s}", .{nonce});
     try sendConnectRequest(self, nonce);
 }
 
