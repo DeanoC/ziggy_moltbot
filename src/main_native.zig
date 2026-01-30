@@ -294,7 +294,7 @@ pub fn main() !void {
     try initLogging(allocator);
     defer logger.deinit();
 
-    var cfg = try config.loadOrDefault(allocator, "moltbot_config.json");
+    var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
 
     var ws_client = websocket_client.WebSocketClient.init(
@@ -319,7 +319,7 @@ pub fn main() !void {
         glfw.windowHint(.opengl_forward_compat, true);
     }
 
-    const window = try glfw.Window.create(1280, 720, "MoltBot Client", null, null);
+    const window = try glfw.Window.create(1280, 720, "ZiggyStarClaw", null, null);
     defer window.destroy();
 
     glfw.makeContextCurrent(window);
@@ -359,7 +359,7 @@ pub fn main() !void {
     var next_reconnect_at_ms: i64 = 0;
     var next_ping_at_ms: i64 = 0;
 
-    logger.info("MoltBot client stub (native) loaded. Server: {s}", .{cfg.server_url});
+    logger.info("ZiggyStarClaw client (native) loaded. Server: {s}", .{cfg.server_url});
 
     while (!window.shouldClose()) {
         glfw.pollEvents();
@@ -451,7 +451,7 @@ pub fn main() !void {
         }
 
         if (ui_action.save_config) {
-            config.save(allocator, "moltbot_config.json", cfg) catch |err| {
+            config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
         }
@@ -461,7 +461,7 @@ pub fn main() !void {
                 logger.err("Failed to reset config: {}", .{err});
                 return;
             };
-            _ = std.fs.cwd().deleteFile("moltbot_config.json") catch {};
+            _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;

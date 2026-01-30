@@ -490,7 +490,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     _ = c.SDL_SetHint(c.SDL_HINT_IME_SHOW_UI, "1");
 
-    const pref_path_c = c.SDL_GetPrefPath("deanoc", "moltbot");
+    const pref_path_c = c.SDL_GetPrefPath("deanoc", "ziggystarclaw");
     if (pref_path_c != null) {
         const pref_path = std.mem.span(@as([*:0]const u8, pref_path_c));
         std.posix.chdir(pref_path) catch {};
@@ -505,7 +505,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     _ = c.SDL_GL_SetAttribute(c.SDL_GL_STENCIL_SIZE, 8);
 
     const window = c.SDL_CreateWindow(
-        "MoltBot Client",
+        "ZiggyStarClaw",
         c.SDL_WINDOWPOS_UNDEFINED,
         c.SDL_WINDOWPOS_UNDEFINED,
         1280,
@@ -527,7 +527,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     var ctx = client_state.ClientContext.init(allocator) catch return 1;
     defer ctx.deinit();
-    var cfg = config.loadOrDefault(allocator, "moltbot_config.json") catch |err| blk: {
+    var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
     };
@@ -663,7 +663,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         if (ui_action.save_config) {
-            config.save(allocator, "moltbot_config.json", cfg) catch |err| {
+            config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
         }
@@ -673,7 +673,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 logger.err("Failed to reset config: {}", .{err});
                 return 1;
             };
-            _ = std.fs.cwd().deleteFile("moltbot_config.json") catch {};
+            _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;

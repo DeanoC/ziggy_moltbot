@@ -3,7 +3,7 @@ const std = @import("std");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-pub const default_path = "moltbot_device.json";
+pub const default_path = "ziggystarclaw_device.json";
 
 pub const DeviceIdentity = struct {
     device_id: []const u8,

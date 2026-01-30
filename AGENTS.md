@@ -1,4 +1,4 @@
-# MoltBot Zig Client - Build & Run
+# ZiggyStarClaw - Build & Run
 
 This repo uses the pinned Zig toolchain at `./.tools/zig-0.15.2/zig`.
 
@@ -11,12 +11,12 @@ Build:
 
 Run:
 ```bash
-./zig-out/bin/moltbot-client
+./zig-out/bin/ziggystarclaw-client
 ```
 
 CLI:
 ```bash
-./zig-out/bin/moltbot-cli
+./zig-out/bin/ziggystarclaw-cli
 ```
 
 ## Windows (cross-compile from Linux)
@@ -28,8 +28,8 @@ Build:
 
 Artifacts:
 ```
-zig-out/bin/moltbot-client.exe
-zig-out/bin/moltbot-cli.exe
+zig-out/bin/ziggystarclaw-client.exe
+zig-out/bin/ziggystarclaw-cli.exe
 ```
 
 ## WASM (Emscripten)
@@ -51,7 +51,7 @@ Serve locally:
 
 Open:
 ```
-http://localhost:8080/moltbot-client.html
+http://localhost:8080/ziggystarclaw-client.html
 ```
 
 ## Android (SDL + OpenGL ES)
@@ -63,16 +63,16 @@ Build APK:
 
 APK output:
 ```
-zig-out/bin/moltbot_android.apk
+zig-out/bin/ziggystarclaw_android.apk
 ```
 
 Install + run (from Windows PowerShell or any adb shell):
 ```powershell
-adb install -r zig-out\bin\moltbot_android.apk
-adb shell am start -S -W -n com.deanoc.moltbot/org.libsdl.app.SDLActivity
+adb install -r zig-out\bin\ziggystarclaw_android.apk
+adb shell am start -S -W -n com.deanoc.ziggystarclaw/org.libsdl.app.SDLActivity
 ```
 
 Logcat filter:
 ```powershell
-adb logcat -v time MoltBot:D *:S
+adb logcat -v time ZiggyStarClaw:D *:S
 ```

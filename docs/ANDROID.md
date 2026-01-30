@@ -15,16 +15,13 @@ This project now includes a minimal SDL2 + OpenGL ES Android target that builds 
 ## Build APK
 
 ```sh
-zig build apk -Dandroid=true \
-  -Dandroid-build-tools=35.0.0 \
-  -Dandroid-ndk=27.0.12077973 \
-  -Dandroid-api=34
+./.tools/zig-0.15.2/zig build -Dandroid=true
 ```
 
 The APK will be written to:
 
 ```
-zig-out/bin/moltbot_android.apk
+zig-out/bin/ziggystarclaw_android.apk
 ```
 
 Note: `zig-android-sdk` packages the native shared library as `libmain.so`. SDLActivity loads `libSDL2.so` then `libmain.so`.
@@ -32,12 +29,12 @@ Note: `zig-android-sdk` packages the native shared library as `libmain.so`. SDLA
 ## Install + Run (manual)
 
 ```sh
-adb install -r zig-out/bin/moltbot_android.apk
-adb shell am start -S -W -n com.deanoc.moltbot/android.app.NativeActivity
+adb install -r zig-out/bin/ziggystarclaw_android.apk
+adb shell am start -S -W -n com.deanoc.ziggystarclaw/org.libsdl.app.SDLActivity
 ```
 
 Check logs:
 
 ```sh
-adb logcat | rg MoltBot
+adb logcat | rg ZiggyStarClaw
 ```

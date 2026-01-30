@@ -1,6 +1,8 @@
-# Zig MoltBot Client
-<img width="1024" height="1024" alt="ziggy_moltbot" src="https://github.com/user-attachments/assets/dc795424-20a7-4fce-aa32-3826987a5c71" />
+# ZiggyStarClaw
+![ZiggyStarClaw](assets/ZiggyStarClaw.png)
 
+
+ZiggyStarClaw and the Lobsters From Mars.
 
 A clean, performant MoltBot client built in Zig with an ImGui-based UI. Targets native desktop and optional WASM.
 

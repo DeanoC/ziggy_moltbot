@@ -4,7 +4,7 @@ const storage = @import("../platform/wasm_storage.zig");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
-pub const default_key: [:0]const u8 = "moltbot_device.json";
+pub const default_key: [:0]const u8 = "ziggystarclaw_device.json";
 
 pub const DeviceIdentity = struct {
     device_id: []const u8,

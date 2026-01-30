@@ -6,15 +6,15 @@ const websocket_client = @import("client/websocket_client.zig");
 const logger = @import("utils/logger.zig");
 
 const usage =
-    \\MoltBot CLI (debug)
+    \\ZiggyStarClaw CLI (debug)
     \\
     \\Usage:
-    \\  moltbot-cli [options]
+    \\  ziggystarclaw-cli [options]
     \\
     \\Options:
     \\  --url <ws/wss url>       Override server URL
     \\  --token <token>          Override auth token
-    \\  --config <path>          Config file path (default: moltbot_config.json)
+    \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
     \\  --insecure-tls           Disable TLS verification
     \\  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
     \\  -h, --help               Show help
@@ -32,7 +32,7 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    var config_path: []const u8 = "moltbot_config.json";
+    var config_path: []const u8 = "ziggystarclaw_config.json";
     var override_url: ?[]const u8 = null;
     var override_token: ?[]const u8 = null;
     var override_insecure: ?bool = null;

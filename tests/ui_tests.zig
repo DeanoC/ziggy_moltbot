@@ -1,5 +1,5 @@
 const std = @import("std");
-const moltbot = @import("moltbot");
+const moltbot = @import("ziggystarclaw");
 
 // UI tests are compile-only for now; rendering requires an active backend.
 

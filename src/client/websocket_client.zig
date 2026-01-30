@@ -286,7 +286,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
             .id = client_id,
-            .displayName = "MoltBot Zig Client",
+            .displayName = "ZiggyStarClaw",
             .version = "0.1.0",
             .platform = @tagName(builtin.os.tag),
             .mode = client_mode,

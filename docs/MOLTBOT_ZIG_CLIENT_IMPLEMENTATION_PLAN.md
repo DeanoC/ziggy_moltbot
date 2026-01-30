@@ -133,7 +133,7 @@ This project aims to create a replacement for MoltBot's built-in UI with a clean
 ## Project Structure
 
 ```
-zig-moltbot-client/
+ziggystarclaw/
 ├── build.zig                      # Build configuration
 ├── build.zig.zon                  # Package manifest with dependencies
 ├── README.md                      # Project documentation
@@ -214,8 +214,8 @@ zig-moltbot-client/
 
 ```bash
 # Create project directory
-mkdir zig-moltbot-client
-cd zig-moltbot-client
+mkdir ziggystarclaw
+cd ziggystarclaw
 
 # Initialize Git
 git init
@@ -240,7 +240,7 @@ Define dependencies:
 
 ```zig
 .{
-    .name = "zig-moltbot-client",
+    .name = "ziggystarclaw",
     .version = "0.1.0",
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
@@ -738,7 +738,7 @@ pub fn build(b: *std.Build) void {
 
     // WASM target
     const wasm_exe = b.addExecutable(.{
-        .name = "moltbot-client",
+        .name = "ziggystarclaw-client",
         .root_source_file = b.path("src/main_wasm.zig"),
         .target = b.resolveTargetQuery(.{
             .cpu_arch = .wasm32,
@@ -749,7 +749,7 @@ pub fn build(b: *std.Build) void {
 
     // Native target
     const native_exe = b.addExecutable(.{
-        .name = "moltbot-client",
+        .name = "ziggystarclaw-client",
         .root_source_file = b.path("src/main_native.zig"),
         .target = target,
         .optimize = optimize,
@@ -796,7 +796,7 @@ pub fn build(b: *std.Build) void {
 
 ```zig
 .{
-    .name = "zig-moltbot-client",
+    .name = "ziggystarclaw",
     .version = "0.1.0",
     .minimum_zig_version = "0.15.1",
     .dependencies = .{
@@ -822,8 +822,8 @@ pub fn build(b: *std.Build) void {
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/zig-moltbot-client.git
-cd zig-moltbot-client
+git clone https://github.com/yourusername/ziggystarclaw.git
+cd ziggystarclaw
 
 # Fetch dependencies
 zig build --fetch
@@ -874,7 +874,7 @@ zig build test -Dlog_level=debug
 zig build -Doptimize=Debug
 
 # Use GDB/LLDB
-gdb ./zig-cache/bin/moltbot-client
+gdb ./zig-cache/bin/ziggystarclaw-client
 ```
 
 ### Code Organization Best Practices

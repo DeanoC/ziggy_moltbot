@@ -1,5 +1,5 @@
 const std = @import("std");
-const moltbot = @import("moltbot");
+const moltbot = @import("ziggystarclaw");
 
 const state = moltbot.client.state;
 

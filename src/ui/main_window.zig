@@ -55,9 +55,9 @@ pub fn draw(
         flags.no_scroll_with_mouse = true;
     }
 
-    if (zgui.begin("MoltBot Client", .{ .flags = flags })) {
+    if (zgui.begin("ZiggyStarClaw", .{ .flags = flags })) {
         if (!compact_header) {
-            zgui.text("MoltBot Zig Client (ImGui)", .{});
+            zgui.text("ZiggyStarClaw and the Lobsters From Mars", .{});
             zgui.separator();
         }
 

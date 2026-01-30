@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
 
-    const app_module = b.addModule("moltbot", .{
+    const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
@@ -41,12 +41,12 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "zgui", .module = zgui_native },
                 .{ .name = "zglfw", .module = zglfw_native },
-                .{ .name = "moltbot", .module = app_module },
+                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
 
         const native_exe = b.addExecutable(.{
-            .name = "moltbot-client",
+            .name = "ziggystarclaw-client",
             .root_module = native_module,
         });
 
@@ -74,12 +74,12 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
-                .{ .name = "moltbot", .module = app_module },
+                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
 
         const cli_exe = b.addExecutable(.{
-            .name = "moltbot-cli",
+            .name = "ziggystarclaw-cli",
             .root_module = cli_module,
         });
 
@@ -115,7 +115,7 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "moltbot", .module = app_module },
+                    .{ .name = "ziggystarclaw", .module = app_module },
                 },
             });
             const tests = b.addTest(.{ .root_module = test_mod });
@@ -146,7 +146,7 @@ pub fn build(b: *std.Build) void {
         });
 
         const wasm = b.addLibrary(.{
-            .name = "moltbot-client",
+            .name = "ziggystarclaw-client",
             .root_module = wasm_module,
             .linkage = .static,
         });
@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) void {
                 .preload_paths = null,
                 .shell_file_path = b.path("web/shell.html"),
                 .js_library_path = null,
-                .out_file_name = "moltbot-client.html",
+                .out_file_name = "ziggystarclaw-client.html",
                 .install_dir = .{ .custom = "web" },
             },
         );
@@ -313,7 +313,7 @@ pub fn build(b: *std.Build) void {
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{
-                .name = "moltbot_android",
+                .name = "ziggystarclaw_android",
                 .root_module = android_module,
                 .linkage = .dynamic,
             });

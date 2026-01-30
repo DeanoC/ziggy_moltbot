@@ -57,7 +57,7 @@ var use_device_identity = true;
 var device_identity: ?identity.DeviceIdentity = null;
 var last_state: ?client_state.ClientState = null;
 var initialized = false;
-const config_storage_key: [:0]const u8 = "moltbot.config";
+const config_storage_key: [:0]const u8 = "ziggystarclaw.config";
 
 const MessageQueue = struct {
     items: std.ArrayList([]u8) = .empty,
@@ -143,7 +143,7 @@ fn initApp() !void {
     glfw.windowHint(.context_version_minor, 0);
     glfw.windowHint(.doublebuffer, true);
 
-    const win = try glfw.createWindow(1280, 720, "MoltBot Client (Web)", null, null);
+    const win = try glfw.createWindow(1280, 720, "ZiggyStarClaw (Web)", null, null);
     glfw.makeContextCurrent(win);
     glfw.swapInterval(1);
 
@@ -162,7 +162,7 @@ fn initApp() !void {
     window = win;
     message_queue = MessageQueue{};
     initialized = true;
-    logger.info("MoltBot client (wasm) initialized.", .{});
+    logger.info("ZiggyStarClaw client (wasm) initialized.", .{});
 }
 
 fn deinitApp() void {
@@ -410,7 +410,7 @@ fn sendConnectRequest(nonce: ?[]const u8) void {
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
             .id = client_id,
-            .displayName = "MoltBot Zig Client",
+            .displayName = "ZiggyStarClaw",
             .version = "0.1.0",
             .platform = "web",
             .mode = client_mode,
