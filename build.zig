@@ -300,11 +300,16 @@ pub fn build(b: *std.Build) void {
                 .target = android_target,
                 .optimize = optimize,
             });
+            const ws_android = b.dependency("websocket", .{
+                .target = android_target,
+                .optimize = optimize,
+            }).module("websocket");
             const zgui_android_pkg = b.dependency("zgui", .{
                 .target = android_target,
                 .optimize = optimize,
                 .backend = .no_backend,
             });
+            android_module.addImport("websocket", ws_android);
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{
