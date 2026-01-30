@@ -43,45 +43,89 @@ pub fn draw(
         const avail = zgui.getContentRegionAvail();
         const left_width: f32 = 240.0;
         const right_width: f32 = 320.0;
-        const center_width = @max(120.0, avail[0] - left_width - right_width - spacing_x * 2.0);
+        const min_center_width: f32 = 160.0;
+        const compact_layout = avail[0] < left_width + right_width + spacing_x * 2.0 + min_center_width;
 
-        if (zgui.beginChild("LeftPanel", .{ .w = left_width, .child_flags = .{ .border = true } })) {
-            const sessions_action = session_list.draw(
-                allocator,
-                ctx.sessions.items,
-                ctx.current_session,
-                ctx.sessions_loading,
-            );
-            action.refresh_sessions = sessions_action.refresh;
-            action.select_session = sessions_action.selected_key;
-        }
-        zgui.endChild();
+        if (compact_layout) {
+            const total_h = avail[1];
+            const sessions_h = @min(200.0, total_h * 0.25);
+            const settings_h = @min(220.0, total_h * 0.3);
+            const chat_h = @max(140.0, total_h - sessions_h - settings_h - spacing_y * 2.0);
 
-        zgui.sameLine(.{});
-
-        if (zgui.beginChild("CenterPanel", .{ .w = center_width, .child_flags = .{ .border = true } })) {
-            const center_avail = zgui.getContentRegionAvail();
-            const input_height: f32 = 96.0;
-            const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
-            chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
-            zgui.separator();
-            if (input_panel.draw(allocator)) |message| {
-                action.send_message = message;
+            if (zgui.beginChild("LeftPanel", .{ .w = avail[0], .h = sessions_h, .child_flags = .{ .border = true } })) {
+                const sessions_action = session_list.draw(
+                    allocator,
+                    ctx.sessions.items,
+                    ctx.current_session,
+                    ctx.sessions_loading,
+                );
+                action.refresh_sessions = sessions_action.refresh;
+                action.select_session = sessions_action.selected_key;
             }
-        }
-        zgui.endChild();
+            zgui.endChild();
 
-        zgui.sameLine(.{});
+            if (zgui.beginChild("CenterPanel", .{ .w = avail[0], .h = chat_h, .child_flags = .{ .border = true } })) {
+                const center_avail = zgui.getContentRegionAvail();
+                const input_height: f32 = 88.0;
+                const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
+                chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
+                zgui.separator();
+                if (input_panel.draw(allocator)) |message| {
+                    action.send_message = message;
+                }
+            }
+            zgui.endChild();
 
-        if (zgui.beginChild("RightPanel", .{ .w = right_width, .child_flags = .{ .border = true } })) {
-            const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
-            action.connect = settings_action.connect;
-            action.disconnect = settings_action.disconnect;
-            action.save_config = settings_action.save;
-            action.clear_saved = settings_action.clear_saved;
-            action.config_updated = settings_action.config_updated;
+            if (zgui.beginChild("RightPanel", .{ .w = avail[0], .h = settings_h, .child_flags = .{ .border = true } })) {
+                const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
+                action.connect = settings_action.connect;
+                action.disconnect = settings_action.disconnect;
+                action.save_config = settings_action.save;
+                action.clear_saved = settings_action.clear_saved;
+                action.config_updated = settings_action.config_updated;
+            }
+            zgui.endChild();
+        } else {
+            const center_width = @max(min_center_width, avail[0] - left_width - right_width - spacing_x * 2.0);
+
+            if (zgui.beginChild("LeftPanel", .{ .w = left_width, .child_flags = .{ .border = true } })) {
+                const sessions_action = session_list.draw(
+                    allocator,
+                    ctx.sessions.items,
+                    ctx.current_session,
+                    ctx.sessions_loading,
+                );
+                action.refresh_sessions = sessions_action.refresh;
+                action.select_session = sessions_action.selected_key;
+            }
+            zgui.endChild();
+
+            zgui.sameLine(.{});
+
+            if (zgui.beginChild("CenterPanel", .{ .w = center_width, .child_flags = .{ .border = true } })) {
+                const center_avail = zgui.getContentRegionAvail();
+                const input_height: f32 = 96.0;
+                const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
+                chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
+                zgui.separator();
+                if (input_panel.draw(allocator)) |message| {
+                    action.send_message = message;
+                }
+            }
+            zgui.endChild();
+
+            zgui.sameLine(.{});
+
+            if (zgui.beginChild("RightPanel", .{ .w = right_width, .child_flags = .{ .border = true } })) {
+                const settings_action = settings_view.draw(allocator, cfg, ctx.state, is_connected);
+                action.connect = settings_action.connect;
+                action.disconnect = settings_action.disconnect;
+                action.save_config = settings_action.save;
+                action.clear_saved = settings_action.clear_saved;
+                action.config_updated = settings_action.config_updated;
+            }
+            zgui.endChild();
         }
-        zgui.endChild();
 
         status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
     }

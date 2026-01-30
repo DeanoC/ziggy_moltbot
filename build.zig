@@ -300,12 +300,22 @@ pub fn build(b: *std.Build) void {
                 .target = android_target,
                 .optimize = optimize,
             });
+            const zgui_android_pkg = b.dependency("zgui", .{
+                .target = android_target,
+                .optimize = optimize,
+                .backend = .no_backend,
+            });
+            android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{
                 .name = "moltbot_android",
                 .root_module = android_module,
                 .linkage = .dynamic,
             });
+            android_lib.root_module.link_libc = true;
+            android_lib.root_module.link_libcpp = true;
+            android_lib.root_module.linkSystemLibrary("GLESv2", .{});
+            android_lib.root_module.linkSystemLibrary("EGL", .{});
             android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
             android_lib.root_module.addCSourceFile(.{
                 .file = b.path("src/android_hid_stub.c"),
@@ -323,6 +333,33 @@ pub fn build(b: *std.Build) void {
             android_lib.root_module.addIncludePath(sdl_dep.path("include"));
             android_lib.root_module.addIncludePath(sdl_dep.path("include-pregen"));
             android_lib.linkLibrary(sdl_lib);
+
+            const zgui_imgui = zgui_android_pkg.artifact("imgui");
+            zgui_imgui.root_module.link_libcpp = false;
+            zgui_imgui.root_module.link_libc = true;
+            zgui_imgui.root_module.addIncludePath(sdl_dep.path("include"));
+            zgui_imgui.root_module.addIncludePath(sdl_dep.path("include-pregen"));
+            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs"));
+            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui"));
+            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui/backends"));
+            android_lib.root_module.addCSourceFile(.{
+                .file = b.path("src/imgui_impl_sdl2_android.cpp"),
+                .flags = &.{
+                    "-DIMGUI_IMPL_API=extern \"C\"",
+                    "-fno-sanitize=undefined",
+                    "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+                },
+            });
+            android_lib.root_module.addCSourceFile(.{
+                .file = zgui_android_pkg.path("libs/imgui/backends/imgui_impl_opengl3.cpp"),
+                .flags = &.{
+                    "-DIMGUI_IMPL_OPENGL_ES2",
+                    "-DIMGUI_IMPL_API=extern \"C\"",
+                    "-fno-sanitize=undefined",
+                    "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+                },
+            });
+            android_lib.linkLibrary(zgui_imgui);
 
             apk.addArtifact(android_lib);
         }
