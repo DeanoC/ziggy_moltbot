@@ -2,7 +2,7 @@ const std = @import("std");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
-const websocket_client = @import("client/websocket_client.zig");
+const websocket_client = @import("openclaw_transport").websocket;
 const logger = @import("utils/logger.zig");
 
 const usage =
