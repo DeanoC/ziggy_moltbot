@@ -439,6 +439,7 @@ fn downloadThread(
         logger.warn("Download failed: {}", .{err});
         const message = switch (err) {
             error.UpdateHashMismatch => "SHA256 mismatch",
+            error.UnexpectedCharacter, error.InvalidFormat => "Invalid download URL",
             else => @errorName(err),
         };
         state.setDownloadError(allocator, message);
@@ -460,6 +461,9 @@ fn downloadFile(
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
+    const trimmed_url = std.mem.trim(u8, url, " \t\r\n");
+    if (trimmed_url.len == 0) return error.UpdateDownloadFailed;
+
     const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch return error.OutOfMemory;
     defer allocator.free(path);
 
@@ -467,13 +471,33 @@ fn downloadFile(
     var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
-    const uri = try std.Uri.parse(url);
-    var req = try client.request(.GET, uri, .{});
-    defer req.deinit();
+    var current_url = try allocator.dupe(u8, trimmed_url);
+    defer allocator.free(current_url);
 
-    try req.sendBodiless();
+    var redirects_left: u8 = 3;
+    var response_opt: ?std.http.Client.Response = null;
     var redirect_buf: [8 * 1024]u8 = undefined;
-    var response = try req.receiveHead(&redirect_buf);
+    while (true) {
+        const uri = try std.Uri.parse(current_url);
+        var req = try client.request(.GET, uri, .{});
+        defer req.deinit();
+
+        try req.sendBodiless();
+        var response = try req.receiveHead(&redirect_buf);
+        if (response.head.status.class() == .redirect) {
+            if (redirects_left == 0) return error.UpdateDownloadFailed;
+            const location = response.head.location orelse return error.UpdateDownloadFailed;
+            const location_trim = std.mem.trim(u8, location, " \t\r\n");
+            if (location_trim.len == 0) return error.UpdateDownloadFailed;
+            allocator.free(current_url);
+            current_url = try allocator.dupe(u8, location_trim);
+            redirects_left -= 1;
+            continue;
+        }
+        response_opt = response;
+        break;
+    }
+    var response = response_opt orelse return error.UpdateDownloadFailed;
     if (response.head.status != .ok) return error.UpdateDownloadFailed;
 
     const total = response.head.content_length;
