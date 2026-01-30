@@ -165,6 +165,7 @@ manifest = {
     "date": "${DATE}",
     "notes": "",
     "release_url": "https://github.com/DeanoC/ZiggyStarClaw/releases/latest",
+    "base_url": "https://github.com/DeanoC/ZiggyStarClaw/releases/latest/download/",
     "platforms": {
         "linux": {
             "file": f"ziggystarclaw_linux_${VERSION}.tar.gz",

@@ -13,6 +13,7 @@ pub const SettingsAction = struct {
     config_updated: bool = false,
     check_updates: bool = false,
     open_release: bool = false,
+    download_update: bool = false,
 };
 
 var server_buf: [256:0]u8 = [_:0]u8{0} ** 256;
@@ -21,6 +22,7 @@ var connect_host_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var update_url_buf: [512:0]u8 = [_:0]u8{0} ** 512;
 var insecure_tls_value = false;
 var initialized = false;
+var download_popup_opened = false;
 
 pub fn draw(
     allocator: std.mem.Allocator,
@@ -131,6 +133,60 @@ pub fn draw(
             if (zgui.button("Open Release Page", .{})) {
                 action.open_release = true;
             }
+            if (snapshot.download_url != null and snapshot.download_status == .idle) {
+                zgui.sameLine(.{});
+                if (zgui.button("Download Update", .{})) {
+                    action.download_update = true;
+                }
+            }
+            if (snapshot.download_status == .failed) {
+                zgui.textWrapped("Download failed: {s}", .{snapshot.download_error_message orelse "unknown"});
+            }
+            if (snapshot.download_status == .unsupported) {
+                zgui.textWrapped(
+                    "Download unsupported: {s}",
+                    .{snapshot.download_error_message orelse "not supported"},
+                );
+            }
+            if (snapshot.download_status == .complete) {
+                zgui.textWrapped("Download complete.", .{});
+            }
+        }
+
+        if (snapshot.download_status == .downloading) {
+            if (!download_popup_opened) {
+                zgui.openPopup("Downloading Update", .{});
+                download_popup_opened = true;
+            }
+        } else {
+            download_popup_opened = false;
+        }
+
+        if (zgui.beginPopupModal(
+            "Downloading Update",
+            .{ .popen = &download_popup_opened, .flags = .{ .always_auto_resize = true } },
+        )) {
+            zgui.text("Downloading update...", .{});
+            const total = snapshot.download_total orelse 0;
+            const progress = if (total > 0)
+                @as(f32, @floatFromInt(snapshot.download_bytes)) / @as(f32, @floatFromInt(total))
+            else
+                0.0;
+            var overlay_buf: [64:0]u8 = [_:0]u8{0} ** 64;
+            const overlay = if (total > 0)
+                std.fmt.bufPrintZ(&overlay_buf, "{d}/{d} bytes", .{
+                    snapshot.download_bytes,
+                    total,
+                }) catch null
+            else
+                std.fmt.bufPrintZ(&overlay_buf, "{d} bytes", .{snapshot.download_bytes}) catch null;
+            zgui.progressBar(.{ .fraction = progress, .overlay = overlay });
+            if (snapshot.download_status != .downloading) {
+                if (zgui.button("Close", .{})) {
+                    zgui.closeCurrentPopup();
+                }
+            }
+            zgui.endPopup();
         }
     }
     zgui.endChild();

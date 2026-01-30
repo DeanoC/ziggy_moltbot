@@ -503,7 +503,15 @@ pub fn main() !void {
                 allocator,
                 manifest_url,
                 build_options.app_version,
+                true,
             );
+        }
+        if (ui_action.download_update) {
+            const snapshot = ctx.update_state.snapshot();
+            if (snapshot.download_url) |download_url| {
+                const file_name = snapshot.download_file orelse "ziggystarclaw_update.zip";
+                update_checker.UpdateState.startDownload(&ctx.update_state, allocator, download_url, file_name);
+            }
         }
         if (ui_action.open_release) {
             const snapshot = ctx.update_state.snapshot();
