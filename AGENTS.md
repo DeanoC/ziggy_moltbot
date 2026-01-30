@@ -2,6 +2,12 @@
 
 This repo uses the pinned Zig toolchain at `./.tools/zig-0.15.2/zig`.
 
+Always run all platform builds before final responses:
+- Native: `./.tools/zig-0.15.2/zig build`
+- Windows: `./.tools/zig-0.15.2/zig build -Dtarget=x86_64-windows-gnu`
+- WASM: `source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true`
+- Android: `./.tools/zig-0.15.2/zig build -Dandroid=true`
+
 ## Native (Linux)
 
 Build:

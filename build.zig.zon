@@ -1,7 +1,7 @@
 .{
     .name = .ziggystarclaw,
     .version = "0.1.0",
-    .fingerprint = 0x1cc2d61fb4846ac1,
+    .fingerprint = 0x8c6b3a4e18b2d25c,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
         .websocket = .{

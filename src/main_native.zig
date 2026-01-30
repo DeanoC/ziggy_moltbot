@@ -31,7 +31,7 @@ fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) vo
 }
 
 fn setWindowIcon(window: *glfw.Window) void {
-    const icon_png = @embedFile("assets/icons/ZiggyStarClaw_Icon.png");
+    const icon_png = @embedFile("icons/ZiggyStarClaw_Icon.png");
     var width: c_int = 0;
     var height: c_int = 0;
     const pixels = icon.zsc_load_icon_rgba_from_memory(icon_png.ptr, @intCast(icon_png.len), &width, &height);

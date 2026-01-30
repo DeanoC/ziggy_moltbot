@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
+        native_module.addEmbedPath(b.path("assets/icons"));
 
         const native_exe = b.addExecutable(.{
             .name = "ziggystarclaw-client",
