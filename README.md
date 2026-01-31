@@ -12,7 +12,12 @@ The aim is to provide a small alternative to the offical companion apps (hence L
 
 
 ## Status
-Planning -> initial scaffolding in progress.
+Active development (latest release: v0.1.8).
+
+Highlights:
+- Cross-platform client (Linux, Windows, Android, WASM).
+- CLI approvals management and interactive REPL mode (`--interactive`).
+- `--run` supports default node from config when `--node` is not provided.
 
 ## Quick Start
 
