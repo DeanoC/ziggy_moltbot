@@ -10,6 +10,7 @@ const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
+const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -700,6 +701,11 @@ pub fn main() !void {
             imgui_gl.applyDpiScale(dpi_scale);
         }
     }
+    image_cache.init(allocator);
+    if (use_webgpu) {
+        image_cache.setEnabled(false);
+    }
+    defer image_cache.deinit();
     defer {
         if (use_webgpu) {
             imgui_wgpu.deinit();

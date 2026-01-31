@@ -13,6 +13,8 @@ test "ui modules compile" {
     _ = moltbot.ui.panel_manager;
     _ = moltbot.ui.ui_command;
     _ = moltbot.ui.ui_command_inbox;
+    _ = moltbot.ui.image_cache;
+    _ = moltbot.ui.data_uri;
     try std.testing.expect(true);
 }
 

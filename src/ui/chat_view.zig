@@ -2,6 +2,7 @@ const std = @import("std");
 const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
+const image_cache = @import("image_cache.zig");
 
 pub fn draw(
     allocator: std.mem.Allocator,
@@ -98,6 +99,48 @@ pub fn draw(
                     zgui.endPopup();
                 }
                 zgui.setCursorPos(after_text);
+
+                if (msg.attachments) |attachments| {
+                    for (attachments) |attachment| {
+                        if (!isImageAttachment(attachment)) continue;
+                        image_cache.request(attachment.url);
+                        const max_width = @max(120.0, @min(320.0, zgui.getContentRegionAvail()[0]));
+                        const max_height: f32 = 240.0;
+                        if (image_cache.get(attachment.url)) |entry| {
+                            switch (entry.state) {
+                                .ready => {
+                                    const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
+                                    const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+                                    const w = @as(f32, @floatFromInt(entry.width));
+                                    const h = @as(f32, @floatFromInt(entry.height));
+                                    const aspect = if (h > 0) w / h else 1.0;
+                                    var draw_w = @min(max_width, w);
+                                    var draw_h = draw_w / aspect;
+                                    if (draw_h > max_height) {
+                                        draw_h = max_height;
+                                        draw_w = draw_h * aspect;
+                                    }
+                                    zgui.image(tex_ref, .{ .w = draw_w, .h = draw_h });
+                                },
+                                .loading => {
+                                    zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
+                                    zgui.dummy(.{ .w = max_width, .h = 120.0 });
+                                },
+                                .failed => {
+                                    zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Image failed to load", .{});
+                                    if (entry.error_message) |err| {
+                                        zgui.sameLine(.{});
+                                        zgui.textDisabled("{s}", .{err});
+                                    }
+                                },
+                            }
+                        } else {
+                            zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
+                            zgui.dummy(.{ .w = max_width, .h = 120.0 });
+                        }
+                        zgui.spacing();
+                    }
+                }
             }
             if (stream_text) |stream| {
                 zgui.separator();
@@ -151,6 +194,26 @@ fn renderGroupHeader(role: []const u8, now_ms: i64, ts_ms: i64) void {
     zgui.textColored(color, "{s} · {d}d ago", .{ label, days });
 }
 
+fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    if (value.len < suffix.len) return false;
+    const start = value.len - suffix.len;
+    var index: usize = 0;
+    while (index < suffix.len) : (index += 1) {
+        if (std.ascii.toLower(value[start + index]) != suffix[index]) return false;
+    }
+    return true;
+}
+
+fn isImageAttachment(att: types.ChatAttachment) bool {
+    if (std.mem.indexOf(u8, att.kind, "image") != null) return true;
+    if (std.mem.startsWith(u8, att.url, "data:image/")) return true;
+    return endsWithIgnoreCase(att.url, ".png") or
+        endsWithIgnoreCase(att.url, ".jpg") or
+        endsWithIgnoreCase(att.url, ".jpeg") or
+        endsWithIgnoreCase(att.url, ".gif") or
+        endsWithIgnoreCase(att.url, ".webp");
+}
+
 var last_message_count: usize = 0;
 var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
@@ -171,6 +234,11 @@ fn ensureChatBuffer(
             if (store.isCommandMessage(msg.id)) continue;
         }
         writer.print("[{s}] {s}\n\n", .{ msg.role, msg.content }) catch return false;
+        if (msg.attachments) |attachments| {
+            for (attachments) |attachment| {
+                writer.print("[attachment:{s}] {s}\n\n", .{ attachment.kind, attachment.url }) catch return false;
+            }
+        }
     }
     if (stream_text) |stream| {
         writer.print("[assistant] {s}\n", .{stream}) catch return false;

@@ -9,6 +9,8 @@ extern "C" {
 
 unsigned char* zsc_load_icon_rgba_from_memory(const unsigned char* data, int len, int* width, int* height);
 void zsc_free_icon(void* pixels);
+unsigned char* zsc_load_image_rgba_from_memory(const unsigned char* data, int len, int* width, int* height);
+void zsc_free_image(void* pixels);
 
 #ifdef __cplusplus
 }

@@ -7,6 +7,9 @@
         .websocket = .{
             .path = "deps/websocket",
         },
+        .freetype = .{
+            .path = "deps/freetype",
+        },
         .zgui = .{
             .url = "https://github.com/DeanoC/zgui/archive/refs/heads/main.zip",
             .hash = "zgui-0.6.0-dev--L6sZFr8bQAetX8MeTZqoCrYzz0W7_LYTkPEuC6jbbD-",

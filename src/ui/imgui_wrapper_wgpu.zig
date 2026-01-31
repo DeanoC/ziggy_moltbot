@@ -3,6 +3,8 @@ const zgui = @import("zgui");
 const glfw = @import("zglfw");
 const theme = @import("theme.zig");
 
+extern fn zsc_imgui_use_freetype() void;
+
 pub fn init(
     allocator: std.mem.Allocator,
     window: *glfw.Window,
@@ -11,6 +13,7 @@ pub fn init(
     depth_format: u32,
 ) void {
     zgui.init(allocator);
+    zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
     theme.apply();

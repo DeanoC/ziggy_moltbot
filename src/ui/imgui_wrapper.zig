@@ -3,8 +3,11 @@ const zgui = @import("zgui");
 const glfw = @import("zglfw");
 const theme = @import("theme.zig");
 
+extern fn zsc_imgui_use_freetype() void;
+
 pub fn init(allocator: std.mem.Allocator, window: *glfw.Window) void {
     zgui.init(allocator);
+    zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
     theme.apply();
@@ -17,6 +20,7 @@ pub fn initWithGlslVersion(
     glsl_version: [:0]const u8,
 ) void {
     zgui.init(allocator);
+    zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
     theme.apply();

@@ -10,6 +10,7 @@ const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
+const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -45,6 +46,7 @@ extern fn molt_ws_send(text: [*:0]const u8) void;
 extern fn molt_ws_close() void;
 extern fn molt_ws_ready_state() c_int;
 extern fn molt_open_url(url: [*:0]const u8) void;
+extern fn zsc_imgui_use_freetype() void;
 
 pub const panic = zemscripten.panic;
 
@@ -161,9 +163,11 @@ fn initApp() !void {
     glfw.swapInterval(1);
 
     zgui.init(allocator);
+    zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
     theme.apply();
+    image_cache.init(allocator);
     if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
         logger.err("Failed to init ImGui GLFW backend.", .{});
     }
@@ -189,6 +193,7 @@ fn deinitApp() void {
     if (!initialized) return;
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
+    image_cache.deinit();
     zgui.deinit();
     manager.deinit();
     command_inbox.deinit(allocator);

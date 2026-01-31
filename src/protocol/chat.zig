@@ -15,6 +15,12 @@ pub const ChatSendParams = struct {
     idempotencyKey: []const u8,
 };
 
+pub const ChatAttachment = struct {
+    kind: []const u8,
+    url: []const u8,
+    name: ?[]const u8 = null,
+};
+
 pub const ChatContentItem = struct {
     type: []const u8,
     text: ?[]const u8 = null,
@@ -27,6 +33,7 @@ pub const ChatHistoryMessage = struct {
     content: ?[]ChatContentItem = null,
     text: ?[]const u8 = null,
     timestamp: ?i64 = null,
+    attachments: ?[]ChatAttachment = null,
 };
 
 pub const ChatHistoryResult = struct {
