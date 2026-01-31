@@ -5,6 +5,7 @@ const gateway = @import("../protocol/gateway.zig");
 const messages = @import("../protocol/messages.zig");
 const sessions = @import("../protocol/sessions.zig");
 const chat = @import("../protocol/chat.zig");
+const nodes = @import("../protocol/nodes.zig");
 const requests = @import("../protocol/requests.zig");
 const logger = @import("../utils/logger.zig");
 
@@ -77,6 +78,20 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
 
+        if (std.mem.eql(u8, frame.value.event, "exec.approval.requested")) {
+            handleExecApprovalRequested(ctx, frame.value.payload) catch |err| {
+                logger.warn("Failed to handle exec approval request ({s})", .{@errorName(err)});
+            };
+            return null;
+        }
+
+        if (std.mem.eql(u8, frame.value.event, "exec.approval.resolved")) {
+            handleExecApprovalResolved(ctx, frame.value.payload) catch |err| {
+                logger.warn("Failed to handle exec approval resolved ({s})", .{@errorName(err)});
+            };
+            return null;
+        }
+
         logger.debug("Gateway event: {s}", .{frame.value.event});
         return null;
     }
@@ -95,15 +110,33 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             std.mem.eql(u8, ctx.pending_history_request_id.?, response_id);
         const is_send = ctx.pending_send_request_id != null and
             std.mem.eql(u8, ctx.pending_send_request_id.?, response_id);
+        const is_nodes = ctx.pending_nodes_request_id != null and
+            std.mem.eql(u8, ctx.pending_nodes_request_id.?, response_id);
+        const is_node_invoke = ctx.pending_node_invoke_request_id != null and
+            std.mem.eql(u8, ctx.pending_node_invoke_request_id.?, response_id);
+        const is_node_describe = ctx.pending_node_describe_request_id != null and
+            std.mem.eql(u8, ctx.pending_node_describe_request_id.?, response_id);
+        const is_approval_resolve = ctx.pending_approval_resolve_request_id != null and
+            std.mem.eql(u8, ctx.pending_approval_resolve_request_id.?, response_id);
 
         if (!frame.value.ok) {
             if (is_sessions) ctx.clearPendingSessionsRequest();
             if (is_history) ctx.clearPendingHistoryRequest();
             if (is_send) ctx.clearPendingSendRequest();
+            if (is_nodes) ctx.clearPendingNodesRequest();
+            if (is_node_invoke) ctx.clearPendingNodeInvokeRequest();
+            if (is_node_describe) ctx.clearPendingNodeDescribeRequest();
+            if (is_approval_resolve) ctx.clearPendingApprovalResolveRequest();
 
             if (frame.value.@"error") |err| {
                 logger.err("Gateway request failed ({s}): {s}", .{ err.code, err.message });
                 ctx.setError(err.message) catch {};
+                if (is_nodes or is_node_invoke) {
+                    ctx.setOperatorNotice(err.message) catch {};
+                }
+                if (is_node_describe or is_approval_resolve) {
+                    ctx.setOperatorNotice(err.message) catch {};
+                }
                 if (err.details) |details| {
                     if (details == .object) {
                         if (details.object.get("requestId")) |request_id| {
@@ -152,6 +185,37 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
             if (is_send) {
                 ctx.clearPendingSendRequest();
+                return null;
+            }
+
+            if (is_nodes) {
+                ctx.clearPendingNodesRequest();
+                handleNodesList(ctx, payload) catch |err| {
+                    logger.warn("node.list handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
+            if (is_node_invoke) {
+                ctx.clearPendingNodeInvokeRequest();
+                handleNodeInvokeResponse(ctx, payload) catch |err| {
+                    logger.warn("node.invoke handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
+            if (is_node_describe) {
+                ctx.clearPendingNodeDescribeRequest();
+                handleNodeDescribeResponse(ctx, payload) catch |err| {
+                    logger.warn("node.describe handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
+            if (is_approval_resolve) {
+                handleExecApprovalResolveResponse(ctx, payload) catch |err| {
+                    logger.warn("exec.approval.resolve handling failed ({s})", .{@errorName(err)});
+                };
                 return null;
             }
         }
@@ -236,6 +300,123 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
     }
     ctx.clearStreamText();
     ctx.clearStreamRunId();
+}
+
+fn handleNodesList(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    var parsed = try messages.parsePayload(ctx.allocator, payload, nodes.NodeListResult);
+    defer parsed.deinit();
+
+    const items = parsed.value.nodes orelse {
+        logger.warn("node.list payload missing nodes", .{});
+        return;
+    };
+
+    const list = try ctx.allocator.alloc(types.Node, items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (list[0..filled]) |*node| {
+            freeNodeOwned(ctx.allocator, node);
+        }
+        ctx.allocator.free(list);
+    }
+
+    for (items, 0..) |item, index| {
+        list[index] = .{
+            .id = try ctx.allocator.dupe(u8, item.nodeId),
+            .display_name = if (item.displayName) |name| try ctx.allocator.dupe(u8, name) else null,
+            .platform = if (item.platform) |platform| try ctx.allocator.dupe(u8, platform) else null,
+            .version = if (item.version) |version| try ctx.allocator.dupe(u8, version) else null,
+            .core_version = if (item.coreVersion) |core| try ctx.allocator.dupe(u8, core) else null,
+            .ui_version = if (item.uiVersion) |ui| try ctx.allocator.dupe(u8, ui) else null,
+            .device_family = if (item.deviceFamily) |family| try ctx.allocator.dupe(u8, family) else null,
+            .model_identifier = if (item.modelIdentifier) |model| try ctx.allocator.dupe(u8, model) else null,
+            .remote_ip = if (item.remoteIp) |ip| try ctx.allocator.dupe(u8, ip) else null,
+            .caps = try dupStringList(ctx.allocator, item.caps),
+            .commands = try dupStringList(ctx.allocator, item.commands),
+            .path_env = if (item.pathEnv) |path| try ctx.allocator.dupe(u8, path) else null,
+            .permissions_json = if (item.permissions) |perm| try stringifyJsonValue(ctx.allocator, perm) else null,
+            .connected_at_ms = item.connectedAtMs,
+            .connected = item.connected,
+            .paired = item.paired,
+        };
+        filled = index + 1;
+    }
+
+    ctx.setNodesOwned(list);
+    if (ctx.current_node) |node_id| {
+        if (!nodeListHasId(ctx.nodes.items, node_id)) {
+            ctx.clearCurrentNode();
+        }
+    }
+}
+
+fn handleNodeInvokeResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    const rendered = try stringifyJsonValue(ctx.allocator, payload);
+    ctx.setNodeResultOwned(rendered);
+    ctx.clearOperatorNotice();
+}
+
+fn handleNodeDescribeResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    const node_id = extractNodeId(payload) orelse ctx.current_node;
+    const rendered = try stringifyJsonValue(ctx.allocator, payload);
+    if (node_id) |id| {
+        try ctx.upsertNodeDescribeOwned(id, rendered);
+    } else {
+        ctx.setNodeResultOwned(rendered);
+    }
+    ctx.clearOperatorNotice();
+}
+
+fn handleExecApprovalResolveResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    _ = payload;
+    if (ctx.pending_approval_target_id) |target_id| {
+        _ = ctx.removeApprovalById(target_id);
+    }
+    ctx.clearPendingApprovalResolveRequest();
+    ctx.clearOperatorNotice();
+}
+
+fn handleExecApprovalRequested(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
+    const value = payload orelse return;
+    const rendered = try stringifyJsonValue(ctx.allocator, value);
+    errdefer ctx.allocator.free(rendered);
+
+    var extracted = extractApprovalInfo(ctx.allocator, value);
+    errdefer {
+        if (extracted.id) |id| ctx.allocator.free(id);
+        if (extracted.summary) |summary| ctx.allocator.free(summary);
+    }
+    const approval_id = extracted.id orelse try requests.makeRequestId(ctx.allocator);
+    const summary = extracted.summary;
+    const requested_at = extracted.requested_at_ms;
+    const can_resolve = extracted.id != null;
+
+    const approval = types.ExecApproval{
+        .id = approval_id,
+        .payload_json = rendered,
+        .summary = summary,
+        .requested_at_ms = requested_at,
+        .can_resolve = can_resolve,
+    };
+    errdefer {
+        ctx.allocator.free(approval.id);
+        ctx.allocator.free(approval.payload_json);
+        if (approval.summary) |text| ctx.allocator.free(text);
+    }
+    extracted.id = null;
+    extracted.summary = null;
+    try ctx.upsertApprovalOwned(approval);
+
+    if (!can_resolve) {
+        ctx.setOperatorNotice("Approval request missing id; cannot resolve automatically.") catch {};
+    }
+}
+
+fn handleExecApprovalResolved(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
+    const value = payload orelse return;
+    if (extractApprovalId(value)) |id| {
+        _ = ctx.removeApprovalById(id);
+    }
 }
 
 fn selectPreferredSession(ctx: *state.ClientContext) void {
@@ -522,9 +703,179 @@ fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) v
     }
 }
 
+fn freeNodeOwned(allocator: std.mem.Allocator, node: *types.Node) void {
+    allocator.free(node.id);
+    if (node.display_name) |name| allocator.free(name);
+    if (node.platform) |platform| allocator.free(platform);
+    if (node.version) |version| allocator.free(version);
+    if (node.core_version) |core| allocator.free(core);
+    if (node.ui_version) |ui| allocator.free(ui);
+    if (node.device_family) |family| allocator.free(family);
+    if (node.model_identifier) |model| allocator.free(model);
+    if (node.remote_ip) |ip| allocator.free(ip);
+    freeStringList(allocator, node.caps);
+    freeStringList(allocator, node.commands);
+    if (node.path_env) |path| allocator.free(path);
+    if (node.permissions_json) |perm| allocator.free(perm);
+}
+
 fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void {
     allocator.free(session.key);
     if (session.display_name) |name| allocator.free(name);
     if (session.label) |label| allocator.free(label);
     if (session.kind) |kind| allocator.free(kind);
+}
+
+fn dupStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) !?[]const []const u8 {
+    const items = list orelse return null;
+    if (items.len == 0) return null;
+    const owned = try allocator.alloc([]const u8, items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (owned[0..filled]) |item| allocator.free(item);
+        allocator.free(owned);
+    }
+    for (items, 0..) |item, index| {
+        owned[index] = try allocator.dupe(u8, item);
+        filled = index + 1;
+    }
+    return owned;
+}
+
+fn freeStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) void {
+    if (list) |items| {
+        for (items) |item| {
+            allocator.free(item);
+        }
+        allocator.free(items);
+    }
+}
+
+fn nodeListHasId(list: []const types.Node, id: []const u8) bool {
+    for (list) |node| {
+        if (std.mem.eql(u8, node.id, id)) return true;
+    }
+    return false;
+}
+
+fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
+    var out: std.io.Writer.Allocating = .init(allocator);
+    errdefer out.deinit();
+    const writer = &out.writer;
+    try std.json.Stringify.value(value, .{ .emit_null_optional_fields = false }, writer);
+    return try out.toOwnedSlice();
+}
+
+const ApprovalInfo = struct {
+    id: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    requested_at_ms: ?i64 = null,
+};
+
+fn extractApprovalInfo(allocator: std.mem.Allocator, value: std.json.Value) ApprovalInfo {
+    var info = ApprovalInfo{};
+    if (value != .object) return info;
+    const obj = value.object;
+    if (obj.get("id")) |id_val| {
+        if (id_val == .string) {
+            info.id = allocator.dupe(u8, id_val.string) catch null;
+        }
+    } else if (obj.get("requestId")) |id_val| {
+        if (id_val == .string) {
+            info.id = allocator.dupe(u8, id_val.string) catch null;
+        }
+    }
+
+    var request_obj: ?std.json.ObjectMap = null;
+    if (obj.get("request")) |req_val| {
+        if (req_val == .object) {
+            request_obj = req_val.object;
+        }
+    }
+
+    const command = if (request_obj) |req| blk: {
+        if (req.get("command")) |cmd_val| {
+            if (cmd_val == .string) break :blk cmd_val.string;
+        }
+        break :blk null;
+    } else if (obj.get("command")) |cmd_val| if (cmd_val == .string) cmd_val.string else null else null;
+
+    const node_id = if (request_obj) |req| blk: {
+        if (req.get("nodeId")) |node_val| {
+            if (node_val == .string) break :blk node_val.string;
+        }
+        break :blk null;
+    } else if (obj.get("nodeId")) |node_val| if (node_val == .string) node_val.string else null else null;
+
+    const resolved_path = if (request_obj) |req| blk: {
+        if (req.get("resolvedPath")) |path_val| {
+            if (path_val == .string) break :blk path_val.string;
+        }
+        break :blk null;
+    } else if (obj.get("resolvedPath")) |path_val| if (path_val == .string) path_val.string else null else null;
+
+    const host = if (request_obj) |req| blk: {
+        if (req.get("host")) |host_val| {
+            if (host_val == .string) break :blk host_val.string;
+        }
+        break :blk null;
+    } else if (obj.get("host")) |host_val| if (host_val == .string) host_val.string else null else null;
+
+    const cwd = if (request_obj) |req| blk: {
+        if (req.get("cwd")) |cwd_val| {
+            if (cwd_val == .string) break :blk cwd_val.string;
+        }
+        break :blk null;
+    } else if (obj.get("cwd")) |cwd_val| if (cwd_val == .string) cwd_val.string else null else null;
+
+    if (command != null or node_id != null) {
+        const command_text = command orelse "unknown";
+        const context_text = resolved_path orelse host orelse cwd orelse node_id;
+        if (context_text) |ctx_text| {
+            info.summary = std.fmt.allocPrint(allocator, "{s} · {s}", .{ ctx_text, command_text }) catch null;
+        } else {
+            info.summary = allocator.dupe(u8, command_text) catch null;
+        }
+    }
+
+    if (obj.get("createdAtMs")) |ts_val| {
+        if (ts_val == .integer) info.requested_at_ms = ts_val.integer;
+    } else if (obj.get("requestedAtMs")) |ts_val| {
+        if (ts_val == .integer) info.requested_at_ms = ts_val.integer;
+    } else if (obj.get("ts")) |ts_val| {
+        if (ts_val == .integer) info.requested_at_ms = ts_val.integer;
+    }
+
+    return info;
+}
+
+fn extractApprovalId(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+    if (obj.get("id")) |id_val| {
+        if (id_val == .string) return id_val.string;
+    }
+    if (obj.get("requestId")) |id_val| {
+        if (id_val == .string) return id_val.string;
+    }
+    return null;
+}
+
+fn extractNodeId(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+    if (obj.get("nodeId")) |node_val| {
+        if (node_val == .string) return node_val.string;
+    }
+    if (obj.get("node")) |node_val| {
+        if (node_val == .object) {
+            if (node_val.object.get("nodeId")) |inner| {
+                if (inner == .string) return inner.string;
+            }
+            if (node_val.object.get("id")) |inner| {
+                if (inner == .string) return inner.string;
+            }
+        }
+    }
+    return null;
 }

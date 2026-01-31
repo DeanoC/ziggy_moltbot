@@ -10,6 +10,12 @@ pub const ClientState = enum {
     error_state,
 };
 
+pub const NodeDescribe = struct {
+    node_id: []const u8,
+    payload_json: []const u8,
+    updated_at_ms: i64,
+};
+
 pub const ClientContext = struct {
     allocator: std.mem.Allocator,
     state: ClientState,
@@ -18,14 +24,26 @@ pub const ClientContext = struct {
     stream_run_id: ?[]const u8,
     sessions: std.ArrayList(types.Session),
     messages: std.ArrayList(types.ChatMessage),
+    current_node: ?[]const u8,
+    nodes: std.ArrayList(types.Node),
+    node_describes: std.ArrayList(NodeDescribe),
+    approvals: std.ArrayList(types.ExecApproval),
     users: std.ArrayList(types.User),
     stream_text: ?[]const u8 = null,
     sessions_loading: bool = false,
     messages_loading: bool = false,
+    nodes_loading: bool = false,
     pending_sessions_request_id: ?[]const u8 = null,
     pending_history_request_id: ?[]const u8 = null,
     pending_send_request_id: ?[]const u8 = null,
+    pending_nodes_request_id: ?[]const u8 = null,
+    pending_node_invoke_request_id: ?[]const u8 = null,
+    pending_node_describe_request_id: ?[]const u8 = null,
+    pending_approval_resolve_request_id: ?[]const u8 = null,
+    pending_approval_target_id: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
+    operator_notice: ?[]const u8 = null,
+    node_result: ?[]const u8 = null,
     update_state: update_checker.UpdateState = .{},
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
@@ -37,14 +55,26 @@ pub const ClientContext = struct {
             .stream_run_id = null,
             .sessions = std.ArrayList(types.Session).empty,
             .messages = std.ArrayList(types.ChatMessage).empty,
+            .current_node = null,
+            .nodes = std.ArrayList(types.Node).empty,
+            .node_describes = std.ArrayList(NodeDescribe).empty,
+            .approvals = std.ArrayList(types.ExecApproval).empty,
             .users = std.ArrayList(types.User).empty,
             .stream_text = null,
             .sessions_loading = false,
             .messages_loading = false,
+            .nodes_loading = false,
             .pending_sessions_request_id = null,
             .pending_history_request_id = null,
             .pending_send_request_id = null,
+            .pending_nodes_request_id = null,
+            .pending_node_invoke_request_id = null,
+            .pending_node_describe_request_id = null,
+            .pending_approval_resolve_request_id = null,
+            .pending_approval_target_id = null,
             .last_error = null,
+            .operator_notice = null,
+            .node_result = null,
             .update_state = .{},
         };
     }
@@ -63,17 +93,28 @@ pub const ClientContext = struct {
         self.clearStreamText();
         self.clearPendingRequests();
         self.clearError();
+        self.clearOperatorNotice();
+        self.clearNodeResult();
+        self.clearCurrentNode();
+        self.clearApprovals();
+        self.clearNodeDescribes();
         for (self.sessions.items) |*session| {
             freeSession(self.allocator, session);
         }
         for (self.messages.items) |*message| {
             freeChatMessage(self.allocator, message);
         }
+        for (self.nodes.items) |*node| {
+            freeNode(self.allocator, node);
+        }
         for (self.users.items) |*user| {
             freeUser(self.allocator, user);
         }
         self.sessions.deinit(self.allocator);
         self.messages.deinit(self.allocator);
+        self.nodes.deinit(self.allocator);
+        self.node_describes.deinit(self.allocator);
+        self.approvals.deinit(self.allocator);
         self.users.deinit(self.allocator);
     }
 
@@ -97,8 +138,86 @@ pub const ClientContext = struct {
         self.messages = std.ArrayList(types.ChatMessage).fromOwnedSlice(messages);
     }
 
+    pub fn setNodesOwned(self: *ClientContext, nodes: []types.Node) void {
+        clearNodesInternal(self);
+        self.nodes.deinit(self.allocator);
+        self.nodes = std.ArrayList(types.Node).fromOwnedSlice(nodes);
+    }
+
+    pub fn upsertNodeDescribeOwned(self: *ClientContext, node_id: []const u8, payload_json: []u8) !void {
+        for (self.node_describes.items, 0..) |*existing, index| {
+            if (std.mem.eql(u8, existing.node_id, node_id)) {
+                freeNodeDescribe(self.allocator, existing);
+                self.node_describes.items[index] = .{
+                    .node_id = try self.allocator.dupe(u8, node_id),
+                    .payload_json = payload_json,
+                    .updated_at_ms = std.time.milliTimestamp(),
+                };
+                return;
+            }
+        }
+        try self.node_describes.append(self.allocator, .{
+            .node_id = try self.allocator.dupe(u8, node_id),
+            .payload_json = payload_json,
+            .updated_at_ms = std.time.milliTimestamp(),
+        });
+    }
+
+    pub fn removeNodeDescribeById(self: *ClientContext, node_id: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.node_describes.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.node_describes.items[index].node_id, node_id)) {
+                var removed = self.node_describes.orderedRemove(index);
+                freeNodeDescribe(self.allocator, &removed);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fn upsertApprovalOwned(self: *ClientContext, approval: types.ExecApproval) !void {
+        for (self.approvals.items, 0..) |*existing, index| {
+            if (std.mem.eql(u8, existing.id, approval.id)) {
+                freeApproval(self.allocator, existing);
+                self.approvals.items[index] = approval;
+                return;
+            }
+        }
+        try self.approvals.append(self.allocator, approval);
+    }
+
+    pub fn removeApprovalById(self: *ClientContext, id: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.approvals.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.approvals.items[index].id, id)) {
+                var removed = self.approvals.orderedRemove(index);
+                freeApproval(self.allocator, &removed);
+                return true;
+            }
+        }
+        return false;
+    }
+
     pub fn clearMessages(self: *ClientContext) void {
         clearMessagesInternal(self);
+    }
+
+    pub fn clearNodes(self: *ClientContext) void {
+        clearNodesInternal(self);
+    }
+
+    pub fn clearNodeDescribes(self: *ClientContext) void {
+        for (self.node_describes.items) |*describe| {
+            freeNodeDescribe(self.allocator, describe);
+        }
+        self.node_describes.clearRetainingCapacity();
+    }
+
+    pub fn clearApprovals(self: *ClientContext) void {
+        for (self.approvals.items) |*approval| {
+            freeApproval(self.allocator, approval);
+        }
+        self.approvals.clearRetainingCapacity();
     }
 
     pub fn upsertMessage(self: *ClientContext, msg: types.ChatMessage) !void {
@@ -130,6 +249,21 @@ pub const ClientContext = struct {
         }
         self.current_session = try self.allocator.dupe(u8, key);
         self.clearHistorySession();
+    }
+
+    pub fn setCurrentNode(self: *ClientContext, node_id: []const u8) !void {
+        if (self.current_node) |current| {
+            if (std.mem.eql(u8, current, node_id)) return;
+            self.allocator.free(current);
+        }
+        self.current_node = try self.allocator.dupe(u8, node_id);
+    }
+
+    pub fn clearCurrentNode(self: *ClientContext) void {
+        if (self.current_node) |node_id| {
+            self.allocator.free(node_id);
+            self.current_node = null;
+        }
     }
 
     pub fn clearHistorySession(self: *ClientContext) void {
@@ -226,10 +360,80 @@ pub const ClientContext = struct {
         self.pending_send_request_id = null;
     }
 
+    pub fn setPendingNodesRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_nodes_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_nodes_request_id = id;
+        self.nodes_loading = true;
+    }
+
+    pub fn clearPendingNodesRequest(self: *ClientContext) void {
+        if (self.pending_nodes_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_nodes_request_id = null;
+        self.nodes_loading = false;
+    }
+
+    pub fn setPendingNodeInvokeRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_node_invoke_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_node_invoke_request_id = id;
+    }
+
+    pub fn clearPendingNodeInvokeRequest(self: *ClientContext) void {
+        if (self.pending_node_invoke_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_node_invoke_request_id = null;
+    }
+
+    pub fn setPendingNodeDescribeRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_node_describe_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_node_describe_request_id = id;
+    }
+
+    pub fn clearPendingNodeDescribeRequest(self: *ClientContext) void {
+        if (self.pending_node_describe_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_node_describe_request_id = null;
+    }
+
+    pub fn setPendingApprovalResolveRequest(self: *ClientContext, id: []const u8, target_id: []const u8) void {
+        if (self.pending_approval_resolve_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        if (self.pending_approval_target_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_approval_resolve_request_id = id;
+        self.pending_approval_target_id = target_id;
+    }
+
+    pub fn clearPendingApprovalResolveRequest(self: *ClientContext) void {
+        if (self.pending_approval_resolve_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        if (self.pending_approval_target_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_approval_resolve_request_id = null;
+        self.pending_approval_target_id = null;
+    }
+
     pub fn clearPendingRequests(self: *ClientContext) void {
         self.clearPendingSessionsRequest();
         self.clearPendingHistoryRequest();
         self.clearPendingSendRequest();
+        self.clearPendingNodesRequest();
+        self.clearPendingNodeInvokeRequest();
+        self.clearPendingNodeDescribeRequest();
+        self.clearPendingApprovalResolveRequest();
     }
 
     pub fn setError(self: *ClientContext, message: []const u8) !void {
@@ -241,6 +445,30 @@ pub const ClientContext = struct {
         if (self.last_error) |msg| {
             self.allocator.free(msg);
             self.last_error = null;
+        }
+    }
+
+    pub fn setOperatorNotice(self: *ClientContext, message: []const u8) !void {
+        self.clearOperatorNotice();
+        self.operator_notice = try self.allocator.dupe(u8, message);
+    }
+
+    pub fn clearOperatorNotice(self: *ClientContext) void {
+        if (self.operator_notice) |msg| {
+            self.allocator.free(msg);
+            self.operator_notice = null;
+        }
+    }
+
+    pub fn setNodeResultOwned(self: *ClientContext, result: []u8) void {
+        self.clearNodeResult();
+        self.node_result = result;
+    }
+
+    pub fn clearNodeResult(self: *ClientContext) void {
+        if (self.node_result) |value| {
+            self.allocator.free(value);
+            self.node_result = null;
         }
     }
 };
@@ -257,6 +485,13 @@ fn clearMessagesInternal(self: *ClientContext) void {
         freeChatMessage(self.allocator, message);
     }
     self.messages.clearRetainingCapacity();
+}
+
+fn clearNodesInternal(self: *ClientContext) void {
+    for (self.nodes.items) |*node| {
+        freeNode(self.allocator, node);
+    }
+    self.nodes.clearRetainingCapacity();
 }
 
 fn cloneAttachment(allocator: std.mem.Allocator, attachment: types.ChatAttachment) !types.ChatAttachment {
@@ -325,6 +560,64 @@ fn freeSession(allocator: std.mem.Allocator, session: *types.Session) void {
     }
     if (session.kind) |kind| {
         allocator.free(kind);
+    }
+}
+
+fn cloneNode(allocator: std.mem.Allocator, node: types.Node) !types.Node {
+    return .{
+        .id = try allocator.dupe(u8, node.id),
+        .display_name = if (node.display_name) |name| try allocator.dupe(u8, name) else null,
+        .platform = if (node.platform) |platform| try allocator.dupe(u8, platform) else null,
+        .version = if (node.version) |version| try allocator.dupe(u8, version) else null,
+        .caps = try cloneStringList(allocator, node.caps),
+        .commands = try cloneStringList(allocator, node.commands),
+        .connected = node.connected,
+        .paired = node.paired,
+    };
+}
+
+fn freeNode(allocator: std.mem.Allocator, node: *types.Node) void {
+    allocator.free(node.id);
+    if (node.display_name) |name| allocator.free(name);
+    if (node.platform) |platform| allocator.free(platform);
+    if (node.version) |version| allocator.free(version);
+    freeStringList(allocator, node.caps);
+    freeStringList(allocator, node.commands);
+}
+
+fn freeNodeDescribe(allocator: std.mem.Allocator, describe: *NodeDescribe) void {
+    allocator.free(describe.node_id);
+    allocator.free(describe.payload_json);
+}
+
+fn freeApproval(allocator: std.mem.Allocator, approval: *types.ExecApproval) void {
+    allocator.free(approval.id);
+    allocator.free(approval.payload_json);
+    if (approval.summary) |summary| {
+        allocator.free(summary);
+    }
+}
+
+fn cloneStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) !?[]const []const u8 {
+    const items = list orelse return null;
+    if (items.len == 0) return null;
+    var owned = try allocator.alloc([]const u8, items.len);
+    errdefer {
+        for (owned) |item| allocator.free(item);
+        allocator.free(owned);
+    }
+    for (items, 0..) |item, index| {
+        owned[index] = try allocator.dupe(u8, item);
+    }
+    return owned;
+}
+
+fn freeStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) void {
+    if (list) |items| {
+        for (items) |item| {
+            allocator.free(item);
+        }
+        allocator.free(items);
     }
 }
 

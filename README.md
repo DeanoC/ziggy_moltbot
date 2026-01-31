@@ -12,7 +12,7 @@ The aim is to provide a small alternative to the offical companion apps (hence L
 
 
 ## Status
-Planning → initial scaffolding in progress.
+Planning -> initial scaffolding in progress.
 
 ## Quick Start
 
@@ -34,8 +34,7 @@ zig build run
 ./.tools/emsdk/emsdk install latest
 ./.tools/emsdk/emsdk activate latest
 
-# Build
-zig build -Dwasm=true
+# Build (Windows: run scripts/patch-zemscripten.ps1 once after fetch)\nzig build -Dwasm=true
 ```
 
 Outputs are installed under `zig-out/web/`.

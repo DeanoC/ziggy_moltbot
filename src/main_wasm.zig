@@ -5,6 +5,7 @@ const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const ui_state = @import("ui/state.zig");
+const operator_view = @import("ui/operator_view.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -13,6 +14,8 @@ const messages = @import("protocol/messages.zig");
 const requests = @import("protocol/requests.zig");
 const chat_proto = @import("protocol/chat.zig");
 const sessions_proto = @import("protocol/sessions.zig");
+const nodes_proto = @import("protocol/nodes.zig");
+const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
 const identity = @import("client/device_identity_wasm.zig");
 const wasm_storage = @import("platform/wasm_storage.zig");
@@ -498,6 +501,29 @@ fn sendSessionsListRequest() void {
     }
 }
 
+fn sendNodesListRequest() void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_nodes_request_id != null) return;
+
+    const params = nodes_proto.NodeListParams{};
+    const request = requests.buildRequestPayload(allocator, "node.list", params) catch |err| {
+        logger.warn("Failed to build node.list request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingNodesRequest(request.id);
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
 fn sendChatHistoryRequest(session_key: []const u8) void {
     if (!ws_connected or ctx.state != .connected) return;
     if (ctx.pending_history_request_id != null) return;
@@ -519,6 +545,133 @@ fn sendChatHistoryRequest(session_key: []const u8) void {
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
         ctx.setPendingHistoryRequest(request.id);
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendNodeInvokeRequest(
+    node_id: []const u8,
+    command: []const u8,
+    params_json: ?[]const u8,
+    timeout_ms: ?u32,
+) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_node_invoke_request_id != null) {
+        ctx.setOperatorNotice("Another node invoke is already in progress.") catch {};
+        return;
+    }
+
+    var parsed_params: ?std.json.Parsed(std.json.Value) = null;
+    defer if (parsed_params) |*parsed| parsed.deinit();
+    var params_value: ?std.json.Value = null;
+
+    if (params_json) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            parsed_params = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch |err| {
+                logger.warn("Invalid node params JSON: {}", .{err});
+                ctx.setOperatorNotice("Invalid JSON for node params.") catch {};
+                return;
+            };
+            params_value = parsed_params.?.value;
+        }
+    }
+
+    const idempotency = requests.makeRequestId(allocator) catch |err| {
+        logger.warn("Failed to generate idempotency key: {}", .{err});
+        return;
+    };
+    defer allocator.free(idempotency);
+
+    const params = nodes_proto.NodeInvokeParams{
+        .nodeId = node_id,
+        .command = command,
+        .params = params_value,
+        .timeoutMs = timeout_ms,
+        .idempotencyKey = idempotency,
+    };
+
+    const request = requests.buildRequestPayload(allocator, "node.invoke", params) catch |err| {
+        logger.warn("Failed to build node.invoke request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingNodeInvokeRequest(request.id);
+        ctx.clearOperatorNotice();
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendNodeDescribeRequest(node_id: []const u8) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_node_describe_request_id != null) {
+        ctx.setOperatorNotice("Another node describe request is already in progress.") catch {};
+        return;
+    }
+
+    const params = nodes_proto.NodeDescribeParams{
+        .nodeId = node_id,
+    };
+    const request = requests.buildRequestPayload(allocator, "node.describe", params) catch |err| {
+        logger.warn("Failed to build node.describe request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingNodeDescribeRequest(request.id);
+        ctx.clearOperatorNotice();
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendExecApprovalResolveRequest(request_id: []const u8, decision: operator_view.ExecApprovalDecision) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_approval_resolve_request_id != null) {
+        ctx.setOperatorNotice("Another approval resolve request is already in progress.") catch {};
+        return;
+    }
+
+    const params = approvals_proto.ExecApprovalResolveParams{
+        .id = request_id,
+        .decision = approvalDecisionLabel(decision),
+    };
+    const request = requests.buildRequestPayload(allocator, "exec.approval.resolve", params) catch |err| {
+        logger.warn("Failed to build exec.approval.resolve request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    const target_copy = allocator.dupe(u8, request_id) catch {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
+    };
+    errdefer allocator.free(target_copy);
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingApprovalResolveRequest(request.id, target_copy);
+        ctx.clearOperatorNotice();
     } else {
         allocator.free(request.payload);
         allocator.free(request.id);
@@ -748,6 +901,9 @@ fn frame() callconv(.c) void {
         if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
             sendSessionsListRequest();
         }
+        if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
+            sendNodesListRequest();
+        }
         if (ctx.current_session) |session_key| {
             if (ctx.pending_history_request_id == null) {
                 const needs_history = ctx.history_session == null or
@@ -836,10 +992,20 @@ fn frame() callconv(.c) void {
         ctx.clearPendingRequests();
         ctx.clearStreamText();
         ctx.clearStreamRunId();
+        ctx.clearNodes();
+        ctx.clearCurrentNode();
+        ctx.clearApprovals();
+        ctx.clearNodeDescribes();
+        ctx.clearNodeResult();
+        ctx.clearOperatorNotice();
     }
 
     if (ui_action.refresh_sessions) {
         sendSessionsListRequest();
+    }
+
+    if (ui_action.refresh_nodes) {
+        sendNodesListRequest();
     }
 
     if (ui_action.select_session) |session_key| {
@@ -854,6 +1020,43 @@ fn frame() callconv(.c) void {
         if (ws_connected) {
             sendChatHistoryRequest(session_key);
         }
+    }
+
+    if (ui_action.select_node) |node_id| {
+        defer allocator.free(node_id);
+        ctx.setCurrentNode(node_id) catch |err| {
+            logger.warn("Failed to set node: {}", .{err});
+        };
+    }
+
+    if (ui_action.invoke_node) |invoke| {
+        var invoke_mut = invoke;
+        defer invoke_mut.deinit(allocator);
+        if (invoke_mut.node_id.len == 0 or invoke_mut.command.len == 0) {
+            ctx.setOperatorNotice("Node ID and command are required.") catch {};
+        } else {
+            sendNodeInvokeRequest(
+                invoke_mut.node_id,
+                invoke_mut.command,
+                invoke_mut.params_json,
+                invoke_mut.timeout_ms,
+            );
+        }
+    }
+
+    if (ui_action.describe_node) |node_id| {
+        defer allocator.free(node_id);
+        if (node_id.len == 0) {
+            ctx.setOperatorNotice("Node ID is required for describe.") catch {};
+        } else {
+            sendNodeDescribeRequest(node_id);
+        }
+    }
+
+    if (ui_action.resolve_approval) |resolve| {
+        var resolve_mut = resolve;
+        defer resolve_mut.deinit(allocator);
+        sendExecApprovalResolveRequest(resolve_mut.request_id, resolve_mut.decision);
     }
 
     if (ui_action.send_message) |message| {
@@ -871,9 +1074,30 @@ fn frame() callconv(.c) void {
         }
     }
 
+    if (ui_action.clear_node_result) {
+        ctx.clearNodeResult();
+    }
+
+    if (ui_action.clear_node_describe) |node_id| {
+        defer allocator.free(node_id);
+        _ = ctx.removeNodeDescribeById(node_id);
+    }
+
+    if (ui_action.clear_operator_notice) {
+        ctx.clearOperatorNotice();
+    }
+
     endFrame();
 
     win.swapBuffers();
+}
+
+fn approvalDecisionLabel(decision: operator_view.ExecApprovalDecision) []const u8 {
+    return switch (decision) {
+        .allow_once => "allow-once",
+        .allow_always => "allow-always",
+        .deny => "deny",
+    };
 }
 
 export fn main() c_int {

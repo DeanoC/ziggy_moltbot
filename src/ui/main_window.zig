@@ -10,6 +10,7 @@ const sessions_panel = @import("panels/sessions_panel.zig");
 const chat_panel = @import("panels/chat_panel.zig");
 const settings_panel = @import("panels/settings_panel.zig");
 const settings_view = @import("settings_view.zig");
+const operator_view = @import("operator_view.zig");
 const status_bar = @import("status_bar.zig");
 
 pub const UiAction = struct {
@@ -26,6 +27,14 @@ pub const UiAction = struct {
     download_update: bool = false,
     open_download: bool = false,
     install_update: bool = false,
+    refresh_nodes: bool = false,
+    select_node: ?[]u8 = null,
+    invoke_node: ?operator_view.NodeInvokeAction = null,
+    describe_node: ?[]u8 = null,
+    resolve_approval: ?operator_view.ExecApprovalResolveAction = null,
+    clear_node_describe: ?[]u8 = null,
+    clear_node_result: bool = false,
+    clear_operator_notice: bool = false,
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
@@ -127,27 +136,45 @@ pub fn draw(
             }
 
             if (zgui.beginChild(
-                "SettingsPanel",
+                "RightPanel",
                 .{ .w = metrics.avail_width, .h = metrics.settings_height, .child_flags = .{ .border = true } },
             )) {
-                const settings_action = settings_panel.draw(
-                    allocator,
-                    cfg,
-                    ctx.state,
-                    is_connected,
-                    &ctx.update_state,
-                    app_version,
-                );
-                action.connect = settings_action.connect;
-                action.disconnect = settings_action.disconnect;
-                action.save_config = settings_action.save;
-                action.clear_saved = settings_action.clear_saved;
-                action.config_updated = settings_action.config_updated;
-                action.check_updates = settings_action.check_updates;
-                action.open_release = settings_action.open_release;
-                action.download_update = settings_action.download_update;
-                action.open_download = settings_action.open_download;
-                action.install_update = settings_action.install_update;
+                if (zgui.beginTabBar("RightTabs", .{})) {
+                    if (zgui.beginTabItem("Settings", .{})) {
+                        const settings_action = settings_panel.draw(
+                            allocator,
+                            cfg,
+                            ctx.state,
+                            is_connected,
+                            &ctx.update_state,
+                            app_version,
+                        );
+                        action.connect = settings_action.connect;
+                        action.disconnect = settings_action.disconnect;
+                        action.save_config = settings_action.save;
+                        action.clear_saved = settings_action.clear_saved;
+                        action.config_updated = settings_action.config_updated;
+                        action.check_updates = settings_action.check_updates;
+                        action.open_release = settings_action.open_release;
+                        action.download_update = settings_action.download_update;
+                        action.open_download = settings_action.open_download;
+                        action.install_update = settings_action.install_update;
+                        zgui.endTabItem();
+                    }
+                    if (zgui.beginTabItem("Operator", .{})) {
+                        const operator_action = operator_view.draw(allocator, ctx, is_connected);
+                        action.refresh_nodes = operator_action.refresh_nodes;
+                        action.select_node = operator_action.select_node;
+                        action.invoke_node = operator_action.invoke_node;
+                        action.describe_node = operator_action.describe_node;
+                        action.resolve_approval = operator_action.resolve_approval;
+                        action.clear_node_describe = operator_action.clear_node_describe;
+                        action.clear_node_result = operator_action.clear_node_result;
+                        action.clear_operator_notice = operator_action.clear_operator_notice;
+                        zgui.endTabItem();
+                    }
+                    zgui.endTabBar();
+                }
             }
             zgui.endChild();
         } else {
@@ -212,27 +239,45 @@ pub fn draw(
             zgui.sameLine(.{ .spacing = spacing_x });
 
             if (zgui.beginChild(
-                "SettingsPanel",
+                "RightPanel",
                 .{ .w = metrics.right_width, .h = metrics.usable_height, .child_flags = .{ .border = true } },
             )) {
-                const settings_action = settings_panel.draw(
-                    allocator,
-                    cfg,
-                    ctx.state,
-                    is_connected,
-                    &ctx.update_state,
-                    app_version,
-                );
-                action.connect = settings_action.connect;
-                action.disconnect = settings_action.disconnect;
-                action.save_config = settings_action.save;
-                action.clear_saved = settings_action.clear_saved;
-                action.config_updated = settings_action.config_updated;
-                action.check_updates = settings_action.check_updates;
-                action.open_release = settings_action.open_release;
-                action.download_update = settings_action.download_update;
-                action.open_download = settings_action.open_download;
-                action.install_update = settings_action.install_update;
+                if (zgui.beginTabBar("RightTabs", .{})) {
+                    if (zgui.beginTabItem("Settings", .{})) {
+                        const settings_action = settings_panel.draw(
+                            allocator,
+                            cfg,
+                            ctx.state,
+                            is_connected,
+                            &ctx.update_state,
+                            app_version,
+                        );
+                        action.connect = settings_action.connect;
+                        action.disconnect = settings_action.disconnect;
+                        action.save_config = settings_action.save;
+                        action.clear_saved = settings_action.clear_saved;
+                        action.config_updated = settings_action.config_updated;
+                        action.check_updates = settings_action.check_updates;
+                        action.open_release = settings_action.open_release;
+                        action.download_update = settings_action.download_update;
+                        action.open_download = settings_action.open_download;
+                        action.install_update = settings_action.install_update;
+                        zgui.endTabItem();
+                    }
+                    if (zgui.beginTabItem("Operator", .{})) {
+                        const operator_action = operator_view.draw(allocator, ctx, is_connected);
+                        action.refresh_nodes = operator_action.refresh_nodes;
+                        action.select_node = operator_action.select_node;
+                        action.invoke_node = operator_action.invoke_node;
+                        action.describe_node = operator_action.describe_node;
+                        action.resolve_approval = operator_action.resolve_approval;
+                        action.clear_node_describe = operator_action.clear_node_describe;
+                        action.clear_node_result = operator_action.clear_node_result;
+                        action.clear_operator_notice = operator_action.clear_operator_notice;
+                        zgui.endTabItem();
+                    }
+                    zgui.endTabBar();
+                }
             }
             zgui.endChild();
         }
