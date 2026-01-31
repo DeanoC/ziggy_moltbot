@@ -478,6 +478,9 @@ fn downloadFile(
     var response_opt: ?std.http.Client.Response = null;
     var redirect_buf: [8 * 1024]u8 = undefined;
     while (true) {
+        if (try normalizeUrlForParse(allocator, &current_url)) {
+            // current_url updated in place
+        }
         const uri = try std.Uri.parse(current_url);
         var req = try client.request(.GET, uri, .{});
         defer req.deinit();
@@ -532,6 +535,38 @@ fn downloadFile(
         state.download_verified = true;
         state.mutex.unlock();
     }
+}
+
+fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
+    const src = url.*;
+    if (std.mem.indexOfAny(u8, src, " +") == null) return false;
+
+    var new_len: usize = 0;
+    for (src) |ch| {
+        if (ch == ' ' or ch == '+') {
+            new_len += 3;
+        } else {
+            new_len += 1;
+        }
+    }
+
+    var buf = try allocator.alloc(u8, new_len);
+    var pos: usize = 0;
+    for (src) |ch| {
+        if (ch == ' ' or ch == '+') {
+            buf[pos] = '%';
+            buf[pos + 1] = '2';
+            buf[pos + 2] = '0';
+            pos += 3;
+        } else {
+            buf[pos] = ch;
+            pos += 1;
+        }
+    }
+
+    allocator.free(src);
+    url.* = buf;
+    return true;
 }
 
 fn resolveRedirectUrl(allocator: std.mem.Allocator, base: std.Uri, location: []const u8) ![]u8 {
