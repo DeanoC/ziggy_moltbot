@@ -5,6 +5,7 @@ const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const layout = @import("layout.zig");
 const ui_state = @import("state.zig");
+const theme = @import("theme.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const chat_panel = @import("panels/chat_panel.zig");
 const settings_panel = @import("panels/settings_panel.zig");
@@ -66,7 +67,9 @@ pub fn draw(
 
     if (zgui.begin("ZiggyStarClaw", .{ .flags = flags })) {
         if (!compact_header) {
+            theme.push(.title);
             zgui.text("ZiggyStarClaw and the Lobsters From Mars", .{});
+            theme.pop();
             zgui.separator();
         }
 
