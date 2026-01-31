@@ -19,6 +19,9 @@ Highlights:
 - CLI approvals management and interactive REPL mode (`--interactive`).
 - `--run` supports default node from config when `--node` is not provided.
 
+## User Guide
+Start here: `docs/user/README.md`
+
 ## Quick Start
 
 ```bash
