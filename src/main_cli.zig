@@ -34,7 +34,7 @@ const usage =
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
     \\  --interactive            Start interactive REPL mode
-    \\  --save-config            Save settings to config file
+    \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\
 ;
@@ -226,9 +226,9 @@ pub fn main() !void {
         return error.InvalidArguments;
     }
 
-    // Validate: --run requires --node or default_node
+    // Allow --run with default node; only error if neither is provided.
     if (run_command != null and node_id == null and cfg.default_node == null) {
-        logger.err("--run requires --node or a default node set via --use-node.", .{});
+        logger.err("No node specified. Use --node or --use-node to set a default.", .{});
         return error.InvalidArguments;
     }
 
@@ -540,12 +540,10 @@ fn runRepl(
     var current_node = cfg.default_node;
 
     while (true) {
-        // Print prompt
         const session_name = if (current_session) |s| s[0..@min(s.len, 8)] else "none";
         const node_name = if (current_node) |n| n[0..@min(n.len, 8)] else "none";
         try stdout.print("[session:{s} node:{s}]> ", .{ session_name, node_name });
 
-        // Read input
         var input_buffer: [1024]u8 = undefined;
         const bytes_read = try std.fs.File.stdin().read(&input_buffer);
         if (bytes_read == 0) break;
@@ -553,7 +551,6 @@ fn runRepl(
         const input = std.mem.trim(u8, input_buffer[0..bytes_read], " \t\r\n");
         if (input.len == 0) continue;
 
-        // Parse command
         var parts = std.mem.splitScalar(u8, input, ' ');
         const cmd_str = parts.next() orelse continue;
         const cmd = parseReplCommand(cmd_str);
@@ -710,7 +707,6 @@ fn runRepl(
             },
         }
 
-        // Process any incoming messages
         var processed = false;
         while (!processed) {
             const payload = ws_client.receive() catch |err| {
@@ -723,8 +719,6 @@ fn runRepl(
                     logger.warn("Error handling message: {s}", .{@errorName(err)});
                     break :blk null;
                 };
-                // Check if it's a chat message to display
-                // For now, just continue - messages are stored in context
             } else {
                 processed = true;
             }
@@ -783,14 +777,12 @@ fn runNodeCommand(
     const idempotency_key = try requests.makeRequestId(allocator);
     defer allocator.free(idempotency_key);
 
-    // Build params JSON for system.run command
     var params_json = std.json.ObjectMap.init(allocator);
     defer params_json.deinit();
 
     var command_arr = std.json.Array.init(allocator);
     defer command_arr.deinit();
 
-    // Split command by spaces (simple approach)
     var it = std.mem.splitScalar(u8, command, ' ');
     while (it.next()) |part| {
         if (part.len > 0) {
