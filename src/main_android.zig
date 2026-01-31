@@ -2,11 +2,13 @@ const std = @import("std");
 const zgui = @import("zgui");
 const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
+const theme = @import("ui/theme.zig");
+const ui_state = @import("ui/state.zig");
 const operator_view = @import("ui/operator_view.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
-const websocket_client = @import("openclaw_transport").websocket;
+const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
@@ -620,15 +622,12 @@ fn beginFrame(window: *c.SDL_Window) void {
 }
 
 fn applyDpiScale(scale: f32) void {
-    if (scale <= 0.0 or scale == 1.0) return;
-
-    var cfg = zgui.FontConfig.init();
-    cfg.size_pixels = 16.0 * scale;
-    const font = zgui.io.addFontDefault(cfg);
-    zgui.io.setDefaultFont(font);
-
+    const resolved_scale: f32 = if (scale > 0.0) scale else 1.0;
+    theme.apply();
+    theme.applyTypography(resolved_scale);
+    if (resolved_scale == 1.0) return;
     const style = zgui.getStyle();
-    style.scaleAllSizes(scale);
+    style.scaleAllSizes(resolved_scale);
 }
 
 fn guessDpiScale(window: *c.SDL_Window) f32 {
@@ -710,6 +709,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     var ctx = client_state.ClientContext.init(allocator) catch return 1;
     defer ctx.deinit();
+    var ui_layout_state = ui_state.UiState{};
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
@@ -732,7 +732,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     defer ws_client.deinit();
 
     zgui.init(allocator);
-    zgui.styleColorsDark(zgui.getStyle());
+    theme.apply();
     _ = ImGui_ImplSDL2_InitForOpenGL(@ptrCast(window), @ptrCast(gl_ctx));
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
@@ -831,7 +831,14 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         beginFrame(window);
-        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected, build_options.app_version);
+        const ui_action = ui.draw(
+            allocator,
+            &ctx,
+            &cfg,
+            ws_client.is_connected,
+            build_options.app_version,
+            &ui_layout_state,
+        );
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
             c.SDL_StartTextInput();

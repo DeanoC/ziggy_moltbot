@@ -9,8 +9,10 @@ pub fn build(b: *std.Build) void {
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
     const app_version = readAppVersion(b);
+    const use_webgpu = b.option(bool, "webgpu", "Enable WebGPU renderer") orelse false;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
+    build_options.addOption(bool, "use_webgpu", use_webgpu);
 
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
@@ -21,17 +23,24 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("websocket");
-    const openclaw_transport = b.addModule("openclaw_transport", .{
-        .root_source_file = b.path("src/transport/root.zig"),
-        .target = target,
-    });
-    openclaw_transport.addImport("websocket", ws_native);
+    app_module.addImport("websocket", ws_native);
 
-    const zgui_pkg = b.dependency("zgui", .{
-        .target = target,
-        .optimize = optimize,
-        .backend = .glfw_opengl3,
-    });
+
+    const zgui_pkg = blk: {
+        if (use_webgpu) {
+            break :blk b.dependency("zgui", .{
+                .target = target,
+                .optimize = optimize,
+                .backend = .glfw_wgpu,
+            });
+        } else {
+            break :blk b.dependency("zgui", .{
+                .target = target,
+                .optimize = optimize,
+                .backend = .glfw_opengl3,
+            });
+        }
+    };
     const zgui_native = zgui_pkg.module("root");
 
     const zglfw_pkg = b.dependency("zglfw", .{
@@ -49,8 +58,6 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "zgui", .module = zgui_native },
                 .{ .name = "zglfw", .module = zglfw_native },
-                .{ .name = "openclaw_transport", .module = openclaw_transport },
-                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -61,26 +68,68 @@ pub fn build(b: *std.Build) void {
         });
         native_exe.root_module.addOptions("build_options", build_options);
 
-        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
         native_exe.root_module.addIncludePath(b.path("src"));
-        native_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/opengl_loader.c"),
-            .flags = &.{},
-        });
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
             .flags = &.{},
         });
 
-        native_exe.linkLibrary(zgui_pkg.artifact("imgui"));
-        native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
-
-        switch (target.result.os.tag) {
-            .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
-            .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
-            .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
-            else => {},
+        const zgui_imgui = zgui_pkg.artifact("imgui");
+        if (use_webgpu) {
+            const zgpu_pkg = b.dependency("zgpu", .{
+                .target = target,
+                .optimize = optimize,
+            });
+            native_module.addImport("zgpu", zgpu_pkg.module("root"));
+            if (target.result.os.tag != .emscripten) {
+                zgui_imgui.root_module.addCMacro("IMGUI_IMPL_WEBGPU_BACKEND_DAWN", "");
+            }
+            native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
+            native_exe.root_module.addCSourceFile(.{
+                .file = zgpu_pkg.path("src/dawn.cpp"),
+                .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },
+            });
+            native_exe.root_module.addCSourceFile(.{
+                .file = zgpu_pkg.path("src/dawn_proc.c"),
+                .flags = &.{"-fno-sanitize=undefined"},
+            });
+            if (target.result.abi != .msvc) {
+                native_exe.root_module.link_libcpp = true;
+            }
+            @import("zgpu").addLibraryPathsTo(native_exe);
+            native_exe.root_module.linkSystemLibrary("dawn", .{});
+            switch (target.result.os.tag) {
+                .windows => {
+                    native_exe.root_module.linkSystemLibrary("ole32", .{});
+                    native_exe.root_module.linkSystemLibrary("dxguid", .{});
+                },
+                .macos => {
+                    native_exe.root_module.linkSystemLibrary("objc", .{});
+                    native_exe.root_module.linkFramework("Metal", .{});
+                    native_exe.root_module.linkFramework("CoreGraphics", .{});
+                    native_exe.root_module.linkFramework("Foundation", .{});
+                    native_exe.root_module.linkFramework("IOKit", .{});
+                    native_exe.root_module.linkFramework("IOSurface", .{});
+                    native_exe.root_module.linkFramework("QuartzCore", .{});
+                },
+                else => {},
+            }
+        } else {
+            native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
+            native_exe.root_module.addCSourceFile(.{
+                .file = b.path("src/opengl_loader.c"),
+                .flags = &.{},
+            });
+            switch (target.result.os.tag) {
+                .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
+                .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
+                .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
+                else => {},
+            }
         }
+
+        native_exe.linkLibrary(zgui_imgui);
+        native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
         if (target.result.os.tag == .windows) {
             native_exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("assets/icons/ziggystarclaw.rc"),
@@ -95,8 +144,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
-                .{ .name = "openclaw_transport", .module = openclaw_transport },
-                .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
 
@@ -344,19 +391,12 @@ pub fn build(b: *std.Build) void {
                 .target = android_target,
                 .optimize = optimize,
             }).module("websocket");
-            const openclaw_transport_android = b.createModule(.{
-                .root_source_file = b.path("src/transport/root.zig"),
-                .target = android_target,
-                .optimize = optimize,
-            });
-            openclaw_transport_android.addImport("websocket", ws_android);
             const zgui_android_pkg = b.dependency("zgui", .{
                 .target = android_target,
                 .optimize = optimize,
                 .backend = .no_backend,
             });
             android_module.addImport("websocket", ws_android);
-            android_module.addImport("openclaw_transport", openclaw_transport_android);
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{

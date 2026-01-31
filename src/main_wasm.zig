@@ -3,6 +3,8 @@ const zemscripten = @import("zemscripten");
 const glfw = @import("zglfw");
 const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
+const theme = @import("ui/theme.zig");
+const ui_state = @import("ui/state.zig");
 const operator_view = @import("ui/operator_view.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
@@ -52,6 +54,7 @@ var allocator: std.mem.Allocator = undefined;
 var window: ?*glfw.Window = null;
 var ctx: client_state.ClientContext = undefined;
 var cfg: config.Config = undefined;
+var ui_layout_state: ui_state.UiState = .{};
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -96,15 +99,12 @@ fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) vo
 }
 
 fn applyDpiScale(scale: f32) void {
-    if (scale <= 0.0 or scale == 1.0) return;
-
-    var font_cfg = zgui.FontConfig.init();
-    font_cfg.size_pixels = 16.0 * scale;
-    const font = zgui.io.addFontDefault(font_cfg);
-    zgui.io.setDefaultFont(font);
-
+    const resolved_scale: f32 = if (scale > 0.0) scale else 1.0;
+    theme.apply();
+    theme.applyTypography(resolved_scale);
+    if (resolved_scale == 1.0) return;
     const style = zgui.getStyle();
-    style.scaleAllSizes(scale);
+    style.scaleAllSizes(resolved_scale);
 }
 
 fn beginFrame(
@@ -154,7 +154,7 @@ fn initApp() !void {
     glfw.swapInterval(1);
 
     zgui.init(allocator);
-    zgui.styleColorsDark(zgui.getStyle());
+    theme.apply();
     if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
         logger.err("Failed to init ImGui GLFW backend.", .{});
     }
@@ -930,7 +930,14 @@ fn frame() callconv(.c) void {
     }
 
     beginFrame(win_width, win_height, fb_width, fb_height);
-    const ui_action = ui.draw(allocator, &ctx, &cfg, ws_connected, build_options.app_version);
+    const ui_action = ui.draw(
+        allocator,
+        &ctx,
+        &cfg,
+        ws_connected,
+        build_options.app_version,
+        &ui_layout_state,
+    );
 
     if (ui_action.config_updated) {
         // config updated in-place

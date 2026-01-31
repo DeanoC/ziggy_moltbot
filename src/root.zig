@@ -12,14 +12,16 @@ pub const client = struct {
     pub const state = @import("client/state.zig");
     pub const config = @import("client/config.zig");
     pub const event_handler = @import("client/event_handler.zig");
-    pub const websocket_client = @import("client/websocket_client.zig");
     pub const device_identity = @import("client/device_identity.zig");
 };
 
 pub const transport = struct {
-    pub const websocket = @import("transport/root.zig").websocket;
-    pub const WebSocketClient = @import("transport/root.zig").WebSocketClient;
+    pub const websocket = @import("client/websocket_client.zig");
+    pub const WebSocketClient = websocket.WebSocketClient;
 };
+
+pub const websocket = transport.websocket;
+pub const WebSocketClient = transport.WebSocketClient;
 
 pub const ui = struct {
     pub const imgui_wrapper = @import("ui/imgui_wrapper.zig");

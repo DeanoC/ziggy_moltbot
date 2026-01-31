@@ -4,6 +4,7 @@ const zgui = @import("zgui");
 const config = @import("../client/config.zig");
 const state = @import("../client/state.zig");
 const update_checker = @import("../client/update_checker.zig");
+const theme = @import("theme.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -42,7 +43,9 @@ pub fn draw(
     }
 
     if (zgui.beginChild("Settings", .{ .h = 0.0, .child_flags = .{ .border = true } })) {
+        theme.push(.heading);
         zgui.text("Connection", .{});
+        theme.pop();
 
         _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
         _ = zgui.inputText("Connect Host (override)", .{ .buf = connect_host_buf[0.. :0] });
@@ -99,7 +102,9 @@ pub fn draw(
         zgui.textWrapped("State: {s}", .{@tagName(client_state)});
 
         zgui.separator();
+        theme.push(.heading);
         zgui.text("Updates", .{});
+        theme.pop();
         _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
         zgui.textWrapped("Current version: {s}", .{app_version});
 

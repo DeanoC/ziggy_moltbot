@@ -1,10 +1,11 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const glfw = @import("zglfw");
+const theme = @import("theme.zig");
 
 pub fn init(allocator: std.mem.Allocator, window: *glfw.Window) void {
     zgui.init(allocator);
-    zgui.styleColorsDark(zgui.getStyle());
+    theme.apply();
     zgui.backend.init(window);
 }
 
@@ -14,7 +15,7 @@ pub fn initWithGlslVersion(
     glsl_version: [:0]const u8,
 ) void {
     zgui.init(allocator);
-    zgui.styleColorsDark(zgui.getStyle());
+    theme.apply();
     zgui.backend.initWithGlSlVersion(window, glsl_version);
 }
 
@@ -49,13 +50,10 @@ pub fn deinit() void {
 }
 
 pub fn applyDpiScale(scale: f32) void {
-    if (scale <= 0.0 or scale == 1.0) return;
-
-    var cfg = zgui.FontConfig.init();
-    cfg.size_pixels = 16.0 * scale;
-    const font = zgui.io.addFontDefault(cfg);
-    zgui.io.setDefaultFont(font);
-
+    const resolved_scale: f32 = if (scale > 0.0) scale else 1.0;
+    theme.apply();
+    theme.applyTypography(resolved_scale);
+    if (resolved_scale == 1.0) return;
     const style = zgui.getStyle();
-    style.scaleAllSizes(scale);
+    style.scaleAllSizes(resolved_scale);
 }

@@ -3,9 +3,12 @@ const zgui = @import("zgui");
 const builtin = @import("builtin");
 const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
-const chat_view = @import("chat_view.zig");
-const input_panel = @import("input_panel.zig");
-const session_list = @import("session_list.zig");
+const layout = @import("layout.zig");
+const ui_state = @import("state.zig");
+const theme = @import("theme.zig");
+const sessions_panel = @import("panels/sessions_panel.zig");
+const chat_panel = @import("panels/chat_panel.zig");
+const settings_panel = @import("panels/settings_panel.zig");
 const settings_view = @import("settings_view.zig");
 const operator_view = @import("operator_view.zig");
 const status_bar = @import("status_bar.zig");
@@ -46,6 +49,7 @@ pub fn draw(
     cfg: *config.Config,
     is_connected: bool,
     app_version: []const u8,
+    state_ui: *ui_state.UiState,
 ) UiAction {
     var action = UiAction{};
 
@@ -72,7 +76,9 @@ pub fn draw(
 
     if (zgui.begin("ZiggyStarClaw", .{ .flags = flags })) {
         if (!compact_header) {
+            theme.push(.title);
             zgui.text("ZiggyStarClaw and the Lobsters From Mars", .{});
+            theme.pop();
             zgui.separator();
         }
 
@@ -82,45 +88,60 @@ pub fn draw(
         const avail = zgui.getContentRegionAvail();
         const status_height = zgui.getFrameHeightWithSpacing();
         const usable_h = @max(1.0, avail[1] - status_height - spacing_y);
-        const left_width: f32 = if (builtin.abi == .android) 220.0 else 240.0;
-        const right_width: f32 = if (builtin.abi == .android) 360.0 else 320.0;
-        const min_center_width: f32 = 160.0;
-        const compact_layout = avail[0] < left_width + right_width + spacing_x * 2.0 + min_center_width;
 
-        if (compact_layout) {
-            const total_h = usable_h;
-            const sessions_h = @min(200.0, total_h * 0.25);
-            const settings_h = @min(220.0, total_h * 0.3);
-            const chat_h = @max(140.0, total_h - sessions_h - settings_h - spacing_y * 2.0);
+        var metrics = layout.compute(state_ui, avail[0], usable_h, spacing_x, spacing_y);
 
-            if (zgui.beginChild("LeftPanel", .{ .w = avail[0], .h = sessions_h, .child_flags = .{ .border = true } })) {
-                const sessions_action = session_list.draw(
-                    allocator,
-                    ctx.sessions.items,
-                    ctx.current_session,
-                    ctx.sessions_loading,
-                );
+        if (metrics.compact_layout) {
+            if (zgui.beginChild(
+                "SessionsPanel",
+                .{ .w = metrics.avail_width, .h = metrics.sessions_height, .child_flags = .{ .border = true } },
+            )) {
+                const sessions_action = sessions_panel.draw(allocator, ctx);
                 action.refresh_sessions = sessions_action.refresh;
                 action.select_session = sessions_action.selected_key;
             }
             zgui.endChild();
 
-            if (zgui.beginChild("CenterPanel", .{ .w = avail[0], .h = chat_h, .child_flags = .{ .border = true } })) {
-                const center_avail = zgui.getContentRegionAvail();
-                const input_height: f32 = 88.0;
-                const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
-                chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
-                zgui.separator();
-                if (input_panel.draw(allocator)) |message| {
-                    action.send_message = message;
-                }
+            if (layout.splitterHorizontal(
+                "split_sessions",
+                metrics.avail_width,
+                metrics.splitter,
+                &state_ui.compact_sessions_height,
+                state_ui.min_sessions_height,
+                metrics.usable_height,
+                1.0,
+            )) {
+                metrics = layout.compute(state_ui, avail[0], usable_h, spacing_x, spacing_y);
+            }
+
+            if (zgui.beginChild(
+                "ChatPanel",
+                .{ .w = metrics.avail_width, .h = metrics.chat_height, .child_flags = .{ .border = true } },
+            )) {
+                const chat_action = chat_panel.draw(allocator, ctx);
+                action.send_message = chat_action.send_message;
             }
             zgui.endChild();
 
-            if (zgui.beginChild("RightPanel", .{ .w = avail[0], .h = settings_h, .child_flags = .{ .border = true } })) {
+            if (layout.splitterHorizontal(
+                "split_settings",
+                metrics.avail_width,
+                metrics.splitter,
+                &state_ui.compact_settings_height,
+                state_ui.min_settings_height,
+                metrics.usable_height,
+                -1.0,
+            )) {
+                metrics = layout.compute(state_ui, avail[0], usable_h, spacing_x, spacing_y);
+            }
+
+            if (zgui.beginChild(
+                "RightPanel",
+                .{ .w = metrics.avail_width, .h = metrics.settings_height, .child_flags = .{ .border = true } },
+            )) {
                 if (zgui.beginTabBar("RightTabs", .{})) {
                     if (zgui.beginTabItem("Settings", .{})) {
-                        const settings_action = settings_view.draw(
+                        const settings_action = settings_panel.draw(
                             allocator,
                             cfg,
                             ctx.state,
@@ -157,40 +178,73 @@ pub fn draw(
             }
             zgui.endChild();
         } else {
-            const center_width = @max(min_center_width, avail[0] - left_width - right_width - spacing_x * 2.0);
-
-            if (zgui.beginChild("LeftPanel", .{ .w = left_width, .h = usable_h, .child_flags = .{ .border = true } })) {
-                const sessions_action = session_list.draw(
-                    allocator,
-                    ctx.sessions.items,
-                    ctx.current_session,
-                    ctx.sessions_loading,
-                );
+            if (zgui.beginChild(
+                "SessionsPanel",
+                .{ .w = metrics.left_width, .h = metrics.usable_height, .child_flags = .{ .border = true } },
+            )) {
+                const sessions_action = sessions_panel.draw(allocator, ctx);
                 action.refresh_sessions = sessions_action.refresh;
                 action.select_session = sessions_action.selected_key;
             }
             zgui.endChild();
 
-            zgui.sameLine(.{});
+            zgui.sameLine(.{ .spacing = spacing_x });
 
-            if (zgui.beginChild("CenterPanel", .{ .w = center_width, .h = usable_h, .child_flags = .{ .border = true } })) {
-                const center_avail = zgui.getContentRegionAvail();
-                const input_height: f32 = 96.0;
-                const history_height = @max(80.0, center_avail[1] - input_height - spacing_y);
-                chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, history_height);
-                zgui.separator();
-                if (input_panel.draw(allocator)) |message| {
-                    action.send_message = message;
-                }
+            const total_gap = state_ui.splitter_thickness * 2.0 + spacing_x * 2.0;
+            const max_left = @max(
+                state_ui.min_left_width,
+                avail[0] - state_ui.right_width - state_ui.min_center_width - total_gap,
+            );
+            if (layout.splitterVertical(
+                "split_left",
+                metrics.usable_height,
+                metrics.splitter,
+                &state_ui.left_width,
+                state_ui.min_left_width,
+                max_left,
+                1.0,
+            )) {
+                metrics = layout.compute(state_ui, avail[0], usable_h, spacing_x, spacing_y);
+            }
+
+            zgui.sameLine(.{ .spacing = spacing_x });
+
+            if (zgui.beginChild(
+                "ChatPanel",
+                .{ .w = metrics.center_width, .h = metrics.usable_height, .child_flags = .{ .border = true } },
+            )) {
+                const chat_action = chat_panel.draw(allocator, ctx);
+                action.send_message = chat_action.send_message;
             }
             zgui.endChild();
 
-            zgui.sameLine(.{});
+            zgui.sameLine(.{ .spacing = spacing_x });
 
-            if (zgui.beginChild("RightPanel", .{ .w = right_width, .h = usable_h, .child_flags = .{ .border = true } })) {
+            const max_right = @max(
+                state_ui.min_right_width,
+                avail[0] - state_ui.left_width - state_ui.min_center_width - total_gap,
+            );
+            if (layout.splitterVertical(
+                "split_right",
+                metrics.usable_height,
+                metrics.splitter,
+                &state_ui.right_width,
+                state_ui.min_right_width,
+                max_right,
+                -1.0,
+            )) {
+                metrics = layout.compute(state_ui, avail[0], usable_h, spacing_x, spacing_y);
+            }
+
+            zgui.sameLine(.{ .spacing = spacing_x });
+
+            if (zgui.beginChild(
+                "RightPanel",
+                .{ .w = metrics.right_width, .h = metrics.usable_height, .child_flags = .{ .border = true } },
+            )) {
                 if (zgui.beginTabBar("RightTabs", .{})) {
                     if (zgui.beginTabItem("Settings", .{})) {
-                        const settings_action = settings_view.draw(
+                        const settings_action = settings_panel.draw(
                             allocator,
                             cfg,
                             ctx.state,
