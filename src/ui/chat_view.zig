@@ -1,11 +1,13 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
+const ui_command_inbox = @import("ui_command_inbox.zig");
 
 pub fn draw(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
+    inbox: ?*const ui_command_inbox.UiCommandInbox,
     height: f32,
 ) void {
     const clamped = if (height > 60.0) height else 60.0;
@@ -42,7 +44,7 @@ pub fn draw(
         }
         zgui.sameLine(.{});
         if (zgui.button("Copy All", .{})) {
-            if (ensureChatBuffer(allocator, messages, stream_text)) {
+            if (ensureChatBuffer(allocator, messages, stream_text, inbox)) {
                 const zbuf = bufferZ();
                 zgui.setClipboardText(zbuf);
             }
@@ -51,7 +53,7 @@ pub fn draw(
 
         if (select_mode) {
             if (content_changed or chat_buffer.items.len == 0) {
-                _ = ensureChatBuffer(allocator, messages, stream_text);
+                _ = ensureChatBuffer(allocator, messages, stream_text, inbox);
             }
             const zbuf = bufferZ();
             _ = zgui.inputTextMultiline("##chat_select", .{
@@ -64,6 +66,9 @@ pub fn draw(
             var last_role: ?[]const u8 = null;
 
             for (messages, 0..) |msg, index| {
+                if (inbox) |store| {
+                    if (store.isCommandMessage(msg.id)) continue;
+                }
                 zgui.pushIntId(@intCast(index));
                 defer zgui.popId();
                 if (last_role == null or !std.mem.eql(u8, last_role.?, msg.role)) {
@@ -157,10 +162,14 @@ fn ensureChatBuffer(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
+    inbox: ?*const ui_command_inbox.UiCommandInbox,
 ) bool {
     chat_buffer.clearRetainingCapacity();
     var writer = chat_buffer.writer(allocator);
     for (messages) |msg| {
+        if (inbox) |store| {
+            if (store.isCommandMessage(msg.id)) continue;
+        }
         writer.print("[{s}] {s}\n\n", .{ msg.role, msg.content }) catch return false;
     }
     if (stream_text) |stream| {

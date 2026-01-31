@@ -2,9 +2,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
-const ui_state = @import("ui/state.zig");
 const imgui_gl = @import("ui/imgui_wrapper.zig");
 const operator_view = @import("ui/operator_view.zig");
+const imgui_bridge = @import("ui/imgui_bridge.zig");
+const panel_manager = @import("ui/panel_manager.zig");
+const workspace_store = @import("ui/workspace_store.zig");
+const workspace = @import("ui/workspace.zig");
+const ui_command_inbox = @import("ui/ui_command_inbox.zig");
+const dock_layout = @import("ui/dock_layout.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -708,7 +713,19 @@ pub fn main() !void {
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
-    var ui_layout_state = ui_state.UiState{};
+    const workspace_state = workspace_store.loadOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
+        logger.warn("Failed to load workspace: {}", .{err});
+        break :blk workspace.Workspace.initDefault(allocator) catch |init_err| {
+            logger.err("Failed to init default workspace: {}", .{init_err});
+            return init_err;
+        };
+    };
+    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
+    defer manager.deinit();
+    var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
+    defer command_inbox.deinit(allocator);
+    var dock_state = dock_layout.DockState{};
+    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -822,7 +839,9 @@ pub fn main() !void {
             &cfg,
             ws_client.is_connected,
             build_options.app_version,
-            &ui_layout_state,
+            &manager,
+            &command_inbox,
+            &dock_state,
         );
 
         if (ui_action.config_updated) {
@@ -836,6 +855,16 @@ pub fn main() !void {
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
+        }
+
+        if (ui_action.save_workspace) {
+            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
+                logger.warn("Failed to capture workspace layout: {}", .{err});
+            };
+            workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
+                logger.err("Failed to save workspace: {}", .{err});
+            };
+            manager.workspace.markClean();
         }
 
         if (ui_action.check_updates) {
