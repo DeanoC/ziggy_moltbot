@@ -4,8 +4,12 @@ const glfw = @import("zglfw");
 const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
-const ui_state = @import("ui/state.zig");
 const operator_view = @import("ui/operator_view.zig");
+const imgui_bridge = @import("ui/imgui_bridge.zig");
+const panel_manager = @import("ui/panel_manager.zig");
+const workspace = @import("ui/workspace.zig");
+const ui_command_inbox = @import("ui/ui_command_inbox.zig");
+const dock_layout = @import("ui/dock_layout.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -54,7 +58,9 @@ var allocator: std.mem.Allocator = undefined;
 var window: ?*glfw.Window = null;
 var ctx: client_state.ClientContext = undefined;
 var cfg: config.Config = undefined;
-var ui_layout_state: ui_state.UiState = .{};
+var manager: panel_manager.PanelManager = undefined;
+var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
+var dock_state: dock_layout.DockState = .{};
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -67,6 +73,7 @@ var device_identity: ?identity.DeviceIdentity = null;
 var last_state: ?client_state.ClientState = null;
 var initialized = false;
 const config_storage_key: [:0]const u8 = "ziggystarclaw.config";
+const workspace_storage_key: [:0]const u8 = "ziggystarclaw.workspace";
 
 const MessageQueue = struct {
     items: std.ArrayList([]u8) = .empty,
@@ -154,6 +161,8 @@ fn initApp() !void {
     glfw.swapInterval(1);
 
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setIniFilename(null);
     theme.apply();
     if (!ImGui_ImplGlfw_InitForOpenGL(win, true)) {
         logger.err("Failed to init ImGui GLFW backend.", .{});
@@ -165,6 +174,11 @@ fn initApp() !void {
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
+    const ws = try loadWorkspaceFromStorage();
+    manager = panel_manager.PanelManager.init(allocator, ws);
+    command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
+    dock_state = .{};
+    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
     window = win;
     message_queue = MessageQueue{};
     initialized = true;
@@ -176,6 +190,8 @@ fn deinitApp() void {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     zgui.deinit();
+    manager.deinit();
+    command_inbox.deinit(allocator);
     ctx.deinit();
     cfg.deinit(allocator);
     message_queue.deinit(allocator);
@@ -309,6 +325,42 @@ fn saveConfigToStorage() void {
     defer allocator.free(json);
     wasm_storage.set(allocator, config_storage_key, json) catch |err| {
         logger.warn("Failed to persist config: {}", .{err});
+    };
+}
+
+fn loadWorkspaceFromStorage() !workspace.Workspace {
+    const raw = wasm_storage.get(allocator, workspace_storage_key) catch |err| {
+        logger.warn("Failed to read stored workspace: {}", .{err});
+        return try workspace.Workspace.initDefault(allocator);
+    };
+    if (raw == null) {
+        return try workspace.Workspace.initDefault(allocator);
+    }
+    defer allocator.free(raw.?);
+
+    var parsed = std.json.parseFromSlice(workspace.WorkspaceSnapshot, allocator, raw.?, .{}) catch |err| {
+        logger.warn("Stored workspace parse failed: {}", .{err});
+        return try workspace.Workspace.initDefault(allocator);
+    };
+    defer parsed.deinit();
+
+    return try workspace.Workspace.fromSnapshot(allocator, parsed.value);
+}
+
+fn saveWorkspaceToStorage(ws: *workspace.Workspace) void {
+    var snapshot = ws.toSnapshot(allocator) catch |err| {
+        logger.warn("Failed to snapshot workspace: {}", .{err});
+        return;
+    };
+    defer snapshot.deinit(allocator);
+
+    const json = std.json.Stringify.valueAlloc(allocator, snapshot, .{}) catch |err| {
+        logger.warn("Failed to serialize workspace: {}", .{err});
+        return;
+    };
+    defer allocator.free(json);
+    wasm_storage.set(allocator, workspace_storage_key, json) catch |err| {
+        logger.warn("Failed to persist workspace: {}", .{err});
     };
 }
 
@@ -936,7 +988,9 @@ fn frame() callconv(.c) void {
         &cfg,
         ws_connected,
         build_options.app_version,
-        &ui_layout_state,
+        &manager,
+        &command_inbox,
+        &dock_state,
     );
 
     if (ui_action.config_updated) {
@@ -946,6 +1000,13 @@ fn frame() callconv(.c) void {
 
     if (ui_action.save_config) {
         saveConfigToStorage();
+    }
+    if (ui_action.save_workspace) {
+        dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
+            logger.warn("Failed to capture workspace layout: {}", .{err});
+        };
+        saveWorkspaceToStorage(&manager.workspace);
+        manager.workspace.markClean();
     }
     if (ui_action.check_updates) {
         const manifest_url = cfg.update_manifest_url orelse "";
