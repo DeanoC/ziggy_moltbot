@@ -3,6 +3,7 @@ const zemscripten = @import("zemscripten");
 const glfw = @import("zglfw");
 const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
+const ui_state = @import("ui/state.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -49,6 +50,7 @@ var allocator: std.mem.Allocator = undefined;
 var window: ?*glfw.Window = null;
 var ctx: client_state.ClientContext = undefined;
 var cfg: config.Config = undefined;
+var ui_layout_state: ui_state.UiState = .{};
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -774,7 +776,14 @@ fn frame() callconv(.c) void {
     }
 
     beginFrame(win_width, win_height, fb_width, fb_height);
-    const ui_action = ui.draw(allocator, &ctx, &cfg, ws_connected, build_options.app_version);
+    const ui_action = ui.draw(
+        allocator,
+        &ctx,
+        &cfg,
+        ws_connected,
+        build_options.app_version,
+        &ui_layout_state,
+    );
 
     if (ui_action.config_updated) {
         // config updated in-place

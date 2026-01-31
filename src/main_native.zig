@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
+const ui_state = @import("ui/state.zig");
 const imgui_gl = @import("ui/imgui_wrapper.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
@@ -536,6 +537,7 @@ pub fn main() !void {
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
+    var ui_layout_state = ui_state.UiState{};
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -640,7 +642,14 @@ pub fn main() !void {
         } else {
             imgui_gl.beginFrame(win_width, win_height, fb_width, fb_height);
         }
-        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected, build_options.app_version);
+        const ui_action = ui.draw(
+            allocator,
+            &ctx,
+            &cfg,
+            ws_client.is_connected,
+            build_options.app_version,
+            &ui_layout_state,
+        );
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;

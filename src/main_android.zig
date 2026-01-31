@@ -2,6 +2,7 @@ const std = @import("std");
 const zgui = @import("zgui");
 const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
+const ui_state = @import("ui/state.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -539,6 +540,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     var ctx = client_state.ClientContext.init(allocator) catch return 1;
     defer ctx.deinit();
+    var ui_layout_state = ui_state.UiState{};
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
@@ -657,7 +659,14 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         beginFrame(window);
-        const ui_action = ui.draw(allocator, &ctx, &cfg, ws_client.is_connected, build_options.app_version);
+        const ui_action = ui.draw(
+            allocator,
+            &ctx,
+            &cfg,
+            ws_client.is_connected,
+            build_options.app_version,
+            &ui_layout_state,
+        );
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
             c.SDL_StartTextInput();
