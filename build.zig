@@ -2,6 +2,23 @@ const std = @import("std");
 const android = @import("android");
 const zemscripten_build = @import("zemscripten");
 
+const FreetypeInfo = struct {
+    lib: *std.Build.Step.Compile,
+    include_path: std.Build.LazyPath,
+};
+
+fn addFreetype(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) FreetypeInfo {
+    const freetype_dep = b.dependency("freetype", .{
+        .target = target,
+        .optimize = optimize,
+        .enable_brotli = false,
+    });
+    return .{
+        .lib = freetype_dep.artifact("freetype"),
+        .include_path = freetype_dep.path("include"),
+    };
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -13,6 +30,11 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
     build_options.addOption(bool, "use_webgpu", use_webgpu);
+    const imgui_cpp_flags = &.{
+        "-std=c++17",
+        "-DIMGUI_ENABLE_FREETYPE",
+        "-DIMGUI_USE_WCHAR32",
+    };
 
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
@@ -32,12 +54,14 @@ pub fn build(b: *std.Build) void {
                 .target = target,
                 .optimize = optimize,
                 .backend = .glfw_wgpu,
+                .use_wchar32 = true,
             });
         } else {
             break :blk b.dependency("zgui", .{
                 .target = target,
                 .optimize = optimize,
                 .backend = .glfw_opengl3,
+                .use_wchar32 = true,
             });
         }
     };
@@ -67,6 +91,7 @@ pub fn build(b: *std.Build) void {
             .root_module = native_module,
         });
         native_exe.root_module.addOptions("build_options", build_options);
+        const freetype_native = addFreetype(b, target, optimize);
 
         native_exe.root_module.addIncludePath(b.path("src"));
         native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui"));
@@ -76,10 +101,22 @@ pub fn build(b: *std.Build) void {
         });
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/imgui_ini_bridge.cpp"),
-            .flags = &.{ "-std=c++17" },
+            .flags = imgui_cpp_flags,
         });
+        native_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/imgui_freetype_bridge.cpp"),
+            .flags = imgui_cpp_flags,
+        });
+        native_exe.root_module.addIncludePath(freetype_native.include_path);
 
         const zgui_imgui = zgui_pkg.artifact("imgui");
+        zgui_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
+        zgui_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
+        zgui_imgui.root_module.addIncludePath(freetype_native.include_path);
+        zgui_imgui.root_module.addCSourceFile(.{
+            .file = zgui_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
+            .flags = imgui_cpp_flags,
+        });
         if (use_webgpu) {
             const zgpu_pkg = b.dependency("zgpu", .{
                 .target = target,
@@ -134,6 +171,7 @@ pub fn build(b: *std.Build) void {
         }
 
         native_exe.linkLibrary(zgui_imgui);
+        native_exe.linkLibrary(freetype_native.lib);
         native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
         if (target.result.os.tag == .windows) {
             native_exe.root_module.addWin32ResourceFile(.{
@@ -182,6 +220,7 @@ pub fn build(b: *std.Build) void {
             "tests/client_tests.zig",
             "tests/logger_tests.zig",
             "tests/ui_tests.zig",
+            "tests/image_cache_tests.zig",
         };
 
         for (test_files) |test_path| {
@@ -231,6 +270,7 @@ pub fn build(b: *std.Build) void {
             .target = wasm_target,
             .optimize = optimize,
             .backend = .no_backend,
+            .use_wchar32 = true,
         });
         const zglfw_wasm_pkg = b.dependency("zglfw", .{
             .target = wasm_target,
@@ -239,14 +279,18 @@ pub fn build(b: *std.Build) void {
         wasm.root_module.addImport("zgui", zgui_wasm_pkg.module("root"));
         wasm.root_module.addImport("zglfw", zglfw_wasm_pkg.module("root"));
         wasm.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
+        wasm.root_module.addIncludePath(b.path("src"));
         wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs"));
         wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui"));
         wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui/backends"));
+        // freetype include path added after freetype_wasm is created
         const imgui_backend_flags = &.{
             "-DIMGUI_IMPL_OPENGL_ES3",
             "-DIMGUI_IMPL_API=extern \"C\"",
             "-fno-sanitize=undefined",
             "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+            "-DIMGUI_ENABLE_FREETYPE",
+            "-DIMGUI_USE_WCHAR32",
             "-std=c++17",
         };
         wasm.root_module.addCSourceFile(.{
@@ -256,6 +300,10 @@ pub fn build(b: *std.Build) void {
         wasm.root_module.addCSourceFile(.{
             .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_opengl3.cpp"),
             .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/icon_loader.c"),
+            .flags = &.{ "-fno-sanitize=undefined" },
         });
         wasm.root_module.addCSourceFile(.{
             .file = b.path("src/wasm_clipboard.cpp"),
@@ -277,9 +325,28 @@ pub fn build(b: *std.Build) void {
             .file = b.path("src/imgui_ini_bridge.cpp"),
             .flags = imgui_backend_flags,
         });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/imgui_freetype_bridge.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_fetch.cpp"),
+            .flags = imgui_backend_flags,
+        });
         const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
+        const freetype_wasm = addFreetype(b, wasm_target, optimize);
+        freetype_wasm.lib.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
+        zgui_wasm_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
+        zgui_wasm_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
+        zgui_wasm_imgui.root_module.addIncludePath(freetype_wasm.include_path);
+        zgui_wasm_imgui.root_module.addCSourceFile(.{
+            .file = zgui_wasm_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
+            .flags = imgui_backend_flags,
+        });
         zgui_wasm_imgui.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         wasm.linkLibrary(zgui_wasm_imgui);
+        wasm.linkLibrary(freetype_wasm.lib);
+        wasm.root_module.addIncludePath(freetype_wasm.include_path);
 
         const zemscripten = b.dependency("zemscripten", .{});
         wasm.root_module.addImport("zemscripten", zemscripten.module("root"));
@@ -297,9 +364,10 @@ pub fn build(b: *std.Build) void {
             .emsdk_allocator = .emmalloc,
         });
         emcc_settings.put("ALLOW_MEMORY_GROWTH", "1") catch unreachable;
+        emcc_settings.put("SUPPORT_LONGJMP", "1") catch unreachable;
         emcc_settings.put(
             "EXPORTED_FUNCTIONS",
-            "['_main','_malloc','_free','_molt_ws_on_open','_molt_ws_on_close','_molt_ws_on_error','_molt_ws_on_message']",
+            "['_main','_malloc','_free','_molt_ws_on_open','_molt_ws_on_close','_molt_ws_on_error','_molt_ws_on_message','_zsc_wasm_fetch_on_success','_zsc_wasm_fetch_on_error']",
         ) catch unreachable;
         emcc_settings.put(
             "EXPORTED_RUNTIME_METHODS",
@@ -405,7 +473,9 @@ pub fn build(b: *std.Build) void {
                 .target = android_target,
                 .optimize = optimize,
                 .backend = .no_backend,
+                .use_wchar32 = true,
             });
+            const freetype_android = addFreetype(b, android_target, optimize);
             android_module.addImport("websocket", ws_android);
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
@@ -415,6 +485,7 @@ pub fn build(b: *std.Build) void {
                 .linkage = .dynamic,
             });
             android_lib.root_module.addOptions("build_options", build_options);
+            android_lib.root_module.addIncludePath(b.path("src"));
             android_lib.root_module.link_libc = true;
             android_lib.root_module.link_libcpp = true;
             android_lib.root_module.linkSystemLibrary("GLESv2", .{});
@@ -425,9 +496,18 @@ pub fn build(b: *std.Build) void {
                 .flags = &.{},
             });
             android_lib.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_ini_bridge.cpp"),
-                .flags = &.{ "-std=c++17" },
+                .file = b.path("src/icon_loader.c"),
+                .flags = &.{ "-fno-sanitize=undefined" },
             });
+            android_lib.root_module.addCSourceFile(.{
+                .file = b.path("src/imgui_ini_bridge.cpp"),
+                .flags = imgui_cpp_flags,
+            });
+            android_lib.root_module.addCSourceFile(.{
+                .file = b.path("src/imgui_freetype_bridge.cpp"),
+                .flags = imgui_cpp_flags,
+            });
+            android_lib.root_module.addIncludePath(freetype_android.include_path);
 
             const sdl_dep = b.dependency("SDL", .{
                 .target = android_target,
@@ -446,6 +526,13 @@ pub fn build(b: *std.Build) void {
             zgui_imgui.root_module.link_libc = true;
             zgui_imgui.root_module.addIncludePath(sdl_dep.path("include"));
             zgui_imgui.root_module.addIncludePath(sdl_dep.path("include-pregen"));
+            zgui_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
+            zgui_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
+            zgui_imgui.root_module.addIncludePath(freetype_android.include_path);
+            zgui_imgui.root_module.addCSourceFile(.{
+                .file = zgui_android_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
+                .flags = imgui_cpp_flags,
+            });
             android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs"));
             android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui"));
             android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui/backends"));
@@ -455,6 +542,8 @@ pub fn build(b: *std.Build) void {
                     "-DIMGUI_IMPL_API=extern \"C\"",
                     "-fno-sanitize=undefined",
                     "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+                    "-DIMGUI_ENABLE_FREETYPE",
+                    "-DIMGUI_USE_WCHAR32",
                 },
             });
             android_lib.root_module.addCSourceFile(.{
@@ -464,9 +553,12 @@ pub fn build(b: *std.Build) void {
                     "-DIMGUI_IMPL_API=extern \"C\"",
                     "-fno-sanitize=undefined",
                     "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+                    "-DIMGUI_ENABLE_FREETYPE",
+                    "-DIMGUI_USE_WCHAR32",
                 },
             });
             android_lib.linkLibrary(zgui_imgui);
+            android_lib.linkLibrary(freetype_android.lib);
 
             apk.addArtifact(android_lib);
         }

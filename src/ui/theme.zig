@@ -1,7 +1,23 @@
+const std = @import("std");
 const zgui = @import("zgui");
+const builtin = @import("builtin");
 
 const font_body_data = @embedFile("../assets/fonts/space_grotesk/SpaceGrotesk-Regular.ttf");
 const font_heading_data = @embedFile("../assets/fonts/space_grotesk/SpaceGrotesk-SemiBold.ttf");
+const emoji_font_data = @embedFile("../assets/fonts/noto/NotoColorEmoji.ttf");
+
+const emoji_ranges = [_]zgui.Wchar{
+    0x0020, 0x00FF,
+    0x2000, 0x206F,
+    0x2600, 0x27BF,
+    0x1F100, 0x1F1FF,
+    0x1F300, 0x1F5FF,
+    0x1F600, 0x1F64F,
+    0x1F680, 0x1F6FF,
+    0x1F900, 0x1F9FF,
+    0x1FA70, 0x1FAFF,
+    0,
+};
 
 pub const FontRole = enum {
     body,
@@ -120,6 +136,45 @@ pub fn apply() void {
     style.setColor(.modal_window_dim_bg, rgba(0, 0, 0, 110));
 }
 
+fn tryAddEmojiFontFromFile(path: [:0]const u8, size: f32, cfg: zgui.FontConfig) bool {
+    const path_ptr: [*:0]const u8 = @ptrCast(path.ptr);
+    if (std.fs.accessAbsoluteZ(path_ptr, .{})) |_| {} else |_| return false;
+    const font: ?zgui.Font = zgui.io.addFontFromFileWithConfig(path, size, cfg, &emoji_ranges);
+    return font != null;
+}
+
+fn addEmojiFontFromMemory(size: f32, cfg: zgui.FontConfig) void {
+    _ = zgui.io.addFontFromMemoryWithConfig(emoji_font_data, size, cfg, &emoji_ranges);
+}
+
+fn addEmojiFont(size: f32, cfg: zgui.FontConfig) void {
+    if (builtin.abi == .android or builtin.cpu.arch == .wasm32) {
+        addEmojiFontFromMemory(size, cfg);
+        return;
+    }
+    if (builtin.os.tag == .windows) {
+        if (!tryAddEmojiFontFromFile("C:\\\\Windows\\\\Fonts\\\\seguiemj.ttf", size, cfg)) {
+            addEmojiFontFromMemory(size, cfg);
+        }
+        return;
+    }
+    if (builtin.os.tag == .macos) {
+        if (!tryAddEmojiFontFromFile("/System/Library/Fonts/Apple Color Emoji.ttc", size, cfg)) {
+            addEmojiFontFromMemory(size, cfg);
+        }
+        return;
+    }
+
+    const linux_paths = [_][:0]const u8{
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    };
+    for (linux_paths) |path| {
+        if (tryAddEmojiFontFromFile(path, size, cfg)) return;
+    }
+    addEmojiFontFromMemory(size, cfg);
+}
+
 pub fn applyTypography(scale: f32) void {
     if (scale <= 0.0) return;
     if (last_scale == scale and font_body != null) return;
@@ -136,8 +191,19 @@ pub fn applyTypography(scale: f32) void {
     cfg.oversample_v = 2;
 
     font_body = zgui.io.addFontFromMemoryWithConfig(font_body_data, body_size, cfg, null);
+
+    var emoji_cfg = zgui.FontConfig.init();
+    emoji_cfg.merge_mode = true;
+    emoji_cfg.font_data_owned_by_atlas = false;
+    emoji_cfg.pixel_snap_h = true;
+    emoji_cfg.font_loader_flags = @as(c_uint, @bitCast(zgui.FreeTypeLoaderFlags{ .load_color = true }));
+    addEmojiFont(body_size, emoji_cfg);
+
     font_heading = zgui.io.addFontFromMemoryWithConfig(font_heading_data, heading_size, cfg, null);
+    addEmojiFont(heading_size, emoji_cfg);
+
     font_title = zgui.io.addFontFromMemoryWithConfig(font_heading_data, title_size, cfg, null);
+    addEmojiFont(title_size, emoji_cfg);
 
     if (font_body) |body| {
         zgui.io.setDefaultFont(body);

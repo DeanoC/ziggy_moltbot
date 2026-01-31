@@ -6,6 +6,10 @@
 #include <dlfcn.h>
 #endif
 
+#ifndef GL_UNPACK_ALIGNMENT
+#define GL_UNPACK_ALIGNMENT 0x0CF5
+#endif
+
 // GLFW exposes glfwGetProcAddress; declare it as returning void* for loader use.
 extern void* glfwGetProcAddress(const char*);
 
@@ -101,4 +105,25 @@ void zgui_glClearColor(float r, float g, float b, float a) {
 
 void zgui_glClear(unsigned int mask) {
     if (glClear) glClear(mask);
+}
+
+unsigned int zsc_gl_create_texture_rgba(const unsigned char* pixels, int width, int height) {
+    if (!glGenTextures || !glBindTexture || !glTexParameteri || !glPixelStorei || !glTexImage2D) {
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    return tex;
+}
+
+void zsc_gl_destroy_texture(unsigned int tex) {
+    if (!glDeleteTextures || tex == 0) return;
+    glDeleteTextures(1, &tex);
 }

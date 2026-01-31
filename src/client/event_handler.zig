@@ -583,13 +583,49 @@ fn buildChatMessage(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) 
     errdefer allocator.free(role);
     const content = try extractChatText(allocator, msg);
     errdefer allocator.free(content);
+    const attachments = if (msg.attachments) |items| try buildChatAttachments(allocator, items) else null;
+    errdefer {
+        if (attachments) |list| {
+            for (list) |*attachment| {
+                allocator.free(attachment.kind);
+                allocator.free(attachment.url);
+                if (attachment.name) |name| allocator.free(name);
+            }
+            allocator.free(list);
+        }
+    }
     return .{
         .id = id,
         .role = role,
         .content = content,
         .timestamp = msg.timestamp orelse std.time.milliTimestamp(),
-        .attachments = null,
+        .attachments = attachments,
     };
+}
+
+fn buildChatAttachments(
+    allocator: std.mem.Allocator,
+    attachments: []chat.ChatAttachment,
+) ![]types.ChatAttachment {
+    const list = try allocator.alloc(types.ChatAttachment, attachments.len);
+    var filled: usize = 0;
+    errdefer {
+        for (list[0..filled]) |*attachment| {
+            allocator.free(attachment.kind);
+            allocator.free(attachment.url);
+            if (attachment.name) |name| allocator.free(name);
+        }
+        allocator.free(list);
+    }
+    for (attachments, 0..) |attachment, index| {
+        list[index] = .{
+            .kind = try allocator.dupe(u8, attachment.kind),
+            .url = try allocator.dupe(u8, attachment.url),
+            .name = if (attachment.name) |name| try allocator.dupe(u8, name) else null,
+        };
+        filled = index + 1;
+    }
+    return list;
 }
 
 fn buildStreamMessage(allocator: std.mem.Allocator, run_id: []const u8, content: []const u8) !types.ChatMessage {

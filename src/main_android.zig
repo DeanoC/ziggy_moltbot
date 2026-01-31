@@ -10,6 +10,7 @@ const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
+const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -37,6 +38,7 @@ extern fn ImGui_ImplSDL2_InitForOpenGL(window: *const anyopaque, sdl_gl_context:
 extern fn ImGui_ImplSDL2_Shutdown() void;
 extern fn ImGui_ImplSDL2_NewFrame() void;
 extern fn ImGui_ImplSDL2_ProcessEvent(event: *const anyopaque) bool;
+extern fn zsc_imgui_use_freetype() void;
 extern fn ImGui_ImplSDL2_SetSafeOffset(x: f32, y: f32) void;
 
 var ui_scale: f32 = 1.0;
@@ -748,9 +750,11 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     defer ws_client.deinit();
 
     zgui.init(allocator);
+    zsc_imgui_use_freetype();
     zgui.io.setConfigFlags(.{ .dock_enable = true });
     zgui.io.setIniFilename(null);
     theme.apply();
+    image_cache.init(allocator);
     _ = ImGui_ImplSDL2_InitForOpenGL(@ptrCast(window), @ptrCast(gl_ctx));
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
@@ -1134,6 +1138,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
+    image_cache.deinit();
     zgui.deinit();
     return 0;
 }

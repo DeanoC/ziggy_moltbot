@@ -8,6 +8,7 @@ const panel_manager = @import("panel_manager.zig");
 const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
+const image_cache = @import("image_cache.zig");
 const chat_panel = @import("panels/chat_panel.zig");
 const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
@@ -56,6 +57,7 @@ pub fn draw(
     dock_state: *dock_layout.DockState,
 ) UiAction {
     var action = UiAction{};
+    image_cache.beginFrame();
 
     inbox.collectFromMessages(allocator, ctx.messages.items, manager);
 
