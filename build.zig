@@ -21,6 +21,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     }).module("websocket");
+    const openclaw_transport = b.addModule("openclaw_transport", .{
+        .root_source_file = b.path("src/transport/root.zig"),
+        .target = target,
+    });
+    openclaw_transport.addImport("websocket", ws_native);
 
     const zgui_pkg = b.dependency("zgui", .{
         .target = target,
@@ -44,6 +49,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "zgui", .module = zgui_native },
                 .{ .name = "zglfw", .module = zglfw_native },
+                .{ .name = "openclaw_transport", .module = openclaw_transport },
                 .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
@@ -89,6 +95,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
+                .{ .name = "openclaw_transport", .module = openclaw_transport },
                 .{ .name = "ziggystarclaw", .module = app_module },
             },
         });
@@ -337,12 +344,19 @@ pub fn build(b: *std.Build) void {
                 .target = android_target,
                 .optimize = optimize,
             }).module("websocket");
+            const openclaw_transport_android = b.createModule(.{
+                .root_source_file = b.path("src/transport/root.zig"),
+                .target = android_target,
+                .optimize = optimize,
+            });
+            openclaw_transport_android.addImport("websocket", ws_android);
             const zgui_android_pkg = b.dependency("zgui", .{
                 .target = android_target,
                 .optimize = optimize,
                 .backend = .no_backend,
             });
             android_module.addImport("websocket", ws_android);
+            android_module.addImport("openclaw_transport", openclaw_transport_android);
             android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{

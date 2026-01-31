@@ -16,6 +16,11 @@ pub const client = struct {
     pub const device_identity = @import("client/device_identity.zig");
 };
 
+pub const transport = struct {
+    pub const websocket = @import("transport/root.zig").websocket;
+    pub const WebSocketClient = @import("transport/root.zig").WebSocketClient;
+};
+
 pub const ui = struct {
     pub const imgui_wrapper = @import("ui/imgui_wrapper.zig");
     pub const main_window = @import("ui/main_window.zig");
