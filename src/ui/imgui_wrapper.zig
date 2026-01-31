@@ -5,6 +5,8 @@ const theme = @import("theme.zig");
 
 pub fn init(allocator: std.mem.Allocator, window: *glfw.Window) void {
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setIniFilename(null);
     theme.apply();
     zgui.backend.init(window);
 }
@@ -15,6 +17,8 @@ pub fn initWithGlslVersion(
     glsl_version: [:0]const u8,
 ) void {
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setIniFilename(null);
     theme.apply();
     zgui.backend.initWithGlSlVersion(window, glsl_version);
 }

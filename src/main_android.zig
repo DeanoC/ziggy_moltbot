@@ -3,8 +3,13 @@ const zgui = @import("zgui");
 const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
-const ui_state = @import("ui/state.zig");
 const operator_view = @import("ui/operator_view.zig");
+const imgui_bridge = @import("ui/imgui_bridge.zig");
+const panel_manager = @import("ui/panel_manager.zig");
+const workspace_store = @import("ui/workspace_store.zig");
+const workspace = @import("ui/workspace.zig");
+const ui_command_inbox = @import("ui/ui_command_inbox.zig");
+const dock_layout = @import("ui/dock_layout.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -709,7 +714,18 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
     var ctx = client_state.ClientContext.init(allocator) catch return 1;
     defer ctx.deinit();
-    var ui_layout_state = ui_state.UiState{};
+    const workspace_state = workspace_store.loadOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
+        logger.warn("Failed to load workspace: {}", .{err});
+        break :blk workspace.Workspace.initDefault(allocator) catch |init_err| {
+            logger.warn("Failed to init default workspace: {}", .{init_err});
+            return 1;
+        };
+    };
+    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
+    defer manager.deinit();
+    var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
+    defer command_inbox.deinit(allocator);
+    var dock_state = dock_layout.DockState{};
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
@@ -732,11 +748,14 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     defer ws_client.deinit();
 
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setIniFilename(null);
     theme.apply();
     _ = ImGui_ImplSDL2_InitForOpenGL(@ptrCast(window), @ptrCast(gl_ctx));
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
     applyDpiScale(ui_scale);
+    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -837,7 +856,9 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             &cfg,
             ws_client.is_connected,
             build_options.app_version,
-            &ui_layout_state,
+            &manager,
+            &command_inbox,
+            &dock_state,
         );
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
@@ -859,6 +880,16 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
+        }
+
+        if (ui_action.save_workspace) {
+            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
+                logger.warn("Failed to capture workspace layout: {}", .{err});
+            };
+            workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
+                logger.err("Failed to save workspace: {}", .{err});
+            };
+            manager.workspace.markClean();
         }
         if (ui_action.check_updates) {
             const manifest_url = cfg.update_manifest_url orelse "";

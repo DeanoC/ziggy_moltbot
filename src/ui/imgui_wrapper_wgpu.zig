@@ -11,6 +11,8 @@ pub fn init(
     depth_format: u32,
 ) void {
     zgui.init(allocator);
+    zgui.io.setConfigFlags(.{ .dock_enable = true });
+    zgui.io.setIniFilename(null);
     theme.apply();
     zgui.backend.init(
         @ptrCast(window),

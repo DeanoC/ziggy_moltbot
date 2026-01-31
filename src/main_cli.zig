@@ -188,9 +188,9 @@ pub fn main() !void {
         return error.InvalidArguments;
     }
 
-    // Validate: --run requires --node
-    if (run_command != null and node_id == null) {
-        logger.err("--run requires --node to specify which node to run on.", .{});
+    // Allow --run with default node; only error if neither is provided.
+    if (run_command != null and node_id == null and cfg.default_node == null) {
+        logger.err("No node specified. Use --node or --use-node to set a default.", .{});
         return error.InvalidArguments;
     }
 
@@ -326,7 +326,7 @@ pub fn main() !void {
         try sendChatMessage(allocator, &ws_client, target_session, message);
         std.Thread.sleep(500 * std.time.ns_per_ms);
         logger.info("Message sent successfully.", .{});
-        
+
         if (save_config) {
             try config.save(allocator, config_path, cfg);
             logger.info("Config saved to {s}", .{config_path});
@@ -340,7 +340,7 @@ pub fn main() !void {
             logger.err("No node specified. Use --node or --use-node to set a default.", .{});
             return error.NoNodeSpecified;
         };
-        
+
         // Verify node exists
         var node_exists = false;
         for (ctx.nodes.items) |node| {
@@ -355,7 +355,7 @@ pub fn main() !void {
         }
 
         try runNodeCommand(allocator, &ws_client, target_node, command);
-        
+
         // Wait for result
         var wait_attempts: u32 = 0;
         while (wait_attempts < 100 and ctx.node_result == null) : (wait_attempts += 1) {
@@ -380,7 +380,7 @@ pub fn main() !void {
         } else {
             logger.info("Command sent. Waiting for result timed out.", .{});
         }
-        
+
         if (save_config) {
             try config.save(allocator, config_path, cfg);
             logger.info("Config saved to {s}", .{config_path});
@@ -467,10 +467,10 @@ fn runNodeCommand(
     // Build params JSON for system.run command
     var params_json = std.json.ObjectMap.init(allocator);
     defer params_json.deinit();
-    
+
     var command_arr = std.json.Array.init(allocator);
     defer command_arr.deinit();
-    
+
     // Split command by spaces (simple approach)
     var it = std.mem.splitScalar(u8, command, ' ');
     while (it.next()) |part| {
@@ -478,9 +478,9 @@ fn runNodeCommand(
             try command_arr.append(std.json.Value{ .string = try allocator.dupe(u8, part) });
         }
     }
-    
+
     try params_json.put("command", std.json.Value{ .array = command_arr });
-    
+
     const params = nodes_proto.NodeInvokeParams{
         .nodeId = target_node,
         .command = "system.run",

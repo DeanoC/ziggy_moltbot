@@ -69,9 +69,14 @@ pub fn build(b: *std.Build) void {
         native_exe.root_module.addOptions("build_options", build_options);
 
         native_exe.root_module.addIncludePath(b.path("src"));
+        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui"));
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
             .flags = &.{},
+        });
+        native_exe.root_module.addCSourceFile(.{
+            .file = b.path("src/imgui_ini_bridge.cpp"),
+            .flags = &.{ "-std=c++17" },
         });
 
         const zgui_imgui = zgui_pkg.artifact("imgui");
@@ -242,6 +247,7 @@ pub fn build(b: *std.Build) void {
             "-DIMGUI_IMPL_API=extern \"C\"",
             "-fno-sanitize=undefined",
             "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+            "-std=c++17",
         };
         wasm.root_module.addCSourceFile(.{
             .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_glfw.cpp"),
@@ -265,6 +271,10 @@ pub fn build(b: *std.Build) void {
         });
         wasm.root_module.addCSourceFile(.{
             .file = b.path("src/wasm_open_url.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/imgui_ini_bridge.cpp"),
             .flags = imgui_backend_flags,
         });
         const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
@@ -413,6 +423,10 @@ pub fn build(b: *std.Build) void {
             android_lib.root_module.addCSourceFile(.{
                 .file = b.path("src/android_hid_stub.c"),
                 .flags = &.{},
+            });
+            android_lib.root_module.addCSourceFile(.{
+                .file = b.path("src/imgui_ini_bridge.cpp"),
+                .flags = &.{ "-std=c++17" },
             });
 
             const sdl_dep = b.dependency("SDL", .{
