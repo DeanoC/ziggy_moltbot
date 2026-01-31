@@ -267,8 +267,10 @@ pub fn build(b: *std.Build) void {
         });
         emcc_step.dependOn(&web_assets.step);
 
-        const chmod_emcc = b.addSystemCommand(&.{ "chmod", "+x", zemscripten_build.emccPath(b) });
-        emcc_step.dependOn(&chmod_emcc.step);
+        if (target.result.os.tag != .windows) {
+            const chmod_emcc = b.addSystemCommand(&.{ "chmod", "+x", zemscripten_build.emccPath(b) });
+            emcc_step.dependOn(&chmod_emcc.step);
+        }
 
         b.getInstallStep().dependOn(emcc_step);
     }
