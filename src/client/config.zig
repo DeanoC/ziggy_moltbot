@@ -7,6 +7,7 @@ pub const Config = struct {
     connect_host_override: ?[]const u8 = null,
     update_manifest_url: ?[]const u8 = null,
     default_session: ?[]const u8 = null,
+    default_node: ?[]const u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.server_url);
@@ -18,6 +19,9 @@ pub const Config = struct {
             allocator.free(value);
         }
         if (self.default_session) |value| {
+            allocator.free(value);
+        }
+        if (self.default_node) |value| {
             allocator.free(value);
         }
     }
@@ -34,6 +38,7 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
             "https://github.com/DeanoC/ZiggyStarClaw/releases/latest/download/update.json",
         ),
         .default_session = null,
+        .default_node = null,
     };
 }
 
@@ -63,6 +68,10 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
         else
             null,
         .default_session = if (parsed.value.default_session) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .default_node = if (parsed.value.default_node) |value|
             try allocator.dupe(u8, value)
         else
             null,
