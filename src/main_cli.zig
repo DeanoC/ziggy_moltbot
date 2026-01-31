@@ -33,10 +33,28 @@ const usage =
     \\  --list-approvals         List pending approvals and exit
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
+    \\  --interactive            Start interactive REPL mode
     \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\
 ;
+
+const ReplCommand = enum {
+    help,
+    send,
+    session,
+    sessions,
+    node,
+    nodes,
+    run,
+    approvals,
+    approve,
+    deny,
+    quit,
+    exit,
+    save,
+    unknown,
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -65,6 +83,7 @@ pub fn main() !void {
     var list_approvals = false;
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
+    var interactive = false;
     var save_config = false;
 
     var i: usize = 1;
@@ -130,6 +149,8 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             deny_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--interactive")) {
+            interactive = true;
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else {
@@ -212,7 +233,7 @@ pub fn main() !void {
     }
 
     // Handle --save-config without connecting
-    if (save_config and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null) {
+    if (save_config and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) {
         try config.save(allocator, config_path, cfg);
         logger.info("Config saved to {s}", .{config_path});
         return;
@@ -279,7 +300,8 @@ pub fn main() !void {
                 if (run_command != null and have_nodes) break;
                 if (approve_id != null) break;
                 if (deny_id != null) break;
-                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null) break;
+                if (interactive) break;
+                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) break;
             }
         } else {
             std.Thread.sleep(50 * std.time.ns_per_ms);
@@ -454,6 +476,12 @@ pub fn main() !void {
         return;
     }
 
+    // Handle --interactive
+    if (interactive) {
+        try runRepl(allocator, &ws_client, &ctx, &cfg, config_path);
+        return;
+    }
+
     // Save config if requested
     if (save_config) {
         try config.save(allocator, config_path, cfg);
@@ -496,6 +524,225 @@ pub fn main() !void {
     }
 }
 
+fn runRepl(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+    cfg: *config.Config,
+    config_path: []const u8,
+) !void {
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+
+    try stdout.writeAll("\nZiggyStarClaw Interactive Mode\n");
+    try stdout.writeAll("Type 'help' for commands, 'quit' to exit.\n\n");
+
+    var current_session = cfg.default_session;
+    var current_node = cfg.default_node;
+
+    while (true) {
+        const session_name = if (current_session) |s| s[0..@min(s.len, 8)] else "none";
+        const node_name = if (current_node) |n| n[0..@min(n.len, 8)] else "none";
+        try stdout.print("[session:{s} node:{s}]> ", .{ session_name, node_name });
+
+        var input_buffer: [1024]u8 = undefined;
+        const bytes_read = try std.fs.File.stdin().read(&input_buffer);
+        if (bytes_read == 0) break;
+
+        const input = std.mem.trim(u8, input_buffer[0..bytes_read], " \t\r\n");
+        if (input.len == 0) continue;
+
+        var parts = std.mem.splitScalar(u8, input, ' ');
+        const cmd_str = parts.next() orelse continue;
+        const cmd = parseReplCommand(cmd_str);
+
+        switch (cmd) {
+            .help => {
+                try stdout.writeAll(
+                    "Commands:\n" ++
+                    "  help                    Show this help\n" ++
+                    "  send <message>          Send message to current session\n" ++
+                    "  session [key]           Show or set current session\n" ++
+                    "  sessions                List available sessions\n" ++
+                    "  node [id]               Show or set current node\n" ++
+                    "  nodes                   List available nodes\n" ++
+                    "  run <command>           Run command on current node\n" ++
+                    "  approvals               List pending approvals\n" ++
+                    "  approve <id>            Approve request by ID\n" ++
+                    "  deny <id>               Deny request by ID\n" ++
+                    "  save                    Save current session/node to config\n" ++
+                    "  quit/exit               Exit interactive mode\n"
+                );
+            },
+            .send => {
+                const message = parts.rest();
+                if (message.len == 0) {
+                    try stdout.writeAll("Usage: send <message>\n");
+                    continue;
+                }
+                const target_session = current_session orelse blk: {
+                    if (ctx.sessions.items.len == 0) {
+                        try stdout.writeAll("No sessions available. Use 'sessions' to list.\n");
+                        continue;
+                    }
+                    break :blk ctx.sessions.items[0].key;
+                };
+                try sendChatMessage(allocator, ws_client, target_session, message);
+                try stdout.writeAll("Message sent.\n");
+            },
+            .session => {
+                const new_session = parts.rest();
+                if (new_session.len == 0) {
+                    if (current_session) |s| {
+                        try stdout.print("Current session: {s}\n", .{s});
+                    } else {
+                        try stdout.writeAll("No current session. Use 'session <key>' to set.\n");
+                    }
+                } else {
+                    current_session = try allocator.dupe(u8, new_session);
+                    try stdout.print("Session set to: {s}\n", .{current_session.?});
+                }
+            },
+            .sessions => {
+                try stdout.writeAll("Available sessions:\n");
+                if (ctx.sessions.items.len == 0) {
+                    try stdout.writeAll("  (no sessions available)\n");
+                } else {
+                    for (ctx.sessions.items) |session| {
+                        const display = session.display_name orelse session.key;
+                        const label = session.label orelse "-";
+                        try stdout.print("  {s} | {s} | {s}\n", .{ session.key, display, label });
+                    }
+                }
+            },
+            .node => {
+                const new_node = parts.rest();
+                if (new_node.len == 0) {
+                    if (current_node) |n| {
+                        try stdout.print("Current node: {s}\n", .{n});
+                    } else {
+                        try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    }
+                } else {
+                    current_node = try allocator.dupe(u8, new_node);
+                    try stdout.print("Node set to: {s}\n", .{current_node.?});
+                }
+            },
+            .nodes => {
+                try stdout.writeAll("Available nodes:\n");
+                if (ctx.nodes.items.len == 0) {
+                    try stdout.writeAll("  (no nodes available)\n");
+                } else {
+                    for (ctx.nodes.items) |node| {
+                        const display = node.display_name orelse node.id;
+                        const platform = node.platform orelse "-";
+                        const status = if (node.connected orelse false) "connected" else "disconnected";
+                        try stdout.print("  {s} | {s} | {s} | {s}\n", .{ node.id, display, platform, status });
+                    }
+                }
+            },
+            .run => {
+                const command = parts.rest();
+                if (command.len == 0) {
+                    try stdout.writeAll("Usage: run <command>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                try runNodeCommand(allocator, ws_client, target_node, command);
+                try stdout.writeAll("Command sent.\n");
+            },
+            .approvals => {
+                try stdout.writeAll("Pending approvals:\n");
+                if (ctx.approvals.items.len == 0) {
+                    try stdout.writeAll("  (no pending approvals)\n");
+                } else {
+                    for (ctx.approvals.items) |approval| {
+                        const summary = approval.summary orelse "(no summary)";
+                        try stdout.print("  {s} | {s}\n", .{ approval.id, summary });
+                    }
+                }
+            },
+            .approve => {
+                const id = parts.rest();
+                if (id.len == 0) {
+                    try stdout.writeAll("Usage: approve <id>\n");
+                    continue;
+                }
+                try resolveApproval(allocator, ws_client, id, "approve");
+                try stdout.writeAll("Approval sent.\n");
+            },
+            .deny => {
+                const id = parts.rest();
+                if (id.len == 0) {
+                    try stdout.writeAll("Usage: deny <id>\n");
+                    continue;
+                }
+                try resolveApproval(allocator, ws_client, id, "deny");
+                try stdout.writeAll("Denial sent.\n");
+            },
+            .quit, .exit => {
+                try stdout.writeAll("Goodbye!\n");
+                break;
+            },
+            .save => {
+                if (current_session) |s| {
+                    if (cfg.default_session) |old| {
+                        allocator.free(old);
+                    }
+                    cfg.default_session = try allocator.dupe(u8, s);
+                }
+                if (current_node) |n| {
+                    if (cfg.default_node) |old| {
+                        allocator.free(old);
+                    }
+                    cfg.default_node = try allocator.dupe(u8, n);
+                }
+                try config.save(allocator, config_path, cfg.*);
+                try stdout.writeAll("Config saved.\n");
+            },
+            .unknown => {
+                try stdout.print("Unknown command: {s}. Type 'help' for available commands.\n", .{cmd_str});
+            },
+        }
+
+        var processed = false;
+        while (!processed) {
+            const payload = ws_client.receive() catch |err| {
+                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+                break;
+            };
+            if (payload) |text| {
+                defer allocator.free(text);
+                _ = event_handler.handleRawMessage(ctx, text) catch |err| blk: {
+                    logger.warn("Error handling message: {s}", .{@errorName(err)});
+                    break :blk null;
+                };
+            } else {
+                processed = true;
+            }
+        }
+    }
+}
+
+fn parseReplCommand(cmd: []const u8) ReplCommand {
+    if (std.mem.eql(u8, cmd, "help")) return .help;
+    if (std.mem.eql(u8, cmd, "send")) return .send;
+    if (std.mem.eql(u8, cmd, "session")) return .session;
+    if (std.mem.eql(u8, cmd, "sessions")) return .sessions;
+    if (std.mem.eql(u8, cmd, "node")) return .node;
+    if (std.mem.eql(u8, cmd, "nodes")) return .nodes;
+    if (std.mem.eql(u8, cmd, "run")) return .run;
+    if (std.mem.eql(u8, cmd, "approvals")) return .approvals;
+    if (std.mem.eql(u8, cmd, "approve")) return .approve;
+    if (std.mem.eql(u8, cmd, "deny")) return .deny;
+    if (std.mem.eql(u8, cmd, "quit")) return .quit;
+    if (std.mem.eql(u8, cmd, "exit")) return .exit;
+    if (std.mem.eql(u8, cmd, "save")) return .save;
+    return .unknown;
+}
+
 fn sendChatMessage(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
@@ -530,14 +777,12 @@ fn runNodeCommand(
     const idempotency_key = try requests.makeRequestId(allocator);
     defer allocator.free(idempotency_key);
 
-    // Build params JSON for system.run command
     var params_json = std.json.ObjectMap.init(allocator);
     defer params_json.deinit();
 
     var command_arr = std.json.Array.init(allocator);
     defer command_arr.deinit();
 
-    // Split command by spaces (simple approach)
     var it = std.mem.splitScalar(u8, command, ' ');
     while (it.next()) |part| {
         if (part.len > 0) {
