@@ -17,6 +17,13 @@ pub const NodeConfig = struct {
     camera_enabled: bool = false,
     location_enabled: bool = false,
 
+    // Canvas backend ("webkitgtk", "chrome", "none")
+    canvas_backend: []const u8 = "chrome",
+    canvas_width: u32 = 1280,
+    canvas_height: u32 = 720,
+    chrome_path: ?[]const u8 = null,
+    chrome_debug_port: u16 = 9222,
+
     // Paths
     exec_approvals_path: []const u8,
 
@@ -25,6 +32,7 @@ pub const NodeConfig = struct {
             .node_id = try allocator.dupe(u8, node_id),
             .display_name = try allocator.dupe(u8, display_name),
             .gateway_host = try allocator.dupe(u8, gateway_host),
+            .canvas_backend = try allocator.dupe(u8, "chrome"),
             .exec_approvals_path = try allocator.dupe(u8, "~/.openclaw/exec-approvals.json"),
         };
     }
@@ -38,6 +46,10 @@ pub const NodeConfig = struct {
         allocator.free(self.gateway_host);
         if (self.tls_fingerprint) |fp| {
             allocator.free(fp);
+        }
+        allocator.free(self.canvas_backend);
+        if (self.chrome_path) |path| {
+            allocator.free(path);
         }
         allocator.free(self.exec_approvals_path);
     }

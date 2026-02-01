@@ -7,12 +7,24 @@ const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
 const health_reporter = @import("node/health_reporter.zig");
 const HealthReporter = health_reporter.HealthReporter;
+const canvas = @import("node/canvas.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const event_handler = @import("client/event_handler.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const gateway = @import("protocol/gateway.zig");
 const logger = @import("utils/logger.zig");
+
+fn parseCanvasBackend(str: []const u8) canvas.CanvasBackend {
+    if (std.mem.eql(u8, str, "webkitgtk")) {
+        return .webkitgtk;
+    } else if (std.mem.eql(u8, str, "chrome")) {
+        return .chrome;
+    } else if (std.mem.eql(u8, str, "none")) {
+        return .none;
+    }
+    return .chrome; // Default
+}
 
 pub const usage =
     \\ZiggyStarClaw Node Mode
@@ -152,6 +164,21 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     }
     if (config.canvas_enabled) {
         try node_ctx.registerCanvasCapabilities();
+        
+        // Initialize canvas with configured backend
+        const canvas_config = canvas.CanvasConfig{
+            .backend = parseCanvasBackend(config.canvas_backend),
+            .width = config.canvas_width,
+            .height = config.canvas_height,
+            .headless = true,
+            .chrome_path = config.chrome_path,
+            .chrome_debug_port = config.chrome_debug_port,
+        };
+        
+        node_ctx.canvas_manager.initialize(canvas_config) catch |err| {
+            logger.warn("Failed to initialize canvas: {s}", .{@errorName(err)});
+            logger.warn("Canvas commands will return errors", .{});
+        };
     }
 
     // Initialize command router

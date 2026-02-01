@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../protocol/types.zig");
 const ProcessManager = @import("process_manager.zig").ProcessManager;
+const CanvasManager = @import("canvas.zig").CanvasManager;
 
 /// Node capability categories
 pub const Capability = enum {
@@ -132,6 +133,7 @@ pub const NodeContext = struct {
     pending_executions: std.ArrayList(PendingExecution),
     exec_approvals_path: []const u8,
     process_manager: ProcessManager,
+    canvas_manager: CanvasManager,
 
     // Stats
     commands_executed: u64 = 0,
@@ -149,6 +151,7 @@ pub const NodeContext = struct {
             .pending_executions = std.ArrayList(PendingExecution).empty,
             .exec_approvals_path = try allocator.dupe(u8, "~/.openclaw/exec-approvals.json"),
             .process_manager = ProcessManager.init(allocator),
+            .canvas_manager = CanvasManager.init(allocator),
         };
     }
 
@@ -183,6 +186,7 @@ pub const NodeContext = struct {
         self.permissions.deinit();
 
         self.process_manager.deinit();
+        self.canvas_manager.deinit();
 
         for (self.pending_executions.items) |*exec| {
             if (exec.child_process) |*child| {

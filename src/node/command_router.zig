@@ -381,34 +381,105 @@ fn systemExecApprovalsSetHandler(allocator: std.mem.Allocator, ctx: *NodeContext
 // Canvas Command Handlers (Stubs)
 // ============================================================================
 
-fn canvasPresentHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
-    return std.json.Value{ .object = result };
+fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.present() catch |err| {
+            logger.err("canvas.present failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
+        try result.put("backend", std.json.Value{ .string = try allocator.dupe(u8, @tagName(canvas.config.backend)) });
+        return std.json.Value{ .object = result };
+    }
+    
+    return CommandError.NotAllowed;
 }
 
-fn canvasHideHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
-    return std.json.Value{ .object = result };
+fn canvasHideHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.hide() catch |err| {
+            logger.err("canvas.hide failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
+        return std.json.Value{ .object = result };
+    }
+    
+    return CommandError.NotAllowed;
 }
 
-fn canvasNavigateHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
-    return std.json.Value{ .object = result };
+fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const url_param = params.object.get("url") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (url_param != .string) {
+        return CommandError.InvalidParams;
+    }
+    
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.navigate(url_param.string) catch |err| {
+            logger.err("canvas.navigate failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
+        try result.put("url", std.json.Value{ .string = try allocator.dupe(u8, url_param.string) });
+        return std.json.Value{ .object = result };
+    }
+    
+    return CommandError.NotAllowed;
 }
 
-fn canvasEvalHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
-    return std.json.Value{ .object = result };
+fn canvasEvalHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const js_param = params.object.get("js") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (js_param != .string) {
+        return CommandError.InvalidParams;
+    }
+    
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        const result_str = canvas.eval(js_param.string) catch |err| {
+            logger.err("canvas.eval failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        defer allocator.free(result_str);
+        
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "success") });
+        try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, result_str) });
+        return std.json.Value{ .object = result };
+    }
+    
+    return CommandError.NotAllowed;
 }
 
-fn canvasSnapshotHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    var result = std.json.ObjectMap.init(allocator);
-    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "not_implemented") });
-    return std.json.Value{ .object = result };
+fn canvasSnapshotHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const path_param = params.object.get("path") orelse {
+        return CommandError.InvalidParams;
+    };
+    if (path_param != .string) {
+        return CommandError.InvalidParams;
+    }
+    
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.snapshot(path_param.string) catch |err| {
+            logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        
+        var result = std.json.ObjectMap.init(allocator);
+        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "saved") });
+        try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, path_param.string) });
+        return std.json.Value{ .object = result };
+    }
+    
+    return CommandError.NotAllowed;
 }
 
 // ============================================================================
