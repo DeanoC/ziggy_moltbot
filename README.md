@@ -12,7 +12,7 @@ The aim is to provide a small alternative to the offical companion apps (hence L
 
 
 ## Status
-Active development (latest release: v0.1.15).
+Active development (latest release: v0.1.16).
 
 Highlights:
 - Cross-platform client (Linux, Windows, Android, WASM).
