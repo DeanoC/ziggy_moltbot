@@ -10,12 +10,12 @@ test "sanitizeUrl strips wrappers and whitespace" {
     try std.testing.expectEqualStrings("https://example.com/update.json", sanitized);
 }
 
-test "normalizeUrlForParse escapes spaces, plus, and stray percent" {
+test "normalizeUrlForParse escapes spaces and stray percent" {
     var url = try allocator.dupe(u8, "https://example.com/file%ZZ name+test");
     defer allocator.free(url);
     const changed = try update_checker.normalizeUrlForParse(allocator, &url);
     try std.testing.expect(changed);
-    try std.testing.expectEqualStrings("https://example.com/file%25ZZ%20name%20test", url);
+    try std.testing.expectEqualStrings("https://example.com/file%25ZZ%20name+test", url);
 }
 
 test "normalizeUrlForParse handles github release asset urls" {
@@ -24,4 +24,12 @@ test "normalizeUrlForParse handles github release asset urls" {
     defer allocator.free(url);
     _ = try update_checker.normalizeUrlForParse(allocator, &url);
     _ = try std.Uri.parse(url);
+}
+
+test "normalizeUrlForParse encodes invalid characters" {
+    var url = try allocator.dupe(u8, "https://example.com/a|b");
+    defer allocator.free(url);
+    const changed = try update_checker.normalizeUrlForParse(allocator, &url);
+    try std.testing.expect(changed);
+    try std.testing.expectEqualStrings("https://example.com/a%7Cb", url);
 }

@@ -271,7 +271,7 @@ fn checkThread(
 ) void {
     defer allocator.free(current_version);
 
-    const sanitized_manifest_url = sanitizeUrl(allocator, manifest_url) catch |err| {
+    var sanitized_manifest_url = sanitizeUrl(allocator, manifest_url) catch |err| {
         logger.warn("Update manifest URL invalid: {}", .{err});
         allocator.free(manifest_url);
         state.setError(allocator, @errorName(err));
@@ -279,6 +279,11 @@ fn checkThread(
     };
     allocator.free(manifest_url);
     defer allocator.free(sanitized_manifest_url);
+    _ = normalizeUrlForParse(allocator, &sanitized_manifest_url) catch |err| {
+        logger.warn("Update manifest URL normalization failed: {}", .{err});
+        state.setError(allocator, @errorName(err));
+        return;
+    };
 
     const latest_version = checkForUpdates(allocator, sanitized_manifest_url, current_version) catch |err| {
         logger.warn("Update check failed: {}", .{err});
@@ -566,15 +571,16 @@ pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     const src = url.*;
     var needs_escape = false;
     for (src, 0..) |ch, idx| {
-        if (ch == ' ' or ch == '+') {
-            needs_escape = true;
-            break;
-        }
         if (ch == '%') {
             if (idx + 2 >= src.len or !isHex(src[idx + 1]) or !isHex(src[idx + 2])) {
                 needs_escape = true;
                 break;
             }
+            continue;
+        }
+        if (!isUrlAllowed(ch)) {
+            needs_escape = true;
+            break;
         }
     }
     if (!needs_escape) return false;
@@ -583,17 +589,17 @@ pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     var i: usize = 0;
     while (i < src.len) : (i += 1) {
         const ch = src[i];
-        if (ch == ' ' or ch == '+') {
-            new_len += 3;
-            continue;
-        }
         if (ch == '%') {
             if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
                 new_len += 3;
                 continue;
             }
         }
-        new_len += 1;
+        if (!isUrlAllowed(ch)) {
+            new_len += 3;
+        } else {
+            new_len += 1;
+        }
     }
 
     var buf = try allocator.alloc(u8, new_len);
@@ -601,12 +607,7 @@ pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     i = 0;
     while (i < src.len) : (i += 1) {
         const ch = src[i];
-        if (ch == ' ' or ch == '+') {
-            buf[pos] = '%';
-            buf[pos + 1] = '2';
-            buf[pos + 2] = '0';
-            pos += 3;
-        } else if (ch == '%') {
+        if (ch == '%') {
             if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
                 buf[pos] = '%';
                 buf[pos + 1] = '2';
@@ -616,6 +617,11 @@ pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
                 buf[pos] = ch;
                 pos += 1;
             }
+        } else if (!isUrlAllowed(ch)) {
+            buf[pos] = '%';
+            buf[pos + 1] = toHexUpper(@intCast((ch >> 4) & 0xF));
+            buf[pos + 2] = toHexUpper(@intCast(ch & 0xF));
+            pos += 3;
         } else {
             buf[pos] = ch;
             pos += 1;
@@ -631,6 +637,20 @@ fn isHex(ch: u8) bool {
     return (ch >= '0' and ch <= '9') or
         (ch >= 'a' and ch <= 'f') or
         (ch >= 'A' and ch <= 'F');
+}
+
+fn isUrlAllowed(ch: u8) bool {
+    return (ch >= 'a' and ch <= 'z') or
+        (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or
+        ch == '-' or ch == '.' or ch == '_' or ch == '~' or
+        ch == ':' or ch == '/' or ch == '?' or ch == '#' or ch == '[' or ch == ']' or ch == '@' or
+        ch == '!' or ch == '$' or ch == '&' or ch == '\'' or ch == '(' or ch == ')' or
+        ch == '*' or ch == '+' or ch == ',' or ch == ';' or ch == '=';
+}
+
+fn toHexUpper(value: u8) u8 {
+    return if (value < 10) value + '0' else value - 10 + 'A';
 }
 
 fn resolveRedirectUrl(allocator: std.mem.Allocator, base: std.Uri, location: []const u8) ![]u8 {
