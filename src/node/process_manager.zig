@@ -156,11 +156,11 @@ pub const ProcessManager = struct {
                     stderr_t.join();
                 }
                 
-                const child = if (proc.child) |*child_value| child_value else {
+                const child_proc = if (proc.child) |*child_value| child_value else {
                     manager.updateProcessState(proc_id, .failed, null);
                     return;
                 };
-                const term = child.wait() catch |err| {
+                const term = child_proc.wait() catch |err| {
                     logger.err("Process {s} wait failed: {s}", .{ proc_id, @errorName(err) });
                     manager.updateProcessState(proc_id, .failed, null);
                     return;
