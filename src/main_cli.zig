@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -9,7 +10,24 @@ const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
-const main_node = @import("main_node.zig");
+const main_node = if (builtin.os.tag == .windows) struct {
+    pub const usage =
+        \\ZiggyStarClaw Node Mode
+        \\
+        \\Node mode is not supported on Windows.
+        \\
+    ;
+
+    pub const NodeCliOptions = struct {};
+
+    pub fn parseNodeOptions(_: std.mem.Allocator, _: []const []const u8) !NodeCliOptions {
+        return error.NodeModeUnsupported;
+    }
+
+    pub fn runNodeMode(_: std.mem.Allocator, _: NodeCliOptions) !void {
+        return error.NodeModeUnsupported;
+    }
+} else @import("main_node.zig");
 
 const usage =
     \\ZiggyStarClaw CLI (debug)
@@ -170,6 +188,10 @@ pub fn main() !void {
 
     // Handle node mode
     if (node_mode) {
+        if (builtin.os.tag == .windows) {
+            logger.err("Node mode is not supported on Windows.", .{});
+            return error.NodeModeUnsupported;
+        }
         const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
         try main_node.runNodeMode(allocator, node_opts);
         return;
