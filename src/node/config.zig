@@ -4,6 +4,8 @@ const std = @import("std");
 pub const NodeConfig = struct {
     node_id: []const u8,
     device_token: ?[]const u8 = null,
+    /// Gateway auth token (OpenClaw gateway.auth.token). Required when the gateway auth mode is token.
+    gateway_token: ?[]const u8 = null,
     display_name: []const u8,
     gateway_host: []const u8,
     gateway_port: u16 = 18789,
@@ -24,6 +26,19 @@ pub const NodeConfig = struct {
     chrome_path: ?[]const u8 = null,
     chrome_debug_port: u16 = 9222,
 
+    // Connection roles
+    // For "both" mode we maintain two concurrent websocket connections.
+    enable_node_connection: bool = true,
+    enable_operator_connection: bool = false,
+
+    // Node connection identity
+    node_device_identity_path: []const u8 = "ziggystarclaw_device.json",
+
+    // Operator connection identity + scopes (only used when enable_operator_connection=true)
+    operator_device_identity_path: []const u8 = "ziggystarclaw_operator_device.json",
+    operator_scopes: []const []const u8 = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
+    operator_scopes_owned: bool = false,
+
     // Paths
     exec_approvals_path: []const u8,
 
@@ -33,6 +48,12 @@ pub const NodeConfig = struct {
             .display_name = try allocator.dupe(u8, display_name),
             .gateway_host = try allocator.dupe(u8, gateway_host),
             .canvas_backend = try allocator.dupe(u8, "chrome"),
+            .enable_node_connection = true,
+            .enable_operator_connection = false,
+            .node_device_identity_path = try allocator.dupe(u8, "ziggystarclaw_device.json"),
+            .operator_device_identity_path = try allocator.dupe(u8, "ziggystarclaw_operator_device.json"),
+            .operator_scopes = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
+            .operator_scopes_owned = false,
             .exec_approvals_path = try allocator.dupe(u8, "~/.openclaw/exec-approvals.json"),
         };
     }
@@ -42,8 +63,19 @@ pub const NodeConfig = struct {
         if (self.device_token) |token| {
             allocator.free(token);
         }
+        if (self.gateway_token) |token| {
+            allocator.free(token);
+        }
         allocator.free(self.display_name);
         allocator.free(self.gateway_host);
+        allocator.free(self.node_device_identity_path);
+        allocator.free(self.operator_device_identity_path);
+        if (self.operator_scopes_owned) {
+            for (self.operator_scopes) |s| {
+                allocator.free(s);
+            }
+            allocator.free(self.operator_scopes);
+        }
         if (self.tls_fingerprint) |fp| {
             allocator.free(fp);
         }
@@ -87,9 +119,25 @@ pub const NodeConfig = struct {
         defer parsed.deinit();
 
         // Deep copy all strings
+        // Copy operator scopes
+        var scopes_list = std.ArrayList([]const u8).empty;
+        errdefer {
+            for (scopes_list.items) |s| allocator.free(s);
+            scopes_list.deinit(allocator);
+        }
+        for (parsed.value.operator_scopes) |s| {
+            try scopes_list.append(allocator, try allocator.dupe(u8, s));
+        }
+        const operator_scopes_owned = try scopes_list.toOwnedSlice(allocator);
+        scopes_list.deinit(allocator);
+
         return .{
             .node_id = try allocator.dupe(u8, parsed.value.node_id),
             .device_token = if (parsed.value.device_token) |token|
+                try allocator.dupe(u8, token)
+            else
+                null,
+            .gateway_token = if (parsed.value.gateway_token) |token|
                 try allocator.dupe(u8, token)
             else
                 null,
@@ -106,6 +154,14 @@ pub const NodeConfig = struct {
             .screen_enabled = parsed.value.screen_enabled,
             .camera_enabled = parsed.value.camera_enabled,
             .location_enabled = parsed.value.location_enabled,
+
+            .enable_node_connection = parsed.value.enable_node_connection,
+            .enable_operator_connection = parsed.value.enable_operator_connection,
+            .node_device_identity_path = try allocator.dupe(u8, parsed.value.node_device_identity_path),
+            .operator_device_identity_path = try allocator.dupe(u8, parsed.value.operator_device_identity_path),
+            .operator_scopes = operator_scopes_owned,
+            .operator_scopes_owned = true,
+
             .exec_approvals_path = try allocator.dupe(u8, parsed.value.exec_approvals_path),
         };
     }

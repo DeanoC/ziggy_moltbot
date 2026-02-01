@@ -200,10 +200,18 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         var ws_client = websocket_client.WebSocketClient.init(
             allocator,
             ws_url,
-            config.device_token orelse "",
+            config.gateway_token orelse "",
             opts.insecure_tls,
             null,
         );
+        // Node connection (role=node, no scopes)
+        ws_client.setConnectProfile(.{
+            .role = "node",
+            .scopes = &.{},
+            .client_id = "node-host",
+            .client_mode = "node",
+        });
+        ws_client.setDeviceIdentityPath(config.node_device_identity_path);
         ws_client.setReadTimeout(15000);
 
         ws_client.connect() catch |err| {
@@ -220,13 +228,42 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             continue;
         };
 
+        // Optional operator connection (second websocket) for "both" mode.
+        // This mirrors real usage: a controller client and a node host.
+        var op_ws_client: ?websocket_client.WebSocketClient = null;
+        if (config.enable_operator_connection) {
+            var op = websocket_client.WebSocketClient.init(
+                allocator,
+                ws_url,
+                config.gateway_token orelse "",
+                opts.insecure_tls,
+                null,
+            );
+            op.setConnectProfile(.{
+                .role = "operator",
+                .scopes = config.operator_scopes,
+                .client_id = "cli",
+                .client_mode = "cli",
+            });
+            op.setDeviceIdentityPath(config.operator_device_identity_path);
+            op.setReadTimeout(15000);
+            op.connect() catch |err| {
+                logger.warn("Operator connection failed (continuing as node-only): {s}", .{@errorName(err)});
+                op.deinit();
+            };
+            if (op.is_connected) {
+                op_ws_client = op;
+                logger.info("Operator connection established.", .{});
+            }
+        }
+
         node_ctx.state = .connecting;
         reconnect_attempt = 0; // Reset on successful connection
 
         logger.info("Connected, waiting for handshake...", .{});
 
-        // Send connect request with node role
-        try sendNodeConnectRequest(allocator, &ws_client, &node_ctx);
+        // IMPORTANT: WebSocketClient handles the gateway handshake (connect.challenge -> connect req)
+        // internally when use_device_identity is enabled. Do not send a second connect here.
 
         // Initialize health reporter
         var health = HealthReporter.init(allocator, &node_ctx, &ws_client);
@@ -302,7 +339,8 @@ fn sendNodeConnectRequest(
         .minProtocol = gateway.PROTOCOL_VERSION,
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
-            .id = "ziggystarclaw-node",
+            // Must match gateway allowlist (see GATEWAY_CLIENT_IDS)
+            .id = "node-host",
             .displayName = node_ctx.display_name,
             .version = "0.2.0",
             .platform = @tagName(@import("builtin").target.os.tag),
@@ -313,7 +351,8 @@ fn sendNodeConnectRequest(
         .caps = caps,
         .commands = commands,
         .permissions = std.json.Value{ .object = permissions },
-        .auth = .{ .token = "" }, // Will be populated from device identity
+        // For token-auth gateways, this allows the node to connect without device identity.
+        .auth = .{ .token = if (ws_client.token.len > 0) ws_client.token else null },
     };
 
     const frame = NodeConnectFrame{

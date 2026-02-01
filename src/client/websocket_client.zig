@@ -18,9 +18,16 @@ pub const WebSocketClient = struct {
     client: ?ws.Client = null,
     read_timeout_ms: u32 = 1,
     device_identity: ?identity.DeviceIdentity = null,
+    device_identity_path: []const u8 = identity.default_path,
     connect_nonce: ?[]u8 = null,
     connect_sent: bool = false,
     use_device_identity: bool = true,
+
+    // Connect profile (defaults match CLI/operator)
+    connect_role: []const u8 = "operator",
+    connect_scopes: []const []const u8 = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
+    connect_client_id: []const u8 = "cli",
+    connect_client_mode: []const u8 = "cli",
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -35,11 +42,28 @@ pub const WebSocketClient = struct {
             .token = token,
             .insecure_tls = insecure_tls,
             .connect_host_override = connect_host_override,
+            .device_identity_path = identity.default_path,
         };
+    }
+
+    pub fn setDeviceIdentityPath(self: *WebSocketClient, path: []const u8) void {
+        self.device_identity_path = path;
     }
 
     pub fn setReadTimeout(self: *WebSocketClient, ms: u32) void {
         self.read_timeout_ms = ms;
+    }
+
+    pub fn setConnectProfile(self: *WebSocketClient, params: struct {
+        role: []const u8,
+        scopes: []const []const u8,
+        client_id: []const u8,
+        client_mode: []const u8,
+    }) void {
+        self.connect_role = params.role;
+        self.connect_scopes = params.scopes;
+        self.connect_client_id = params.client_id;
+        self.connect_client_mode = params.client_mode;
     }
 
     pub fn storeDeviceToken(
@@ -50,12 +74,12 @@ pub const WebSocketClient = struct {
         issued_at_ms: ?i64,
     ) !void {
         if (self.device_identity == null) {
-            self.device_identity = try identity.loadOrCreate(self.allocator, identity.default_path);
+            self.device_identity = try identity.loadOrCreate(self.allocator, self.device_identity_path);
         }
         if (self.device_identity) |*ident| {
             try identity.storeDeviceToken(
                 self.allocator,
-                identity.default_path,
+                self.device_identity_path,
                 ident,
                 token,
                 role,
@@ -109,7 +133,7 @@ pub const WebSocketClient = struct {
 
         if (self.use_device_identity) {
             if (self.device_identity == null) {
-                self.device_identity = try identity.loadOrCreate(self.allocator, identity.default_path);
+                self.device_identity = try identity.loadOrCreate(self.allocator, self.device_identity_path);
             }
         } else {
             try sendConnectRequest(self, null);
@@ -216,10 +240,10 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const request_id = try requests.makeRequestId(self.allocator);
     defer self.allocator.free(request_id);
 
-    const scopes = [_][]const u8{ "operator.admin", "operator.approvals", "operator.pairing" };
+    const scopes = self.connect_scopes;
     const caps = [_][]const u8{};
-    const client_id = "node-host";
-    const client_mode = "node";
+    const client_id = self.connect_client_id;
+    const client_mode = self.connect_client_mode;
     const auth_token = if (self.device_identity) |ident|
         if (ident.device_token) |token| token else self.token
     else
@@ -237,8 +261,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .device_id = ident.device_id,
             .client_id = client_id,
             .client_mode = client_mode,
-            .role = "operator",
-            .scopes = &scopes,
+            .role = self.connect_role,
+            .scopes = scopes,
             .signed_at_ms = signed_at,
             .token = if (auth_token.len > 0) auth_token else "",
             .nonce = nonce.?,
@@ -292,8 +316,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .mode = client_mode,
         },
         .caps = &caps,
-        .role = "operator",
-        .scopes = &scopes,
+        .role = self.connect_role,
+        .scopes = scopes,
         .auth = auth,
         .device = device,
     };
