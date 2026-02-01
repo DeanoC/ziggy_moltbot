@@ -57,6 +57,14 @@ pub const HealthReporter = struct {
     }
     
     fn sendHeartbeat(self: *HealthReporter) !void {
+        // IMPORTANT: The gateway requires the *first* request on a fresh WS connection
+        // to be `connect`. Do not emit `node.heartbeat` until the node is fully
+        // registered (hello-ok received).
+        switch (self.node_ctx.state) {
+            .idle, .executing, .error_state => {},
+            else => return,
+        }
+
         const request_id = try makeRequestId(self.allocator);
         defer self.allocator.free(request_id);
         

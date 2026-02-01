@@ -55,16 +55,18 @@ pub const usage =
     \\  ziggystarclaw-cli --node-mode [options]
     \\
     \\Options:
-    \\  --host <host>            Gateway host (default: 127.0.0.1)
-    \\  --port <port>            Gateway port (default: 18789)
-    \\  --display-name <name>    Node display name
-    \\  --node-id <id>           Override node ID
-    \\  --config <path>          Node config path
-    \\  --save-config            Save config after successful connection
-    \\  --tls                    Use TLS for connection
-    \\  --insecure-tls           Disable TLS verification
-    \\  --log-level <level>      Log level (debug|info|warn|error)
-    \\  -h, --help               Show help
+    \\  --host <host>              Gateway host (default: 127.0.0.1)
+    \\  --port <port>              Gateway port (default: 18789)
+    \\  --display-name <name>      Node display name
+    \\  --node-id <id>             Override node ID
+    \\  --config <path>            Node config path
+    \\  --save-config              Save config after successful connection
+    \\  --as-node / --no-node      Enable/disable the node connection (default: on)
+    \\  --as-operator / --no-operator  Enable/disable the operator connection (default: off)
+    \\  --tls                      Use TLS for connection
+    \\  --insecure-tls             Disable TLS verification
+    \\  --log-level <level>        Log level (debug|info|warn|error)
+    \\  -h, --help                 Show help
     \\
 ;
 
@@ -75,6 +77,11 @@ pub const NodeCliOptions = struct {
     node_id: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
     save_config: bool = false,
+
+    // Connect role toggles (checkboxes)
+    as_node: ?bool = null,
+    as_operator: ?bool = null,
+
     tls: bool = false,
     insecure_tls: bool = false,
     log_level: logger.Level = .info,
@@ -108,6 +115,14 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             opts.config_path = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             opts.save_config = true;
+        } else if (std.mem.eql(u8, arg, "--as-node")) {
+            opts.as_node = true;
+        } else if (std.mem.eql(u8, arg, "--no-node")) {
+            opts.as_node = false;
+        } else if (std.mem.eql(u8, arg, "--as-operator")) {
+            opts.as_operator = true;
+        } else if (std.mem.eql(u8, arg, "--no-operator")) {
+            opts.as_operator = false;
         } else if (std.mem.eql(u8, arg, "--tls")) {
             opts.tls = true;
         } else if (std.mem.eql(u8, arg, "--insecure-tls")) {
@@ -170,6 +185,12 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         allocator.free(config.display_name);
         config.display_name = try allocator.dupe(u8, name);
     }
+    if (opts.as_node) |v| {
+        config.enable_node_connection = v;
+    }
+    if (opts.as_operator) |v| {
+        config.enable_operator_connection = v;
+    }
     if (opts.tls) {
         config.tls = true;
     }
@@ -225,39 +246,108 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
         logger.info("Connecting to gateway at {s} (attempt {d}/{d})...", .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts });
 
-        var ws_client = websocket_client.WebSocketClient.init(
-            allocator,
-            ws_url,
-            config.device_token orelse "",
-            opts.insecure_tls,
-            null,
-        );
-        ws_client.setReadTimeout(15000);
+        var ws_client: ?websocket_client.WebSocketClient = null;
+        if (config.enable_node_connection) {
+            var ws = websocket_client.WebSocketClient.init(
+                allocator,
+                ws_url,
+                config.gateway_token orelse "",
+                opts.insecure_tls,
+                null,
+            );
+            ws.setConnectProfile(.{
+                .role = "node",
+                .scopes = &.{},
+                .client_id = "node-host",
+                .client_mode = "node",
+            });
+            // Declare what this node can do (gateway requires a declared command list)
+            ws.setConnectNodeMetadata(.{
+                .caps = &.{ "system" },
+                .commands = &.{
+                    "system.run",
+                    "system.which",
+                    "system.notify",
+                    "system.execApprovals.get",
+                    "system.execApprovals.set",
+                },
+            });
+            ws.setDeviceIdentityPath(config.node_device_identity_path);
+            ws.setReadTimeout(15000);
 
-        ws_client.connect() catch |err| {
-            logger.err("Connection failed: {s}", .{@errorName(err)});
-            ws_client.deinit();
-            reconnect_attempt += 1;
-            if (reconnect_attempt >= max_reconnect_attempts) {
-                logger.err("Max reconnection attempts reached", .{});
-                return error.ConnectionFailed;
+            ws.connect() catch |err| {
+                logger.err("Node connection failed: {s}", .{@errorName(err)});
+                ws.deinit();
+                reconnect_attempt += 1;
+                if (reconnect_attempt >= max_reconnect_attempts) {
+                    logger.err("Max reconnection attempts reached", .{});
+                    return error.ConnectionFailed;
+                }
+                const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+                logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
+                std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+                continue;
+            };
+            ws_client = ws;
+        }
+
+        // Optional operator connection (second websocket) for "both" mode.
+        // This mirrors real usage: a controller client and a node host.
+        var op_ws_client: ?websocket_client.WebSocketClient = null;
+        if (config.enable_operator_connection) {
+            var op = websocket_client.WebSocketClient.init(
+                allocator,
+                ws_url,
+                config.gateway_token orelse "",
+                opts.insecure_tls,
+                null,
+            );
+            op.setConnectProfile(.{
+                .role = "operator",
+                .scopes = config.operator_scopes,
+                .client_id = "cli",
+                .client_mode = "cli",
+            });
+            op.setDeviceIdentityPath(config.operator_device_identity_path);
+            op.setReadTimeout(15000);
+            op.connect() catch |err| {
+                logger.warn("Operator connection failed (continuing): {s}", .{@errorName(err)});
+                op.deinit();
+            };
+            if (op.is_connected) {
+                op_ws_client = op;
+                logger.info("Operator connection established.", .{});
             }
-            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
-            logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
-            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
-            continue;
-        };
+        }
+
+        if (ws_client == null and op_ws_client == null) {
+            logger.err("No connections enabled (--no-node and --no-operator).", .{});
+            return error.InvalidArguments;
+        }
+
+        // Move the node websocket into a concrete variable for existing code paths.
+        // (If node is disabled, we'll exit early for now.)
+        if (ws_client == null) {
+            logger.err("Operator-only mode is not yet fully supported in node-mode loop.", .{});
+            return error.NotImplemented;
+        }
+
+        var ws_client_val = ws_client.?;
+        defer ws_client_val.deinit();
+        if (op_ws_client) |*op| {
+            defer op.deinit();
+        }
 
         node_ctx.state = .connecting;
         reconnect_attempt = 0; // Reset on successful connection
 
         logger.info("Connected, waiting for handshake...", .{});
 
-        // Send connect request with node role
-        try sendNodeConnectRequest(allocator, &ws_client, &node_ctx);
+        // IMPORTANT: WebSocketClient handles the gateway handshake (connect.challenge -> connect req)
+        // internally when use_device_identity is enabled. Do not send a second connect here.
 
         // Initialize health reporter
-        var health = HealthReporter.init(allocator, &node_ctx, &ws_client);
+        var health = HealthReporter.init(allocator, &node_ctx, &ws_client_val);
         health.start() catch |err| {
             logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
         };
@@ -266,25 +356,25 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         // Main event loop
         const running = true;
         while (running) {
-            if (!ws_client.is_connected) {
+            if (!ws_client_val.is_connected) {
                 logger.err("Disconnected from gateway.", .{});
                 break;
             }
 
-            const payload = ws_client.receive() catch |err| {
+            const payload = ws_client_val.receive() catch |err| {
                 logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
                 break;
             };
 
             if (payload) |text| {
                 defer allocator.free(text);
-                try handleNodeMessage(allocator, &ws_client, &node_ctx, &router, text);
+                try handleNodeMessage(allocator, &ws_client_val, &node_ctx, &router, text);
             } else {
                 std.Thread.sleep(50 * std.time.ns_per_ms);
             }
         }
 
-        ws_client.deinit();
+        // ws_client_val is deinit'd by defer.
 
         // If we got here due to disconnect, retry
         if (reconnect_attempt < max_reconnect_attempts) {
@@ -330,7 +420,8 @@ fn sendNodeConnectRequest(
         .minProtocol = gateway.PROTOCOL_VERSION,
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
-            .id = "ziggystarclaw-node",
+            // Must match gateway allowlist (see GATEWAY_CLIENT_IDS)
+            .id = "node-host",
             .displayName = node_ctx.display_name,
             .version = "0.2.0",
             .platform = @tagName(@import("builtin").target.os.tag),
@@ -341,7 +432,8 @@ fn sendNodeConnectRequest(
         .caps = caps,
         .commands = commands,
         .permissions = std.json.Value{ .object = permissions },
-        .auth = .{ .token = "" }, // Will be populated from device identity
+        // For token-auth gateways, this allows the node to connect without device identity.
+        .auth = .{ .token = if (ws_client.token.len > 0) ws_client.token else null },
     };
 
     const frame = NodeConnectFrame{
@@ -379,9 +471,11 @@ fn handleNodeMessage(
 
         if (std.mem.eql(u8, event.string, "connect.challenge")) {
             logger.info("Received connect challenge", .{});
-            // Handle challenge response if needed
+            // Handled by WebSocketClient
         } else if (std.mem.eql(u8, event.string, "device.pair.requested")) {
             logger.warn("Device pairing required. Approve via gateway UI or CLI.", .{});
+        } else if (std.mem.eql(u8, event.string, "node.invoke.request")) {
+            try handleNodeInvokeRequestEvent(allocator, ws_client, node_ctx, router, value);
         }
     } else if (std.mem.eql(u8, frame_type, "res")) {
         _ = value.object.get("id") orelse return;
@@ -442,6 +536,7 @@ fn handleNodeInvoke(
     router: *CommandRouter,
     request: std.json.Value,
 ) !void {
+    // Legacy request form ("req" method="node.invoke"). Keep for compatibility.
     const request_id = request.object.get("id") orelse return;
     const params = request.object.get("params") orelse return;
 
@@ -457,24 +552,130 @@ fn handleNodeInvoke(
     node_ctx.state = .executing;
     defer node_ctx.state = .idle;
 
-    // Execute command
     const result = router.route(node_ctx, command.string, command_params) catch |err| {
         logger.err("Command execution failed: {s}", .{@errorName(err)});
-
-        // Send error response
         const error_response = try buildErrorResponse(allocator, request_id.string, err);
         defer allocator.free(error_response.payload);
         try ws_client.send(error_response.payload);
         return;
     };
 
-    // Send success response
     const response = try buildSuccessResponse(allocator, request_id.string, result);
     defer {
         allocator.free(response.payload);
         allocator.free(response.id);
     }
     try ws_client.send(response.payload);
+}
+
+fn handleNodeInvokeRequestEvent(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    node_ctx: *NodeContext,
+    router: *CommandRouter,
+    frame: std.json.Value,
+) !void {
+    // Gateway sends node.invoke.request as an event, expects node.invoke.result as a request.
+    const payload = frame.object.get("payload") orelse return;
+    if (payload != .object) return;
+
+    const invoke_id = payload.object.get("id") orelse return;
+    if (invoke_id != .string) return;
+
+    const node_id = payload.object.get("nodeId") orelse return;
+    if (node_id != .string) return;
+
+    const command = payload.object.get("command") orelse return;
+    if (command != .string) return;
+
+    var command_params: std.json.Value = std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+    var parsed_params: ?std.json.Parsed(std.json.Value) = null;
+    defer if (parsed_params) |*parsed| parsed.deinit();
+    if (payload.object.get("paramsJSON")) |params_json| {
+        if (params_json == .string and params_json.string.len > 0) {
+            parsed_params = try std.json.parseFromSlice(std.json.Value, allocator, params_json.string, .{});
+            command_params = parsed_params.?.value;
+        }
+    }
+
+    logger.info("Received node.invoke.request: {s}", .{command.string});
+
+    node_ctx.state = .executing;
+    defer node_ctx.state = .idle;
+
+    const result = router.route(node_ctx, command.string, command_params) catch |err| {
+        logger.err("Command execution failed: {s}", .{@errorName(err)});
+        try sendNodeInvokeResultError(allocator, ws_client, invoke_id.string, node_id.string, err);
+        return;
+    };
+
+    try sendNodeInvokeResultOk(allocator, ws_client, invoke_id.string, node_id.string, result);
+}
+
+fn sendNodeInvokeResultOk(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    invoke_id: []const u8,
+    node_id: []const u8,
+    payload: std.json.Value,
+) !void {
+    const frame = .{
+        .type = "req",
+        .id = invoke_id,
+        .method = "node.invoke.result",
+        .params = .{
+            .id = invoke_id,
+            .nodeId = node_id,
+            .ok = true,
+            .payload = payload,
+        },
+    };
+    const json = try messages.serializeMessage(allocator, frame);
+    defer allocator.free(json);
+    try ws_client.send(json);
+}
+
+fn sendNodeInvokeResultError(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    invoke_id: []const u8,
+    node_id: []const u8,
+    err: anyerror,
+) !void {
+    const code = switch (err) {
+        error.CommandNotSupported => "COMMAND_NOT_SUPPORTED",
+        error.NotAllowed => "NOT_ALLOWED",
+        error.InvalidParams => "INVALID_PARAMS",
+        error.Timeout => "TIMEOUT",
+        error.BackgroundNotAvailable => "NODE_BACKGROUND_UNAVAILABLE",
+        error.PermissionRequired => "PERMISSION_REQUIRED",
+        else => "EXECUTION_FAILED",
+    };
+
+    const message = switch (err) {
+        error.CommandNotSupported => "Command not supported by this node",
+        error.NotAllowed => "Command not in allowlist",
+        error.InvalidParams => "Invalid parameters",
+        error.Timeout => "Command execution timed out",
+        error.BackgroundNotAvailable => "Command requires foreground",
+        error.PermissionRequired => "Required permission not granted",
+        else => "Command execution failed",
+    };
+
+    const frame = .{
+        .type = "req",
+        .id = invoke_id,
+        .method = "node.invoke.result",
+        .params = .{
+            .id = invoke_id,
+            .nodeId = node_id,
+            .ok = false,
+            .@"error" = .{ .code = code, .message = message },
+        },
+    };
+    const json = try messages.serializeMessage(allocator, frame);
+    defer allocator.free(json);
+    try ws_client.send(json);
 }
 
 fn buildSuccessResponse(
