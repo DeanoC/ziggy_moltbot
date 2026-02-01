@@ -193,6 +193,15 @@ pub fn main() !void {
         }
     }
 
+    const has_action = list_sessions or list_nodes or list_approvals or send_message != null or
+        run_command != null or approve_id != null or deny_id != null or use_session != null or
+        use_node != null or interactive or node_mode or save_config;
+    if (!has_action) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll(usage);
+        return;
+    }
+
     // Handle node mode
     if (node_mode) {
         if (builtin.os.tag == .windows) {
@@ -578,6 +587,7 @@ fn runRepl(
     config_path: []const u8,
 ) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdin = std.fs.File.stdin().deprecatedReader();
 
     try stdout.writeAll("\nZiggyStarClaw Interactive Mode\n");
     try stdout.writeAll("Type 'help' for commands, 'quit' to exit.\n\n");
@@ -591,10 +601,10 @@ fn runRepl(
         try stdout.print("[session:{s} node:{s}]> ", .{ session_name, node_name });
 
         var input_buffer: [1024]u8 = undefined;
-        const bytes_read = try std.fs.File.stdin().read(&input_buffer);
-        if (bytes_read == 0) break;
+        const line_opt = try stdin.readUntilDelimiterOrEof(&input_buffer, '\n');
+        if (line_opt == null) break;
 
-        const input = std.mem.trim(u8, input_buffer[0..bytes_read], " \t\r\n");
+        const input = std.mem.trim(u8, line_opt.?, " \t\r\n");
         if (input.len == 0) continue;
 
         var parts = std.mem.splitScalar(u8, input, ' ');
