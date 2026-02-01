@@ -9,6 +9,7 @@ const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
+const main_node = @import("main_node.zig");
 
 const usage =
     \\ZiggyStarClaw CLI (debug)
@@ -34,8 +35,10 @@ const usage =
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
     \\  --interactive            Start interactive REPL mode
+    \\  --node-mode              Run as a capability node (see --node-mode-help)
     \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
+    \\  --node-mode-help         Show node mode help
     \\
 ;
 
@@ -84,6 +87,7 @@ pub fn main() !void {
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
     var interactive = false;
+    var node_mode = false;
     var save_config = false;
 
     var i: usize = 1;
@@ -151,11 +155,24 @@ pub fn main() !void {
             deny_id = args[i];
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
+        } else if (std.mem.eql(u8, arg, "--node-mode")) {
+            node_mode = true;
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
+        } else if (std.mem.eql(u8, arg, "--node-mode-help")) {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.writeAll(main_node.usage);
+            return;
         } else {
             logger.warn("Unknown argument: {s}", .{arg});
         }
+    }
+
+    // Handle node mode
+    if (node_mode) {
+        const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
+        try main_node.runNodeMode(allocator, node_opts);
+        return;
     }
 
     var cfg = try config.loadOrDefault(allocator, config_path);
