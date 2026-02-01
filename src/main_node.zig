@@ -15,6 +15,28 @@ const messages = @import("protocol/messages.zig");
 const gateway = @import("protocol/gateway.zig");
 const logger = @import("utils/logger.zig");
 
+fn expandUserPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (path.len >= 2 and path[0] == '~' and (path[1] == '/' or path[1] == '\\')) {
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (home) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, path[2..] });
+        }
+        const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (userprofile) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, path[2..] });
+        }
+    }
+    return allocator.dupe(u8, path);
+}
+
 fn parseCanvasBackend(str: []const u8) canvas.CanvasBackend {
     if (std.mem.eql(u8, str, "webkitgtk")) {
         return .webkitgtk;
@@ -156,6 +178,12 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     // Initialize node context
     var node_ctx = try NodeContext.init(allocator, config.node_id, config.display_name);
     defer node_ctx.deinit();
+    const approvals_path = expandUserPath(allocator, config.exec_approvals_path) catch |err| blk: {
+        logger.warn("Failed to expand exec approvals path: {s}", .{@errorName(err)});
+        break :blk allocator.dupe(u8, config.exec_approvals_path) catch return err;
+    };
+    allocator.free(node_ctx.exec_approvals_path);
+    node_ctx.exec_approvals_path = approvals_path;
 
     // Register capabilities based on config
     if (config.system_enabled) {
