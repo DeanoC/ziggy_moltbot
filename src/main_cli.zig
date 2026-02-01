@@ -10,6 +10,8 @@ const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
+const main_operator = @import("main_operator.zig");
+
 const main_node = if (builtin.os.tag == .windows) struct {
     pub const usage =
         \\ZiggyStarClaw Node Mode
@@ -54,6 +56,7 @@ const usage =
     \\  --deny <id>              Deny an exec request by ID
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
+    \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\  --save-config            Save --url, --token, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
@@ -106,6 +109,7 @@ pub fn main() !void {
     var deny_id: ?[]const u8 = null;
     var interactive = false;
     var node_mode = false;
+    var operator_mode = false;
     var save_config = false;
 
     var i: usize = 1;
@@ -175,6 +179,8 @@ pub fn main() !void {
             interactive = true;
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             node_mode = true;
+        } else if (std.mem.eql(u8, arg, "--operator-mode")) {
+            operator_mode = true;
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else if (std.mem.eql(u8, arg, "--node-mode-help")) {
@@ -194,6 +200,13 @@ pub fn main() !void {
         }
         const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
         try main_node.runNodeMode(allocator, node_opts);
+        return;
+    }
+
+    // Handle operator mode
+    if (operator_mode) {
+        const op_opts = try main_operator.parseOperatorOptions(allocator, args[1..]);
+        try main_operator.runOperatorMode(allocator, op_opts);
         return;
     }
 
@@ -285,6 +298,13 @@ pub fn main() !void {
         cfg.insecure_tls,
         cfg.connect_host_override,
     );
+    // Explicitly set CLI connect profile (operator)
+    ws_client.setConnectProfile(.{
+        .role = "operator",
+        .scopes = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
+        .client_id = "cli",
+        .client_mode = "cli",
+    });
     ws_client.setReadTimeout(read_timeout_ms);
     defer ws_client.deinit();
 
