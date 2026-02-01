@@ -29,6 +29,8 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
         .h = input_h,
         .flags = .{
             .allow_tab_input = true,
+            // Treat Enter as "submit"; we re-insert newlines on Shift+Enter.
+            .enter_returns_true = true,
             // Avoid horizontal scrolling; wrap instead.
             .no_horizontal_scroll = true,
         },
@@ -44,17 +46,33 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
     }
 
     // Enter to send, Shift+Enter for newline.
+    // We also handle keypad enter.
     if (zgui.isItemActive()) {
         const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
-        if (zgui.isKeyPressed(.enter, false) and !shift_down) {
+
+        const enter_pressed = zgui.isKeyPressed(.enter, false) or zgui.isKeyPressed(.keypad_enter, false);
+
+        if (enter_pressed and shift_down) {
+            // Ensure newline is inserted (enter_returns_true can suppress it).
+            const buf = std.mem.sliceTo(&input_buf, 0);
+            if (buf.len + 1 < input_buf.len) {
+                input_buf[buf.len] = '\n';
+                input_buf[buf.len + 1] = 0;
+            }
+        } else if (enter_pressed and !shift_down) {
             send = true;
-            // inputTextMultiline may have inserted a newline already; strip trailing newlines.
-            if (changed) {
-                var buf = std.mem.sliceTo(&input_buf, 0);
-                while (buf.len > 0 and (buf[buf.len - 1] == '\n' or buf[buf.len - 1] == '\r')) {
-                    input_buf[buf.len - 1] = 0;
-                    buf = std.mem.sliceTo(&input_buf, 0);
-                }
+            // Strip trailing newline(s)
+            var buf = std.mem.sliceTo(&input_buf, 0);
+            while (buf.len > 0 and (buf[buf.len - 1] == '\n' or buf[buf.len - 1] == '\r')) {
+                input_buf[buf.len - 1] = 0;
+                buf = std.mem.sliceTo(&input_buf, 0);
+            }
+        }
+
+        // Fallback: if ImGui reports submit via enter_returns_true.
+        if (!send and changed and !shift_down) {
+            if (zgui.isKeyPressed(.enter, false) or zgui.isKeyPressed(.keypad_enter, false)) {
+                send = true;
             }
         }
     }

@@ -10,6 +10,7 @@ pub fn draw(
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
     height: f32,
+    show_tools: bool,
 ) void {
     const clamped = if (height > 60.0) height else 60.0;
     if (zgui.beginChild("ChatHistory", .{ .h = clamped, .child_flags = .{ .border = true } })) {
@@ -44,10 +45,6 @@ pub fn draw(
             content_changed = true;
         }
         zgui.sameLine(.{});
-        if (zgui.checkbox("Show tool output", .{ .v = &show_tool_output })) {
-            content_changed = true;
-        }
-        zgui.sameLine(.{});
         if (zgui.button("Copy All", .{})) {
             if (ensureChatBuffer(allocator, messages, stream_text, inbox)) {
                 const zbuf = bufferZ();
@@ -74,7 +71,7 @@ pub fn draw(
                 if (inbox) |store| {
                     if (store.isCommandMessage(msg.id)) continue;
                 }
-                if (!show_tool_output and isToolRole(msg.role)) {
+                if (!show_tools and isToolRole(msg.role)) {
                     continue;
                 }
                 zgui.pushIntId(@intCast(index));
@@ -230,7 +227,6 @@ var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
 var select_mode: bool = false;
-var show_tool_output: bool = false;
 var chat_buffer: std.ArrayList(u8) = .empty;
 
 fn ensureChatBuffer(
