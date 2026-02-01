@@ -33,16 +33,18 @@ pub const usage =
     \\  ziggystarclaw-cli --node-mode [options]
     \\
     \\Options:
-    \\  --host <host>            Gateway host (default: 127.0.0.1)
-    \\  --port <port>            Gateway port (default: 18789)
-    \\  --display-name <name>    Node display name
-    \\  --node-id <id>           Override node ID
-    \\  --config <path>          Node config path
-    \\  --save-config            Save config after successful connection
-    \\  --tls                    Use TLS for connection
-    \\  --insecure-tls           Disable TLS verification
-    \\  --log-level <level>      Log level (debug|info|warn|error)
-    \\  -h, --help               Show help
+    \\  --host <host>              Gateway host (default: 127.0.0.1)
+    \\  --port <port>              Gateway port (default: 18789)
+    \\  --display-name <name>      Node display name
+    \\  --node-id <id>             Override node ID
+    \\  --config <path>            Node config path
+    \\  --save-config              Save config after successful connection
+    \\  --as-node / --no-node      Enable/disable the node connection (default: on)
+    \\  --as-operator / --no-operator  Enable/disable the operator connection (default: off)
+    \\  --tls                      Use TLS for connection
+    \\  --insecure-tls             Disable TLS verification
+    \\  --log-level <level>        Log level (debug|info|warn|error)
+    \\  -h, --help                 Show help
     \\
 ;
 
@@ -53,6 +55,11 @@ pub const NodeCliOptions = struct {
     node_id: ?[]const u8 = null,
     config_path: ?[]const u8 = null,
     save_config: bool = false,
+
+    // Connect role toggles (checkboxes)
+    as_node: ?bool = null,
+    as_operator: ?bool = null,
+
     tls: bool = false,
     insecure_tls: bool = false,
     log_level: logger.Level = .info,
@@ -86,6 +93,14 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             opts.config_path = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             opts.save_config = true;
+        } else if (std.mem.eql(u8, arg, "--as-node")) {
+            opts.as_node = true;
+        } else if (std.mem.eql(u8, arg, "--no-node")) {
+            opts.as_node = false;
+        } else if (std.mem.eql(u8, arg, "--as-operator")) {
+            opts.as_operator = true;
+        } else if (std.mem.eql(u8, arg, "--no-operator")) {
+            opts.as_operator = false;
         } else if (std.mem.eql(u8, arg, "--tls")) {
             opts.tls = true;
         } else if (std.mem.eql(u8, arg, "--insecure-tls")) {
@@ -148,6 +163,12 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         allocator.free(config.display_name);
         config.display_name = try allocator.dupe(u8, name);
     }
+    if (opts.as_node) |v| {
+        config.enable_node_connection = v;
+    }
+    if (opts.as_operator) |v| {
+        config.enable_operator_connection = v;
+    }
     if (opts.tls) {
         config.tls = true;
     }
@@ -197,36 +218,39 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
         logger.info("Connecting to gateway at {s} (attempt {d}/{d})...", .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts });
 
-        var ws_client = websocket_client.WebSocketClient.init(
-            allocator,
-            ws_url,
-            config.gateway_token orelse "",
-            opts.insecure_tls,
-            null,
-        );
-        // Node connection (role=node, no scopes)
-        ws_client.setConnectProfile(.{
-            .role = "node",
-            .scopes = &.{},
-            .client_id = "node-host",
-            .client_mode = "node",
-        });
-        ws_client.setDeviceIdentityPath(config.node_device_identity_path);
-        ws_client.setReadTimeout(15000);
+        var ws_client: ?websocket_client.WebSocketClient = null;
+        if (config.enable_node_connection) {
+            var ws = websocket_client.WebSocketClient.init(
+                allocator,
+                ws_url,
+                config.gateway_token orelse "",
+                opts.insecure_tls,
+                null,
+            );
+            ws.setConnectProfile(.{
+                .role = "node",
+                .scopes = &.{},
+                .client_id = "node-host",
+                .client_mode = "node",
+            });
+            ws.setDeviceIdentityPath(config.node_device_identity_path);
+            ws.setReadTimeout(15000);
 
-        ws_client.connect() catch |err| {
-            logger.err("Connection failed: {s}", .{@errorName(err)});
-            ws_client.deinit();
-            reconnect_attempt += 1;
-            if (reconnect_attempt >= max_reconnect_attempts) {
-                logger.err("Max reconnection attempts reached", .{});
-                return error.ConnectionFailed;
-            }
-            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
-            logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
-            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
-            continue;
-        };
+            ws.connect() catch |err| {
+                logger.err("Node connection failed: {s}", .{@errorName(err)});
+                ws.deinit();
+                reconnect_attempt += 1;
+                if (reconnect_attempt >= max_reconnect_attempts) {
+                    logger.err("Max reconnection attempts reached", .{});
+                    return error.ConnectionFailed;
+                }
+                const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+                logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
+                std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+                continue;
+            };
+            ws_client = ws;
+        }
 
         // Optional operator connection (second websocket) for "both" mode.
         // This mirrors real usage: a controller client and a node host.
@@ -248,13 +272,31 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             op.setDeviceIdentityPath(config.operator_device_identity_path);
             op.setReadTimeout(15000);
             op.connect() catch |err| {
-                logger.warn("Operator connection failed (continuing as node-only): {s}", .{@errorName(err)});
+                logger.warn("Operator connection failed (continuing): {s}", .{@errorName(err)});
                 op.deinit();
             };
             if (op.is_connected) {
                 op_ws_client = op;
                 logger.info("Operator connection established.", .{});
             }
+        }
+
+        if (ws_client == null and op_ws_client == null) {
+            logger.err("No connections enabled (--no-node and --no-operator).", .{});
+            return error.InvalidArguments;
+        }
+
+        // Move the node websocket into a concrete variable for existing code paths.
+        // (If node is disabled, we'll exit early for now.)
+        if (ws_client == null) {
+            logger.err("Operator-only mode is not yet fully supported in node-mode loop.", .{});
+            return error.NotImplemented;
+        }
+
+        var ws_client_val = ws_client.?;
+        defer ws_client_val.deinit();
+        if (op_ws_client) |*op| {
+            defer op.deinit();
         }
 
         node_ctx.state = .connecting;
@@ -266,7 +308,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         // internally when use_device_identity is enabled. Do not send a second connect here.
 
         // Initialize health reporter
-        var health = HealthReporter.init(allocator, &node_ctx, &ws_client);
+        var health = HealthReporter.init(allocator, &node_ctx, &ws_client_val);
         health.start() catch |err| {
             logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
         };
@@ -275,25 +317,25 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         // Main event loop
         const running = true;
         while (running) {
-            if (!ws_client.is_connected) {
+            if (!ws_client_val.is_connected) {
                 logger.err("Disconnected from gateway.", .{});
                 break;
             }
 
-            const payload = ws_client.receive() catch |err| {
+            const payload = ws_client_val.receive() catch |err| {
                 logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
                 break;
             };
 
             if (payload) |text| {
                 defer allocator.free(text);
-                try handleNodeMessage(allocator, &ws_client, &node_ctx, &router, text);
+                try handleNodeMessage(allocator, &ws_client_val, &node_ctx, &router, text);
             } else {
                 std.Thread.sleep(50 * std.time.ns_per_ms);
             }
         }
 
-        ws_client.deinit();
+        // ws_client_val is deinit'd by defer.
 
         // If we got here due to disconnect, retry
         if (reconnect_attempt < max_reconnect_attempts) {
