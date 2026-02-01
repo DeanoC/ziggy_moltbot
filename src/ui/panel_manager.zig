@@ -7,12 +7,14 @@ pub const PanelManager = struct {
     allocator: std.mem.Allocator,
     workspace: workspace.Workspace,
     next_panel_id: workspace.PanelId,
+    focus_request_id: ?workspace.PanelId = null,
 
     pub fn init(allocator: std.mem.Allocator, ws: workspace.Workspace) PanelManager {
         var manager = PanelManager{
             .allocator = allocator,
             .workspace = ws,
             .next_panel_id = 1,
+            .focus_request_id = null,
         };
         manager.recomputeNextId();
         return manager;
@@ -83,6 +85,7 @@ pub const PanelManager = struct {
 
     pub fn focusPanel(self: *PanelManager, id: workspace.PanelId) void {
         self.workspace.focused_panel_id = id;
+        self.focus_request_id = id;
         self.workspace.markDirty();
     }
 
@@ -95,6 +98,9 @@ pub const PanelManager = struct {
                 self.workspace.markDirty();
                 if (self.workspace.focused_panel_id != null and self.workspace.focused_panel_id.? == id) {
                     self.workspace.focused_panel_id = null;
+                }
+                if (self.focus_request_id != null and self.focus_request_id.? == id) {
+                    self.focus_request_id = null;
                 }
                 return true;
             }

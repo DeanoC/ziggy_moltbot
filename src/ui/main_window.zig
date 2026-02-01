@@ -98,10 +98,9 @@ pub fn draw(
                     .first_use_ever,
                 );
             }
-            if (manager.workspace.focused_panel_id != null and
-                manager.workspace.focused_panel_id.? == panel.id)
-            {
+            if (manager.focus_request_id != null and manager.focus_request_id.? == panel.id) {
                 zgui.setNextWindowFocus();
+                manager.focus_request_id = null;
             }
 
             var open = true;
