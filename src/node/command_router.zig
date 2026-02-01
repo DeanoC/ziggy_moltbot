@@ -235,6 +235,7 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     // Wait with timeout
     const start_time = std.time.milliTimestamp();
     var timed_out = false;
+    var reaped_status: ?u32 = null;
 
     while (true) {
         const elapsed = std.time.milliTimestamp() - start_time;
@@ -243,13 +244,14 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
             _ = child.kill() catch {};
             break;
         }
-        
-        // Check if child exited (poll)
+
+        // Check if child exited (poll). NOTE: waitpid reaps the child; don't call child.wait() after.
         const result = std.posix.waitpid(child.id, std.posix.W.NOHANG);
         if (result.pid != 0) {
-            break; // Process exited
+            reaped_status = result.status;
+            break;
         }
-        
+
         std.Thread.sleep(50 * std.time.ns_per_ms);
     }
 
@@ -257,13 +259,22 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     stderr_thread.join();
 
     // Get exit status
-    const term = if (timed_out) 
-        std.process.Child.Term{ .Signal = 9 }
-    else 
-        child.wait() catch |err| {
+    const term: std.process.Child.Term = if (timed_out) blk: {
+        break :blk std.process.Child.Term{ .Signal = 9 };
+    } else if (reaped_status) |status| blk: {
+        if (std.posix.W.IFEXITED(status)) {
+            break :blk std.process.Child.Term{ .Exited = std.posix.W.EXITSTATUS(status) };
+        }
+        if (std.posix.W.IFSIGNALED(status)) {
+            break :blk std.process.Child.Term{ .Signal = std.posix.W.TERMSIG(status) };
+        }
+        break :blk std.process.Child.Term{ .Unknown = status };
+    } else blk: {
+        break :blk child.wait() catch |err| {
             logger.err("Failed to wait for process: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
+    };
 
     const exit_code: i32 = switch (term) {
         .Exited => |code| @intCast(code),

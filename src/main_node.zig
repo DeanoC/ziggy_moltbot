@@ -233,6 +233,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 .client_id = "node-host",
                 .client_mode = "node",
             });
+            // Declare what this node can do (gateway requires a declared command list)
+            ws.setConnectNodeMetadata(.{
+                .caps = &.{ "system" },
+                .commands = &.{
+                    "system.run",
+                    "system.which",
+                    "system.notify",
+                    "system.execApprovals.get",
+                    "system.execApprovals.set",
+                },
+            });
             ws.setDeviceIdentityPath(config.node_device_identity_path);
             ws.setReadTimeout(15000);
 
@@ -432,9 +443,11 @@ fn handleNodeMessage(
 
         if (std.mem.eql(u8, event.string, "connect.challenge")) {
             logger.info("Received connect challenge", .{});
-            // Handle challenge response if needed
+            // Handled by WebSocketClient
         } else if (std.mem.eql(u8, event.string, "device.pair.requested")) {
             logger.warn("Device pairing required. Approve via gateway UI or CLI.", .{});
+        } else if (std.mem.eql(u8, event.string, "node.invoke.request")) {
+            try handleNodeInvokeRequestEvent(allocator, ws_client, node_ctx, router, value);
         }
     } else if (std.mem.eql(u8, frame_type, "res")) {
         _ = value.object.get("id") orelse return;
@@ -495,6 +508,7 @@ fn handleNodeInvoke(
     router: *CommandRouter,
     request: std.json.Value,
 ) !void {
+    // Legacy request form ("req" method="node.invoke"). Keep for compatibility.
     const request_id = request.object.get("id") orelse return;
     const params = request.object.get("params") orelse return;
 
@@ -510,24 +524,129 @@ fn handleNodeInvoke(
     node_ctx.state = .executing;
     defer node_ctx.state = .idle;
 
-    // Execute command
     const result = router.route(node_ctx, command.string, command_params) catch |err| {
         logger.err("Command execution failed: {s}", .{@errorName(err)});
-
-        // Send error response
         const error_response = try buildErrorResponse(allocator, request_id.string, err);
         defer allocator.free(error_response.payload);
         try ws_client.send(error_response.payload);
         return;
     };
 
-    // Send success response
     const response = try buildSuccessResponse(allocator, request_id.string, result);
     defer {
         allocator.free(response.payload);
         allocator.free(response.id);
     }
     try ws_client.send(response.payload);
+}
+
+fn handleNodeInvokeRequestEvent(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    node_ctx: *NodeContext,
+    router: *CommandRouter,
+    frame: std.json.Value,
+) !void {
+    // Gateway sends node.invoke.request as an event, expects node.invoke.result as a request.
+    const payload = frame.object.get("payload") orelse return;
+    if (payload != .object) return;
+
+    const invoke_id = payload.object.get("id") orelse return;
+    if (invoke_id != .string) return;
+
+    const node_id = payload.object.get("nodeId") orelse return;
+    if (node_id != .string) return;
+
+    const command = payload.object.get("command") orelse return;
+    if (command != .string) return;
+
+    var command_params: std.json.Value = std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+    if (payload.object.get("paramsJSON")) |params_json| {
+        if (params_json == .string and params_json.string.len > 0) {
+            var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_json.string, .{});
+            defer parsed.deinit();
+            command_params = parsed.value;
+        }
+    }
+
+    logger.info("Received node.invoke.request: {s}", .{command.string});
+
+    node_ctx.state = .executing;
+    defer node_ctx.state = .idle;
+
+    const result = router.route(node_ctx, command.string, command_params) catch |err| {
+        logger.err("Command execution failed: {s}", .{@errorName(err)});
+        try sendNodeInvokeResultError(allocator, ws_client, invoke_id.string, node_id.string, err);
+        return;
+    };
+
+    try sendNodeInvokeResultOk(allocator, ws_client, invoke_id.string, node_id.string, result);
+}
+
+fn sendNodeInvokeResultOk(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    invoke_id: []const u8,
+    node_id: []const u8,
+    payload: std.json.Value,
+) !void {
+    const frame = .{
+        .type = "req",
+        .id = invoke_id,
+        .method = "node.invoke.result",
+        .params = .{
+            .id = invoke_id,
+            .nodeId = node_id,
+            .ok = true,
+            .payload = payload,
+        },
+    };
+    const json = try messages.serializeMessage(allocator, frame);
+    defer allocator.free(json);
+    try ws_client.send(json);
+}
+
+fn sendNodeInvokeResultError(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    invoke_id: []const u8,
+    node_id: []const u8,
+    err: anyerror,
+) !void {
+    const code = switch (err) {
+        error.CommandNotSupported => "COMMAND_NOT_SUPPORTED",
+        error.NotAllowed => "NOT_ALLOWED",
+        error.InvalidParams => "INVALID_PARAMS",
+        error.Timeout => "TIMEOUT",
+        error.BackgroundNotAvailable => "NODE_BACKGROUND_UNAVAILABLE",
+        error.PermissionRequired => "PERMISSION_REQUIRED",
+        else => "EXECUTION_FAILED",
+    };
+
+    const message = switch (err) {
+        error.CommandNotSupported => "Command not supported by this node",
+        error.NotAllowed => "Command not in allowlist",
+        error.InvalidParams => "Invalid parameters",
+        error.Timeout => "Command execution timed out",
+        error.BackgroundNotAvailable => "Command requires foreground",
+        error.PermissionRequired => "Required permission not granted",
+        else => "Command execution failed",
+    };
+
+    const frame = .{
+        .type = "req",
+        .id = invoke_id,
+        .method = "node.invoke.result",
+        .params = .{
+            .id = invoke_id,
+            .nodeId = node_id,
+            .ok = false,
+            .@"error" = .{ .code = code, .message = message },
+        },
+    };
+    const json = try messages.serializeMessage(allocator, frame);
+    defer allocator.free(json);
+    try ws_client.send(json);
 }
 
 fn buildSuccessResponse(

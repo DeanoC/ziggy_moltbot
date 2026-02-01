@@ -29,6 +29,10 @@ pub const WebSocketClient = struct {
     connect_client_id: []const u8 = "cli",
     connect_client_mode: []const u8 = "cli",
 
+    // Node metadata (used when connect_role == "node")
+    connect_caps: []const []const u8 = &.{},
+    connect_commands: []const []const u8 = &.{},
+
     pub fn init(
         allocator: std.mem.Allocator,
         url: []const u8,
@@ -64,6 +68,14 @@ pub const WebSocketClient = struct {
         self.connect_scopes = params.scopes;
         self.connect_client_id = params.client_id;
         self.connect_client_mode = params.client_mode;
+    }
+
+    pub fn setConnectNodeMetadata(self: *WebSocketClient, params: struct {
+        caps: []const []const u8,
+        commands: []const []const u8,
+    }) void {
+        self.connect_caps = params.caps;
+        self.connect_commands = params.commands;
     }
 
     pub fn storeDeviceToken(
@@ -241,13 +253,16 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     defer self.allocator.free(request_id);
 
     const scopes = self.connect_scopes;
-    const caps = [_][]const u8{};
+    const caps = self.connect_caps;
+    const commands = self.connect_commands;
     const client_id = self.connect_client_id;
     const client_mode = self.connect_client_mode;
-    const auth_token = if (self.device_identity) |ident|
-        if (ident.device_token) |token| token else self.token
+    // Prefer the configured gateway token (self.token). Only fall back to a stored device token
+    // if we weren't given a gateway token.
+    const auth_token = if (self.token.len > 0) self.token else if (self.device_identity) |ident|
+        (ident.device_token orelse "")
     else
-        self.token;
+        "";
     const auth = if (auth_token.len > 0) gateway.ConnectAuth{ .token = auth_token } else null;
     var signature_buf: ?[]u8 = null;
     defer if (signature_buf) |sig| self.allocator.free(sig);
@@ -305,7 +320,29 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         },
     );
 
-    const connect_params = gateway.ConnectParams{
+    const ConnectParamsExt = struct {
+        minProtocol: u32,
+        maxProtocol: u32,
+        client: gateway.ConnectClient,
+        caps: []const []const u8,
+        role: []const u8,
+        scopes: []const []const u8,
+        // Extra fields used by node sessions (gateway reads them dynamically)
+        commands: []const []const u8,
+        auth: ?gateway.ConnectAuth = null,
+        device: ?gateway.DeviceAuth = null,
+        locale: ?[]const u8 = null,
+        userAgent: ?[]const u8 = null,
+    };
+
+    const ConnectRequestFrameExt = struct {
+        type: []const u8 = "req",
+        id: []const u8,
+        method: []const u8 = "connect",
+        params: ConnectParamsExt,
+    };
+
+    const connect_params = ConnectParamsExt{
         .minProtocol = gateway.PROTOCOL_VERSION,
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
@@ -315,14 +352,15 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .platform = @tagName(builtin.os.tag),
             .mode = client_mode,
         },
-        .caps = &caps,
+        .caps = caps,
         .role = self.connect_role,
         .scopes = scopes,
+        .commands = commands,
         .auth = auth,
         .device = device,
     };
 
-    const request = gateway.ConnectRequestFrame{
+    const request = ConnectRequestFrameExt{
         .id = request_id,
         .params = connect_params,
     };
