@@ -114,6 +114,9 @@ pub fn draw(
         const snapshot = update_state.snapshot();
         zgui.beginDisabled(.{ .disabled = snapshot.in_flight or update_url_text.len == 0 });
         if (zgui.button("Check Updates", .{})) {
+            if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
+                action.config_updated = true;
+            }
             action.check_updates = true;
         }
         zgui.endDisabled();
