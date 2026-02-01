@@ -16,8 +16,10 @@ pub fn draw(
 ) ChatPanelAction {
     var action = ChatPanelAction{};
     const center_avail = zgui.getContentRegionAvail();
-    const spacing = zgui.getStyle().item_spacing[1];
-    const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 2.0;
+    const style = zgui.getStyle();
+    const spacing = style.item_spacing[1];
+    const separator_height: f32 = 1.0 + spacing;
+    const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 3.0 + separator_height;
     const history_height = @max(80.0, center_avail[1] - input_height);
     chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height);
     zgui.separator();
