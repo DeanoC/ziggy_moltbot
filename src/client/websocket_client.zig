@@ -218,8 +218,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
 
     const scopes = [_][]const u8{ "operator.admin", "operator.approvals", "operator.pairing" };
     const caps = [_][]const u8{};
-    const client_id = "cli";
-    const client_mode = "cli";
+    const client_id = "node-host";
+    const client_mode = "node";
     const auth_token = if (self.device_identity) |ident|
         if (ident.device_token) |token| token else self.token
     else
