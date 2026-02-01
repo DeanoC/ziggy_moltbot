@@ -23,6 +23,7 @@ pub const UiAction = struct {
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
+    new_session: bool = false,
     select_session: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
@@ -134,6 +135,7 @@ pub fn draw(
                         action.clear_saved = control_action.clear_saved;
                         action.config_updated = control_action.config_updated;
                         action.refresh_sessions = control_action.refresh_sessions;
+                        action.new_session = control_action.new_session;
                         action.select_session = control_action.select_session;
                         action.check_updates = control_action.check_updates;
                         action.open_release = control_action.open_release;

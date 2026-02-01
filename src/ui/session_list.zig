@@ -4,6 +4,7 @@ const types = @import("../protocol/types.zig");
 
 pub const SessionAction = struct {
     refresh: bool = false,
+    new_session: bool = false,
     selected_key: ?[]u8 = null,
 };
 
@@ -18,6 +19,10 @@ pub fn draw(
     zgui.text("Sessions", .{});
     if (zgui.button("Refresh", .{})) {
         action.refresh = true;
+    }
+    zgui.sameLine(.{ .spacing = 8.0 });
+    if (zgui.button("New", .{})) {
+        action.new_session = true;
     }
     if (loading) {
         zgui.sameLine(.{});

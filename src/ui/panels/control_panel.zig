@@ -14,6 +14,7 @@ pub const ControlPanelAction = struct {
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
+    new_session: bool = false,
     select_session: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
@@ -45,6 +46,7 @@ pub fn draw(
             panel.active_tab = .Sessions;
             const sessions_action = sessions_panel.draw(allocator, ctx);
             action.refresh_sessions = sessions_action.refresh;
+            action.new_session = sessions_action.new_session;
             action.select_session = sessions_action.selected_key;
             zgui.endTabItem();
         }

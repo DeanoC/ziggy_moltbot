@@ -222,6 +222,35 @@ fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     }
 }
 
+fn makeNewSessionKey(allocator: std.mem.Allocator) ![]u8 {
+    const suffix = try requests.makeRequestId(allocator);
+    defer allocator.free(suffix);
+    return try std.fmt.allocPrint(allocator, "agent:main:{s}", .{suffix});
+}
+
+fn sendSessionsResetRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+) void {
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+
+    const params = sessions_proto.SessionsResetParams{ .key = session_key };
+    const request = requests.buildRequestPayload(allocator, "sessions.reset", params) catch |err| {
+        logger.warn("Failed to build sessions.reset request: {}", .{err});
+        return;
+    };
+    defer allocator.free(request.payload);
+    defer allocator.free(request.id);
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send sessions.reset: {}", .{err});
+        return;
+    };
+}
+
 fn sendSessionsListRequest(
     allocator: std.mem.Allocator,
     ctx: *client_state.ClientContext,
@@ -977,6 +1006,23 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
         if (ui_action.refresh_sessions) {
             sendSessionsListRequest(allocator, &ctx, &ws_client);
+        }
+
+        if (ui_action.new_session) {
+            if (ws_client.is_connected) {
+                const key = makeNewSessionKey(allocator) catch null;
+                if (key) |session_key| {
+                    defer allocator.free(session_key);
+                    sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                    ctx.setCurrentSession(session_key) catch {};
+                    ctx.clearMessages();
+                    ctx.clearStreamText();
+                    ctx.clearStreamRunId();
+                    ctx.clearPendingHistoryRequest();
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendSessionsListRequest(allocator, &ctx, &ws_client);
+                }
+            }
         }
 
         if (ui_action.refresh_nodes) {

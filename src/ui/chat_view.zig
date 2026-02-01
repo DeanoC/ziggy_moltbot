@@ -44,6 +44,10 @@ pub fn draw(
             content_changed = true;
         }
         zgui.sameLine(.{});
+        if (zgui.checkbox("Show tool output", .{ .v = &show_tool_output })) {
+            content_changed = true;
+        }
+        zgui.sameLine(.{});
         if (zgui.button("Copy All", .{})) {
             if (ensureChatBuffer(allocator, messages, stream_text, inbox)) {
                 const zbuf = bufferZ();
@@ -69,6 +73,9 @@ pub fn draw(
             for (messages, 0..) |msg, index| {
                 if (inbox) |store| {
                     if (store.isCommandMessage(msg.id)) continue;
+                }
+                if (!show_tool_output and isToolRole(msg.role)) {
+                    continue;
                 }
                 zgui.pushIntId(@intCast(index));
                 defer zgui.popId();
@@ -214,11 +221,16 @@ fn isImageAttachment(att: types.ChatAttachment) bool {
         endsWithIgnoreCase(att.url, ".webp");
 }
 
+fn isToolRole(role: []const u8) bool {
+    return std.mem.startsWith(u8, role, "tool") or std.mem.eql(u8, role, "toolResult");
+}
+
 var last_message_count: usize = 0;
 var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
 var select_mode: bool = false;
+var show_tool_output: bool = false;
 var chat_buffer: std.ArrayList(u8) = .empty;
 
 fn ensureChatBuffer(

@@ -532,6 +532,26 @@ fn handleConnectChallenge(raw: []const u8) void {
     sendConnectRequest(nonce);
 }
 
+fn makeNewSessionKey(alloc: std.mem.Allocator) ![]u8 {
+    const suffix = try requests.makeRequestId(alloc);
+    defer alloc.free(suffix);
+    return try std.fmt.allocPrint(alloc, "agent:main:{s}", .{suffix});
+}
+
+fn sendSessionsResetRequest(session_key: []const u8) void {
+    if (!ws_connected or ctx.state != .connected) return;
+
+    const params = sessions_proto.SessionsResetParams{ .key = session_key };
+    const request = requests.buildRequestPayload(allocator, "sessions.reset", params) catch |err| {
+        logger.warn("Failed to build sessions.reset request: {}", .{err});
+        return;
+    };
+    defer allocator.free(request.payload);
+    defer allocator.free(request.id);
+
+    _ = sendWsText(request.payload);
+}
+
 fn sendSessionsListRequest() void {
     if (!ws_connected or ctx.state != .connected) return;
     if (ctx.pending_sessions_request_id != null) return;
@@ -1068,6 +1088,23 @@ fn frame() callconv(.c) void {
 
     if (ui_action.refresh_sessions) {
         sendSessionsListRequest();
+    }
+
+    if (ui_action.new_session) {
+        if (ws_connected) {
+            const key = makeNewSessionKey(allocator) catch null;
+            if (key) |session_key| {
+                defer allocator.free(session_key);
+                sendSessionsResetRequest(session_key);
+                ctx.setCurrentSession(session_key) catch {};
+                ctx.clearMessages();
+                ctx.clearStreamText();
+                ctx.clearStreamRunId();
+                ctx.clearPendingHistoryRequest();
+                sendChatHistoryRequest(session_key);
+                sendSessionsListRequest();
+            }
+        }
     }
 
     if (ui_action.refresh_nodes) {

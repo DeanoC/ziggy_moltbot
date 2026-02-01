@@ -5,6 +5,10 @@ pub const SessionsListParams = struct {
     limit: ?u32 = null,
 };
 
+pub const SessionsResetParams = struct {
+    key: []const u8,
+};
+
 pub const SessionRow = struct {
     key: []const u8,
     kind: ?[]const u8 = null,
