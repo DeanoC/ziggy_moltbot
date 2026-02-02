@@ -58,9 +58,20 @@ const usage =
     \\  --list-sessions          List available sessions and exit
     \\  --use-session <key>      Set default session and exit
     \\  --list-nodes             List available nodes and exit
-    \\  --node <id>              Target node for run command
+    \\  --node <id>              Target node for node commands
     \\  --use-node <id>          Set default node and exit
-    \\  --run <command>          Run a command on the target node
+    \\  --run <command>          Run a command on the target node (system.run)
+    \\  --which <name>           Locate executable on node PATH (system.which)
+    \\  --notify <title>         Show a notification on the node (system.notify)
+    \\  --ps                     List node background processes (process.list)
+    \\  --spawn <command>        Spawn background process on node (process.spawn)
+    \\  --poll <processId>       Poll background process status (process.poll)
+    \\  --stop <processId>       Stop background process (process.stop)
+    \\  --canvas-present         Show canvas (canvas.present)
+    \\  --canvas-hide            Hide canvas (canvas.hide)
+    \\  --canvas-navigate <url>  Navigate canvas to URL (canvas.navigate)
+    \\  --canvas-eval <js>       Eval JS in canvas (canvas.eval)
+    \\  --canvas-snapshot <path> Save canvas snapshot to path on node (canvas.snapshot)
     \\  --list-approvals         List pending approvals and exit
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
@@ -83,6 +94,13 @@ const ReplCommand = enum {
     node,
     nodes,
     run,
+    which,
+    notify,
+    ps,
+    spawn,
+    poll,
+    stop,
+    canvas,
     approvals,
     approve,
     deny,
@@ -117,6 +135,17 @@ pub fn main() !void {
     var node_id: ?[]const u8 = null;
     var use_node: ?[]const u8 = null;
     var run_command: ?[]const u8 = null;
+    var which_name: ?[]const u8 = null;
+    var notify_title: ?[]const u8 = null;
+    var ps_list = false;
+    var spawn_command: ?[]const u8 = null;
+    var poll_process_id: ?[]const u8 = null;
+    var stop_process_id: ?[]const u8 = null;
+    var canvas_present = false;
+    var canvas_hide = false;
+    var canvas_navigate: ?[]const u8 = null;
+    var canvas_eval: ?[]const u8 = null;
+    var canvas_snapshot: ?[]const u8 = null;
     var list_approvals = false;
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
@@ -191,6 +220,44 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             run_command = args[i];
+        } else if (std.mem.eql(u8, arg, "--which")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            which_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--notify")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            notify_title = args[i];
+        } else if (std.mem.eql(u8, arg, "--ps")) {
+            ps_list = true;
+        } else if (std.mem.eql(u8, arg, "--spawn")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            spawn_command = args[i];
+        } else if (std.mem.eql(u8, arg, "--poll")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            poll_process_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--stop")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            stop_process_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--canvas-present")) {
+            canvas_present = true;
+        } else if (std.mem.eql(u8, arg, "--canvas-hide")) {
+            canvas_hide = true;
+        } else if (std.mem.eql(u8, arg, "--canvas-navigate")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_navigate = args[i];
+        } else if (std.mem.eql(u8, arg, "--canvas-eval")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_eval = args[i];
+        } else if (std.mem.eql(u8, arg, "--canvas-snapshot")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_snapshot = args[i];
         } else if (std.mem.eql(u8, arg, "--list-approvals")) {
             list_approvals = true;
         } else if (std.mem.eql(u8, arg, "--approve")) {
@@ -228,8 +295,11 @@ pub fn main() !void {
     }
 
     const has_action = list_sessions or list_nodes or list_approvals or send_message != null or
-        run_command != null or approve_id != null or deny_id != null or use_session != null or
-        use_node != null or check_update_only or print_update_url or interactive or node_mode or save_config;
+        run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
+        poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
+        canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or approve_id != null or
+        deny_id != null or use_session != null or use_node != null or check_update_only or print_update_url or
+        interactive or node_mode or save_config;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
@@ -324,14 +394,21 @@ pub fn main() !void {
     }
 
     const requires_connection = list_sessions or list_nodes or list_approvals or send_message != null or
-        run_command != null or approve_id != null or deny_id != null or interactive;
+        run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
+        poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
+        canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or approve_id != null or
+        deny_id != null or interactive;
     if (requires_connection and cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
     }
 
-    // Allow --run with default node; only error if neither is provided.
-    if (run_command != null and node_id == null and cfg.default_node == null) {
+    const needs_node = run_command != null or which_name != null or notify_title != null or ps_list or
+        spawn_command != null or poll_process_id != null or stop_process_id != null or canvas_present or
+        canvas_hide or canvas_navigate != null or canvas_eval != null or canvas_snapshot != null;
+
+    // Allow node commands with default node; only error if neither is provided.
+    if (needs_node and node_id == null and cfg.default_node == null) {
         logger.err("No node specified. Use --node or --use-node to set a default.", .{});
         return error.InvalidArguments;
     }
@@ -452,11 +529,11 @@ pub fn main() !void {
                 if (list_nodes and have_nodes) break;
                 if (list_approvals) break;
                 if (send_message != null and have_sessions) break;
-                if (run_command != null and have_nodes) break;
+                if ((run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or canvas_navigate != null or canvas_eval != null or canvas_snapshot != null) and have_nodes) break;
                 if (approve_id != null) break;
                 if (deny_id != null) break;
                 if (interactive) break;
-                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) break;
+                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and which_name == null and notify_title == null and !ps_list and spawn_command == null and poll_process_id == null and stop_process_id == null and !canvas_present and !canvas_hide and canvas_navigate == null and canvas_eval == null and canvas_snapshot == null and approve_id == null and deny_id == null and !interactive) break;
             }
         } else {
             std.Thread.sleep(50 * std.time.ns_per_ms);
@@ -551,57 +628,131 @@ pub fn main() !void {
         return;
     }
 
-    // Handle --run
-    if (run_command) |command| {
-        const target_node = node_id orelse cfg.default_node orelse {
-            logger.err("No node specified. Use --node or --use-node to set a default.", .{});
-            return error.NoNodeSpecified;
-        };
+    const target_node = node_id orelse cfg.default_node;
 
-        // Verify node exists
+    if (target_node != null) {
+        // Verify node exists for any node action.
         var node_exists = false;
         for (ctx.nodes.items) |node| {
-            if (std.mem.eql(u8, node.id, target_node)) {
+            if (std.mem.eql(u8, node.id, target_node.?)) {
                 node_exists = true;
                 break;
             }
         }
         if (!node_exists) {
-            logger.err("Node '{s}' not found. Use --list-nodes to see available nodes.", .{target_node});
+            logger.err("Node '{s}' not found. Use --list-nodes to see available nodes.", .{target_node.?});
             return error.NodeNotFound;
         }
+    }
 
-        try runNodeCommand(allocator, &ws_client, target_node, command);
-
-        // Wait for result
-        var wait_attempts: u32 = 0;
-        while (wait_attempts < 100 and ctx.node_result == null) : (wait_attempts += 1) {
-            const payload = ws_client.receive() catch |err| {
-                logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
-                break;
-            };
-            if (payload) |text| {
-                defer allocator.free(text);
-                _ = event_handler.handleRawMessage(&ctx, text) catch |err| blk: {
-                    logger.warn("Error handling message: {s}", .{@errorName(err)});
-                    break :blk null;
-                };
-            } else {
-                std.Thread.sleep(100 * std.time.ns_per_ms);
-            }
-        }
-
-        if (ctx.node_result) |result| {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.print("Result: {s}\n", .{result});
-        } else {
-            logger.info("Command sent. Waiting for result timed out.", .{});
-        }
-
+    // Handle --run (system.run)
+    if (run_command) |command| {
+        try runNodeCommand(allocator, &ws_client, target_node.?, command);
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         if (save_config) {
             try config.save(allocator, config_path, cfg);
             logger.info("Config saved to {s}", .{config_path});
         }
+        return;
+    }
+
+    // Handle --which (system.which)
+    if (which_name) |name| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("name", std.json.Value{ .string = name });
+
+        try invokeNode(allocator, &ws_client, target_node.?, "system.which", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle --notify (system.notify)
+    if (notify_title) |title| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("title", std.json.Value{ .string = title });
+
+        try invokeNode(allocator, &ws_client, target_node.?, "system.notify", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle --ps (process.list)
+    if (ps_list) {
+        try invokeNode(allocator, &ws_client, target_node.?, "process.list", null);
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle --spawn (process.spawn)
+    if (spawn_command) |cmdline| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        var cmd_arr = try buildJsonCommandArray(allocator, cmdline);
+        defer freeJsonStringArray(allocator, &cmd_arr);
+        try params_obj.put("command", std.json.Value{ .array = cmd_arr });
+
+        try invokeNode(allocator, &ws_client, target_node.?, "process.spawn", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle --poll (process.poll)
+    if (poll_process_id) |pid| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("processId", std.json.Value{ .string = pid });
+
+        try invokeNode(allocator, &ws_client, target_node.?, "process.poll", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle --stop (process.stop)
+    if (stop_process_id) |pid| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("processId", std.json.Value{ .string = pid });
+
+        try invokeNode(allocator, &ws_client, target_node.?, "process.stop", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+
+    // Handle canvas
+    if (canvas_present) {
+        try invokeNode(allocator, &ws_client, target_node.?, "canvas.present", null);
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+    if (canvas_hide) {
+        try invokeNode(allocator, &ws_client, target_node.?, "canvas.hide", null);
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+    if (canvas_navigate) |url| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("url", std.json.Value{ .string = url });
+        try invokeNode(allocator, &ws_client, target_node.?, "canvas.navigate", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+    if (canvas_eval) |js| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("js", std.json.Value{ .string = js });
+        try invokeNode(allocator, &ws_client, target_node.?, "canvas.eval", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
+        return;
+    }
+    if (canvas_snapshot) |path| {
+        var params_obj = std.json.ObjectMap.init(allocator);
+        defer params_obj.deinit();
+        try params_obj.put("path", std.json.Value{ .string = path });
+        try invokeNode(allocator, &ws_client, target_node.?, "canvas.snapshot", std.json.Value{ .object = params_obj });
+        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
 
@@ -713,21 +864,26 @@ fn runRepl(
 
         switch (cmd) {
             .help => {
-                try stdout.writeAll(
-                    "Commands:\n" ++
+                try stdout.writeAll("Commands:\n" ++
                     "  help                    Show this help\n" ++
                     "  send <message>          Send message to current session\n" ++
                     "  session [key]           Show or set current session\n" ++
                     "  sessions                List available sessions\n" ++
                     "  node [id]               Show or set current node\n" ++
                     "  nodes                   List available nodes\n" ++
-                    "  run <command>           Run command on current node\n" ++
+                    "  run <command>           Run command on current node (system.run)\n" ++
+                    "  which <name>            Locate executable on node PATH (system.which)\n" ++
+                    "  notify <title>          Show node notification (system.notify)\n" ++
+                    "  ps                      List node background processes (process.list)\n" ++
+                    "  spawn <command>         Spawn background process (process.spawn)\n" ++
+                    "  poll <processId>        Poll process status (process.poll)\n" ++
+                    "  stop <processId>        Stop process (process.stop)\n" ++
+                    "  canvas <op> [args...]   Canvas ops: present|hide|navigate <url>|eval <js>|snapshot <path>\n" ++
                     "  approvals               List pending approvals\n" ++
                     "  approve <id>            Approve request by ID\n" ++
                     "  deny <id>               Deny request by ID\n" ++
                     "  save                    Save current session/node to config\n" ++
-                    "  quit/exit               Exit interactive mode\n"
-                );
+                    "  quit/exit               Exit interactive mode\n");
             },
             .send => {
                 const message = parts.rest();
@@ -807,7 +963,149 @@ fn runRepl(
                     continue;
                 };
                 try runNodeCommand(allocator, ws_client, target_node, command);
-                try stdout.writeAll("Command sent.\n");
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .which => {
+                const name = parts.rest();
+                if (name.len == 0) {
+                    try stdout.writeAll("Usage: which <name>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var params_obj = std.json.ObjectMap.init(allocator);
+                defer params_obj.deinit();
+                try params_obj.put("name", std.json.Value{ .string = name });
+                try invokeNode(allocator, ws_client, target_node, "system.which", std.json.Value{ .object = params_obj });
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .notify => {
+                const title = parts.rest();
+                if (title.len == 0) {
+                    try stdout.writeAll("Usage: notify <title>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var params_obj = std.json.ObjectMap.init(allocator);
+                defer params_obj.deinit();
+                try params_obj.put("title", std.json.Value{ .string = title });
+                try invokeNode(allocator, ws_client, target_node, "system.notify", std.json.Value{ .object = params_obj });
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .ps => {
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                try invokeNode(allocator, ws_client, target_node, "process.list", null);
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .spawn => {
+                const command = parts.rest();
+                if (command.len == 0) {
+                    try stdout.writeAll("Usage: spawn <command>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var params_obj = std.json.ObjectMap.init(allocator);
+                defer params_obj.deinit();
+                var cmd_arr = try buildJsonCommandArray(allocator, command);
+                defer freeJsonStringArray(allocator, &cmd_arr);
+                try params_obj.put("command", std.json.Value{ .array = cmd_arr });
+                try invokeNode(allocator, ws_client, target_node, "process.spawn", std.json.Value{ .object = params_obj });
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .poll => {
+                const pid = parts.rest();
+                if (pid.len == 0) {
+                    try stdout.writeAll("Usage: poll <processId>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var params_obj = std.json.ObjectMap.init(allocator);
+                defer params_obj.deinit();
+                try params_obj.put("processId", std.json.Value{ .string = pid });
+                try invokeNode(allocator, ws_client, target_node, "process.poll", std.json.Value{ .object = params_obj });
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .stop => {
+                const pid = parts.rest();
+                if (pid.len == 0) {
+                    try stdout.writeAll("Usage: stop <processId>\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var params_obj = std.json.ObjectMap.init(allocator);
+                defer params_obj.deinit();
+                try params_obj.put("processId", std.json.Value{ .string = pid });
+                try invokeNode(allocator, ws_client, target_node, "process.stop", std.json.Value{ .object = params_obj });
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
+            },
+            .canvas => {
+                const rest = parts.rest();
+                if (rest.len == 0) {
+                    try stdout.writeAll("Usage: canvas <present|hide|navigate|eval|snapshot> [args...]\n");
+                    continue;
+                }
+                const target_node = current_node orelse {
+                    try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
+                    continue;
+                };
+                var subparts = std.mem.splitScalar(u8, rest, ' ');
+                const op = subparts.next() orelse continue;
+                const arg = std.mem.trim(u8, subparts.rest(), " \t\r\n");
+
+                if (std.mem.eql(u8, op, "present")) {
+                    try invokeNode(allocator, ws_client, target_node, "canvas.present", null);
+                } else if (std.mem.eql(u8, op, "hide")) {
+                    try invokeNode(allocator, ws_client, target_node, "canvas.hide", null);
+                } else if (std.mem.eql(u8, op, "navigate")) {
+                    if (arg.len == 0) {
+                        try stdout.writeAll("Usage: canvas navigate <url>\n");
+                        continue;
+                    }
+                    var params_obj = std.json.ObjectMap.init(allocator);
+                    defer params_obj.deinit();
+                    try params_obj.put("url", std.json.Value{ .string = arg });
+                    try invokeNode(allocator, ws_client, target_node, "canvas.navigate", std.json.Value{ .object = params_obj });
+                } else if (std.mem.eql(u8, op, "eval")) {
+                    if (arg.len == 0) {
+                        try stdout.writeAll("Usage: canvas eval <js>\n");
+                        continue;
+                    }
+                    var params_obj = std.json.ObjectMap.init(allocator);
+                    defer params_obj.deinit();
+                    try params_obj.put("js", std.json.Value{ .string = arg });
+                    try invokeNode(allocator, ws_client, target_node, "canvas.eval", std.json.Value{ .object = params_obj });
+                } else if (std.mem.eql(u8, op, "snapshot")) {
+                    if (arg.len == 0) {
+                        try stdout.writeAll("Usage: canvas snapshot <path>\n");
+                        continue;
+                    }
+                    var params_obj = std.json.ObjectMap.init(allocator);
+                    defer params_obj.deinit();
+                    try params_obj.put("path", std.json.Value{ .string = arg });
+                    try invokeNode(allocator, ws_client, target_node, "canvas.snapshot", std.json.Value{ .object = params_obj });
+                } else {
+                    try stdout.print("Unknown canvas op: {s}\n", .{op});
+                    continue;
+                }
+
+                try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .approvals => {
                 try stdout.writeAll("Pending approvals:\n");
@@ -898,6 +1196,13 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "node")) return .node;
     if (std.mem.eql(u8, cmd, "nodes")) return .nodes;
     if (std.mem.eql(u8, cmd, "run")) return .run;
+    if (std.mem.eql(u8, cmd, "which")) return .which;
+    if (std.mem.eql(u8, cmd, "notify")) return .notify;
+    if (std.mem.eql(u8, cmd, "ps")) return .ps;
+    if (std.mem.eql(u8, cmd, "spawn")) return .spawn;
+    if (std.mem.eql(u8, cmd, "poll")) return .poll;
+    if (std.mem.eql(u8, cmd, "stop")) return .stop;
+    if (std.mem.eql(u8, cmd, "canvas")) return .canvas;
     if (std.mem.eql(u8, cmd, "approvals")) return .approvals;
     if (std.mem.eql(u8, cmd, "approve")) return .approve;
     if (std.mem.eql(u8, cmd, "deny")) return .deny;
@@ -932,34 +1237,40 @@ fn sendChatMessage(
     try ws_client.send(request.payload);
 }
 
-fn runNodeCommand(
+fn buildJsonCommandArray(allocator: std.mem.Allocator, cmdline: []const u8) !std.json.Array {
+    var arr = std.json.Array.init(allocator);
+    errdefer arr.deinit();
+
+    var it = std.mem.splitScalar(u8, cmdline, ' ');
+    while (it.next()) |part| {
+        if (part.len == 0) continue;
+        try arr.append(std.json.Value{ .string = try allocator.dupe(u8, part) });
+    }
+
+    return arr;
+}
+
+fn freeJsonStringArray(allocator: std.mem.Allocator, arr: *std.json.Array) void {
+    for (arr.items) |item| {
+        if (item == .string) allocator.free(item.string);
+    }
+    arr.deinit();
+}
+
+fn invokeNode(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
     target_node: []const u8,
     command: []const u8,
+    params_value: ?std.json.Value,
 ) !void {
     const idempotency_key = try requests.makeRequestId(allocator);
     defer allocator.free(idempotency_key);
 
-    var params_json = std.json.ObjectMap.init(allocator);
-    defer params_json.deinit();
-
-    var command_arr = std.json.Array.init(allocator);
-    defer command_arr.deinit();
-
-    var it = std.mem.splitScalar(u8, command, ' ');
-    while (it.next()) |part| {
-        if (part.len > 0) {
-            try command_arr.append(std.json.Value{ .string = try allocator.dupe(u8, part) });
-        }
-    }
-
-    try params_json.put("command", std.json.Value{ .array = command_arr });
-
     const params = nodes_proto.NodeInvokeParams{
         .nodeId = target_node,
-        .command = "system.run",
-        .params = std.json.Value{ .object = params_json },
+        .command = command,
+        .params = params_value,
         .idempotencyKey = idempotency_key,
     };
 
@@ -969,8 +1280,57 @@ fn runNodeCommand(
         allocator.free(request.id);
     }
 
-    logger.info("Running command on node {s}: {s}", .{ target_node, command });
+    logger.info("Invoking node {s}: {s}", .{ target_node, command });
     try ws_client.send(request.payload);
+}
+
+fn awaitAndPrintNodeResult(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+) !void {
+    // Wait for result
+    var wait_attempts: u32 = 0;
+    while (wait_attempts < 150 and ctx.node_result == null) : (wait_attempts += 1) {
+        const payload = ws_client.receive() catch |err| {
+            logger.err("WebSocket receive failed: {s}", .{@errorName(err)});
+            break;
+        };
+        if (payload) |text| {
+            defer allocator.free(text);
+            _ = event_handler.handleRawMessage(ctx, text) catch |err| blk: {
+                logger.warn("Error handling message: {s}", .{@errorName(err)});
+                break :blk null;
+            };
+        } else {
+            std.Thread.sleep(100 * std.time.ns_per_ms);
+        }
+    }
+
+    if (ctx.node_result) |result| {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.print("Result: {s}\n", .{result});
+        ctx.clearNodeResult();
+    } else {
+        logger.info("Command sent. Waiting for result timed out.", .{});
+    }
+}
+
+fn runNodeCommand(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    target_node: []const u8,
+    command: []const u8,
+) !void {
+    var params_json = std.json.ObjectMap.init(allocator);
+    defer params_json.deinit();
+
+    var command_arr = try buildJsonCommandArray(allocator, command);
+    defer freeJsonStringArray(allocator, &command_arr);
+
+    try params_json.put("command", std.json.Value{ .array = command_arr });
+
+    try invokeNode(allocator, ws_client, target_node, "system.run", std.json.Value{ .object = params_json });
 }
 
 fn resolveApproval(
