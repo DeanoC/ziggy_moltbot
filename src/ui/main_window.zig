@@ -62,10 +62,31 @@ pub fn draw(
 
     inbox.collectFromMessages(allocator, ctx.messages.items, manager);
 
+    var menu_height: f32 = 0.0;
+    if (zgui.beginMainMenuBar()) {
+        if (zgui.beginMenu("Window", true)) {
+            if (zgui.menuItem("Control", .{})) {
+                manager.ensurePanel(.Control);
+            }
+            if (zgui.menuItem("Chat", .{})) {
+                manager.ensurePanel(.Chat);
+            }
+            if (zgui.menuItem("Tool Output", .{})) {
+                manager.ensurePanel(.ToolOutput);
+            }
+            if (zgui.menuItem("Code Editor", .{})) {
+                manager.ensurePanel(.CodeEditor);
+            }
+            zgui.endMenu();
+        }
+        menu_height = zgui.getWindowSize()[1];
+        zgui.endMainMenuBar();
+    }
+
     const display = zgui.io.getDisplaySize();
     if (display[0] > 0.0 and display[1] > 0.0) {
         const left = safe_insets[0];
-        const top = safe_insets[1];
+        const top = safe_insets[1] + menu_height;
         const right = safe_insets[2];
         const bottom = safe_insets[3];
         const width = @max(1.0, display[0] - left - right);
