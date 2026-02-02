@@ -61,3 +61,18 @@ pub fn captureIni(allocator: std.mem.Allocator, workspace_state: *workspace.Work
     allocator.free(workspace_state.layout.imgui_ini);
     workspace_state.layout.imgui_ini = ini;
 }
+
+pub fn resetDockLayout(
+    allocator: std.mem.Allocator,
+    state: *DockState,
+    workspace_state: *workspace.Workspace,
+) void {
+    imgui_bridge.resetIni();
+    allocator.free(workspace_state.layout.imgui_ini);
+    workspace_state.layout.imgui_ini = allocator.dupe(u8, "") catch unreachable;
+    for (workspace_state.panels.items) |*panel| {
+        panel.state.dock_node = 0;
+    }
+    workspace_state.markDirty();
+    state.* = DockState{};
+}

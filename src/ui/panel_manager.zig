@@ -116,6 +116,10 @@ pub const PanelManager = struct {
         _ = self.openDefaultPanel(kind) catch {};
     }
 
+    pub fn hasPanel(self: *PanelManager, kind: workspace.PanelKind) bool {
+        return self.findPanelByKind(kind) != null;
+    }
+
     pub fn findReusablePanel(
         self: *PanelManager,
         kind: workspace.PanelKind,

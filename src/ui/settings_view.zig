@@ -45,6 +45,18 @@ pub fn draw(
 
     if (zgui.beginChild("Settings", .{ .h = 0.0, .child_flags = .{ .border = true } })) {
         theme.push(.heading);
+        zgui.text("Appearance", .{});
+        theme.pop();
+
+        var use_light_theme = theme.getMode() == .light;
+        if (zgui.checkbox("Light theme", .{ .v = &use_light_theme })) {
+            theme.setMode(if (use_light_theme) .light else .dark);
+            theme.apply();
+        }
+
+        zgui.separator();
+
+        theme.push(.heading);
         zgui.text("Connection", .{});
         theme.pop();
 

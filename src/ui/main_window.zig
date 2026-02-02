@@ -65,17 +65,26 @@ pub fn draw(
     var menu_height: f32 = 0.0;
     if (zgui.beginMainMenuBar()) {
         if (zgui.beginMenu("Window", true)) {
-            if (zgui.menuItem("Control", .{})) {
+            const has_control = manager.hasPanel(.Control);
+            const has_chat = manager.hasPanel(.Chat);
+            const has_tool = manager.hasPanel(.ToolOutput);
+            const has_editor = manager.hasPanel(.CodeEditor);
+
+            if (zgui.menuItem("Control", .{ .selected = has_control })) {
                 manager.ensurePanel(.Control);
             }
-            if (zgui.menuItem("Chat", .{})) {
+            if (zgui.menuItem("Chat", .{ .selected = has_chat })) {
                 manager.ensurePanel(.Chat);
             }
-            if (zgui.menuItem("Tool Output", .{})) {
+            if (zgui.menuItem("Tool Output", .{ .selected = has_tool })) {
                 manager.ensurePanel(.ToolOutput);
             }
-            if (zgui.menuItem("Code Editor", .{})) {
+            if (zgui.menuItem("Code Editor", .{ .selected = has_editor })) {
                 manager.ensurePanel(.CodeEditor);
+            }
+            zgui.separator();
+            if (zgui.menuItem("Reset Layout", .{})) {
+                dock_layout.resetDockLayout(allocator, dock_state, &manager.workspace);
             }
             zgui.endMenu();
         }
