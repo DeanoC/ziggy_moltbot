@@ -19,3 +19,10 @@ pub const data = struct {
     pub const approval_card = @import("data/approval_card.zig");
     pub const list_item = @import("data/list_item.zig");
 };
+
+pub const composite = struct {
+    pub const project_card = @import("composite/project_card.zig");
+    pub const source_browser = @import("composite/source_browser.zig");
+    pub const task_progress = @import("composite/task_progress.zig");
+    pub const artifact_row = @import("composite/artifact_row.zig");
+};

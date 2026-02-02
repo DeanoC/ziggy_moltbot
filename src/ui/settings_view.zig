@@ -135,7 +135,6 @@ pub fn draw(
         if (components.layout.card.begin(.{ .title = "Updates", .id = "updates" })) {
             _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
             zgui.textWrapped("Current version: {s}", .{app_version});
-            const step_spacing = theme.activeTheme().spacing.sm;
             const check_state: components.data.progress_step.State = switch (snapshot.status) {
                 .checking => .active,
                 .up_to_date, .update_available => .complete,
@@ -148,9 +147,39 @@ pub fn draw(
                 .failed, .unsupported => .failed,
                 .idle => .pending,
             };
-            components.data.progress_step.draw(.{ .label = "Check", .state = check_state });
-            zgui.sameLine(.{ .spacing = step_spacing });
-            components.data.progress_step.draw(.{ .label = "Download", .state = download_state });
+            var detail_buf: [256]u8 = undefined;
+            const progress_detail: ?[]const u8 = switch (snapshot.status) {
+                .checking => "Checking for updates...",
+                .up_to_date => "Up to date.",
+                .update_available => switch (snapshot.download_status) {
+                    .downloading => "Downloading update...",
+                    .complete => "Update downloaded.",
+                    .failed => "Download failed.",
+                    .unsupported => "Download unsupported.",
+                    .idle => "Update available.",
+                },
+                .failed => std.fmt.bufPrint(
+                    &detail_buf,
+                    "Error: {s}",
+                    .{snapshot.error_message orelse "unknown"},
+                ) catch "Error: unknown",
+                .unsupported => std.fmt.bufPrint(
+                    &detail_buf,
+                    "Unsupported: {s}",
+                    .{snapshot.error_message orelse "not supported"},
+                ) catch "Unsupported",
+                .idle => null,
+            };
+            _ = components.composite.task_progress.draw(.{
+                .title = "Update Progress",
+                .steps = &[_]components.composite.task_progress.Step{
+                    .{ .label = "Check", .state = check_state },
+                    .{ .label = "Download", .state = download_state },
+                },
+                .detail = progress_detail,
+                .show_logs_button = false,
+            });
+            zgui.dummy(.{ .w = 0.0, .h = spacing });
 
             const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
             if (components.core.button.draw("Check Updates", .{ .disabled = snapshot.in_flight or update_url_text.len == 0, .variant = .secondary })) {
@@ -185,21 +214,10 @@ pub fn draw(
                 .filled = true,
                 .size = .small,
             });
-            switch (snapshot.status) {
-                .update_available => if (snapshot.latest_version) |ver| {
+            if (snapshot.status == .update_available) {
+                if (snapshot.latest_version) |ver| {
                     zgui.textWrapped("Latest: {s}", .{ver});
-                },
-                .failed => zgui.textWrapped(
-                    "Error: {s}",
-                    .{snapshot.error_message orelse "unknown"},
-                ),
-                .unsupported => zgui.textWrapped(
-                    "Unsupported: {s}",
-                    .{snapshot.error_message orelse "not supported"},
-                ),
-                .checking => zgui.textWrapped("Checking for updates...", .{}),
-                .up_to_date => zgui.textWrapped("Up to date.", .{}),
-                .idle => {},
+                }
             }
 
             if (snapshot.status == .update_available) {
