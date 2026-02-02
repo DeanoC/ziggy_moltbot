@@ -16,6 +16,8 @@ pub fn ensureDockLayout(
     state: *DockState,
     workspace_state: *workspace.Workspace,
     dockspace_id: workspace.DockNodeId,
+    dock_pos: [2]f32,
+    dock_size: [2]f32,
 ) void {
     if (state.initialized) return;
     state.initialized = true;
@@ -23,11 +25,10 @@ pub fn ensureDockLayout(
 
     if (workspace_state.layout.imgui_ini.len > 0) return;
 
-    const viewport = zgui.getMainViewport();
     zgui.dockBuilderRemoveNode(dockspace_id);
     _ = zgui.dockBuilderAddNode(dockspace_id, .{ .dock_space = true });
-    zgui.dockBuilderSetNodePos(dockspace_id, viewport.work_pos);
-    zgui.dockBuilderSetNodeSize(dockspace_id, viewport.work_size);
+    zgui.dockBuilderSetNodePos(dockspace_id, dock_pos);
+    zgui.dockBuilderSetNodeSize(dockspace_id, dock_size);
 
     var left: zgui.Ident = 0;
     var right: zgui.Ident = 0;
@@ -38,6 +39,13 @@ pub fn ensureDockLayout(
     state.right = right;
     state.bottom = 0;
     state.center = right;
+
+    for (workspace_state.panels.items) |panel| {
+        var label_buf: [256:0]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&label_buf, "{s}##panel_{d}", .{ panel.title, panel.id }) catch continue;
+        const target = defaultDockForKind(state, panel.kind);
+        zgui.dockBuilderDockWindow(label, target);
+    }
 
     zgui.dockBuilderFinish(dockspace_id);
 }

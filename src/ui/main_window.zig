@@ -120,7 +120,9 @@ pub fn draw(
     zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
         const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{});
-        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id);
+        const host_pos = zgui.getWindowPos();
+        const host_size = zgui.getWindowSize();
+        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, host_pos, host_size);
 
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
