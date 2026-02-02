@@ -9,6 +9,9 @@ pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
 };
 
+var select_copy_mode: bool = false;
+var show_tool_output: bool = false;
+
 pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
@@ -41,7 +44,6 @@ pub fn draw(
         .select_copy_mode = select_copy_mode,
         .show_tool_output = show_tool_output,
     });
-
     zgui.separator();
 
     const input_avail = zgui.getContentRegionAvail();
@@ -50,6 +52,3 @@ pub fn draw(
     }
     return action;
 }
-
-var select_copy_mode: bool = false;
-var show_tool_output: bool = false;

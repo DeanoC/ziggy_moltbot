@@ -58,6 +58,10 @@ pub fn draw(
         last_last_id_hash = last_id_hash;
         last_last_len = last_len;
         last_stream_len = if (stream_text) |stream| stream.len else 0;
+        if (opts.show_tool_output != last_show_tool_output) {
+            content_changed = true;
+        }
+        last_show_tool_output = opts.show_tool_output;
 
         // Header controls are in the Chat panel (outside the scroll view).
         if (opts.select_copy_mode) {
@@ -78,6 +82,7 @@ pub fn draw(
                 if (inbox) |store| {
                     if (store.isCommandMessage(msg.id)) continue;
                 }
+                if (!opts.show_tool_output and isToolRole(msg.role)) {
                 if (!opts.show_tool_output and isToolRole(msg.role)) {
                     continue;
                 }
@@ -237,6 +242,7 @@ var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
 var chat_buffer: std.ArrayList(u8) = .empty;
+var last_show_tool_output: bool = false;
 
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
