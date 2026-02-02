@@ -7,6 +7,7 @@ const theme = @import("theme.zig");
 const panel_manager = @import("panel_manager.zig");
 const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
+const data_uri = @import("data_uri.zig");
 const dock_layout = @import("dock_layout.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
@@ -266,17 +267,7 @@ fn openAttachmentInEditor(
     attachment: sessions_panel.AttachmentOpen,
 ) void {
     const language = if (attachment.kind.len > 0) attachment.kind else "text";
-    const content = std.fmt.allocPrint(
-        allocator,
-        "Attachment: {s}\nType: {s}\nURL: {s}\nRole: {s}\nTimestamp: {d}\n",
-        .{
-            attachment.name,
-            attachment.kind,
-            attachment.url,
-            attachment.role,
-            attachment.timestamp,
-        },
-    ) catch return;
+    const content = buildAttachmentContent(allocator, attachment) orelse return;
     defer allocator.free(content);
 
     if (manager.findReusablePanel(.CodeEditor, attachment.name)) |panel| {
@@ -317,4 +308,48 @@ fn openAttachmentInEditor(
         cleanup.deinit(allocator);
         return;
     };
+}
+
+fn buildAttachmentContent(
+    allocator: std.mem.Allocator,
+    attachment: sessions_panel.AttachmentOpen,
+) ?[]u8 {
+    const header = std.fmt.allocPrint(
+        allocator,
+        "Attachment: {s}\nType: {s}\nURL: {s}\nRole: {s}\nTimestamp: {d}\n",
+        .{
+            attachment.name,
+            attachment.kind,
+            attachment.url,
+            attachment.role,
+            attachment.timestamp,
+        },
+    ) catch return null;
+
+    if (std.mem.startsWith(u8, attachment.url, "data:")) {
+        if (data_uri.decodeDataUriBytes(allocator, attachment.url)) |bytes| {
+            defer allocator.free(bytes);
+            if (std.unicode.utf8ValidateSlice(bytes)) {
+                const max_body: usize = 64 * 1024;
+                const body_len = @min(bytes.len, max_body);
+                const body = allocator.dupe(u8, bytes[0..body_len]) catch null;
+                if (body) |text| {
+                    defer allocator.free(text);
+                    const suffix: []const u8 = if (bytes.len > body_len) "\n\n[truncated]" else "";
+                    const combined = std.fmt.allocPrint(
+                        allocator,
+                        "{s}\n---\n{s}{s}",
+                        .{ header, text, suffix },
+                    ) catch {
+                        allocator.free(header);
+                        return header;
+                    };
+                    allocator.free(header);
+                    return combined;
+                }
+            }
+        } else |_| {}
+    }
+
+    return header;
 }

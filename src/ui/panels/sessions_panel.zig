@@ -5,6 +5,8 @@ const types = @import("../../protocol/types.zig");
 const components = @import("../components/components.zig");
 const session_list = @import("../session_list.zig");
 const theme = @import("../theme.zig");
+const image_cache = @import("../image_cache.zig");
+const data_uri = @import("../data_uri.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -173,6 +175,8 @@ fn drawSessionDetails(
             zgui.textWrapped("Role: {s}", .{preview.role});
             zgui.textWrapped("Timestamp: {d}", .{preview.timestamp});
             zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+            drawAttachmentPreview(allocator, preview);
+            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
             if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
                 action.open_attachment = preview;
             }
@@ -273,4 +277,94 @@ fn collectAttachmentPreviews(
         }
     }
     return buf[0..len];
+}
+
+fn drawAttachmentPreview(allocator: std.mem.Allocator, preview: AttachmentOpen) void {
+    if (isImageAttachment(preview)) {
+        if (preview.url.len == 0) {
+            zgui.textDisabled("Image preview unavailable.", .{});
+            return;
+        }
+        image_cache.request(preview.url);
+        const avail = zgui.getContentRegionAvail();
+        const max_width = @max(160.0, @min(360.0, avail[0]));
+        const max_height: f32 = 220.0;
+        if (image_cache.get(preview.url)) |entry| {
+            switch (entry.state) {
+                .ready => {
+                    const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
+                    const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+                    const w = @as(f32, @floatFromInt(entry.width));
+                    const h = @as(f32, @floatFromInt(entry.height));
+                    const aspect = if (h > 0) w / h else 1.0;
+                    var draw_w = @min(max_width, w);
+                    var draw_h = draw_w / aspect;
+                    if (draw_h > max_height) {
+                        draw_h = max_height;
+                        draw_w = draw_h * aspect;
+                    }
+                    zgui.image(tex_ref, .{ .w = draw_w, .h = draw_h });
+                },
+                .loading => {
+                    zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image preview...", .{});
+                    zgui.dummy(.{ .w = max_width, .h = 120.0 });
+                },
+                .failed => {
+                    zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Image failed to load", .{});
+                    if (entry.error_message) |err| {
+                        zgui.sameLine(.{});
+                        zgui.textDisabled("{s}", .{err});
+                    }
+                },
+            }
+        } else {
+            zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image preview...", .{});
+            zgui.dummy(.{ .w = max_width, .h = 120.0 });
+        }
+        return;
+    }
+
+    if (std.mem.startsWith(u8, preview.url, "data:")) {
+        const max_uri_len: usize = 256 * 1024;
+        if (preview.url.len > max_uri_len) {
+            zgui.textDisabled("Data attachment too large to preview.", .{});
+            return;
+        }
+        if (data_uri.decodeDataUriBytes(allocator, preview.url)) |bytes| {
+            defer allocator.free(bytes);
+            if (!std.unicode.utf8ValidateSlice(bytes)) {
+                zgui.textDisabled("Binary data attachment.", .{});
+                return;
+            }
+            const max_preview: usize = 320;
+            const preview_len = @min(bytes.len, max_preview);
+            zgui.textWrapped("{s}", .{bytes[0..preview_len]});
+            if (bytes.len > preview_len) {
+                zgui.textDisabled("Preview truncated.", .{});
+            }
+            return;
+        } else |_| {}
+    }
+
+    zgui.textDisabled("Preview unavailable.", .{});
+}
+
+fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
+    if (value.len < suffix.len) return false;
+    const start = value.len - suffix.len;
+    var index: usize = 0;
+    while (index < suffix.len) : (index += 1) {
+        if (std.ascii.toLower(value[start + index]) != suffix[index]) return false;
+    }
+    return true;
+}
+
+fn isImageAttachment(att: AttachmentOpen) bool {
+    if (std.mem.indexOf(u8, att.kind, "image") != null) return true;
+    if (std.mem.startsWith(u8, att.url, "data:image/")) return true;
+    return endsWithIgnoreCase(att.url, ".png") or
+        endsWithIgnoreCase(att.url, ".jpg") or
+        endsWithIgnoreCase(att.url, ".jpeg") or
+        endsWithIgnoreCase(att.url, ".gif") or
+        endsWithIgnoreCase(att.url, ".webp");
 }
