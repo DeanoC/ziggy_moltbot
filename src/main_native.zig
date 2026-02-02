@@ -693,9 +693,26 @@ pub fn main() !void {
         }
     }
 
-    const window = try glfw.Window.create(1280, 720, "ZiggyStarClaw", null, null);
+    var window_width: c_int = 1280;
+    var window_height: c_int = 720;
+    if (app_state_state.window_width) |w| {
+        if (w > 200) window_width = @intCast(w);
+    }
+    if (app_state_state.window_height) |h| {
+        if (h > 200) window_height = @intCast(h);
+    }
+
+    const window = try glfw.Window.create(window_width, window_height, "ZiggyStarClaw", null, null);
     defer window.destroy();
     setWindowIcon(window);
+    if (app_state_state.window_maximized) {
+        window.maximize();
+    } else if (app_state_state.window_pos_x != null and app_state_state.window_pos_y != null) {
+        window.setPos(
+            @intCast(app_state_state.window_pos_x.?),
+            @intCast(app_state_state.window_pos_y.?),
+        );
+    }
 
     var renderer: ?webgpu_renderer.Renderer = null;
     if (use_webgpu) {
@@ -783,6 +800,16 @@ pub fn main() !void {
     var next_ping_at_ms: i64 = 0;
     defer {
         app_state_state.last_connected = auto_connect_enabled;
+        const iconified = window.getAttribute(.iconified);
+        if (!iconified) {
+            const size = window.getSize();
+            const pos = window.getPos();
+            app_state_state.window_width = size[0];
+            app_state_state.window_height = size[1];
+            app_state_state.window_pos_x = pos[0];
+            app_state_state.window_pos_y = pos[1];
+        }
+        app_state_state.window_maximized = window.getAttribute(.maximized);
         app_state.save(allocator, "ziggystarclaw_state.json", app_state_state) catch |err| {
             logger.warn("Failed to save app state: {}", .{err});
         };

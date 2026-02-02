@@ -58,6 +58,10 @@ pub fn draw(
         last_last_id_hash = last_id_hash;
         last_last_len = last_len;
         last_stream_len = if (stream_text) |stream| stream.len else 0;
+        if (opts.show_tool_output != last_show_tool_output) {
+            content_changed = true;
+        }
+        last_show_tool_output = opts.show_tool_output;
 
         // Header controls are in the Chat panel (outside the scroll view).
         if (opts.select_copy_mode) {
@@ -172,9 +176,24 @@ pub fn draw(
 }
 
 fn roleColor(role: []const u8) [4]f32 {
-    if (std.mem.eql(u8, role, "assistant")) return .{ 0.5, 0.8, 1.0, 1.0 };
-    if (std.mem.eql(u8, role, "system")) return .{ 0.8, 0.8, 0.6, 1.0 };
-    return .{ 0.7, 0.7, 0.7, 1.0 };
+    if (std.mem.eql(u8, role, "assistant")) return .{
+        0.5,
+        0.8,
+        1.0,
+        1.0,
+    };
+    if (std.mem.eql(u8, role, "system")) return .{
+        0.8,
+        0.8,
+        0.6,
+        1.0,
+    };
+    return .{
+        0.7,
+        0.7,
+        0.7,
+        1.0,
+    };
 }
 
 fn roleLabel(role: []const u8) []const u8 {
@@ -237,6 +256,7 @@ var last_last_id_hash: u64 = 0;
 var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
 var chat_buffer: std.ArrayList(u8) = .empty;
+var last_show_tool_output: bool = false;
 
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
