@@ -1,5 +1,7 @@
 const std = @import("std");
 const zgui = @import("zgui");
+const theme = @import("theme.zig");
+const components = @import("components/components.zig");
 const types = @import("../protocol/types.zig");
 
 pub const SessionAction = struct {
@@ -16,22 +18,25 @@ pub fn draw(
 ) SessionAction {
     var action = SessionAction{};
 
+    const t = theme.activeTheme();
+    theme.push(.heading);
     zgui.text("Sessions", .{});
-    if (zgui.button("Refresh", .{})) {
+    theme.pop();
+    if (components.core.button.draw("Refresh", .{ .variant = .secondary, .size = .small })) {
         action.refresh = true;
     }
-    zgui.sameLine(.{ .spacing = 8.0 });
-    if (zgui.button("New", .{})) {
+    zgui.sameLine(.{ .spacing = t.spacing.sm });
+    if (components.core.button.draw("New", .{ .variant = .primary, .size = .small })) {
         action.new_session = true;
     }
     if (loading) {
         zgui.sameLine(.{});
-        zgui.textDisabled("Loading...", .{});
+        components.core.badge.draw("Loading", .{ .variant = .primary, .filled = false, .size = .small });
     }
 
     zgui.separator();
 
-    if (zgui.beginChild("SessionList", .{ .child_flags = .{ .border = true } })) {
+    if (components.layout.scroll_area.begin(.{ .id = "SessionList", .border = true })) {
         if (sessions.len == 0) {
             zgui.textDisabled("No sessions loaded.", .{});
         }
@@ -46,7 +51,7 @@ pub fn draw(
             zgui.popId();
         }
     }
-    zgui.endChild();
+    components.layout.scroll_area.end();
 
     return action;
 }
