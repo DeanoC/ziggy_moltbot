@@ -1739,7 +1739,8 @@ fn cliLogFn(
     // - cli_log_level (set via env MOLT_LOG_LEVEL today)
     // - logger.getLevel() (set by node-mode/operator-mode flags)
     const logger_level = toStdLogLevel(logger.getLevel());
-    const effective = if (stdLogRank(cli_log_level) > stdLogRank(logger_level)) cli_log_level else logger_level;
+    // Choose the more verbose (lower rank) of the two thresholds.
+    const effective = if (stdLogRank(cli_log_level) < stdLogRank(logger_level)) cli_log_level else logger_level;
     if (stdLogRank(level) < stdLogRank(effective)) return;
 
     var stderr = std.fs.File.stderr().deprecatedWriter();
