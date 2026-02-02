@@ -10,7 +10,10 @@ const builtin = @import("builtin");
 pub const WebSocketClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
+    // Token used for the initial WebSocket handshake (Authorization header)
     token: []const u8,
+    // Token used for the connect request auth payload. If unset, falls back to `token`.
+    connect_auth_token: ?[]const u8 = null,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,
     connect_timeout_ms: u32 = 10_000,
@@ -76,6 +79,10 @@ pub const WebSocketClient = struct {
     }) void {
         self.connect_caps = params.caps;
         self.connect_commands = params.commands;
+    }
+
+    pub fn setConnectAuthToken(self: *WebSocketClient, token: []const u8) void {
+        self.connect_auth_token = token;
     }
 
     pub fn storeDeviceToken(
@@ -259,10 +266,14 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const client_mode = self.connect_client_mode;
     // Prefer the configured gateway token (self.token). Only fall back to a stored device token
     // if we weren't given a gateway token.
-    const auth_token = if (self.token.len > 0) self.token else if (self.device_identity) |ident|
-        (ident.device_token orelse "")
-    else
-        "";
+    const auth_token = blk: {
+        if (self.connect_auth_token) |t| {
+            if (t.len > 0) break :blk t;
+        }
+        if (self.token.len > 0) break :blk self.token;
+        if (self.device_identity) |ident| break :blk (ident.device_token orelse "");
+        break :blk "";
+    };
     const auth = if (auth_token.len > 0) gateway.ConnectAuth{ .token = auth_token } else null;
     var signature_buf: ?[]u8 = null;
     defer if (signature_buf) |sig| self.allocator.free(sig);

@@ -59,8 +59,10 @@ pub const usage =
     \\                            Examples:
     \\                              --url http://100.101.192.123:18789
     \\                              --url ws://127.0.0.1:18789/ws
-    \\  --token <token>            Auth token for gateway connect (alias: --auth-token)
-    \\                            (falls back to env var MOLT_TOKEN if not set)
+    \\  --gateway-token <token>   Token for the initial websocket handshake (gateway auth)
+    \\  --node-token <token>      Token for node connect auth (role=node)
+    \\  --operator-token <token>  Token for operator connect auth (role=operator) when --as-operator
+    \\  --token <token>           Back-compat alias for --gateway-token (NOT node auth)
     \\  --host <host>              Gateway host (default: 127.0.0.1)
     \\  --port <port>              Gateway port (default: 18789)
     \\  --display-name <name>      Node display name
@@ -78,7 +80,12 @@ pub const usage =
 
 pub const NodeCliOptions = struct {
     gateway_url: ?[]const u8 = null,
+    // Token for the initial websocket handshake (gateway auth).
     gateway_token: ?[]const u8 = null,
+    // Token for the node connect auth (role=node). Required when the gateway enforces node auth.
+    node_token: ?[]const u8 = null,
+    // Token for the operator connect auth (role=operator) when --as-operator is enabled.
+    operator_token: ?[]const u8 = null,
 
     gateway_host: []const u8 = "127.0.0.1",
     gateway_port: u16 = 18789,
@@ -106,7 +113,20 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.gateway_url = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--gateway-token")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.gateway_token = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--node-token")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.node_token = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--operator-token")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.operator_token = try allocator.dupe(u8, args[i]);
         } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token")) {
+            // Back-compat: treat --token as the gateway websocket auth token.
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.gateway_token = try allocator.dupe(u8, args[i]);
@@ -245,10 +265,9 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         if (opts.tls) config.tls = true;
     }
 
-    // Gateway auth token:
-    // 1) CLI --token
+    // Websocket handshake token (gateway auth):
+    // 1) CLI --gateway-token / --token
     // 2) MOLT_TOKEN env var
-    // (No hard requirement: gateway may be open or may accept device token from identity.)
     if (opts.gateway_token) |tok| {
         if (config.gateway_token) |old| allocator.free(old);
         config.gateway_token = try allocator.dupe(u8, tok);
@@ -256,6 +275,19 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         if (readEnvOwned(allocator, "MOLT_TOKEN")) |tok| {
             config.gateway_token = tok;
         }
+    }
+
+    // Node connect auth token (role=node)
+    if (opts.node_token) |tok| {
+        if (config.device_token) |old| allocator.free(old);
+        config.device_token = try allocator.dupe(u8, tok);
+    }
+
+    // Operator connect auth token (role=operator) for dual-connection mode
+    if (opts.operator_token) |tok| {
+        // We (currently) reuse gateway_token field for operator connect auth too.
+        if (config.gateway_token) |old| allocator.free(old);
+        config.gateway_token = try allocator.dupe(u8, tok);
     }
 
     if (opts.as_node) |v| {
@@ -324,6 +356,9 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 opts.insecure_tls,
                 null,
             );
+            if (config.device_token) |tok| {
+                ws.setConnectAuthToken(tok);
+            }
             ws.setConnectProfile(.{
                 .role = "node",
                 .scopes = &.{},
@@ -371,6 +406,11 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 opts.insecure_tls,
                 null,
             );
+            // Operator connect auth: default to gateway token unless overridden.
+            // (Right now we reuse config.gateway_token for both handshake + operator connect.)
+            if (config.gateway_token) |tok| {
+                op.setConnectAuthToken(tok);
+            }
             op.setConnectProfile(.{
                 .role = "operator",
                 .scopes = config.operator_scopes,
