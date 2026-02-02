@@ -392,6 +392,19 @@ fn drawAttachmentPreview(
 
     if (content) |body| {
         const format = detectPreviewFormat(preview, body);
+        const format_label = switch (format) {
+            .json => "json",
+            .markdown => "markdown",
+            .log => "log",
+            .text => "text",
+        };
+        zgui.textDisabled("Format: {s}", .{format_label});
+        zgui.sameLine(.{ .spacing = t.spacing.sm });
+        if (components.core.button.draw("Copy Preview", .{ .variant = .ghost, .size = .small })) {
+            const copy_z = zgui.formatZ("{s}", .{body});
+            zgui.setClipboardText(copy_z);
+        }
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
         drawTextPreview(allocator, preview, body, format, t);
         return;
     }
