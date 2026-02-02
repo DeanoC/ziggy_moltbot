@@ -88,11 +88,27 @@ pub const NodeConfig = struct {
 
     /// Get the default config path
     pub fn defaultPath(allocator: std.mem.Allocator) ![]const u8 {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
-            return allocator.dupe(u8, ".openclaw/node.json");
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
         };
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".openclaw", "node.json" });
+        if (home) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, ".openclaw", "node.json" });
+        }
+
+        // Windows fallback
+        const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (userprofile) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, ".openclaw", "node.json" });
+        }
+
+        // Last resort: relative path
+        return allocator.dupe(u8, ".openclaw/node.json");
     }
 
     /// Load config from file, or return null if not found

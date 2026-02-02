@@ -324,10 +324,6 @@ pub fn main() !void {
 
     // Handle node mode
     if (node_mode) {
-        if (builtin.os.tag == .windows) {
-            logger.err("Node mode is not supported on Windows.", .{});
-            return error.NodeModeUnsupported;
-        }
         const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
         try main_node.runNodeMode(allocator, node_opts);
         return;

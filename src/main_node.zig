@@ -55,6 +55,12 @@ pub const usage =
     \\  ziggystarclaw-cli --node-mode [options]
     \\
     \\Options:
+    \\  --url <url>                Gateway URL (ws://, wss://, http://, https://)
+    \\                            Examples:
+    \\                              --url http://100.101.192.123:18789
+    \\                              --url ws://127.0.0.1:18789/ws
+    \\  --token <token>            Auth token for gateway connect (alias: --auth-token)
+    \\                            (falls back to env var MOLT_TOKEN if not set)
     \\  --host <host>              Gateway host (default: 127.0.0.1)
     \\  --port <port>              Gateway port (default: 18789)
     \\  --display-name <name>      Node display name
@@ -63,7 +69,7 @@ pub const usage =
     \\  --save-config              Save config after successful connection
     \\  --as-node / --no-node      Enable/disable the node connection (default: on)
     \\  --as-operator / --no-operator  Enable/disable the operator connection (default: off)
-    \\  --tls                      Use TLS for connection
+    \\  --tls                      Use TLS for connection (ignored if --url is provided)
     \\  --insecure-tls             Disable TLS verification
     \\  --log-level <level>        Log level (debug|info|warn|error)
     \\  -h, --help                 Show help
@@ -71,6 +77,9 @@ pub const usage =
 ;
 
 pub const NodeCliOptions = struct {
+    gateway_url: ?[]const u8 = null,
+    gateway_token: ?[]const u8 = null,
+
     gateway_host: []const u8 = "127.0.0.1",
     gateway_port: u16 = 18789,
     display_name: ?[]const u8 = null,
@@ -93,7 +102,15 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--host")) {
+        if (std.mem.eql(u8, arg, "--url")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.gateway_url = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.gateway_token = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--host")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.gateway_host = try allocator.dupe(u8, args[i]);
@@ -150,6 +167,37 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
     return opts;
 }
 
+fn applyUrlToConfig(allocator: std.mem.Allocator, config: *NodeConfig, url: []const u8) !void {
+    // Accept ws://, wss://, http://, https:// and normalize into host/port/tls.
+    // If the URL includes a path, we ignore it (we always connect to /ws).
+    const uri = try std.Uri.parse(url);
+
+    // Some users may pass a bare host:port; in that case parsing may treat it as a path.
+    // We only support full URLs for now to keep behavior predictable.
+    const scheme = uri.scheme;
+    const host_comp = uri.host orelse return error.InvalidArguments;
+    const host = switch (host_comp) {
+        .raw => |s| s,
+        .percent_encoded => |s| s,
+    };
+
+    const tls = std.mem.eql(u8, scheme, "wss") or std.mem.eql(u8, scheme, "https");
+
+    const port: u16 = if (uri.port) |p| @intCast(p) else if (tls) 443 else 80;
+
+    allocator.free(config.gateway_host);
+    config.gateway_host = try allocator.dupe(u8, host);
+    config.gateway_port = port;
+    config.tls = tls;
+}
+
+fn readEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => null,
+    };
+}
+
 pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     logger.setLevel(opts.log_level);
 
@@ -185,16 +233,37 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         allocator.free(config.display_name);
         config.display_name = try allocator.dupe(u8, name);
     }
+
+    // Gateway url/host/port/tls
+    if (opts.gateway_url) |value| {
+        try applyUrlToConfig(allocator, &config, value);
+    } else {
+        // host/port only apply when --url isn't set
+        allocator.free(config.gateway_host);
+        config.gateway_host = try allocator.dupe(u8, opts.gateway_host);
+        config.gateway_port = opts.gateway_port;
+        if (opts.tls) config.tls = true;
+    }
+
+    // Gateway auth token:
+    // 1) CLI --token
+    // 2) MOLT_TOKEN env var
+    // (No hard requirement: gateway may be open or may accept device token from identity.)
+    if (opts.gateway_token) |tok| {
+        if (config.gateway_token) |old| allocator.free(old);
+        config.gateway_token = try allocator.dupe(u8, tok);
+    } else if (config.gateway_token == null) {
+        if (readEnvOwned(allocator, "MOLT_TOKEN")) |tok| {
+            config.gateway_token = tok;
+        }
+    }
+
     if (opts.as_node) |v| {
         config.enable_node_connection = v;
     }
     if (opts.as_operator) |v| {
         config.enable_operator_connection = v;
     }
-    if (opts.tls) {
-        config.tls = true;
-    }
-    config.gateway_port = opts.gateway_port;
 
     // Initialize node context
     var node_ctx = try NodeContext.init(allocator, config.node_id, config.display_name);
