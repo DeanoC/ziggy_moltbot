@@ -664,7 +664,7 @@ pub fn main() !void {
 
     // Handle --run (system.run)
     if (run_command) |command| {
-        try runNodeCommand(allocator, &ws_client, target_node.?, command);
+        try runNodeCommand(allocator, &ws_client, &ctx, target_node.?, command);
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         if (save_config) {
             try config.save(allocator, config_path, cfg);
@@ -679,7 +679,7 @@ pub fn main() !void {
         defer params_obj.deinit();
         try params_obj.put("name", std.json.Value{ .string = name });
 
-        try invokeNode(allocator, &ws_client, target_node.?, "system.which", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "system.which", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -690,14 +690,14 @@ pub fn main() !void {
         defer params_obj.deinit();
         try params_obj.put("title", std.json.Value{ .string = title });
 
-        try invokeNode(allocator, &ws_client, target_node.?, "system.notify", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "system.notify", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
 
     // Handle --ps (process.list)
     if (ps_list) {
-        try invokeNode(allocator, &ws_client, target_node.?, "process.list", null);
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "process.list", null);
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -710,7 +710,7 @@ pub fn main() !void {
         defer freeJsonStringArray(allocator, &cmd_arr);
         try params_obj.put("command", std.json.Value{ .array = cmd_arr });
 
-        try invokeNode(allocator, &ws_client, target_node.?, "process.spawn", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "process.spawn", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -721,7 +721,7 @@ pub fn main() !void {
         defer params_obj.deinit();
         try params_obj.put("processId", std.json.Value{ .string = pid });
 
-        try invokeNode(allocator, &ws_client, target_node.?, "process.poll", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "process.poll", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -732,19 +732,19 @@ pub fn main() !void {
         defer params_obj.deinit();
         try params_obj.put("processId", std.json.Value{ .string = pid });
 
-        try invokeNode(allocator, &ws_client, target_node.?, "process.stop", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "process.stop", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
 
     // Handle canvas
     if (canvas_present) {
-        try invokeNode(allocator, &ws_client, target_node.?, "canvas.present", null);
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "canvas.present", null);
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
     if (canvas_hide) {
-        try invokeNode(allocator, &ws_client, target_node.?, "canvas.hide", null);
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "canvas.hide", null);
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -752,7 +752,7 @@ pub fn main() !void {
         var params_obj = std.json.ObjectMap.init(allocator);
         defer params_obj.deinit();
         try params_obj.put("url", std.json.Value{ .string = url });
-        try invokeNode(allocator, &ws_client, target_node.?, "canvas.navigate", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "canvas.navigate", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -760,7 +760,7 @@ pub fn main() !void {
         var params_obj = std.json.ObjectMap.init(allocator);
         defer params_obj.deinit();
         try params_obj.put("js", std.json.Value{ .string = js });
-        try invokeNode(allocator, &ws_client, target_node.?, "canvas.eval", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "canvas.eval", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -768,7 +768,7 @@ pub fn main() !void {
         var params_obj = std.json.ObjectMap.init(allocator);
         defer params_obj.deinit();
         try params_obj.put("path", std.json.Value{ .string = path });
-        try invokeNode(allocator, &ws_client, target_node.?, "canvas.snapshot", std.json.Value{ .object = params_obj });
+        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "canvas.snapshot", std.json.Value{ .object = params_obj });
         try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
@@ -979,7 +979,7 @@ fn runRepl(
                     try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
                     continue;
                 };
-                try runNodeCommand(allocator, ws_client, target_node, command);
+                try runNodeCommand(allocator, ws_client, ctx, target_node, command);
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .which => {
@@ -995,7 +995,7 @@ fn runRepl(
                 var params_obj = std.json.ObjectMap.init(allocator);
                 defer params_obj.deinit();
                 try params_obj.put("name", std.json.Value{ .string = name });
-                try invokeNode(allocator, ws_client, target_node, "system.which", std.json.Value{ .object = params_obj });
+                try invokeNode(allocator, ws_client, ctx, target_node, "system.which", std.json.Value{ .object = params_obj });
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .notify => {
@@ -1011,7 +1011,7 @@ fn runRepl(
                 var params_obj = std.json.ObjectMap.init(allocator);
                 defer params_obj.deinit();
                 try params_obj.put("title", std.json.Value{ .string = title });
-                try invokeNode(allocator, ws_client, target_node, "system.notify", std.json.Value{ .object = params_obj });
+                try invokeNode(allocator, ws_client, ctx, target_node, "system.notify", std.json.Value{ .object = params_obj });
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .ps => {
@@ -1019,7 +1019,7 @@ fn runRepl(
                     try stdout.writeAll("No current node. Use 'node <id>' to set.\n");
                     continue;
                 };
-                try invokeNode(allocator, ws_client, target_node, "process.list", null);
+                try invokeNode(allocator, ws_client, ctx, target_node, "process.list", null);
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .spawn => {
@@ -1037,7 +1037,7 @@ fn runRepl(
                 var cmd_arr = try buildJsonCommandArray(allocator, command);
                 defer freeJsonStringArray(allocator, &cmd_arr);
                 try params_obj.put("command", std.json.Value{ .array = cmd_arr });
-                try invokeNode(allocator, ws_client, target_node, "process.spawn", std.json.Value{ .object = params_obj });
+                try invokeNode(allocator, ws_client, ctx, target_node, "process.spawn", std.json.Value{ .object = params_obj });
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .poll => {
@@ -1053,7 +1053,7 @@ fn runRepl(
                 var params_obj = std.json.ObjectMap.init(allocator);
                 defer params_obj.deinit();
                 try params_obj.put("processId", std.json.Value{ .string = pid });
-                try invokeNode(allocator, ws_client, target_node, "process.poll", std.json.Value{ .object = params_obj });
+                try invokeNode(allocator, ws_client, ctx, target_node, "process.poll", std.json.Value{ .object = params_obj });
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .stop => {
@@ -1069,7 +1069,7 @@ fn runRepl(
                 var params_obj = std.json.ObjectMap.init(allocator);
                 defer params_obj.deinit();
                 try params_obj.put("processId", std.json.Value{ .string = pid });
-                try invokeNode(allocator, ws_client, target_node, "process.stop", std.json.Value{ .object = params_obj });
+                try invokeNode(allocator, ws_client, ctx, target_node, "process.stop", std.json.Value{ .object = params_obj });
                 try awaitAndPrintNodeResult(allocator, ws_client, ctx);
             },
             .canvas => {
@@ -1087,9 +1087,9 @@ fn runRepl(
                 const arg = std.mem.trim(u8, subparts.rest(), " \t\r\n");
 
                 if (std.mem.eql(u8, op, "present")) {
-                    try invokeNode(allocator, ws_client, target_node, "canvas.present", null);
+                    try invokeNode(allocator, ws_client, ctx, target_node, "canvas.present", null);
                 } else if (std.mem.eql(u8, op, "hide")) {
-                    try invokeNode(allocator, ws_client, target_node, "canvas.hide", null);
+                    try invokeNode(allocator, ws_client, ctx, target_node, "canvas.hide", null);
                 } else if (std.mem.eql(u8, op, "navigate")) {
                     if (arg.len == 0) {
                         try stdout.writeAll("Usage: canvas navigate <url>\n");
@@ -1098,7 +1098,7 @@ fn runRepl(
                     var params_obj = std.json.ObjectMap.init(allocator);
                     defer params_obj.deinit();
                     try params_obj.put("url", std.json.Value{ .string = arg });
-                    try invokeNode(allocator, ws_client, target_node, "canvas.navigate", std.json.Value{ .object = params_obj });
+                    try invokeNode(allocator, ws_client, ctx, target_node, "canvas.navigate", std.json.Value{ .object = params_obj });
                 } else if (std.mem.eql(u8, op, "eval")) {
                     if (arg.len == 0) {
                         try stdout.writeAll("Usage: canvas eval <js>\n");
@@ -1107,7 +1107,7 @@ fn runRepl(
                     var params_obj = std.json.ObjectMap.init(allocator);
                     defer params_obj.deinit();
                     try params_obj.put("js", std.json.Value{ .string = arg });
-                    try invokeNode(allocator, ws_client, target_node, "canvas.eval", std.json.Value{ .object = params_obj });
+                    try invokeNode(allocator, ws_client, ctx, target_node, "canvas.eval", std.json.Value{ .object = params_obj });
                 } else if (std.mem.eql(u8, op, "snapshot")) {
                     if (arg.len == 0) {
                         try stdout.writeAll("Usage: canvas snapshot <path>\n");
@@ -1116,7 +1116,7 @@ fn runRepl(
                     var params_obj = std.json.ObjectMap.init(allocator);
                     defer params_obj.deinit();
                     try params_obj.put("path", std.json.Value{ .string = arg });
-                    try invokeNode(allocator, ws_client, target_node, "canvas.snapshot", std.json.Value{ .object = params_obj });
+                    try invokeNode(allocator, ws_client, ctx, target_node, "canvas.snapshot", std.json.Value{ .object = params_obj });
                 } else {
                     try stdout.print("Unknown canvas op: {s}\n", .{op});
                     continue;
@@ -1375,6 +1375,7 @@ fn freeJsonStringArray(allocator: std.mem.Allocator, arr: *std.json.Array) void 
 fn invokeNode(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
     target_node: []const u8,
     command: []const u8,
     params_value: ?std.json.Value,
@@ -1390,10 +1391,10 @@ fn invokeNode(
     };
 
     const request = try requests.buildRequestPayload(allocator, "node.invoke", params);
-    defer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
+    defer allocator.free(request.payload);
+
+    // Mark as pending so response routing can populate ctx.node_result.
+    ctx.setPendingNodeInvokeRequest(request.id);
 
     logger.info("Invoking node {s}: {s}", .{ target_node, command });
     try ws_client.send(request.payload);
@@ -1480,6 +1481,7 @@ fn printNodeResult(allocator: std.mem.Allocator, result: []const u8) !void {
 fn runNodeCommand(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
     target_node: []const u8,
     command: []const u8,
 ) !void {
@@ -1491,7 +1493,7 @@ fn runNodeCommand(
 
     try params_json.put("command", std.json.Value{ .array = command_arr });
 
-    try invokeNode(allocator, ws_client, target_node, "system.run", std.json.Value{ .object = params_json });
+    try invokeNode(allocator, ws_client, ctx, target_node, "system.run", std.json.Value{ .object = params_json });
 }
 
 fn resolveApproval(
