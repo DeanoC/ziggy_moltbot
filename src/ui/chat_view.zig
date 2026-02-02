@@ -83,7 +83,6 @@ pub fn draw(
                     if (store.isCommandMessage(msg.id)) continue;
                 }
                 if (!opts.show_tool_output and isToolRole(msg.role)) {
-                if (!opts.show_tool_output and isToolRole(msg.role)) {
                     continue;
                 }
                 zgui.pushIntId(@intCast(index));
@@ -177,9 +176,24 @@ pub fn draw(
 }
 
 fn roleColor(role: []const u8) [4]f32 {
-    if (std.mem.eql(u8, role, "assistant")) return .{ 0.5, 0.8, 1.0, 1.0 };
-    if (std.mem.eql(u8, role, "system")) return .{ 0.8, 0.8, 0.6, 1.0 };
-    return .{ 0.7, 0.7, 0.7, 1.0 };
+    if (std.mem.eql(u8, role, "assistant")) return .{
+        0.5,
+        0.8,
+        1.0,
+        1.0,
+    };
+    if (std.mem.eql(u8, role, "system")) return .{
+        0.8,
+        0.8,
+        0.6,
+        1.0,
+    };
+    return .{
+        0.7,
+        0.7,
+        0.7,
+        1.0,
+    };
 }
 
 fn roleLabel(role: []const u8) []const u8 {
