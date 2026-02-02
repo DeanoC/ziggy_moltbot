@@ -284,13 +284,14 @@ pub const NodeContext = struct {
     }
 };
 
-pub fn generateNodeId(buf: *[32]u8) ![]const u8 {
+pub fn generateNodeId(buf: *[64]u8) ![]const u8 {
     const prefix = "zsc-node-";
     @memcpy(buf[0..prefix.len], prefix);
-    
+
+    // 12 random bytes -> 24 hex chars. Total length = prefix + 24.
     var random_bytes: [12]u8 = undefined;
     std.crypto.random.bytes(&random_bytes);
-    
+
     const hex_chars = "0123456789abcdef";
     var i: usize = prefix.len;
     for (random_bytes) |byte| {
@@ -298,7 +299,7 @@ pub fn generateNodeId(buf: *[32]u8) ![]const u8 {
         buf[i + 1] = hex_chars[byte & 0x0f];
         i += 2;
     }
-    
+
     return buf[0..i];
 }
 

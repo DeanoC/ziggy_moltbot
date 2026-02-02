@@ -213,7 +213,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     }
     if (config.canvas_enabled) {
         try node_ctx.registerCanvasCapabilities();
-        
+
         // Initialize canvas with configured backend
         const canvas_config = canvas.CanvasConfig{
             .backend = parseCanvasBackend(config.canvas_backend),
@@ -223,7 +223,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             .chrome_path = config.chrome_path,
             .chrome_debug_port = config.chrome_debug_port,
         };
-        
+
         node_ctx.canvas_manager.initialize(canvas_config) catch |err| {
             logger.warn("Failed to initialize canvas: {s}", .{@errorName(err)});
             logger.warn("Canvas commands will return errors", .{});
@@ -263,7 +263,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             });
             // Declare what this node can do (gateway requires a declared command list)
             ws.setConnectNodeMetadata(.{
-                .caps = &.{ "system" },
+                .caps = &.{"system"},
                 .commands = &.{
                     "system.run",
                     "system.which",
@@ -726,12 +726,12 @@ fn buildErrorResponse(
     try response_obj.put("type", std.json.Value{ .string = "res" });
     try response_obj.put("id", std.json.Value{ .string = try allocator.dupe(u8, request_id) });
     try response_obj.put("ok", std.json.Value{ .bool = false });
-    
+
     var error_obj = std.json.ObjectMap.init(allocator);
     try error_obj.put("code", std.json.Value{ .string = try allocator.dupe(u8, code) });
     try error_obj.put("message", std.json.Value{ .string = try allocator.dupe(u8, message) });
     try response_obj.put("error", std.json.Value{ .object = error_obj });
-    
+
     const response = std.json.Value{ .object = response_obj };
 
     const json = try messages.serializeMessage(allocator, response);
@@ -739,7 +739,7 @@ fn buildErrorResponse(
 }
 
 fn generateNodeIdAlloc(allocator: std.mem.Allocator) ![]const u8 {
-    var buf: [32]u8 = undefined;
+    var buf: [64]u8 = undefined;
     const id = try node_context.generateNodeId(&buf);
     return try allocator.dupe(u8, id);
 }
