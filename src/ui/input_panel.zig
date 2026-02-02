@@ -23,6 +23,9 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
     var input_h = text_size[1] + style.frame_padding[1] * 2.0 + 8.0;
     input_h = @max(min_h, @min(max_h_clamped, input_h));
 
+    // Dear ImGui's InputTextMultiline doesn't always soft-wrap as expected across backends.
+    // Try to enforce wrapping by pushing a wrap position for the duration of the widget.
+    zgui.pushTextWrapPos(0.0);
     const changed = zgui.inputTextMultiline("##message_input", .{
         .buf = input_buf[0.. :0],
         .w = avail_w,
@@ -33,6 +36,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
             .no_horizontal_scroll = true,
         },
     });
+    zgui.popTextWrapPos();
 
     // Placeholder/hint overlay for multiline
     if (!zgui.isItemActive() and text.len == 0) {
