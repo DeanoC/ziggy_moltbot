@@ -569,8 +569,16 @@ fn cloneNode(allocator: std.mem.Allocator, node: types.Node) !types.Node {
         .display_name = if (node.display_name) |name| try allocator.dupe(u8, name) else null,
         .platform = if (node.platform) |platform| try allocator.dupe(u8, platform) else null,
         .version = if (node.version) |version| try allocator.dupe(u8, version) else null,
+        .core_version = if (node.core_version) |core| try allocator.dupe(u8, core) else null,
+        .ui_version = if (node.ui_version) |ui| try allocator.dupe(u8, ui) else null,
+        .device_family = if (node.device_family) |family| try allocator.dupe(u8, family) else null,
+        .model_identifier = if (node.model_identifier) |model| try allocator.dupe(u8, model) else null,
+        .remote_ip = if (node.remote_ip) |ip| try allocator.dupe(u8, ip) else null,
         .caps = try cloneStringList(allocator, node.caps),
         .commands = try cloneStringList(allocator, node.commands),
+        .path_env = if (node.path_env) |path| try allocator.dupe(u8, path) else null,
+        .permissions_json = if (node.permissions_json) |perm| try allocator.dupe(u8, perm) else null,
+        .connected_at_ms = node.connected_at_ms,
         .connected = node.connected,
         .paired = node.paired,
     };
@@ -581,8 +589,15 @@ fn freeNode(allocator: std.mem.Allocator, node: *types.Node) void {
     if (node.display_name) |name| allocator.free(name);
     if (node.platform) |platform| allocator.free(platform);
     if (node.version) |version| allocator.free(version);
+    if (node.core_version) |core| allocator.free(core);
+    if (node.ui_version) |ui| allocator.free(ui);
+    if (node.device_family) |family| allocator.free(family);
+    if (node.model_identifier) |model| allocator.free(model);
+    if (node.remote_ip) |ip| allocator.free(ip);
     freeStringList(allocator, node.caps);
     freeStringList(allocator, node.commands);
+    if (node.path_env) |path| allocator.free(path);
+    if (node.permissions_json) |perm| allocator.free(perm);
 }
 
 fn freeNodeDescribe(allocator: std.mem.Allocator, describe: *NodeDescribe) void {

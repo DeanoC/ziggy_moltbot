@@ -4,6 +4,7 @@ pub const Config = struct {
     server_url: []const u8,
     token: []const u8,
     insecure_tls: bool = false,
+    auto_connect_on_launch: bool = true,
     connect_host_override: ?[]const u8 = null,
     update_manifest_url: ?[]const u8 = null,
     default_session: ?[]const u8 = null,
@@ -32,6 +33,7 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .server_url = try allocator.dupe(u8, ""),
         .token = try allocator.dupe(u8, ""),
         .insecure_tls = false,
+        .auto_connect_on_launch = true,
         .connect_host_override = null,
         .update_manifest_url = try allocator.dupe(
             u8,
@@ -59,6 +61,7 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
         .server_url = try allocator.dupe(u8, parsed.value.server_url),
         .token = try allocator.dupe(u8, parsed.value.token),
         .insecure_tls = parsed.value.insecure_tls,
+        .auto_connect_on_launch = parsed.value.auto_connect_on_launch,
         .connect_host_override = if (parsed.value.connect_host_override) |value|
             try allocator.dupe(u8, value)
         else

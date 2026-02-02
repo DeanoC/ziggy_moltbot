@@ -22,6 +22,7 @@ test "workspace snapshot roundtrip" {
     const allocator = std.testing.allocator;
     var ws = try moltbot.ui.workspace.Workspace.initDefault(allocator);
     defer ws.deinit(allocator);
+    ws.markClean();
 
     var snapshot = try ws.toSnapshot(allocator);
     defer snapshot.deinit(allocator);
@@ -50,7 +51,7 @@ test "ui command parse open code editor" {
 
 test "panel manager reuses code editor" {
     const allocator = std.testing.allocator;
-    var ws = try moltbot.ui.workspace.Workspace.initDefault(allocator);
+    const ws = try moltbot.ui.workspace.Workspace.initDefault(allocator);
     var manager = moltbot.ui.panel_manager.PanelManager.init(allocator, ws);
     defer manager.deinit();
 

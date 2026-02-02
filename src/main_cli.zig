@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
 const event_handler = @import("client/event_handler.zig");
+const update_checker = @import("client/update_checker.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
 const logger = @import("utils/logger.zig");
 const chat = @import("protocol/chat.zig");
@@ -11,7 +12,7 @@ const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const main_operator = @import("main_operator.zig");
-
+const build_options = @import("build_options");
 const main_node = if (builtin.os.tag == .windows) struct {
     pub const usage =
         \\ZiggyStarClaw Node Mode
@@ -31,8 +32,15 @@ const main_node = if (builtin.os.tag == .windows) struct {
     }
 } else @import("main_node.zig");
 
+pub const std_options = std.Options{
+    .logFn = cliLogFn,
+    .log_level = .debug,
+};
+
+var cli_log_level: std.log.Level = .warn;
+
 const usage =
-    \\ZiggyStarClaw CLI (debug)
+    \\ZiggyStarClaw CLI
     \\
     \\Usage:
     \\  ziggystarclaw-cli [options]
@@ -41,6 +49,8 @@ const usage =
     \\  --url <ws/wss url>       Override server URL
     \\  --token <token>          Override auth token
     \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
+    \\  --update-url <url>       Override update manifest URL
+    \\  --print-update-url       Print normalized update manifest URL and exit
     \\  --insecure-tls           Disable TLS verification
     \\  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
     \\  --send <message>         Send a chat message and exit
@@ -54,10 +64,11 @@ const usage =
     \\  --list-approvals         List pending approvals and exit
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
+    \\  --check-update-only      Fetch update manifest and exit
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
-    \\  --save-config            Save --url, --token, --use-session, --use-node to config file
+    \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
     \\  --operator-mode-help     Show operator mode help
@@ -95,6 +106,7 @@ pub fn main() !void {
     var config_path: []const u8 = "ziggystarclaw_config.json";
     var override_url: ?[]const u8 = null;
     var override_token: ?[]const u8 = null;
+    var override_update_url: ?[]const u8 = null;
     var override_insecure: ?bool = null;
     var read_timeout_ms: u32 = 15_000;
     var send_message: ?[]const u8 = null;
@@ -108,6 +120,8 @@ pub fn main() !void {
     var list_approvals = false;
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
+    var check_update_only = false;
+    var print_update_url = false;
     var interactive = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
@@ -137,6 +151,12 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_token = args[i];
+        } else if (std.mem.eql(u8, arg, "--update-url")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            override_update_url = args[i];
+        } else if (std.mem.eql(u8, arg, "--print-update-url")) {
+            print_update_url = true;
         } else if (std.mem.eql(u8, arg, "--insecure-tls") or std.mem.eql(u8, arg, "--insecure")) {
             override_insecure = true;
         } else if (std.mem.eql(u8, arg, "--read-timeout-ms")) {
@@ -181,6 +201,8 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             deny_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--check-update-only")) {
+            check_update_only = true;
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
@@ -203,6 +225,15 @@ pub fn main() !void {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
+    }
+
+    const has_action = list_sessions or list_nodes or list_approvals or send_message != null or
+        run_command != null or approve_id != null or deny_id != null or use_session != null or
+        use_node != null or check_update_only or print_update_url or interactive or node_mode or save_config;
+    if (!has_action) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll(usage);
+        return;
     }
 
     // Handle node mode
@@ -264,6 +295,12 @@ pub fn main() !void {
             cfg.insecure_tls = parseBool(value);
         }
     }
+    if (override_update_url) |url| {
+        if (cfg.update_manifest_url) |old| {
+            allocator.free(old);
+        }
+        cfg.update_manifest_url = try allocator.dupe(u8, url);
+    }
     if (use_session) |key| {
         if (cfg.default_session) |old| {
             allocator.free(old);
@@ -286,7 +323,9 @@ pub fn main() !void {
         read_timeout_ms = try std.fmt.parseInt(u32, value, 10);
     }
 
-    if (cfg.server_url.len == 0) {
+    const requires_connection = list_sessions or list_nodes or list_approvals or send_message != null or
+        run_command != null or approve_id != null or deny_id != null or interactive;
+    if (requires_connection and cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
     }
@@ -297,10 +336,54 @@ pub fn main() !void {
         return error.InvalidArguments;
     }
 
+    if (print_update_url) {
+        const manifest_url = cfg.update_manifest_url orelse "";
+        if (manifest_url.len == 0) {
+            logger.err("Update manifest URL is empty. Use --update-url or set it in {s}.", .{config_path});
+            return error.InvalidArguments;
+        }
+        var normalized = try update_checker.sanitizeUrl(allocator, manifest_url);
+        defer allocator.free(normalized);
+        _ = try update_checker.normalizeUrlForParse(allocator, &normalized);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.print("Manifest URL: {s}\n", .{manifest_url});
+        try stdout.print("Normalized URL: {s}\n", .{normalized});
+        if (!check_update_only and !requires_connection and !save_config) {
+            return;
+        }
+    }
+
     // Handle --save-config without connecting
-    if (save_config and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) {
+    if (save_config and !check_update_only and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) {
         try config.save(allocator, config_path, cfg);
         logger.info("Config saved to {s}", .{config_path});
+        return;
+    }
+
+    if (check_update_only) {
+        const manifest_url = cfg.update_manifest_url orelse "";
+        if (manifest_url.len == 0) {
+            logger.err("Update manifest URL is empty. Use --update-url or set it in {s}.", .{config_path});
+            return error.InvalidArguments;
+        }
+        var info = try update_checker.checkOnce(allocator, manifest_url, build_options.app_version);
+        defer info.deinit(allocator);
+
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.print("Manifest URL: {s}\n", .{manifest_url});
+        try stdout.print("Current version: {s}\n", .{build_options.app_version});
+        try stdout.print("Latest version: {s}\n", .{info.version});
+        const newer = update_checker.isNewerVersion(info.version, build_options.app_version);
+        try stdout.print("Status: {s}\n", .{if (newer) "update available" else "up to date"});
+        try stdout.print("Release URL: {s}\n", .{info.release_url orelse "-"});
+        try stdout.print("Download URL: {s}\n", .{info.download_url orelse "-"});
+        try stdout.print("Download file: {s}\n", .{info.download_file orelse "-"});
+        try stdout.print("SHA256: {s}\n", .{info.download_sha256 orelse "-"});
+
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
         return;
     }
 
@@ -604,6 +687,7 @@ fn runRepl(
     config_path: []const u8,
 ) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
+    var stdin = std.fs.File.stdin().deprecatedReader();
 
     try stdout.writeAll("\nZiggyStarClaw Interactive Mode\n");
     try stdout.writeAll("Type 'help' for commands, 'quit' to exit.\n\n");
@@ -617,10 +701,10 @@ fn runRepl(
         try stdout.print("[session:{s} node:{s}]> ", .{ session_name, node_name });
 
         var input_buffer: [1024]u8 = undefined;
-        const bytes_read = try std.fs.File.stdin().read(&input_buffer);
-        if (bytes_read == 0) break;
+        const line_opt = try stdin.readUntilDelimiterOrEof(&input_buffer, '\n');
+        if (line_opt == null) break;
 
-        const input = std.mem.trim(u8, input_buffer[0..bytes_read], " \t\r\n");
+        const input = std.mem.trim(u8, line_opt.?, " \t\r\n");
         if (input.len == 0) continue;
 
         var parts = std.mem.splitScalar(u8, input, ' ');
@@ -910,6 +994,23 @@ fn resolveApproval(
     try ws_client.send(request.payload);
 }
 
+fn cliLogFn(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (stdLogRank(level) < stdLogRank(cli_log_level)) return;
+    var stderr = std.fs.File.stderr().deprecatedWriter();
+    if (scope == .default) {
+        stderr.print("{s}: ", .{@tagName(level)}) catch return;
+    } else {
+        stderr.print("{s}({s}): ", .{ @tagName(level), @tagName(scope) }) catch return;
+    }
+    stderr.print(format, args) catch return;
+    stderr.writeByte('\n') catch return;
+}
+
 fn initLogging(allocator: std.mem.Allocator) !void {
     const env_level = std.process.getEnvVarOwned(allocator, "MOLT_LOG_LEVEL") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => null,
@@ -919,6 +1020,7 @@ fn initLogging(allocator: std.mem.Allocator) !void {
         defer allocator.free(value);
         if (parseLogLevel(value)) |level| {
             logger.setLevel(level);
+            cli_log_level = toStdLogLevel(level);
         }
     }
 
@@ -940,6 +1042,24 @@ fn parseLogLevel(value: []const u8) ?logger.Level {
     if (std.ascii.eqlIgnoreCase(value, "warn") or std.ascii.eqlIgnoreCase(value, "warning")) return .warn;
     if (std.ascii.eqlIgnoreCase(value, "error") or std.ascii.eqlIgnoreCase(value, "err")) return .err;
     return null;
+}
+
+fn toStdLogLevel(level: logger.Level) std.log.Level {
+    return switch (level) {
+        .debug => .debug,
+        .info => .info,
+        .warn => .warn,
+        .err => .err,
+    };
+}
+
+fn stdLogRank(level: std.log.Level) u8 {
+    return switch (level) {
+        .debug => 0,
+        .info => 1,
+        .warn => 2,
+        .err => 3,
+    };
 }
 
 fn parseBool(value: []const u8) bool {

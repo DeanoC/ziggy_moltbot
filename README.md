@@ -12,12 +12,13 @@ The aim is to provide a small alternative to the offical companion apps (hence L
 
 
 ## Status
-Active development (latest release: v0.1.8).
+Active development (latest release: v0.1.17).
 
 Highlights:
 - Cross-platform client (Linux, Windows, Android, WASM).
 - CLI approvals management and interactive REPL mode (`--interactive`).
 - `--run` supports default node from config when `--node` is not provided.
+- Auto-connect on launch toggle in Settings.
 
 ## User Guide
 Start here: `docs/user/README.md`

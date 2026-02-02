@@ -3,6 +3,7 @@ const zgui = @import("zgui");
 
 // Leave headroom for multiline messages.
 var input_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
+var pending_insert_newline: bool = false;
 
 const hint_z: [:0]const u8 = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
@@ -33,7 +34,9 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
             .enter_returns_true = true,
             // Avoid horizontal scrolling; wrap instead.
             .no_horizontal_scroll = true,
+            .callback_always = true,
         },
+        .callback = inputCallback,
     });
 
     // Placeholder/hint overlay for multiline
@@ -53,12 +56,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
         const enter_pressed = zgui.isKeyPressed(.enter, false) or zgui.isKeyPressed(.keypad_enter, false);
 
         if (enter_pressed and shift_down) {
-            // Ensure newline is inserted (enter_returns_true can suppress it).
-            const buf = std.mem.sliceTo(&input_buf, 0);
-            if (buf.len + 1 < input_buf.len) {
-                input_buf[buf.len] = '\n';
-                input_buf[buf.len + 1] = 0;
-            }
+            pending_insert_newline = true;
         } else if (enter_pressed and !shift_down) {
             send = true;
             // Strip trailing newline(s)
@@ -90,4 +88,28 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
     const owned = allocator.dupe(u8, final_text) catch return null;
     input_buf[0] = 0;
     return owned;
+}
+
+fn inputCallback(data: *zgui.InputTextCallbackData) callconv(.c) i32 {
+    if (!pending_insert_newline) return 0;
+    pending_insert_newline = false;
+
+    var start = data.selection_start;
+    var end = data.selection_end;
+    if (end < start) {
+        const tmp = start;
+        start = end;
+        end = tmp;
+    }
+    if (start != end) {
+        data.deleteChars(start, end - start);
+        data.cursor_pos = start;
+    }
+
+    data.insertChars(data.cursor_pos, "\n");
+    data.cursor_pos += 1;
+    data.selection_start = data.cursor_pos;
+    data.selection_end = data.cursor_pos;
+    data.buf_dirty = true;
+    return 0;
 }

@@ -24,6 +24,7 @@ var token_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var connect_host_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var update_url_buf: [512:0]u8 = [_:0]u8{0} ** 512;
 var insecure_tls_value = false;
+var auto_connect_value = true;
 var initialized = false;
 var download_popup_opened = false;
 
@@ -57,6 +58,7 @@ pub fn draw(
                 .{ .v = &insecure_tls_value },
             );
         }
+        _ = zgui.checkbox("Auto-connect on launch", .{ .v = &auto_connect_value });
 
         const server_text = std.mem.sliceTo(&server_buf, 0);
         const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
@@ -66,7 +68,8 @@ pub fn draw(
             !std.mem.eql(u8, token_text, cfg.token) or
             !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
             !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
-            (show_insecure_tls and insecure_tls_value != cfg.insecure_tls);
+            (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
+            auto_connect_value != cfg.auto_connect_on_launch;
 
         zgui.beginDisabled(.{ .disabled = !dirty });
         if (zgui.button("Apply", .{})) {
@@ -111,6 +114,9 @@ pub fn draw(
         const snapshot = update_state.snapshot();
         zgui.beginDisabled(.{ .disabled = snapshot.in_flight or update_url_text.len == 0 });
         if (zgui.button("Check Updates", .{})) {
+            if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
+                action.config_updated = true;
+            }
             action.check_updates = true;
         }
         zgui.endDisabled();
@@ -231,6 +237,7 @@ fn syncBuffers(cfg: config.Config) void {
     fillBuffer(token_buf[0..], cfg.token);
     fillBuffer(update_url_buf[0..], cfg.update_manifest_url orelse "");
     insecure_tls_value = cfg.insecure_tls;
+    auto_connect_value = cfg.auto_connect_on_launch;
 }
 
 fn fillBuffer(buf: []u8, value: []const u8) void {
@@ -279,6 +286,10 @@ fn applyConfig(
 
     if (cfg.insecure_tls != insecure_tls_value) {
         cfg.insecure_tls = insecure_tls_value;
+        changed = true;
+    }
+    if (cfg.auto_connect_on_launch != auto_connect_value) {
+        cfg.auto_connect_on_launch = auto_connect_value;
         changed = true;
     }
 

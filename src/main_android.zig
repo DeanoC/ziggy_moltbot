@@ -13,6 +13,7 @@ const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
+const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
@@ -762,6 +763,9 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         break :blk config.initDefault(allocator) catch return 1;
     };
     defer cfg.deinit(allocator);
+    var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
+    var auto_connect_enabled = app_state_state.last_connected;
+    var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     ui.syncSettings(cfg);
 
     var ws_client = websocket_client.WebSocketClient.init(
@@ -803,6 +807,37 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     var reconnect_backoff_ms: u32 = 500;
     var next_reconnect_at_ms: i64 = 0;
     var next_ping_at_ms: i64 = 0;
+    defer {
+        app_state_state.last_connected = auto_connect_enabled;
+        app_state.save(allocator, "ziggystarclaw_state.json", app_state_state) catch |err| {
+            logger.warn("Failed to save app state: {}", .{err});
+        };
+    }
+
+    if (auto_connect_pending) {
+        ctx.state = .connecting;
+        ctx.clearError();
+        ws_client.url = cfg.server_url;
+        ws_client.token = cfg.token;
+        ws_client.insecure_tls = cfg.insecure_tls;
+        ws_client.connect_host_override = cfg.connect_host_override;
+        auto_connect_enabled = true;
+        should_reconnect = true;
+        reconnect_backoff_ms = 500;
+        next_reconnect_at_ms = 0;
+        if (!connect_job.isRunning()) {
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
+                ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
+            };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
+            }
+        }
+        auto_connect_pending = false;
+    }
 
     var running = true;
     var event: c.SDL_Event = undefined;
@@ -954,6 +989,10 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 return 1;
             };
             _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
+            app_state_state.last_connected = false;
+            auto_connect_enabled = false;
+            auto_connect_pending = false;
+            _ = std.fs.cwd().deleteFile("ziggystarclaw_state.json") catch {};
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
@@ -964,6 +1003,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         if (ui_action.connect) {
             ctx.state = .connecting;
             ctx.clearError();
+            auto_connect_enabled = true;
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
@@ -989,6 +1029,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 ws_client.disconnect();
             }
             should_reconnect = false;
+            auto_connect_enabled = false;
             next_reconnect_at_ms = 0;
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;

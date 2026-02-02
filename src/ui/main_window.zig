@@ -106,7 +106,7 @@ pub fn draw(
 
             var open = true;
             const label = zgui.formatZ("{s}##panel_{d}", .{ panel.title, panel.id });
-            if (zgui.begin(label, .{ .popen = &open, .flags = .{ .no_saved_settings = true } })) {
+            if (zgui.begin(label, .{ .popen = &open })) {
                 switch (panel.kind) {
                     .Chat => {
                         const chat_action = chat_panel.draw(allocator, ctx, inbox);

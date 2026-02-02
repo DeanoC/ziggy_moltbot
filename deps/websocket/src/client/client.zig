@@ -615,6 +615,7 @@ fn readWindows(socket: windows.ws2_32.SOCKET, buf: []u8) !usize {
 fn mapRecvError(err: windows.ws2_32.WinsockError) !void {
     switch (err) {
         .WSAECONNRESET => return error.ConnectionResetByPeer,
+        .WSAECONNABORTED => return error.ConnectionResetByPeer,
         .WSAEINVAL => return error.SocketNotBound,
         .WSAEMSGSIZE => return error.MessageTooBig,
         .WSAENETDOWN => return error.NetworkSubsystemFailed,
@@ -624,7 +625,7 @@ fn mapRecvError(err: windows.ws2_32.WinsockError) !void {
         .WSAEINPROGRESS, .WSAEINTR => unreachable,
         .WSANOTINITIALISED => unreachable,
         .WSA_IO_PENDING => unreachable,
-        .WSA_OPERATION_ABORTED => unreachable,
+        .WSA_OPERATION_ABORTED => return error.Closed,
         else => |winsock_err| return windows.unexpectedWSAError(winsock_err),
     }
 }

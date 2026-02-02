@@ -13,6 +13,7 @@ const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const config = @import("client/config.zig");
+const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const gateway = @import("protocol/gateway.zig");
 const messages = @import("protocol/messages.zig");
@@ -76,6 +77,9 @@ var last_state: ?client_state.ClientState = null;
 var initialized = false;
 const config_storage_key: [:0]const u8 = "ziggystarclaw.config";
 const workspace_storage_key: [:0]const u8 = "ziggystarclaw.workspace";
+const app_state_storage_key: [:0]const u8 = "ziggystarclaw.state";
+var app_state_state: app_state.AppState = app_state.initDefault();
+var auto_connect_pending = false;
 
 const MessageQueue = struct {
     items: std.ArrayList([]u8) = .empty,
@@ -178,6 +182,8 @@ fn initApp() !void {
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
+    app_state_state = loadAppStateFromStorage();
+    auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();
     manager = panel_manager.PanelManager.init(allocator, ws);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
@@ -199,6 +205,7 @@ fn deinitApp() void {
     command_inbox.deinit(allocator);
     ctx.deinit();
     cfg.deinit(allocator);
+    saveAppStateToStorage();
     message_queue.deinit(allocator);
     if (connect_nonce) |nonce| {
         allocator.free(nonce);
@@ -299,6 +306,11 @@ fn loadConfigFromStorage() !config.Config {
                 cfg_local.insecure_tls = value.bool;
             }
         }
+        if (obj.get("auto_connect_on_launch")) |value| {
+            if (value == .bool) {
+                cfg_local.auto_connect_on_launch = value.bool;
+            }
+        }
         if (obj.get("connect_host_override")) |value| {
             if (value == .string) {
                 if (cfg_local.connect_host_override) |prev| {
@@ -320,6 +332,37 @@ fn loadConfigFromStorage() !config.Config {
         cfg_local.insecure_tls = false;
     }
     return cfg_local;
+}
+
+fn loadAppStateFromStorage() app_state.AppState {
+    const raw = wasm_storage.get(allocator, app_state_storage_key) catch |err| {
+        logger.warn("Failed to read stored app state: {}", .{err});
+        return app_state.initDefault();
+    };
+    if (raw == null) {
+        return app_state.initDefault();
+    }
+    defer allocator.free(raw.?);
+
+    var parsed = std.json.parseFromSlice(app_state.AppState, allocator, raw.?, .{}) catch |err| {
+        logger.warn("Stored app state parse failed: {}", .{err});
+        return app_state.initDefault();
+    };
+    defer parsed.deinit();
+
+    if (parsed.value.version != 1) return app_state.initDefault();
+    return parsed.value;
+}
+
+fn saveAppStateToStorage() void {
+    const json = std.json.Stringify.valueAlloc(allocator, app_state_state, .{}) catch |err| {
+        logger.warn("Failed to serialize app state: {}", .{err});
+        return;
+    };
+    defer allocator.free(json);
+    wasm_storage.set(allocator, app_state_storage_key, json) catch |err| {
+        logger.warn("Failed to persist app state: {}", .{err});
+    };
 }
 
 fn saveConfigToStorage() void {
@@ -974,6 +1017,15 @@ fn frame() callconv(.c) void {
         last_state = ctx.state;
     }
 
+    if (auto_connect_pending) {
+        ctx.state = .connecting;
+        ctx.clearError();
+        app_state_state.last_connected = true;
+        saveAppStateToStorage();
+        openWebSocket();
+        auto_connect_pending = false;
+    }
+
     if (ws_connected and ctx.state == .connected) {
         if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
             sendSessionsListRequest();
@@ -1058,6 +1110,9 @@ fn frame() callconv(.c) void {
     }
     if (ui_action.clear_saved) {
         wasm_storage.remove(config_storage_key);
+        app_state_state.last_connected = false;
+        auto_connect_pending = false;
+        wasm_storage.remove(app_state_storage_key);
         cfg.deinit(allocator);
         cfg = config.initDefault(allocator) catch |err| {
             logger.warn("Failed to reset config: {}", .{err});
@@ -1069,12 +1124,17 @@ fn frame() callconv(.c) void {
     if (ui_action.connect) {
         ctx.state = .connecting;
         ctx.clearError();
+        app_state_state.last_connected = true;
+        auto_connect_pending = false;
+        saveAppStateToStorage();
         openWebSocket();
     }
 
     if (ui_action.disconnect) {
         closeWebSocket();
         ctx.state = .disconnected;
+        app_state_state.last_connected = false;
+        saveAppStateToStorage();
         ctx.clearPendingRequests();
         ctx.clearStreamText();
         ctx.clearStreamRunId();

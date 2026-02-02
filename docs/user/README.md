@@ -10,6 +10,7 @@ Welcome! This guide is for users who want to run ZiggyStarClaw and connect to an
 - [UI basics](ui.md)
 - [CLI basics](cli.md)
 - [Updates](updates.md)
+- [Node mode (advanced)](node-mode.md)
 
 ## Help
 - [Troubleshooting](troubleshooting.md)

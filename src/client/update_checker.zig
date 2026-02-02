@@ -269,10 +269,23 @@ fn checkThread(
     manifest_url: []const u8,
     current_version: []const u8,
 ) void {
-    defer allocator.free(manifest_url);
     defer allocator.free(current_version);
 
-    const latest_version = checkForUpdates(allocator, manifest_url, current_version) catch |err| {
+    var sanitized_manifest_url = sanitizeUrl(allocator, manifest_url) catch |err| {
+        logger.warn("Update manifest URL invalid: {}", .{err});
+        allocator.free(manifest_url);
+        state.setError(allocator, @errorName(err));
+        return;
+    };
+    allocator.free(manifest_url);
+    defer allocator.free(sanitized_manifest_url);
+    _ = normalizeUrlForParse(allocator, &sanitized_manifest_url) catch |err| {
+        logger.warn("Update manifest URL normalization failed: {}", .{err});
+        state.setError(allocator, @errorName(err));
+        return;
+    };
+
+    const latest_version = checkForUpdates(allocator, sanitized_manifest_url, current_version) catch |err| {
         logger.warn("Update check failed: {}", .{err});
         state.setError(allocator, @errorName(err));
         return;
@@ -308,13 +321,32 @@ fn checkThread(
     }
 }
 
-const UpdateInfo = struct {
+pub const UpdateInfo = struct {
     version: []const u8,
     release_url: ?[]const u8,
     download_url: ?[]const u8,
     download_file: ?[]const u8,
     download_sha256: ?[]const u8,
+
+    pub fn deinit(self: *UpdateInfo, allocator: std.mem.Allocator) void {
+        allocator.free(self.version);
+        if (self.release_url) |value| allocator.free(value);
+        if (self.download_url) |value| allocator.free(value);
+        if (self.download_file) |value| allocator.free(value);
+        if (self.download_sha256) |value| allocator.free(value);
+    }
 };
+
+pub fn checkOnce(
+    allocator: std.mem.Allocator,
+    manifest_url: []const u8,
+    current_version: []const u8,
+) !UpdateInfo {
+    var sanitized_manifest_url = try sanitizeUrl(allocator, manifest_url);
+    defer allocator.free(sanitized_manifest_url);
+    _ = try normalizeUrlForParse(allocator, &sanitized_manifest_url);
+    return checkForUpdates(allocator, sanitized_manifest_url, current_version);
+}
 
 fn checkForUpdates(
     allocator: std.mem.Allocator,
@@ -322,6 +354,12 @@ fn checkForUpdates(
     current_version: []const u8,
 ) !UpdateInfo {
     _ = current_version;
+    if (isFileManifest(manifest_url)) {
+        const body_slice = try readManifestFromFile(allocator, manifest_url);
+        defer allocator.free(body_slice);
+        return parseUpdateManifest(allocator, body_slice);
+    }
+
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
@@ -339,7 +377,142 @@ fn checkForUpdates(
     }
 
     const body_slice = body.written();
+    return parseUpdateManifest(allocator, body_slice);
+}
 
+fn platformKey() ?[]const u8 {
+    return switch (builtin.target.os.tag) {
+        .windows => "windows",
+        .linux => "linux",
+        .macos => "macos",
+        else => null,
+    };
+}
+
+fn downloadThread(
+    state: *UpdateState,
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    file_name: []const u8,
+) void {
+    defer allocator.free(url);
+    defer allocator.free(file_name);
+
+    const result = downloadFile(allocator, state, url, file_name) catch |err| {
+        logger.warn("Download failed for URL '{s}': {}", .{ url, err });
+        const message = switch (err) {
+            error.UpdateHashMismatch => "SHA256 mismatch",
+            error.UnexpectedCharacter, error.InvalidFormat => "Invalid download URL",
+            else => @errorName(err),
+        };
+        state.setDownloadError(allocator, message);
+        return;
+    };
+    _ = result;
+
+    state.mutex.lock();
+    state.download_status = .complete;
+    state.mutex.unlock();
+}
+
+fn downloadFile(
+    allocator: std.mem.Allocator,
+    state: *UpdateState,
+    url: []const u8,
+    file_name: []const u8,
+) !void {
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    const sanitized_url = try sanitizeUrl(allocator, url);
+    defer allocator.free(sanitized_url);
+
+    const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch return error.OutOfMemory;
+    defer allocator.free(path);
+
+    std.fs.cwd().makePath("updates") catch {};
+    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
+
+    var current_url = try allocator.dupe(u8, sanitized_url);
+    defer allocator.free(current_url);
+
+    var redirects_left: u8 = 3;
+    var response_opt: ?std.http.Client.Response = null;
+    var redirect_buf: [8 * 1024]u8 = undefined;
+    while (true) {
+        const before = current_url;
+        const normalized = normalizeUrlForParse(allocator, &current_url) catch |err| {
+            logger.warn("Download URL normalization failed: '{s}' ({})", .{ before, err });
+            return err;
+        };
+        if (normalized) {
+            logger.warn("Download URL normalized: '{s}' -> '{s}'", .{ before, current_url });
+        }
+        const uri = std.Uri.parse(current_url) catch |err| {
+            logger.warn("Download URL parse failed: '{s}' ({})", .{ current_url, err });
+            return err;
+        };
+        var req = try client.request(.GET, uri, .{});
+        defer req.deinit();
+
+        try req.sendBodiless();
+        var response = try req.receiveHead(&redirect_buf);
+        if (response.head.status.class() == .redirect) {
+            if (redirects_left == 0) return error.UpdateDownloadFailed;
+            const location = response.head.location orelse return error.UpdateDownloadFailed;
+            const location_clean = sanitizeUrl(allocator, location) catch |err| {
+                logger.warn("Redirect URL sanitize failed: '{s}' ({})", .{ location, err });
+                return error.UpdateDownloadFailed;
+            };
+            defer allocator.free(location_clean);
+            allocator.free(current_url);
+            current_url = try resolveRedirectUrl(allocator, uri, location_clean);
+            logger.info("Redirected download URL -> '{s}'", .{current_url});
+            redirects_left -= 1;
+            continue;
+        }
+        response_opt = response;
+        break;
+    }
+    var response = response_opt orelse return error.UpdateDownloadFailed;
+    if (response.head.status != .ok) return error.UpdateDownloadFailed;
+
+    const total = response.head.content_length;
+    state.mutex.lock();
+    state.download_total = total;
+    state.download_bytes = 0;
+    state.mutex.unlock();
+
+    var transfer_buf: [16 * 1024]u8 = undefined;
+    const reader = response.reader(&transfer_buf);
+    var download_writer = DownloadWriter.init(file, state);
+    _ = reader.streamRemaining(&download_writer.writer) catch |err| switch (err) {
+        error.ReadFailed => return error.UpdateDownloadFailed,
+        error.WriteFailed => return error.UpdateDownloadFailed,
+    };
+
+    var expected_sha: ?[]const u8 = null;
+    state.mutex.lock();
+    expected_sha = state.download_sha256;
+    state.mutex.unlock();
+    if (expected_sha) |expected| {
+        try file.seekTo(0);
+        const actual = try computeSha256Hex(allocator, file);
+        defer allocator.free(actual);
+        if (!std.ascii.eqlIgnoreCase(expected, actual)) {
+            state.mutex.lock();
+            state.download_verified = false;
+            state.mutex.unlock();
+            return error.UpdateHashMismatch;
+        }
+        state.mutex.lock();
+        state.download_verified = true;
+        state.mutex.unlock();
+    }
+}
+
+fn parseUpdateManifest(allocator: std.mem.Allocator, body_slice: []const u8) !UpdateInfo {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body_slice, .{});
     defer parsed.deinit();
 
@@ -417,133 +590,125 @@ fn checkForUpdates(
     };
 }
 
-fn platformKey() ?[]const u8 {
-    return switch (builtin.target.os.tag) {
-        .windows => "windows",
-        .linux => "linux",
-        .macos => "macos",
-        else => null,
-    };
+fn isFileManifest(manifest_url: []const u8) bool {
+    if (std.mem.startsWith(u8, manifest_url, "file://") or std.mem.startsWith(u8, manifest_url, "file:")) {
+        return true;
+    }
+    return std.mem.indexOf(u8, manifest_url, "://") == null;
 }
 
-fn downloadThread(
-    state: *UpdateState,
-    allocator: std.mem.Allocator,
-    url: []const u8,
-    file_name: []const u8,
-) void {
-    defer allocator.free(url);
-    defer allocator.free(file_name);
-
-    const result = downloadFile(allocator, state, url, file_name) catch |err| {
-        logger.warn("Download failed: {}", .{err});
-        const message = switch (err) {
-            error.UpdateHashMismatch => "SHA256 mismatch",
-            error.UnexpectedCharacter, error.InvalidFormat => "Invalid download URL",
-            else => @errorName(err),
-        };
-        state.setDownloadError(allocator, message);
-        return;
-    };
-    _ = result;
-
-    state.mutex.lock();
-    state.download_status = .complete;
-    state.mutex.unlock();
-}
-
-fn downloadFile(
-    allocator: std.mem.Allocator,
-    state: *UpdateState,
-    url: []const u8,
-    file_name: []const u8,
-) !void {
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
-
-    const trimmed_url = std.mem.trim(u8, url, " \t\r\n");
-    if (trimmed_url.len == 0) return error.UpdateDownloadFailed;
-
-    const path = std.fmt.allocPrint(allocator, "updates/{s}", .{file_name}) catch return error.OutOfMemory;
+fn readManifestFromFile(allocator: std.mem.Allocator, manifest_url: []const u8) ![]u8 {
+    const path = try manifestPathFromUrl(allocator, manifest_url);
     defer allocator.free(path);
-
-    std.fs.cwd().makePath("updates") catch {};
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    var file = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
     defer file.close();
+    return file.readToEndAlloc(allocator, 1024 * 1024);
+}
 
-    var current_url = try allocator.dupe(u8, trimmed_url);
-    defer allocator.free(current_url);
-
-    var redirects_left: u8 = 3;
-    var response_opt: ?std.http.Client.Response = null;
-    var redirect_buf: [8 * 1024]u8 = undefined;
-    while (true) {
-        if (try normalizeUrlForParse(allocator, &current_url)) {
-            // current_url updated in place
+fn manifestPathFromUrl(allocator: std.mem.Allocator, manifest_url: []const u8) ![]u8 {
+    var path = manifest_url;
+    if (std.mem.startsWith(u8, path, "file://")) {
+        path = path[7..];
+    } else if (std.mem.startsWith(u8, path, "file:")) {
+        path = path[5..];
+    }
+    if (path.len == 0) return error.InvalidFormat;
+    if (builtin.target.os.tag == .windows) {
+        if (path.len >= 3 and path[0] == '/' and std.ascii.isAlphabetic(path[1]) and path[2] == ':') {
+            path = path[1..];
         }
-        const uri = try std.Uri.parse(current_url);
-        var req = try client.request(.GET, uri, .{});
-        defer req.deinit();
+    }
+    return percentDecode(allocator, path);
+}
 
-        try req.sendBodiless();
-        var response = try req.receiveHead(&redirect_buf);
-        if (response.head.status.class() == .redirect) {
-            if (redirects_left == 0) return error.UpdateDownloadFailed;
-            const location = response.head.location orelse return error.UpdateDownloadFailed;
-            const location_trim = std.mem.trim(u8, location, " \t\r\n");
-            if (location_trim.len == 0) return error.UpdateDownloadFailed;
-            allocator.free(current_url);
-            current_url = try resolveRedirectUrl(allocator, uri, location_trim);
-            redirects_left -= 1;
+fn percentDecode(allocator: std.mem.Allocator, src: []const u8) ![]u8 {
+    var out_len: usize = 0;
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '%' and i + 2 < src.len and isHex(src[i + 1]) and isHex(src[i + 2])) {
+            out_len += 1;
+            i += 2;
+        } else {
+            out_len += 1;
+        }
+    }
+
+    var buf = try allocator.alloc(u8, out_len);
+    var pos: usize = 0;
+    i = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '%' and i + 2 < src.len and isHex(src[i + 1]) and isHex(src[i + 2])) {
+            const hi = fromHex(src[i + 1]);
+            const lo = fromHex(src[i + 2]);
+            buf[pos] = (hi << 4) | lo;
+            pos += 1;
+            i += 2;
+        } else {
+            buf[pos] = src[i];
+            pos += 1;
+        }
+    }
+    return buf;
+}
+
+fn fromHex(ch: u8) u8 {
+    return if (ch >= '0' and ch <= '9')
+        ch - '0'
+    else if (ch >= 'a' and ch <= 'f')
+        ch - 'a' + 10
+    else
+        ch - 'A' + 10;
+}
+
+pub fn sanitizeUrl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidFormat;
+    if (trimmed.len >= 2) {
+        const first = trimmed[0];
+        const last = trimmed[trimmed.len - 1];
+        const wrapped = (first == '<' and last == '>') or
+            (first == '"' and last == '"') or
+            (first == '\'' and last == '\'');
+        if (wrapped) {
+            trimmed = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t\r\n");
+            if (trimmed.len == 0) return error.InvalidFormat;
+        }
+    }
+    return allocator.dupe(u8, trimmed);
+}
+
+pub fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
+    const src = url.*;
+    var needs_escape = false;
+    for (src, 0..) |ch, idx| {
+        if (ch == '%') {
+            if (idx + 2 >= src.len or !isHex(src[idx + 1]) or !isHex(src[idx + 2])) {
+                needs_escape = true;
+                break;
+            }
             continue;
         }
-        response_opt = response;
-        break;
-    }
-    var response = response_opt orelse return error.UpdateDownloadFailed;
-    if (response.head.status != .ok) return error.UpdateDownloadFailed;
-
-    const total = response.head.content_length;
-    state.mutex.lock();
-    state.download_total = total;
-    state.download_bytes = 0;
-    state.mutex.unlock();
-
-    var transfer_buf: [16 * 1024]u8 = undefined;
-    const reader = response.reader(&transfer_buf);
-    var download_writer = DownloadWriter.init(file, state);
-    _ = reader.streamRemaining(&download_writer.writer) catch |err| switch (err) {
-        error.ReadFailed => return error.UpdateDownloadFailed,
-        error.WriteFailed => return error.UpdateDownloadFailed,
-    };
-
-    var expected_sha: ?[]const u8 = null;
-    state.mutex.lock();
-    expected_sha = state.download_sha256;
-    state.mutex.unlock();
-    if (expected_sha) |expected| {
-        try file.seekTo(0);
-        const actual = try computeSha256Hex(allocator, file);
-        defer allocator.free(actual);
-        if (!std.ascii.eqlIgnoreCase(expected, actual)) {
-            state.mutex.lock();
-            state.download_verified = false;
-            state.mutex.unlock();
-            return error.UpdateHashMismatch;
+        if (!isUrlAllowed(ch)) {
+            needs_escape = true;
+            break;
         }
-        state.mutex.lock();
-        state.download_verified = true;
-        state.mutex.unlock();
     }
-}
-
-fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
-    const src = url.*;
-    if (std.mem.indexOfAny(u8, src, " +") == null) return false;
+    if (!needs_escape) return false;
 
     var new_len: usize = 0;
-    for (src) |ch| {
-        if (ch == ' ' or ch == '+') {
+    var i: usize = 0;
+    while (i < src.len) : (i += 1) {
+        const ch = src[i];
+        if (ch == '%') {
+            if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
+                new_len += 3;
+                continue;
+            }
+        }
+        if (!isUrlAllowed(ch)) {
             new_len += 3;
         } else {
             new_len += 1;
@@ -552,11 +717,23 @@ fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
 
     var buf = try allocator.alloc(u8, new_len);
     var pos: usize = 0;
-    for (src) |ch| {
-        if (ch == ' ' or ch == '+') {
+    i = 0;
+    while (i < src.len) : (i += 1) {
+        const ch = src[i];
+        if (ch == '%') {
+            if (i + 2 >= src.len or !isHex(src[i + 1]) or !isHex(src[i + 2])) {
+                buf[pos] = '%';
+                buf[pos + 1] = '2';
+                buf[pos + 2] = '5';
+                pos += 3;
+            } else {
+                buf[pos] = ch;
+                pos += 1;
+            }
+        } else if (!isUrlAllowed(ch)) {
             buf[pos] = '%';
-            buf[pos + 1] = '2';
-            buf[pos + 2] = '0';
+            buf[pos + 1] = toHexUpper(@intCast((ch >> 4) & 0xF));
+            buf[pos + 2] = toHexUpper(@intCast(ch & 0xF));
             pos += 3;
         } else {
             buf[pos] = ch;
@@ -567,6 +744,26 @@ fn normalizeUrlForParse(allocator: std.mem.Allocator, url: *[]u8) !bool {
     allocator.free(src);
     url.* = buf;
     return true;
+}
+
+fn isHex(ch: u8) bool {
+    return (ch >= '0' and ch <= '9') or
+        (ch >= 'a' and ch <= 'f') or
+        (ch >= 'A' and ch <= 'F');
+}
+
+fn isUrlAllowed(ch: u8) bool {
+    return (ch >= 'a' and ch <= 'z') or
+        (ch >= 'A' and ch <= 'Z') or
+        (ch >= '0' and ch <= '9') or
+        ch == '-' or ch == '.' or ch == '_' or ch == '~' or
+        ch == ':' or ch == '/' or ch == '?' or ch == '#' or ch == '[' or ch == ']' or ch == '@' or
+        ch == '!' or ch == '$' or ch == '&' or ch == '\'' or ch == '(' or ch == ')' or
+        ch == '*' or ch == '+' or ch == ',' or ch == ';' or ch == '=';
+}
+
+fn toHexUpper(value: u8) u8 {
+    return if (value < 10) value + '0' else value - 10 + 'A';
 }
 
 fn resolveRedirectUrl(allocator: std.mem.Allocator, base: std.Uri, location: []const u8) ![]u8 {
@@ -709,7 +906,7 @@ const DownloadWriter = struct {
     };
 };
 
-fn isNewerVersion(latest: []const u8, current: []const u8) bool {
+pub fn isNewerVersion(latest: []const u8, current: []const u8) bool {
     const latest_parts = parseVersion(latest);
     const current_parts = parseVersion(current);
     if (latest_parts[0] != current_parts[0]) return latest_parts[0] > current_parts[0];

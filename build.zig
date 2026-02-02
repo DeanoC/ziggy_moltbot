@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    app_module.addIncludePath(b.path("src"));
 
     const ws_native = b.dependency("websocket", .{
         .target = target,
@@ -221,6 +222,7 @@ pub fn build(b: *std.Build) void {
             "tests/logger_tests.zig",
             "tests/ui_tests.zig",
             "tests/image_cache_tests.zig",
+            "tests/update_checker_tests.zig",
         };
 
         for (test_files) |test_path| {
@@ -232,7 +234,9 @@ pub fn build(b: *std.Build) void {
                     .{ .name = "ziggystarclaw", .module = app_module },
                 },
             });
+            test_mod.addIncludePath(b.path("src"));
             const tests = b.addTest(.{ .root_module = test_mod });
+            tests.addCSourceFile(.{ .file = b.path("src/icon_loader.c"), .flags = &.{} });
             const run_tests = b.addRunArtifact(tests);
             test_step.dependOn(&run_tests.step);
         }

@@ -18,10 +18,13 @@ pub fn draw(
 ) ChatPanelAction {
     var action = ChatPanelAction{};
     const center_avail = zgui.getContentRegionAvail();
-    const history_height = @max(80.0, center_avail[1] - 96.0);
+    const style = zgui.getStyle();
+    const spacing = style.item_spacing[1];
+    const separator_height: f32 = 1.0 + spacing;
+    const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 3.0 + separator_height;
+    const history_height = @max(80.0, center_avail[1] - input_height);
     // Tool output toggle lives here (always visible), but is a simple local UI state.
-    const show_tools = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
-    _ = show_tools;
+    _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
     zgui.sameLine(.{ .spacing = 8.0 });
     zgui.textDisabled("(toolResult/tool*)", .{});
     chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height, show_tool_output);

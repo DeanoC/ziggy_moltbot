@@ -38,14 +38,14 @@ pub const BackgroundProcess = struct {
 /// Process manager for background execution
 pub const ProcessManager = struct {
     allocator: std.mem.Allocator,
-    processes: std.StringHashMap(BackgroundProcess),
+    processes: std.StringHashMap(*BackgroundProcess),
     next_id: u64 = 1,
     mutex: std.Thread.Mutex,
     
     pub fn init(allocator: std.mem.Allocator) ProcessManager {
         return .{
             .allocator = allocator,
-            .processes = std.StringHashMap(BackgroundProcess).init(allocator),
+            .processes = std.StringHashMap(*BackgroundProcess).init(allocator),
             .next_id = 1,
             .mutex = .{},
         };
@@ -57,7 +57,8 @@ pub const ProcessManager = struct {
         
         var iter = self.processes.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.deinit(self.allocator);
+            entry.value_ptr.*.deinit(self.allocator);
+            self.allocator.destroy(entry.value_ptr.*);
             self.allocator.free(entry.key_ptr.*);
         }
         self.processes.deinit();
@@ -75,6 +76,7 @@ pub const ProcessManager = struct {
         // Generate process ID
         const id = try std.fmt.allocPrint(self.allocator, "proc_{d}", .{self.next_id});
         self.next_id += 1;
+        const id_key = try self.allocator.dupe(u8, id);
         
         // Build command string for display
         var cmd_buf = std.ArrayList(u8).empty;
@@ -86,7 +88,8 @@ pub const ProcessManager = struct {
         const cmd_str = try self.allocator.dupe(u8, cmd_buf.items);
         
         // Initialize process entry
-        var proc = BackgroundProcess{
+        const proc_ptr = try self.allocator.create(BackgroundProcess);
+        proc_ptr.* = BackgroundProcess{
             .id = id,
             .command = cmd_str,
             .state = .running,
@@ -107,13 +110,13 @@ pub const ProcessManager = struct {
         // TODO: Set environment if provided (env_map type changed in Zig 0.15)
         
         try child.spawn();
-        proc.pid = child.id;
-        proc.child = child;
+        proc_ptr.pid = child.id;
+        proc_ptr.child = child;
         
         // Start output collection threads
-        const stdout_reader = child.stdout.?;
-        const stderr_reader = child.stderr.?;
-        
+        const stdout_reader = proc_ptr.child.?.stdout.?;
+        const stderr_reader = proc_ptr.child.?.stderr.?;
+
         const stdout_thread = try std.Thread.spawn(.{}, struct {
             fn readOutput(reader: anytype, buf: *std.ArrayList(u8), alloc: std.mem.Allocator, proc_id: []const u8) void {
                 var tmp: [4096]u8 = undefined;
@@ -126,7 +129,7 @@ pub const ProcessManager = struct {
                     };
                 }
             }
-        }.readOutput, .{ stdout_reader, &proc.stdout, self.allocator, id });
+        }.readOutput, .{ stdout_reader, &proc_ptr.stdout, self.allocator, id });
         
         const stderr_thread = try std.Thread.spawn(.{}, struct {
             fn readOutput(reader: anytype, buf: *std.ArrayList(u8), alloc: std.mem.Allocator, proc_id: []const u8) void {
@@ -140,19 +143,23 @@ pub const ProcessManager = struct {
                     };
                 }
             }
-        }.readOutput, .{ stderr_reader, &proc.stderr, self.allocator, id });
+        }.readOutput, .{ stderr_reader, &proc_ptr.stderr, self.allocator, id });
         
         // Store process and detach threads
-        try self.processes.put(id, proc);
+        try self.processes.put(id_key, proc_ptr);
         
         // Start completion monitor thread
         _ = try std.Thread.spawn(.{}, struct {
-            fn monitor(manager: *ProcessManager, proc_id: []const u8, child_proc: *std.process.Child, stdout_t: std.Thread, stderr_t: std.Thread) void {
+            fn monitor(manager: *ProcessManager, proc_id: []const u8, proc: *BackgroundProcess, stdout_t: std.Thread, stderr_t: std.Thread) void {
                 defer {
                     stdout_t.join();
                     stderr_t.join();
                 }
                 
+                const child_proc = if (proc.child) |*child_value| child_value else {
+                    manager.updateProcessState(proc_id, .failed, null);
+                    return;
+                };
                 const term = child_proc.wait() catch |err| {
                     logger.err("Process {s} wait failed: {s}", .{ proc_id, @errorName(err) });
                     manager.updateProcessState(proc_id, .failed, null);
@@ -169,7 +176,7 @@ pub const ProcessManager = struct {
                 const state: ProcessState = if (term == .Signal and exit_code == 9) .killed else .completed;
                 manager.updateProcessState(proc_id, state, exit_code);
             }
-        }.monitor, .{ self, id, &proc.child.?, stdout_thread, stderr_thread });
+        }.monitor, .{ self, id, proc_ptr, stdout_thread, stderr_thread });
         
         return id;
     }
@@ -179,11 +186,11 @@ pub const ProcessManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        if (self.processes.getPtr(id)) |proc| {
-            proc.state = state;
-            proc.exit_code = exit_code;
-            proc.end_time_ms = std.time.milliTimestamp();
-            proc.child = null; // Child is now complete
+        if (self.processes.getPtr(id)) |proc_ptr| {
+            proc_ptr.*.state = state;
+            proc_ptr.*.exit_code = exit_code;
+            proc_ptr.*.end_time_ms = std.time.milliTimestamp();
+            proc_ptr.*.child = null; // Child is now complete
         }
     }
     
@@ -192,8 +199,8 @@ pub const ProcessManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        if (self.processes.get(id)) |proc| {
-            return proc;
+        if (self.processes.get(id)) |proc_ptr| {
+            return proc_ptr.*;
         }
         return null;
     }
@@ -203,7 +210,8 @@ pub const ProcessManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        const proc = self.processes.get(id) orelse return null;
+        const proc_ptr = self.processes.get(id) orelse return null;
+        const proc = proc_ptr.*;
         
         var result = std.json.ObjectMap.init(allocator);
         try result.put("id", std.json.Value{ .string = try allocator.dupe(u8, proc.id) });
@@ -240,7 +248,8 @@ pub const ProcessManager = struct {
         
         var iter = self.processes.iterator();
         while (iter.next()) |entry| {
-            const proc = entry.value_ptr;
+            const proc_ptr = entry.value_ptr.*;
+            const proc = proc_ptr.*;
             var obj = std.json.ObjectMap.init(allocator);
             try obj.put("id", std.json.Value{ .string = try allocator.dupe(u8, proc.id) });
             try obj.put("command", std.json.Value{ .string = try allocator.dupe(u8, proc.command) });
@@ -257,18 +266,17 @@ pub const ProcessManager = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         
-        const proc = self.processes.getPtr(id) orelse return false;
-        
-        if (proc.state != .running or proc.child == null) {
+        const proc_ptr = self.processes.getPtr(id) orelse return false;
+        if (proc_ptr.*.state != .running or proc_ptr.*.child == null) {
             return false;
         }
         
-        if (proc.child) |*child| {
+        if (proc_ptr.*.child) |*child| {
             _ = child.kill() catch {};
         }
         
-        proc.state = .killed;
-        proc.end_time_ms = std.time.milliTimestamp();
+        proc_ptr.*.state = .killed;
+        proc_ptr.*.end_time_ms = std.time.milliTimestamp();
         return true;
     }
     
@@ -283,7 +291,8 @@ pub const ProcessManager = struct {
         
         var iter = self.processes.iterator();
         while (iter.next()) |entry| {
-            const proc = entry.value_ptr;
+            const proc_ptr = entry.value_ptr.*;
+            const proc = proc_ptr.*;
             if (proc.state != .running) {
                 if (proc.end_time_ms) |end| {
                     if (now - end > max_age_ms) {
@@ -294,11 +303,10 @@ pub const ProcessManager = struct {
         }
         
         for (to_remove.items) |id| {
-            if (self.processes.getPtr(id)) |proc| {
-                proc.deinit(self.allocator);
-                if (self.processes.fetchRemove(id)) |kv| {
-                    self.allocator.free(kv.key);
-                }
+            if (self.processes.fetchRemove(id)) |kv| {
+                kv.value.deinit(self.allocator);
+                self.allocator.destroy(kv.value);
+                self.allocator.free(kv.key);
             }
         }
     }

@@ -7,15 +7,21 @@ ZiggyStarClaw provides a focused UI for chat and operator workflows. This page w
 - **Operator**: node status and actions
 - **Settings**: connection and update info
 
+Image placeholder: Full app screenshot with Chat, Operator, and Settings areas labeled.
+
 ## Chat panel
 - Type into the message input and press **Enter** to send.
 - If you have multiple sessions, use the session selector (if shown) to switch.
 - If messages are not appearing, confirm the connection state in Settings.
 
+Image placeholder: Chat panel with message input and a conversation history.
+
 ## Operator panel
 - Shows connected nodes and their status.
 - Lets you inspect node info (platform/version) and run supported actions.
 - If you see no nodes, check your server connection and permissions.
+
+Image placeholder: Operator panel with a connected node and actions visible.
 
 ## Settings panel
 This is where you configure the connection and check for updates.
@@ -24,6 +30,8 @@ Key fields:
 - **Server URL** and **Token**: used for WebSocket auth.
 - **Insecure TLS**: skips certificate verification (use only on trusted networks).
 - **Updates**: shows current version, release links, and update status.
+
+Image placeholder: Settings panel showing connection fields and update status.
 
 ## Updates section
 - **Current version**: what you’re running now.
