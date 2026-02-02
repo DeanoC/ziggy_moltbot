@@ -35,8 +35,8 @@ pub fn begin(args: Args) bool {
     zgui.pushStyleVar1f(.{ .idx = .child_rounding, .v = radius });
     zgui.pushStyleVar1f(.{ .idx = .child_border_size, .v = 1.0 });
 
-    zgui.pushStyleColor(.child_bg, t.colors.surface);
-    zgui.pushStyleColor(.border, t.colors.border);
+    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = t.colors.surface });
+    zgui.pushStyleColor4f(.{ .idx = .border, .c = t.colors.border });
 
     const opened = zgui.beginChild(label_z, .{ .h = 0.0, .child_flags = .{ .border = true } });
 
@@ -67,6 +67,6 @@ pub fn begin(args: Args) bool {
 
 pub fn end() void {
     zgui.endChild();
-    zgui.popStyleColor(2);
+    zgui.popStyleColor(.{ .count = 2 });
     zgui.popStyleVar(.{ .count = 3 });
 }

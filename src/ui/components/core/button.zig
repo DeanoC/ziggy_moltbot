@@ -78,15 +78,15 @@ pub fn draw(label: []const u8, args: Args) bool {
     zgui.pushStyleVar1f(.{ .idx = .frame_border_size, .v = border_size });
 
     if (args.disabled) {
-        zgui.pushStyleColor(.button, disabled_bg);
-        zgui.pushStyleColor(.button_hovered, disabled_bg);
-        zgui.pushStyleColor(.button_active, disabled_bg);
-        zgui.pushStyleColor(.text, disabled_text);
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = disabled_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = disabled_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = disabled_bg });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = disabled_text });
     } else {
-        zgui.pushStyleColor(.button, background);
-        zgui.pushStyleColor(.button_hovered, hovered);
-        zgui.pushStyleColor(.button_active, active);
-        zgui.pushStyleColor(.text, text_color);
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = background });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = hovered });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = active });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = text_color });
     }
 
     zgui.beginDisabled(.{ .disabled = args.disabled });
@@ -94,7 +94,7 @@ pub fn draw(label: []const u8, args: Args) bool {
     const clicked = zgui.button(label_z, .{ .w = width, .h = 0.0 });
     zgui.endDisabled();
 
-    zgui.popStyleColor(4);
+    zgui.popStyleColor(.{ .count = 4 });
     zgui.popStyleVar(.{ .count = 3 });
     return clicked;
 }

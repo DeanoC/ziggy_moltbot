@@ -5,6 +5,7 @@ const config = @import("../client/config.zig");
 const state = @import("../client/state.zig");
 const update_checker = @import("../client/update_checker.zig");
 const theme = @import("theme.zig");
+const components = @import("components/components.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -45,161 +46,159 @@ pub fn draw(
     }
 
     if (zgui.beginChild("Settings", .{ .h = 0.0, .child_flags = .{ .border = true } })) {
-        theme.push(.heading);
-        zgui.text("Appearance", .{});
-        theme.pop();
+        const spacing = theme.activeTheme().spacing.md;
 
-        var use_light_theme = theme_is_light;
-        if (zgui.checkbox("Light theme", .{ .v = &use_light_theme })) {
-            theme_is_light = use_light_theme;
-            theme.setMode(if (theme_is_light) .light else .dark);
-            theme.apply();
-        }
-
-        zgui.separator();
-
-        theme.push(.heading);
-        zgui.text("Connection", .{});
-        theme.pop();
-
-        _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
-        _ = zgui.inputText("Connect Host (override)", .{ .buf = connect_host_buf[0.. :0] });
-        zgui.textWrapped("Override can include :port (e.g. 100.108.141.120:18789).", .{});
-        _ = zgui.inputText("Token", .{ .buf = token_buf[0.. :0], .flags = .{ .password = true } });
-        if (show_insecure_tls) {
-            _ = zgui.checkbox(
-                "Insecure TLS (skip cert verification)",
-                .{ .v = &insecure_tls_value },
-            );
-        }
-        _ = zgui.checkbox("Auto-connect on launch", .{ .v = &auto_connect_value });
-
-        const server_text = std.mem.sliceTo(&server_buf, 0);
-        const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
-        const token_text = std.mem.sliceTo(&token_buf, 0);
-        const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
-        const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
-        const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
-            !std.mem.eql(u8, token_text, cfg.token) or
-            !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
-            !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
-            theme_is_light != theme_default_light or
-            (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
-            auto_connect_value != cfg.auto_connect_on_launch;
-
-        zgui.beginDisabled(.{ .disabled = !dirty });
-        if (zgui.button("Apply", .{})) {
-            if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
-                action.config_updated = true;
+        if (components.layout.card.begin(.{ .title = "Appearance", .id = "appearance" })) {
+            var use_light_theme = theme_is_light;
+            if (zgui.checkbox("Light theme", .{ .v = &use_light_theme })) {
+                theme_is_light = use_light_theme;
+                theme.setMode(if (theme_is_light) .light else .dark);
+                theme.apply();
             }
         }
-        zgui.endDisabled();
+        components.layout.card.end();
+        zgui.dummy(.{ .w = 0.0, .h = spacing });
 
-        zgui.sameLine(.{});
-        if (zgui.button("Save", .{})) {
-            action.save = true;
-        }
-        zgui.sameLine(.{});
-        if (zgui.button("Clear Saved", .{})) {
-            action.clear_saved = true;
-        }
-
-        zgui.separator();
-
-        if (is_connected) {
-            if (zgui.button("Disconnect", .{})) {
-                action.disconnect = true;
-            }
-        } else {
-            if (zgui.button("Connect", .{})) {
-                if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
-                    action.config_updated = true;
-                }
-                action.connect = true;
-            }
-        }
-        zgui.textWrapped("State: {s}", .{@tagName(client_state)});
-
-        zgui.separator();
-        theme.push(.heading);
-        zgui.text("Updates", .{});
-        theme.pop();
-        _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
-        zgui.textWrapped("Current version: {s}", .{app_version});
-
-        const snapshot = update_state.snapshot();
-        zgui.beginDisabled(.{ .disabled = snapshot.in_flight or update_url_text.len == 0 });
-        if (zgui.button("Check Updates", .{})) {
-            if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
-                action.config_updated = true;
-            }
-            action.check_updates = true;
-        }
-        zgui.endDisabled();
-
-        switch (snapshot.status) {
-            .idle => zgui.textWrapped("Status: idle", .{}),
-            .checking => zgui.textWrapped("Status: checking...", .{}),
-            .up_to_date => zgui.textWrapped("Status: up to date", .{}),
-            .update_available => zgui.textWrapped(
-                "Status: update available ({s})",
-                .{snapshot.latest_version orelse "?"},
-            ),
-            .failed => zgui.textWrapped(
-                "Status: error ({s})",
-                .{snapshot.error_message orelse "unknown"},
-            ),
-            .unsupported => zgui.textWrapped(
-                "Status: unsupported ({s})",
-                .{snapshot.error_message orelse "not supported"},
-            ),
-        }
-
-        if (snapshot.status == .update_available) {
-            const fallback_release = "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
-            const release_url = snapshot.release_url orelse fallback_release;
-            zgui.textWrapped("Release: {s}", .{release_url});
-            if (zgui.button("Open Release Page", .{})) {
-                action.open_release = true;
-            }
-            if (snapshot.download_sha256) |sha| {
-                zgui.textWrapped("SHA256: {s}", .{sha});
-            }
-            if (snapshot.download_url != null and snapshot.download_status == .idle) {
-                zgui.sameLine(.{});
-                if (zgui.button("Download Update", .{})) {
-                    action.download_update = true;
-                }
-            }
-            if (snapshot.download_status == .failed) {
-                zgui.textWrapped("Download failed: {s}", .{snapshot.download_error_message orelse "unknown"});
-            }
-            if (snapshot.download_status == .unsupported) {
-                zgui.textWrapped(
-                    "Download unsupported: {s}",
-                    .{snapshot.download_error_message orelse "not supported"},
+        if (components.layout.card.begin(.{ .title = "Connection", .id = "connection" })) {
+            _ = zgui.inputText("Server URL", .{ .buf = server_buf[0.. :0] });
+            _ = zgui.inputText("Connect Host (override)", .{ .buf = connect_host_buf[0.. :0] });
+            zgui.textWrapped("Override can include :port (e.g. 100.108.141.120:18789).", .{});
+            _ = zgui.inputText("Token", .{ .buf = token_buf[0.. :0], .flags = .{ .password = true } });
+            if (show_insecure_tls) {
+                _ = zgui.checkbox(
+                    "Insecure TLS (skip cert verification)",
+                    .{ .v = &insecure_tls_value },
                 );
             }
-            if (snapshot.download_status == .complete) {
-                if (snapshot.download_sha256 != null) {
-                    const verify_status = if (snapshot.download_verified) "verified" else "not verified";
-                    zgui.textWrapped("Download complete ({s}).", .{verify_status});
-                } else {
-                    zgui.textWrapped("Download complete.", .{});
+            _ = zgui.checkbox("Auto-connect on launch", .{ .v = &auto_connect_value });
+
+            const server_text = std.mem.sliceTo(&server_buf, 0);
+            const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
+            const token_text = std.mem.sliceTo(&token_buf, 0);
+            const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
+            const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+            const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
+                !std.mem.eql(u8, token_text, cfg.token) or
+                !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
+                !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
+                theme_is_light != theme_default_light or
+                (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
+                auto_connect_value != cfg.auto_connect_on_launch;
+
+            if (components.core.button.draw("Apply", .{ .disabled = !dirty, .variant = .primary })) {
+                if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
+                    action.config_updated = true;
                 }
-                if (snapshot.download_path != null) {
-                    if (zgui.button("Open Downloaded File", .{})) {
-                        action.open_download = true;
+            }
+
+            zgui.sameLine(.{});
+            if (components.core.button.draw("Save", .{ .variant = .secondary })) {
+                action.save = true;
+            }
+            zgui.sameLine(.{});
+            if (components.core.button.draw("Clear Saved", .{ .variant = .ghost })) {
+                action.clear_saved = true;
+            }
+
+            zgui.separator();
+
+            if (is_connected) {
+                if (components.core.button.draw("Disconnect", .{ .variant = .danger })) {
+                    action.disconnect = true;
+                }
+            } else {
+                if (components.core.button.draw("Connect", .{ .variant = .primary })) {
+                    if (dirty and applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
+                        action.config_updated = true;
                     }
-                    if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
-                        zgui.sameLine(.{});
-                        if (zgui.button("Install Update", .{})) {
-                            action.install_update = true;
+                    action.connect = true;
+                }
+            }
+            zgui.textWrapped("State: {s}", .{@tagName(client_state)});
+        }
+        components.layout.card.end();
+        zgui.dummy(.{ .w = 0.0, .h = spacing });
+
+        const snapshot = update_state.snapshot();
+        if (components.layout.card.begin(.{ .title = "Updates", .id = "updates" })) {
+            _ = zgui.inputText("Update Manifest URL", .{ .buf = update_url_buf[0.. :0] });
+            zgui.textWrapped("Current version: {s}", .{app_version});
+
+            const update_url_text = std.mem.sliceTo(&update_url_buf, 0);
+            if (components.core.button.draw("Check Updates", .{ .disabled = snapshot.in_flight or update_url_text.len == 0, .variant = .secondary })) {
+                const server_text = std.mem.sliceTo(&server_buf, 0);
+                const connect_host_text = std.mem.sliceTo(&connect_host_buf, 0);
+                const token_text = std.mem.sliceTo(&token_buf, 0);
+                if (applyConfig(allocator, cfg, server_text, connect_host_text, token_text, update_url_text)) {
+                    action.config_updated = true;
+                }
+                action.check_updates = true;
+            }
+            switch (snapshot.status) {
+                .idle => zgui.textWrapped("Status: idle", .{}),
+                .checking => zgui.textWrapped("Status: checking...", .{}),
+                .up_to_date => zgui.textWrapped("Status: up to date", .{}),
+                .update_available => zgui.textWrapped(
+                    "Status: update available ({s})",
+                    .{snapshot.latest_version orelse "?"},
+                ),
+                .failed => zgui.textWrapped(
+                    "Status: error ({s})",
+                    .{snapshot.error_message orelse "unknown"},
+                ),
+                .unsupported => zgui.textWrapped(
+                    "Status: unsupported ({s})",
+                    .{snapshot.error_message orelse "not supported"},
+                ),
+            }
+
+            if (snapshot.status == .update_available) {
+                const fallback_release = "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
+                const release_url = snapshot.release_url orelse fallback_release;
+                zgui.textWrapped("Release: {s}", .{release_url});
+                if (components.core.button.draw("Open Release Page", .{ .variant = .secondary })) {
+                    action.open_release = true;
+                }
+                if (snapshot.download_sha256) |sha| {
+                    zgui.textWrapped("SHA256: {s}", .{sha});
+                }
+                if (snapshot.download_url != null and snapshot.download_status == .idle) {
+                    zgui.sameLine(.{});
+                    if (components.core.button.draw("Download Update", .{ .variant = .primary })) {
+                        action.download_update = true;
+                    }
+                }
+                if (snapshot.download_status == .failed) {
+                    zgui.textWrapped("Download failed: {s}", .{snapshot.download_error_message orelse "unknown"});
+                }
+                if (snapshot.download_status == .unsupported) {
+                    zgui.textWrapped(
+                        "Download unsupported: {s}",
+                        .{snapshot.download_error_message orelse "not supported"},
+                    );
+                }
+                if (snapshot.download_status == .complete) {
+                    if (snapshot.download_sha256 != null) {
+                        const verify_status = if (snapshot.download_verified) "verified" else "not verified";
+                        zgui.textWrapped("Download complete ({s}).", .{verify_status});
+                    } else {
+                        zgui.textWrapped("Download complete.", .{});
+                    }
+                    if (snapshot.download_path != null) {
+                        if (components.core.button.draw("Open Downloaded File", .{ .variant = .secondary })) {
+                            action.open_download = true;
+                        }
+                        if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
+                            zgui.sameLine(.{});
+                            if (components.core.button.draw("Install Update", .{ .variant = .primary })) {
+                                action.install_update = true;
+                            }
                         }
                     }
                 }
             }
         }
+        components.layout.card.end();
 
         if (snapshot.download_status == .downloading) {
             if (!download_popup_opened) {
