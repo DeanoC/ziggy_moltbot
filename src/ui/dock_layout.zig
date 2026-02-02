@@ -62,6 +62,9 @@ pub fn resetDockLayout(
     state: *DockState,
     workspace_state: *workspace.Workspace,
 ) void {
+    if (state.dockspace_id != 0) {
+        zgui.dockBuilderRemoveNode(state.dockspace_id);
+    }
     imgui_bridge.resetIni();
     allocator.free(workspace_state.layout.imgui_ini);
     workspace_state.layout.imgui_ini = allocator.dupe(u8, "") catch unreachable;
