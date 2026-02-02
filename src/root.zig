@@ -43,6 +43,7 @@ pub const ui = struct {
     pub const ui_command_inbox = @import("ui/ui_command_inbox.zig");
     pub const dock_layout = @import("ui/dock_layout.zig");
     pub const workspace_store = @import("ui/workspace_store.zig");
+    pub const components = @import("ui/components/components.zig");
 };
 
 pub const platform = struct {
