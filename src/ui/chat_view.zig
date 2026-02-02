@@ -9,6 +9,20 @@ pub const ChatViewOptions = struct {
     show_tool_output: bool = false,
 };
 
+pub fn hasSelection() bool {
+    return chat_select_start != chat_select_end;
+}
+
+pub fn copySelectionToClipboard(allocator: std.mem.Allocator) void {
+    const selection = selectionSlice() orelse return;
+    if (selection.len == 0) return;
+    const buf = allocator.alloc(u8, selection.len + 1) catch return;
+    defer allocator.free(buf);
+    @memcpy(buf[0..selection.len], selection);
+    buf[selection.len] = 0;
+    zgui.setClipboardText(buf[0.. :0]);
+}
+
 pub fn copyAllToClipboard(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
@@ -67,12 +81,14 @@ pub fn draw(
         if (opts.select_copy_mode) {
             if (content_changed or chat_buffer.items.len == 0) {
                 _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.show_tool_output);
+                resetSelection();
             }
             const zbuf = bufferZ();
             _ = zgui.inputTextMultiline("##chat_select", .{
                 .buf = zbuf,
                 .h = clamped - 20.0,
-                .flags = .{ .read_only = true },
+                .flags = .{ .read_only = true, .callback_always = true },
+                .callback = chatSelectCallback,
             });
         } else {
             const now_ms = std.time.milliTimestamp();
@@ -257,6 +273,8 @@ var last_last_len: usize = 0;
 var last_stream_len: usize = 0;
 var chat_buffer: std.ArrayList(u8) = .empty;
 var last_show_tool_output: bool = false;
+var chat_select_start: usize = 0;
+var chat_select_end: usize = 0;
 
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
@@ -289,6 +307,35 @@ fn ensureChatBuffer(
 fn bufferZ() [:0]u8 {
     if (chat_buffer.items.len == 0) return @constCast(empty_z[0.. :0]);
     return chat_buffer.items[0.. :0];
+}
+
+fn selectionSlice() ?[]const u8 {
+    if (chat_buffer.items.len == 0) return null;
+    const text_len = chat_buffer.items.len - 1;
+    if (text_len == 0) return null;
+    var start = chat_select_start;
+    var end = chat_select_end;
+    if (start > end) {
+        const tmp = start;
+        start = end;
+        end = tmp;
+    }
+    if (start >= text_len or end > text_len) return null;
+    if (start == end) return null;
+    return chat_buffer.items[start..end];
+}
+
+fn resetSelection() void {
+    chat_select_start = 0;
+    chat_select_end = 0;
+}
+
+fn chatSelectCallback(data: *zgui.InputTextCallbackData) callconv(.c) i32 {
+    const start_i = if (data.selection_start < 0) 0 else data.selection_start;
+    const end_i = if (data.selection_end < 0) 0 else data.selection_end;
+    chat_select_start = @intCast(start_i);
+    chat_select_end = @intCast(end_i);
+    return 0;
 }
 
 const empty_z = [_:0]u8{};

@@ -27,6 +27,12 @@ pub fn draw(
     zgui.sameLine(.{ .spacing = 8.0 });
     _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
     zgui.sameLine(.{ .spacing = 8.0 });
+    zgui.beginDisabled(.{ .disabled = !select_copy_mode or !chat_view.hasSelection() });
+    if (zgui.button("Copy Selection", .{})) {
+        chat_view.copySelectionToClipboard(allocator);
+    }
+    zgui.endDisabled();
+    zgui.sameLine(.{ .spacing = 8.0 });
     if (zgui.button("Copy All", .{})) {
         chat_view.copyAllToClipboard(allocator, ctx.messages.items, ctx.stream_text, inbox, show_tool_output);
     }
