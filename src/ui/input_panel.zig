@@ -10,12 +10,16 @@ var pending_insert_newline: bool = false;
 
 const hint_z: [:0]const u8 = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
-pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
+pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
     var send = false;
 
     const style = zgui.getStyle();
     const min_h: f32 = 56.0;
-    const max_h_clamped: f32 = @max(min_h, @min(180.0, max_h));
+    const button_height = zgui.getFrameHeight();
+    const button_spacing = style.item_spacing[1];
+    const max_box_h = @max(0.0, avail_h - button_height - button_spacing);
+    const max_h_clamped: f32 = @min(180.0, max_box_h);
+    const min_box_h: f32 = @min(min_h, max_box_h);
 
     const text = std.mem.sliceTo(&input_buf, 0);
     const wrap_w = @max(40.0, avail_w - style.frame_padding[0] * 2.0);
@@ -25,7 +29,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
         zgui.calcTextSize(hint_z, .{ .wrap_width = wrap_w });
 
     var input_h = text_size[1] + style.frame_padding[1] * 2.0 + 8.0;
-    input_h = @max(min_h, @min(max_h_clamped, input_h));
+    input_h = @max(@max(1.0, min_box_h), @min(max_h_clamped, input_h));
 
     // Dear ImGui's InputTextMultiline doesn't always soft-wrap as expected across backends.
     // Try to enforce wrapping by pushing a wrap position for the duration of the widget.

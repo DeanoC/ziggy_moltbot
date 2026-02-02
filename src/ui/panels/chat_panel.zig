@@ -43,8 +43,15 @@ pub fn draw(
     const style = zgui.getStyle();
     const spacing = style.item_spacing[1];
     const separator_height: f32 = 1.0 + spacing;
-    const input_height: f32 = 80.0 + zgui.getFrameHeight() + spacing * 3.0 + separator_height;
-    const history_height = @max(80.0, center_avail[1] - input_height);
+    const button_height = zgui.getFrameHeight();
+    const input_min_box: f32 = 56.0;
+    const input_min_total = input_min_box + button_height + spacing + separator_height;
+    const history_min: f32 = 80.0;
+    var history_height = center_avail[1] - input_min_total;
+    if (history_height < 0.0) history_height = 0.0;
+    if (history_height < history_min and center_avail[1] >= input_min_total + history_min) {
+        history_height = history_min;
+    }
 
     chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_height, .{
         .select_copy_mode = select_copy_mode,
@@ -53,7 +60,7 @@ pub fn draw(
     zgui.separator();
 
     const input_avail = zgui.getContentRegionAvail();
-    if (input_panel.draw(allocator, input_avail[0], input_avail[1] - zgui.getFrameHeightWithSpacing())) |message| {
+    if (input_panel.draw(allocator, input_avail[0], input_avail[1])) |message| {
         action.send_message = message;
     }
     return action;
