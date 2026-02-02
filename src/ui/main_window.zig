@@ -66,6 +66,8 @@ pub fn draw(
     const t = theme.activeTheme();
     const status_padding_y = t.spacing.xs;
     const status_height = zgui.getFrameHeightWithSpacing() + status_padding_y * 2.0;
+    var host_pos: [2]f32 = .{ 0.0, 0.0 };
+    var host_size: [2]f32 = .{ 0.0, 0.0 };
     zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
@@ -108,8 +110,14 @@ pub fn draw(
         const width = @max(1.0, display[0] - left - right);
         const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
         const height = @max(1.0, display[1] - top - bottom - extra_bottom - status_height);
+        host_pos = .{ left, top };
+        host_size = .{ width, height };
         zgui.setNextWindowPos(.{ .x = left, .y = top, .cond = .always });
         zgui.setNextWindowSize(.{ .w = width, .h = height, .cond = .always });
+    } else {
+        const viewport = zgui.getMainViewport();
+        host_pos = viewport.work_pos;
+        host_size = viewport.work_size;
     }
 
     const host_flags = zgui.WindowFlags{
@@ -127,9 +135,9 @@ pub fn draw(
     zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
         const dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{});
-        const host_pos = zgui.getWindowPos();
-        const host_size = zgui.getWindowSize();
-        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, host_pos, host_size);
+        const dock_host_pos = zgui.getWindowPos();
+        const dock_host_size = zgui.getWindowSize();
+        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_host_pos, dock_host_size);
 
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
@@ -223,16 +231,10 @@ pub fn draw(
     zgui.end();
     zgui.popStyleVar(.{ .count = 3 });
 
-    const viewport = zgui.getMainViewport();
-    const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
-    const status_left = safe_insets[0];
-    const status_right = safe_insets[2];
-    const status_bottom = safe_insets[3] + extra_bottom;
-    const status_width = @max(1.0, viewport.size[0] - status_left - status_right);
-    const status_x = viewport.pos[0] + status_left;
-    const status_y = viewport.pos[1] + viewport.size[1] - status_bottom - status_height;
+    const status_x = host_pos[0];
+    const status_y = host_pos[1] + host_size[1];
     zgui.setNextWindowPos(.{ .x = status_x, .y = status_y, .cond = .always });
-    zgui.setNextWindowSize(.{ .w = status_width, .h = status_height, .cond = .always });
+    zgui.setNextWindowSize(.{ .w = host_size[0], .h = status_height, .cond = .always });
     const status_flags = zgui.WindowFlags{
         .no_title_bar = true,
         .no_resize = true,
