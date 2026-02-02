@@ -16,6 +16,7 @@ pub fn saveIniToMemory(allocator: std.mem.Allocator) ![]u8 {
 }
 
 pub fn loadIniFromMemory(data: []const u8) void {
+    if (data.len == 0) return;
     zsc_imgui_load_ini_settings_from_memory(data.ptr, data.len);
 }
 
