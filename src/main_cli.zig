@@ -1237,12 +1237,82 @@ fn sendChatMessage(
     try ws_client.send(request.payload);
 }
 
+fn parseCommandLineArgs(allocator: std.mem.Allocator, cmdline: []const u8) !std.ArrayList([]u8) {
+    // Very small shell-ish tokenizer:
+    // - splits on whitespace
+    // - supports single and double quotes
+    // - supports backslash escaping outside quotes and inside double quotes
+    var out = std.ArrayList([]u8).empty;
+    errdefer {
+        for (out.items) |s| allocator.free(s);
+        out.deinit(allocator);
+    }
+
+    var cur = std.ArrayList(u8).empty;
+    defer cur.deinit(allocator);
+
+    const State = enum { none, single, double };
+    var state: State = .none;
+
+    var i: usize = 0;
+    while (i < cmdline.len) : (i += 1) {
+        const c = cmdline[i];
+
+        // Whitespace ends token (only when not in quotes)
+        if (state == .none and (c == ' ' or c == '\t' or c == '\n' or c == '\r')) {
+            if (cur.items.len > 0) {
+                try out.append(allocator, try allocator.dupe(u8, cur.items));
+                cur.clearRetainingCapacity();
+            }
+            continue;
+        }
+
+        // Quote handling
+        if (state == .none and c == '\'') {
+            state = .single;
+            continue;
+        }
+        if (state == .none and c == '"') {
+            state = .double;
+            continue;
+        }
+        if (state == .single and c == '\'') {
+            state = .none;
+            continue;
+        }
+        if (state == .double and c == '"') {
+            state = .none;
+            continue;
+        }
+
+        // Backslash escaping
+        if ((state == .none or state == .double) and c == '\\' and i + 1 < cmdline.len) {
+            i += 1;
+            try cur.append(allocator, cmdline[i]);
+            continue;
+        }
+
+        try cur.append(allocator, c);
+    }
+
+    if (cur.items.len > 0) {
+        try out.append(allocator, try allocator.dupe(u8, cur.items));
+    }
+
+    return out;
+}
+
 fn buildJsonCommandArray(allocator: std.mem.Allocator, cmdline: []const u8) !std.json.Array {
     var arr = std.json.Array.init(allocator);
     errdefer arr.deinit();
 
-    var it = std.mem.splitScalar(u8, cmdline, ' ');
-    while (it.next()) |part| {
+    var argv = try parseCommandLineArgs(allocator, cmdline);
+    defer {
+        for (argv.items) |s| allocator.free(s);
+        argv.deinit(allocator);
+    }
+
+    for (argv.items) |part| {
         if (part.len == 0) continue;
         try arr.append(std.json.Value{ .string = try allocator.dupe(u8, part) });
     }
@@ -1308,12 +1378,58 @@ fn awaitAndPrintNodeResult(
     }
 
     if (ctx.node_result) |result| {
-        var stdout = std.fs.File.stdout().deprecatedWriter();
-        try stdout.print("Result: {s}\n", .{result});
+        try printNodeResult(allocator, result);
         ctx.clearNodeResult();
     } else {
         logger.info("Command sent. Waiting for result timed out.", .{});
     }
+}
+
+fn printNodeResult(allocator: std.mem.Allocator, result: []const u8) !void {
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+
+    // Try parse JSON for nicer output.
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, result, .{}) catch null;
+    if (parsed) |tree| {
+        defer tree.deinit();
+
+        if (tree.value == .object) {
+            const obj = tree.value.object;
+            // Common shape for system.run in this repo: { stdout, stderr, exitCode }
+            if (obj.get("stdout") != null or obj.get("stderr") != null or obj.get("exitCode") != null) {
+                const exit_code = obj.get("exitCode");
+                if (exit_code) |ec| {
+                    switch (ec) {
+                        .integer => try stdout.print("exitCode: {d}\n", .{ec.integer}),
+                        .float => try stdout.print("exitCode: {d}\n", .{@as(i64, @intFromFloat(ec.float))}),
+                        else => {},
+                    }
+                }
+
+                if (obj.get("stdout")) |outv| {
+                    if (outv == .string and outv.string.len > 0) {
+                        try stdout.writeAll("stdout:\n");
+                        try stdout.writeAll(outv.string);
+                        if (!std.mem.endsWith(u8, outv.string, "\n")) try stdout.writeByte('\n');
+                    }
+                }
+                if (obj.get("stderr")) |errv| {
+                    if (errv == .string and errv.string.len > 0) {
+                        try stdout.writeAll("stderr:\n");
+                        try stdout.writeAll(errv.string);
+                        if (!std.mem.endsWith(u8, errv.string, "\n")) try stdout.writeByte('\n');
+                    }
+                }
+                return;
+            }
+        }
+
+        // Generic JSON pretty print.
+        try stdout.print("{f}\n", .{std.json.fmt(tree.value, .{ .whitespace = .indent_2 })});
+        return;
+    }
+
+    try stdout.print("Result: {s}\n", .{result});
 }
 
 fn runNodeCommand(
