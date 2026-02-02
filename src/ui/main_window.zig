@@ -128,10 +128,17 @@ pub fn draw(
     if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
         const avail = zgui.getContentRegionAvail();
         const dock_height = @max(1.0, avail[1] - status_height);
-        const dock_size = .{ avail[0], dock_height };
-        const dock_pos = zgui.getCursorScreenPos();
-        const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
-        dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
+        var dockspace_id: zgui.Ident = 0;
+        var dock_pos: [2]f32 = .{ 0.0, 0.0 };
+        var dock_size: [2]f32 = .{ 0.0, 0.0 };
+
+        if (zgui.beginChild("DockRegion", .{ .h = dock_height, .child_flags = .{ .border = false } })) {
+            dock_pos = zgui.getWindowPos();
+            dock_size = zgui.getWindowSize();
+            dockspace_id = zgui.dockSpace("MainDockSpace", .{ 0.0, 0.0 }, .{});
+            dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
+        }
+        zgui.endChild();
 
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
@@ -221,8 +228,7 @@ pub fn draw(
 
             index += 1;
         }
-        const status_pos = .{ dock_pos[0], dock_pos[1] + dock_height };
-        zgui.setCursorScreenPos(status_pos);
+
         zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
         zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
         zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
