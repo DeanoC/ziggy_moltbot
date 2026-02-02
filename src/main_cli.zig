@@ -74,6 +74,7 @@ const usage =
     \\  --canvas-snapshot <path> Save canvas snapshot to path on node (canvas.snapshot)
     \\  --exec-approvals-get     Show node exec approvals (system.execApprovals.get)
     \\  --exec-allow <command>   Add an entry to node exec allowlist (system.execApprovals.set)
+    \\  --exec-allow-file <path> Add entries from JSON file to node exec allowlist
     \\  --list-approvals         List pending approvals and exit
     \\  --approve <id>           Approve an exec request by ID
     \\  --deny <id>              Deny an exec request by ID
@@ -150,6 +151,7 @@ pub fn main() !void {
     var canvas_snapshot: ?[]const u8 = null;
     var exec_approvals_get = false;
     var exec_allow_cmd: ?[]const u8 = null;
+    var exec_allow_file: ?[]const u8 = null;
     var list_approvals = false;
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
@@ -268,6 +270,10 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             exec_allow_cmd = args[i];
+        } else if (std.mem.eql(u8, arg, "--exec-allow-file")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            exec_allow_file = args[i];
         } else if (std.mem.eql(u8, arg, "--list-approvals")) {
             list_approvals = true;
         } else if (std.mem.eql(u8, arg, "--approve")) {
@@ -308,7 +314,7 @@ pub fn main() !void {
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
-        exec_allow_cmd != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
         check_update_only or print_update_url or interactive or node_mode or save_config;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -407,7 +413,7 @@ pub fn main() !void {
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
-        exec_allow_cmd != null or approve_id != null or deny_id != null or interactive;
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or interactive;
     if (requires_connection and cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
@@ -416,7 +422,7 @@ pub fn main() !void {
     const needs_node = run_command != null or which_name != null or notify_title != null or ps_list or
         spawn_command != null or poll_process_id != null or stop_process_id != null or canvas_present or
         canvas_hide or canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or
-        exec_approvals_get or exec_allow_cmd != null;
+        exec_approvals_get or exec_allow_cmd != null or exec_allow_file != null;
 
     // Allow node commands with default node; only error if neither is provided.
     if (needs_node and node_id == null and cfg.default_node == null) {
@@ -814,75 +820,30 @@ pub fn main() !void {
     }
 
     if (exec_allow_cmd) |entry| {
-        // 1) Get current approvals
-        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "system.execApprovals.get", null);
-        const raw_owned = (try awaitNodeResultOwned(allocator, &ws_client, &ctx)) orelse {
-            logger.err("No approvals returned.", .{});
-            return error.Unexpected;
-        };
-        defer allocator.free(raw_owned);
-        try printNodeResult(allocator, raw_owned);
+        const added = try addExecAllowlistEntries(allocator, &ws_client, &ctx, target_node.?, &.{entry});
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        if (added == 1) {
+            try stdout.writeAll("Added 1 allowlist entry.\n");
+        } else {
+            try stdout.print("Added {d} allowlist entries.\n", .{added});
+        }
+        return;
+    }
 
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw_owned, .{}) catch {
-            logger.err("Approvals response was not JSON.", .{});
-            return error.Unexpected;
-        };
-        defer parsed.deinit();
-
-        var allow = std.ArrayList([]u8).empty;
+    if (exec_allow_file) |path| {
+        const entries = try readAllowlistFile(allocator, path);
         defer {
-            for (allow.items) |s| allocator.free(s);
-            allow.deinit(allocator);
+            for (entries) |s| allocator.free(s);
+            allocator.free(entries);
         }
 
-        if (parsed.value == .object) {
-            // node.invoke response shape: { ok, nodeId, command, payload }
-            if (parsed.value.object.get("payload")) |payload| {
-                if (payload == .object) {
-                    if (payload.object.get("allowlist")) |alist| {
-                        if (alist == .array) {
-                            for (alist.array.items) |it| {
-                                if (it == .string) try allow.append(allocator, try allocator.dupe(u8, it.string));
-                            }
-                        }
-                    }
-                }
-            }
+        const added = try addExecAllowlistEntries(allocator, &ws_client, &ctx, target_node.?, entries);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        if (added == 1) {
+            try stdout.print("Added 1 allowlist entry from {s}.\n", .{path});
+        } else {
+            try stdout.print("Added {d} allowlist entries from {s}.\n", .{ added, path });
         }
-
-        // Add if missing
-        var exists = false;
-        for (allow.items) |s| {
-            if (std.mem.eql(u8, s, entry)) {
-                exists = true;
-                break;
-            }
-        }
-        if (!exists) {
-            try allow.append(allocator, try allocator.dupe(u8, entry));
-        }
-
-        // 2) Set approvals (mode=allowlist)
-        var params_obj = std.json.ObjectMap.init(allocator);
-        defer params_obj.deinit();
-        try params_obj.put("mode", std.json.Value{ .string = "allowlist" });
-
-        var allow_arr = std.json.Array.init(allocator);
-        defer {
-            for (allow_arr.items) |it| if (it == .string) allocator.free(it.string);
-            allow_arr.deinit();
-        }
-        for (allow.items) |s| {
-            try allow_arr.append(std.json.Value{ .string = try allocator.dupe(u8, s) });
-        }
-        try params_obj.put("allowlist", std.json.Value{ .array = allow_arr });
-
-        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "system.execApprovals.set", std.json.Value{ .object = params_obj });
-        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
-
-        // Re-read
-        try invokeNode(allocator, &ws_client, &ctx, target_node.?, "system.execApprovals.get", null);
-        try awaitAndPrintNodeResult(allocator, &ws_client, &ctx);
         return;
     }
 
@@ -1557,6 +1518,131 @@ fn awaitAndPrintNodeResult(
     } else {
         logger.info("Command sent. Waiting for result timed out.", .{});
     }
+}
+
+fn readAllowlistFile(allocator: std.mem.Allocator, path: []const u8) ![]const []u8 {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(data);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+
+    // Supported formats:
+    // 1) ["cmd1", "cmd2"]
+    // 2) {"allowlist": ["cmd1", ...]}
+    var arr_val: ?std.json.Value = null;
+    if (parsed.value == .array) {
+        arr_val = parsed.value;
+    } else if (parsed.value == .object) {
+        if (parsed.value.object.get("allowlist")) |v| {
+            if (v == .array) arr_val = v;
+        }
+    }
+
+    const arr = arr_val orelse return error.InvalidArguments;
+
+    var out = std.ArrayList([]u8).empty;
+    errdefer {
+        for (out.items) |s| allocator.free(s);
+        out.deinit(allocator);
+    }
+
+    for (arr.array.items) |it| {
+        if (it == .string and it.string.len > 0) {
+            try out.append(allocator, try allocator.dupe(u8, it.string));
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+fn parseAllowlistFromInvokeResult(allocator: std.mem.Allocator, raw: []const u8) !std.ArrayList([]u8) {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
+    defer parsed.deinit();
+
+    var allow = std.ArrayList([]u8).empty;
+    errdefer {
+        for (allow.items) |s| allocator.free(s);
+        allow.deinit(allocator);
+    }
+
+    if (parsed.value == .object) {
+        if (parsed.value.object.get("payload")) |payload| {
+            if (payload == .object) {
+                if (payload.object.get("allowlist")) |alist| {
+                    if (alist == .array) {
+                        for (alist.array.items) |it| {
+                            if (it == .string) try allow.append(allocator, try allocator.dupe(u8, it.string));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return allow;
+}
+
+fn addExecAllowlistEntries(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+    target_node: []const u8,
+    new_entries: []const []const u8,
+) !u32 {
+    // 1) Get current approvals
+    try invokeNode(allocator, ws_client, ctx, target_node, "system.execApprovals.get", null);
+    const raw_owned = (try awaitNodeResultOwned(allocator, ws_client, ctx)) orelse {
+        return error.Unexpected;
+    };
+    defer allocator.free(raw_owned);
+
+    var allow = try parseAllowlistFromInvokeResult(allocator, raw_owned);
+    defer {
+        for (allow.items) |s| allocator.free(s);
+        allow.deinit(allocator);
+    }
+
+    var added: u32 = 0;
+    for (new_entries) |entry| {
+        if (entry.len == 0) continue;
+        var exists = false;
+        for (allow.items) |s| {
+            if (std.mem.eql(u8, s, entry)) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            try allow.append(allocator, try allocator.dupe(u8, entry));
+            added += 1;
+        }
+    }
+
+    if (added == 0) return 0;
+
+    // 2) Set approvals (mode=allowlist)
+    var params_obj = std.json.ObjectMap.init(allocator);
+    defer params_obj.deinit();
+    try params_obj.put("mode", std.json.Value{ .string = "allowlist" });
+
+    var allow_arr = std.json.Array.init(allocator);
+    defer {
+        for (allow_arr.items) |it| if (it == .string) allocator.free(it.string);
+        allow_arr.deinit();
+    }
+
+    for (allow.items) |s| {
+        try allow_arr.append(std.json.Value{ .string = try allocator.dupe(u8, s) });
+    }
+    try params_obj.put("allowlist", std.json.Value{ .array = allow_arr });
+
+    try invokeNode(allocator, ws_client, ctx, target_node, "system.execApprovals.set", std.json.Value{ .object = params_obj });
+    _ = try awaitNodeResultOwned(allocator, ws_client, ctx);
+
+    return added;
 }
 
 fn printNodeResult(allocator: std.mem.Allocator, result: []const u8) !void {
