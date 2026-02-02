@@ -1569,14 +1569,26 @@ fn parseAllowlistFromInvokeResult(allocator: std.mem.Allocator, raw: []const u8)
     }
 
     if (parsed.value == .object) {
-        if (parsed.value.object.get("payload")) |payload| {
+        const obj = parsed.value.object;
+
+        // Accept both shapes:
+        // 1) node.invoke response: { ok, nodeId, command, payload: { allowlist: [...] } }
+        // 2) raw handler payload (future-proof): { allowlist: [...] }
+        var alist_opt: ?std.json.Value = null;
+
+        if (obj.get("payload")) |payload| {
             if (payload == .object) {
-                if (payload.object.get("allowlist")) |alist| {
-                    if (alist == .array) {
-                        for (alist.array.items) |it| {
-                            if (it == .string) try allow.append(allocator, try allocator.dupe(u8, it.string));
-                        }
-                    }
+                if (payload.object.get("allowlist")) |alist| alist_opt = alist;
+            }
+        }
+        if (alist_opt == null) {
+            if (obj.get("allowlist")) |alist| alist_opt = alist;
+        }
+
+        if (alist_opt) |alist| {
+            if (alist == .array) {
+                for (alist.array.items) |it| {
+                    if (it == .string) try allow.append(allocator, try allocator.dupe(u8, it.string));
                 }
             }
         }
