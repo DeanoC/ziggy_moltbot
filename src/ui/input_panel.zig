@@ -3,6 +3,9 @@ const zgui = @import("zgui");
 
 // Leave headroom for multiline messages.
 var input_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
+// Bump this to force ImGui to treat the input as a fresh widget (resets internal state),
+// which is necessary to reliably clear the field immediately after sending.
+var input_generation: u32 = 0;
 var pending_insert_newline: bool = false;
 
 const hint_z: [:0]const u8 = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
@@ -24,7 +27,12 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
     var input_h = text_size[1] + style.frame_padding[1] * 2.0 + 8.0;
     input_h = @max(min_h, @min(max_h_clamped, input_h));
 
-    const changed = zgui.inputTextMultiline("##message_input", .{
+    // Dear ImGui's InputTextMultiline doesn't always soft-wrap as expected across backends.
+    // Try to enforce wrapping by pushing a wrap position for the duration of the widget.
+    const input_id = zgui.formatZ("##message_input_{d}", .{input_generation});
+
+    zgui.pushTextWrapPos(0.0);
+    const changed = zgui.inputTextMultiline(input_id, .{
         .buf = input_buf[0.. :0],
         .w = avail_w,
         .h = input_h,
@@ -38,6 +46,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
         },
         .callback = inputCallback,
     });
+    zgui.popTextWrapPos();
 
     // Placeholder/hint overlay for multiline
     if (!zgui.isItemActive() and text.len == 0) {
@@ -87,6 +96,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, max_h: f32) ?[]u8 {
 
     const owned = allocator.dupe(u8, final_text) catch return null;
     input_buf[0] = 0;
+    input_generation +%= 1;
     return owned;
 }
 
