@@ -17,6 +17,10 @@ pub fn setLevel(level: Level) void {
     min_level.store(@intFromEnum(level), .monotonic);
 }
 
+pub fn getLevel() Level {
+    return @enumFromInt(min_level.load(.monotonic));
+}
+
 pub fn initFile(path: []const u8) !void {
     if (has_fs) {
         deinit();
