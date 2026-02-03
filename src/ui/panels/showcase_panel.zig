@@ -1,6 +1,10 @@
+const std = @import("std");
 const zgui = @import("zgui");
 const components = @import("../components/components.zig");
+const draw_context = @import("../draw_context.zig");
 const theme = @import("../theme.zig");
+
+var draw_ctx_toggle = false;
 
 pub fn draw() void {
     const t = theme.activeTheme();
@@ -51,6 +55,28 @@ pub fn draw() void {
             .detail = "Compiling UI assets and validating layout rules.",
             .show_logs_button = true,
         });
+
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
+        if (components.layout.card.begin(.{ .title = "Draw Context Demo", .id = "draw_ctx_demo" })) {
+            const cursor = zgui.getCursorScreenPos();
+            const size = .{ 180.0, 40.0 };
+            const rect = draw_context.Rect.fromMinSize(cursor, size);
+            var ctx = draw_context.DrawContext.init(
+                std.heap.page_allocator,
+                .{ .imgui = .{} },
+                t,
+                rect,
+            );
+            defer ctx.deinit();
+            if (components.core.rect_button.draw(&ctx, rect, "Context Button", .{
+                .variant = if (draw_ctx_toggle) .success else .primary,
+            })) {
+                draw_ctx_toggle = !draw_ctx_toggle;
+            }
+            zgui.dummy(.{ .w = size[0], .h = size[1] });
+            zgui.textDisabled("State: {s}", .{if (draw_ctx_toggle) "on" else "off"});
+        }
+        components.layout.card.end();
     }
     components.layout.scroll_area.end();
 }

@@ -80,6 +80,7 @@ pub fn draw(
             .width = sidebar_width,
             .collapsible = true,
             .collapsed = &sidebar_collapsed,
+            .collapsed_label = "Operator",
         })) {
             if (!sidebar_collapsed) {
                 zgui.text("Nodes", .{});

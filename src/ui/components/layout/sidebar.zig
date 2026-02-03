@@ -10,6 +10,7 @@ pub const Args = struct {
     collapsible: bool = false,
     collapsed: ?*bool = null,
     collapsed_width: f32 = 56.0,
+    collapsed_label: ?[]const u8 = null,
 };
 
 pub fn begin(args: Args) bool {
@@ -47,6 +48,14 @@ pub fn begin(args: Args) bool {
         zgui.setCursorPos(.{ cursor[0], cursor[1] + button_size + t.spacing.xs });
         if (!is_collapsed) {
             zgui.separator();
+        }
+    }
+    if (opened and is_collapsed) {
+        if (args.collapsed_label) |label| {
+            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+            zgui.pushTextWrapPos(0.0);
+            zgui.textDisabled("{s}", .{label});
+            zgui.popTextWrapPos();
         }
     }
     return opened;

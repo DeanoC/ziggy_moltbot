@@ -53,6 +53,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
             .width = sidebar_width,
             .collapsible = true,
             .collapsed = &sidebar_collapsed,
+            .collapsed_label = "Projects",
         })) {
             if (!sidebar_collapsed) {
                 theme.push(.heading);
