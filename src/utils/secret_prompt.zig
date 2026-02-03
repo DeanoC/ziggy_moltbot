@@ -4,7 +4,7 @@ const builtin = @import("builtin");
 /// Read a secret from stdin.
 /// Best-effort disables echo on Windows; on other platforms it will echo.
 pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
-    var stdout = std.fs.File.stdout().writer();
+    var stdout = std.fs.File.stdout().deprecatedWriter();
     try stdout.writeAll(prompt);
     try stdout.writeAll("\n> ");
 
