@@ -17,6 +17,7 @@ pub const ProjectsViewAction = struct {
 
 var selected_project_index: ?usize = null;
 var search_buf: [128:0]u8 = [_:0]u8{0} ** 128;
+var sidebar_collapsed = false;
 
 pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsViewAction {
     var action = ProjectsViewAction{};
@@ -47,47 +48,54 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
         const avail = zgui.getContentRegionAvail();
         const sidebar_width = @min(260.0, avail[0] * 0.3);
 
-        if (components.layout.sidebar.begin(.{ .id = "projects", .width = sidebar_width })) {
-            theme.push(.heading);
-            zgui.text("My Projects", .{});
-            theme.pop();
-            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+        if (components.layout.sidebar.begin(.{
+            .id = "projects",
+            .width = sidebar_width,
+            .collapsible = true,
+            .collapsed = &sidebar_collapsed,
+        })) {
+            if (!sidebar_collapsed) {
+                theme.push(.heading);
+                zgui.text("My Projects", .{});
+                theme.pop();
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
 
-            zgui.beginDisabled(.{ .disabled = ctx.sessions_loading });
-            if (components.core.button.draw("+ New Project", .{ .variant = .primary, .size = .small })) {
-                action.new_session = true;
-            }
-            zgui.endDisabled();
-
-            if (ctx.sessions_loading) {
-                zgui.sameLine(.{ .spacing = t.spacing.sm });
-                components.core.badge.draw("Loading", .{ .variant = .primary, .filled = false, .size = .small });
-            }
-
-            zgui.separator();
-            zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
-            if (components.layout.scroll_area.begin(.{ .id = "ProjectsList", .border = true })) {
-                if (ctx.sessions.items.len == 0) {
-                    zgui.textDisabled("No projects available.", .{});
+                zgui.beginDisabled(.{ .disabled = ctx.sessions_loading });
+                if (components.core.button.draw("+ New Project", .{ .variant = .primary, .size = .small })) {
+                    action.new_session = true;
                 }
-                const active_index = resolveSelectedIndex(ctx);
-                for (ctx.sessions.items, 0..) |session, idx| {
-                    const name = displayName(session);
-                    const is_active = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
-                    const selected = active_index != null and active_index.? == idx;
-                    if (drawProjectRow(.{
-                        .id = session.key,
-                        .label = name,
-                        .active = is_active,
-                        .selected = selected,
-                        .t = t,
-                    })) {
-                        selected_project_index = idx;
-                        action.select_session = allocator.dupe(u8, session.key) catch null;
+                zgui.endDisabled();
+
+                if (ctx.sessions_loading) {
+                    zgui.sameLine(.{ .spacing = t.spacing.sm });
+                    components.core.badge.draw("Loading", .{ .variant = .primary, .filled = false, .size = .small });
+                }
+
+                zgui.separator();
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+                if (components.layout.scroll_area.begin(.{ .id = "ProjectsList", .border = true })) {
+                    if (ctx.sessions.items.len == 0) {
+                        zgui.textDisabled("No projects available.", .{});
+                    }
+                    const active_index = resolveSelectedIndex(ctx);
+                    for (ctx.sessions.items, 0..) |session, idx| {
+                        const name = displayName(session);
+                        const is_active = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
+                        const selected = active_index != null and active_index.? == idx;
+                        if (drawProjectRow(.{
+                            .id = session.key,
+                            .label = name,
+                            .active = is_active,
+                            .selected = selected,
+                            .t = t,
+                        })) {
+                            selected_project_index = idx;
+                            action.select_session = allocator.dupe(u8, session.key) catch null;
+                        }
                     }
                 }
+                components.layout.scroll_area.end();
             }
-            components.layout.scroll_area.end();
         }
         components.layout.sidebar.end();
 

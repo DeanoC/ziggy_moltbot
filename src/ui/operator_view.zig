@@ -51,6 +51,7 @@ var command_buf: [256:0]u8 = [_:0]u8{0} ** 256;
 var params_buf: [1024:0]u8 = [_:0]u8{0} ** 1024;
 var timeout_buf: [64:0]u8 = [_:0]u8{0} ** 64;
 var initialized = false;
+var sidebar_collapsed = false;
 
 pub fn draw(
     allocator: std.mem.Allocator,
@@ -74,91 +75,98 @@ pub fn draw(
         const avail = zgui.getContentRegionAvail();
         const sidebar_width = @min(280.0, avail[0] * 0.35);
 
-        if (components.layout.sidebar.begin(.{ .id = "operator", .width = sidebar_width })) {
-            zgui.text("Nodes", .{});
-            zgui.beginDisabled(.{ .disabled = !is_connected or ctx.nodes_loading });
-            if (components.core.button.draw("Refresh Nodes", .{ .variant = .secondary, .size = .small })) {
-                action.refresh_nodes = true;
-            }
-            zgui.sameLine(.{ .spacing = spacing });
-            if (components.core.button.draw("Describe Selected", .{ .variant = .secondary, .size = .small })) {
-                if (ctx.current_node) |node_id| {
-                    action.describe_node = allocator.dupe(u8, node_id) catch null;
+        if (components.layout.sidebar.begin(.{
+            .id = "operator",
+            .width = sidebar_width,
+            .collapsible = true,
+            .collapsed = &sidebar_collapsed,
+        })) {
+            if (!sidebar_collapsed) {
+                zgui.text("Nodes", .{});
+                zgui.beginDisabled(.{ .disabled = !is_connected or ctx.nodes_loading });
+                if (components.core.button.draw("Refresh Nodes", .{ .variant = .secondary, .size = .small })) {
+                    action.refresh_nodes = true;
                 }
-            }
-            zgui.endDisabled();
-            if (!is_connected) {
-                zgui.textWrapped("Connect to load nodes.", .{});
-            } else if (ctx.nodes_loading) {
-                zgui.textWrapped("Loading nodes...", .{});
-            }
-
-            const list_height: f32 = 180.0;
-            if (components.layout.scroll_area.begin(.{ .id = "NodesList", .height = list_height, .border = true })) {
-                if (ctx.nodes.items.len == 0) {
-                    zgui.textWrapped("No nodes available.", .{});
-                } else {
-                    for (ctx.nodes.items, 0..) |node, index| {
-                        zgui.pushIntId(@intCast(index));
-                        defer zgui.popId();
-                        const selected = ctx.current_node != null and std.mem.eql(u8, ctx.current_node.?, node.id);
-                        const connected_label = statusLabel(node.connected);
-                        const paired_label = statusLabel(node.paired);
-                        const name = node.display_name orelse node.id;
-                        var label_buf: [256]u8 = undefined;
-                        const label = std.fmt.bufPrint(
-                            &label_buf,
-                            "{s} ({s}, {s})",
-                            .{ name, connected_label, paired_label },
-                        ) catch name;
-                        if (components.data.list_item.draw(.{
-                            .label = label,
-                            .selected = selected,
-                            .id = node.id,
-                        })) {
-                            action.select_node = allocator.dupe(u8, node.id) catch null;
-                        }
+                zgui.sameLine(.{ .spacing = spacing });
+                if (components.core.button.draw("Describe Selected", .{ .variant = .secondary, .size = .small })) {
+                    if (ctx.current_node) |node_id| {
+                        action.describe_node = allocator.dupe(u8, node_id) catch null;
                     }
                 }
-            }
-            components.layout.scroll_area.end();
+                zgui.endDisabled();
+                if (!is_connected) {
+                    zgui.textWrapped("Connect to load nodes.", .{});
+                } else if (ctx.nodes_loading) {
+                    zgui.textWrapped("Loading nodes...", .{});
+                }
 
-            zgui.separator();
-            zgui.text("Execution Approvals", .{});
-            if (!is_connected) {
-                zgui.textWrapped("Connect to receive approval requests.", .{});
-            } else if (ctx.approvals.items.len == 0) {
-                zgui.textWrapped("No pending approvals.", .{});
-            } else {
-                if (components.layout.scroll_area.begin(.{ .id = "ApprovalsList", .height = 160.0, .border = true })) {
-                    for (ctx.approvals.items, 0..) |approval, index| {
-                        zgui.pushIntId(@intCast(index));
-                        defer zgui.popId();
-                        const decision = components.data.approval_card.draw(.{
-                            .id = approval.id,
-                            .summary = approval.summary,
-                            .requested_at_ms = approval.requested_at_ms,
-                            .payload_json = approval.payload_json,
-                            .can_resolve = approval.can_resolve,
-                        });
-                        const id_copy = switch (decision) {
-                            .none => null,
-                            else => allocator.dupe(u8, approval.id) catch null,
-                        };
-                        if (id_copy) |value| {
-                            action.resolve_approval = ExecApprovalResolveAction{
-                                .request_id = value,
-                                .decision = switch (decision) {
-                                    .allow_once => .allow_once,
-                                    .allow_always => .allow_always,
-                                    .deny => .deny,
-                                    .none => unreachable,
-                                },
-                            };
+                const list_height: f32 = 180.0;
+                if (components.layout.scroll_area.begin(.{ .id = "NodesList", .height = list_height, .border = true })) {
+                    if (ctx.nodes.items.len == 0) {
+                        zgui.textWrapped("No nodes available.", .{});
+                    } else {
+                        for (ctx.nodes.items, 0..) |node, index| {
+                            zgui.pushIntId(@intCast(index));
+                            defer zgui.popId();
+                            const selected = ctx.current_node != null and std.mem.eql(u8, ctx.current_node.?, node.id);
+                            const connected_label = statusLabel(node.connected);
+                            const paired_label = statusLabel(node.paired);
+                            const name = node.display_name orelse node.id;
+                            var label_buf: [256]u8 = undefined;
+                            const label = std.fmt.bufPrint(
+                                &label_buf,
+                                "{s} ({s}, {s})",
+                                .{ name, connected_label, paired_label },
+                            ) catch name;
+                            if (components.data.list_item.draw(.{
+                                .label = label,
+                                .selected = selected,
+                                .id = node.id,
+                            })) {
+                                action.select_node = allocator.dupe(u8, node.id) catch null;
+                            }
                         }
                     }
                 }
                 components.layout.scroll_area.end();
+
+                zgui.separator();
+                zgui.text("Execution Approvals", .{});
+                if (!is_connected) {
+                    zgui.textWrapped("Connect to receive approval requests.", .{});
+                } else if (ctx.approvals.items.len == 0) {
+                    zgui.textWrapped("No pending approvals.", .{});
+                } else {
+                    if (components.layout.scroll_area.begin(.{ .id = "ApprovalsList", .height = 160.0, .border = true })) {
+                        for (ctx.approvals.items, 0..) |approval, index| {
+                            zgui.pushIntId(@intCast(index));
+                            defer zgui.popId();
+                            const decision = components.data.approval_card.draw(.{
+                                .id = approval.id,
+                                .summary = approval.summary,
+                                .requested_at_ms = approval.requested_at_ms,
+                                .payload_json = approval.payload_json,
+                                .can_resolve = approval.can_resolve,
+                            });
+                            const id_copy = switch (decision) {
+                                .none => null,
+                                else => allocator.dupe(u8, approval.id) catch null,
+                            };
+                            if (id_copy) |value| {
+                                action.resolve_approval = ExecApprovalResolveAction{
+                                    .request_id = value,
+                                    .decision = switch (decision) {
+                                        .allow_once => .allow_once,
+                                        .allow_always => .allow_always,
+                                        .deny => .deny,
+                                        .none => unreachable,
+                                    },
+                                };
+                            }
+                        }
+                    }
+                    components.layout.scroll_area.end();
+                }
             }
         }
         components.layout.sidebar.end();

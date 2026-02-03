@@ -4,6 +4,7 @@ pub const core = struct {
     pub const badge = @import("core/badge.zig");
     pub const tab_bar = @import("core/tab_bar.zig");
     pub const file_row = @import("core/file_row.zig");
+    pub const widget = @import("core/widget.zig");
 };
 
 pub const layout = struct {
