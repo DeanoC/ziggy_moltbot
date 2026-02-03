@@ -64,7 +64,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
 
         ws.connect() catch |err| {
             logger.err("connect() failed: {s}", .{@errorName(err)});
-            std.time.sleep(500 * std.time.ns_per_ms);
+            std.Thread.sleep(500 * std.time.ns_per_ms);
             continue;
         };
 
@@ -73,7 +73,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         while (std.time.milliTimestamp() - start < 3000) {
             _ = ws.receive() catch {};
             if (!ws.is_connected) break;
-            std.time.sleep(50 * std.time.ns_per_ms);
+            std.Thread.sleep(50 * std.time.ns_per_ms);
         }
 
         if (ws.is_connected) {
@@ -106,7 +106,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         }
 
         logger.err("Disconnected: {s}", .{reason});
-        std.time.sleep(500 * std.time.ns_per_ms);
+        std.Thread.sleep(500 * std.time.ns_per_ms);
     }
 
     return error.ConnectionFailed;
