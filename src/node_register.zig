@@ -104,13 +104,76 @@ fn waitForHelloOk(allocator: std.mem.Allocator, ws: *websocket_client.WebSocketC
     return error.Timeout;
 }
 
+fn promptLineAlloc(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
+    var out = std.fs.File.stdout().deprecatedWriter();
+    try out.print("{s}", .{label});
+
+    var in = std.fs.File.stdin().deprecatedReader();
+    var buf: [2048]u8 = undefined;
+    const line = (try in.readUntilDelimiterOrEof(&buf, '\n')) orelse "";
+    return allocator.dupe(u8, std.mem.trim(u8, line, " \t\r\n"));
+}
+
+fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch {};
+    }
+
+    // Keep it minimal + strict. No legacy keys.
+    const content = try std.fmt.allocPrint(
+        allocator,
+        \\
+        \\{{
+        \\  \"gateway\": {{
+        \\    \"url\": \"{s}\",
+        \\    \"authToken\": \"{s}\"
+        \\  }},
+        \\  \"node\": {{
+        \\    \"enabled\": true,
+        \\    \"id\": \"\",
+        \\    \"token\": \"\",
+        \\    \"displayName\": \"Deano Windows\",
+        \\    \"deviceIdentityPath\": \"%APPDATA%\\\\ZiggyStarClaw\\\\node-device.json\",
+        \\    \"execApprovalsPath\": \"%APPDATA%\\\\ZiggyStarClaw\\\\exec-approvals.json\"
+        \\  }},
+        \\  \"operator\": {{ \"enabled\": false }},
+        \\  \"logging\": {{ \"level\": \"info\" }}
+        \\}}\n
+    ,
+        .{ gateway_url, gateway_token },
+    );
+    defer allocator.free(content);
+
+    const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer f.close();
+    try f.writeAll(content);
+}
+
 pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
     logger.info("node-register using config: {s}", .{cfg_path});
 
-    var cfg = try unified_config.load(allocator, cfg_path);
+    var cfg = unified_config.load(allocator, cfg_path) catch |err| blk: {
+        if (err != error.ConfigNotFound) return err;
+
+        logger.info("config not found; creating {s}", .{cfg_path});
+
+        // Prompt for gateway info (required for pairing RPC).
+        const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. ws://wizball.tail...:18789): ");
+        defer allocator.free(url);
+        if (url.len == 0) return error.InvalidArguments;
+
+        const secret_prompt = @import("utils/secret_prompt.zig");
+        const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
+        defer allocator.free(tok);
+        if (tok.len == 0) return error.InvalidArguments;
+
+        try writeDefaultConfig(allocator, cfg_path, url, tok);
+        // Reload now that we have a config.
+        break :blk try unified_config.load(allocator, cfg_path);
+    };
     defer cfg.deinit(allocator);
 
     // Ensure directories exist for stable paths.
