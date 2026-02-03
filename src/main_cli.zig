@@ -370,20 +370,57 @@ pub fn main() !void {
             return error.InvalidArguments;
         }
 
-        const node_cfg_path = try @import("node/config.zig").NodeConfig.defaultPath(allocator);
+        const NodeConfig = @import("node/config.zig").NodeConfig;
+        const node_cfg_path = try NodeConfig.defaultPath(allocator);
         defer allocator.free(node_cfg_path);
 
         if (node_service_install) {
-            win_service.installTask(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+            // Install a short wrapper script so we can:
+            // - avoid schtasks /TR length limits
+            // - always redirect logs to a file for debugging
+            // - avoid relying on Task Scheduler working directory
+            const exe_path = try std.fs.selfExePathAlloc(allocator);
+            defer allocator.free(exe_path);
+
+            // Best-effort: place wrapper + logs alongside the config (typically %APPDATA%\ZiggyStarClaw).
+            const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
+            std.fs.cwd().makePath(cfg_dir) catch {};
+
+            const wrapper_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
+            defer allocator.free(wrapper_path);
+
+            const log_path = try std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" });
+            defer allocator.free(log_path);
+
+            // Write wrapper (ASCII/CRLF not strictly required, but Windows-friendly).
+            const wrapper = try std.fmt.allocPrint(
+                allocator,
+                "@echo off\r\nsetlocal\r\n\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug >> \"{s}\" 2>&1\r\n",
+                .{ exe_path, node_cfg_path, log_path },
+            );
+            defer allocator.free(wrapper);
+
+            {
+                const f = try std.fs.cwd().createFile(wrapper_path, .{ .truncate = true });
+                defer f.close();
+                try f.writeAll(wrapper);
+            }
+
+            // Task scheduler should run the wrapper (keep /TR short)
+            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{wrapper_path});
+            defer allocator.free(task_run);
+
+            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
                 if (err == win_service.ServiceError.AccessDenied) {
                     logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
                     return;
                 }
                 return err;
             };
-            // Print a plain success message as well (some environments filter logs).
+
             logger.info("Installed scheduled task for node-mode.", .{});
             _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+            _ = std.fs.File.stdout().write("Logs: node-service.log (next to node.json)\n") catch {};
             return;
         }
         if (node_service_uninstall) {

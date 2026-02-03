@@ -83,8 +83,6 @@ pub fn installTask(
 ) !void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
 
-    const task_name = task_name_opt orelse defaultTaskName();
-
     const exe_path = try selfExePath(allocator);
     defer allocator.free(exe_path);
 
@@ -95,6 +93,19 @@ pub fn installTask(
         .{ exe_path, config_path },
     );
     defer allocator.free(task_run);
+
+    return installTaskCommand(allocator, task_run, mode, task_name_opt);
+}
+
+pub fn installTaskCommand(
+    allocator: std.mem.Allocator,
+    task_run: []const u8,
+    mode: InstallMode,
+    task_name_opt: ?[]const u8,
+) !void {
+    if (builtin.os.tag != .windows) return ServiceError.Unsupported;
+
+    const task_name = task_name_opt orelse defaultTaskName();
 
     // schtasks /Create /F /TN <name> /TR <cmd> /SC ONLOGON|ONSTART
     const schedule = switch (mode) {
