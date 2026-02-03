@@ -2,6 +2,7 @@ const std = @import("std");
 const zgui = @import("zgui");
 const theme = @import("../../theme.zig");
 const colors = @import("../../theme/colors.zig");
+const markdown_basic = @import("../../markdown_basic.zig");
 
 pub const Args = struct {
     id: []const u8,
@@ -10,6 +11,7 @@ pub const Args = struct {
     timestamp_ms: ?i64 = null,
     now_ms: i64,
     align_right: bool = false,
+    use_markdown: bool = true,
 };
 
 pub fn draw(args: Args) void {
@@ -47,7 +49,11 @@ pub fn draw(args: Args) void {
             zgui.sameLine(.{ .spacing = t.spacing.sm });
             zgui.textDisabled("{s}", .{label});
         }
-        zgui.textWrapped("{s}", .{args.content});
+        if (args.use_markdown) {
+            markdown_basic.draw(.{ .text = args.content });
+        } else {
+            zgui.textWrapped("{s}", .{args.content});
+        }
     }
     zgui.endChild();
 

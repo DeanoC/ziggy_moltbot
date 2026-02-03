@@ -94,39 +94,56 @@ pub fn draw(
             });
         } else {
             const now_ms = std.time.milliTimestamp();
-            for (messages, 0..) |msg, index| {
-                if (inbox) |store| {
-                    if (store.isCommandMessage(msg.id)) continue;
-                }
-                if (!opts.show_tool_output and isToolRole(msg.role)) {
-                    continue;
-                }
-                zgui.pushIntId(@intCast(index));
-                defer zgui.popId();
-                const align_right = std.mem.eql(u8, msg.role, "user");
-                components.composite.message_bubble.draw(.{
-                    .id = msg.id,
-                    .role = msg.role,
-                    .content = msg.content,
-                    .timestamp_ms = msg.timestamp,
-                    .now_ms = now_ms,
-                    .align_right = align_right,
-                });
+            const visible_count = countVisible(messages, inbox, opts.show_tool_output);
+            if (visible_count == 0) {
+                zgui.textDisabled("No messages yet.", .{});
+            } else {
+                const estimated_height = estimateMessageHeight();
+                var clipper = zgui.ListClipper.init();
+                clipper.begin(@intCast(visible_count), estimated_height);
+                while (clipper.step()) {
+                    var visible_index: i32 = 0;
+                    for (messages, 0..) |msg, index| {
+                        if (inbox) |store| {
+                            if (store.isCommandMessage(msg.id)) continue;
+                        }
+                        if (!opts.show_tool_output and isToolRole(msg.role)) {
+                            continue;
+                        }
+                        if (visible_index < clipper.DisplayStart or visible_index >= clipper.DisplayEnd) {
+                            visible_index += 1;
+                            continue;
+                        }
+                        zgui.pushIntId(@intCast(index));
+                        defer zgui.popId();
+                        const align_right = std.mem.eql(u8, msg.role, "user");
+                        components.composite.message_bubble.draw(.{
+                            .id = msg.id,
+                            .role = msg.role,
+                            .content = msg.content,
+                            .timestamp_ms = msg.timestamp,
+                            .now_ms = now_ms,
+                            .align_right = align_right,
+                        });
 
-                if (msg.attachments) |attachments| {
-                    drawAttachments(attachments, align_right);
-                }
+                        if (msg.attachments) |attachments| {
+                            drawAttachments(attachments, align_right);
+                        }
 
-                if (zgui.beginPopupContextItem()) {
-                    if (zgui.menuItem("Copy message", .{})) {
-                        const msg_z = zgui.formatZ("{s}", .{msg.content});
-                        zgui.setClipboardText(msg_z);
-                        zgui.closeCurrentPopup();
+                        if (zgui.beginPopupContextItem()) {
+                            if (zgui.menuItem("Copy message", .{})) {
+                                const msg_z = zgui.formatZ("{s}", .{msg.content});
+                                zgui.setClipboardText(msg_z);
+                                zgui.closeCurrentPopup();
+                            }
+                            zgui.endPopup();
+                        }
+
+                        zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
+                        visible_index += 1;
                     }
-                    zgui.endPopup();
                 }
-
-                zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
+                clipper.end();
             }
             if (stream_text) |stream| {
                 zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
@@ -170,6 +187,27 @@ fn isImageAttachment(att: types.ChatAttachment) bool {
 
 fn isToolRole(role: []const u8) bool {
     return std.mem.startsWith(u8, role, "tool") or std.mem.eql(u8, role, "toolResult");
+}
+
+fn countVisible(
+    messages: []const types.ChatMessage,
+    inbox: ?*const ui_command_inbox.UiCommandInbox,
+    show_tool_output: bool,
+) i32 {
+    var count: i32 = 0;
+    for (messages) |msg| {
+        if (inbox) |store| {
+            if (store.isCommandMessage(msg.id)) continue;
+        }
+        if (!show_tool_output and isToolRole(msg.role)) continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn estimateMessageHeight() f32 {
+    const t = theme.activeTheme();
+    return zgui.getTextLineHeightWithSpacing() * 4.0 + t.spacing.sm * 2.0;
 }
 
 fn drawAttachments(attachments: []const types.ChatAttachment, align_right: bool) void {

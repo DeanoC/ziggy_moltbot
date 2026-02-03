@@ -5,6 +5,7 @@ const types = @import("../../protocol/types.zig");
 const components = @import("../components/components.zig");
 const session_list = @import("../session_list.zig");
 const theme = @import("../theme.zig");
+const markdown_basic = @import("../markdown_basic.zig");
 const image_cache = @import("../image_cache.zig");
 const data_uri = @import("../data_uri.zig");
 const attachment_cache = @import("../attachment_cache.zig");
@@ -562,42 +563,8 @@ fn drawTextPreview(
 }
 
 fn drawMarkdownPreview(text: []const u8, t: *const theme.Theme) void {
-    var it = std.mem.splitScalar(u8, text, '\n');
-    var line_count: usize = 0;
-    var in_code_block = false;
-    while (it.next()) |line| {
-        if (line_count >= log_preview_lines) break;
-        const trimmed = std.mem.trimRight(u8, line, "\r");
-        if (std.mem.startsWith(u8, trimmed, "```")) {
-            in_code_block = !in_code_block;
-            line_count += 1;
-            continue;
-        }
-        if (in_code_block) {
-            zgui.textDisabled("{s}", .{trimmed});
-            line_count += 1;
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "#")) {
-            theme.push(.heading);
-            zgui.text("{s}", .{std.mem.trim(u8, trimmed, "# ")});
-            theme.pop();
-        } else if (std.mem.startsWith(u8, trimmed, "> ")) {
-            zgui.textDisabled("{s}", .{trimmed[2..]});
-        } else if (std.mem.startsWith(u8, trimmed, "- ") or
-            std.mem.startsWith(u8, trimmed, "* ") or
-            std.mem.startsWith(u8, trimmed, "+ "))
-        {
-            zgui.bulletText("{s}", .{trimmed[2..]});
-        } else {
-            zgui.textWrapped("{s}", .{trimmed});
-        }
-        line_count += 1;
-    }
-    if (line_count >= log_preview_lines) {
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-        zgui.textDisabled("Preview truncated.", .{});
-    }
+    _ = t;
+    markdown_basic.draw(.{ .text = text, .max_lines = log_preview_lines });
 }
 
 fn drawLogPreview(text: []const u8) void {
