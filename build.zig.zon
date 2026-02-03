@@ -1,6 +1,6 @@
 .{
     .name = .ziggystarclaw,
-    .version = "0.2.24",
+    .version = "0.2.25",
     .fingerprint = 0x8c6b3a4e18b2d25c,
     .minimum_zig_version = "0.15.2",
     .dependencies = .{
