@@ -321,7 +321,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
             if (payload) |text| {
                 defer allocator.free(text);
-                try handleNodeMessage(allocator, &ws_client_val, &node_ctx, &router, text);
+                try handleNodeMessage(allocator, &ws_client_val, &node_ctx, &router, config_path, &cfg, text);
             } else {
                 std.Thread.sleep(50 * std.time.ns_per_ms);
             }
@@ -399,6 +399,8 @@ fn handleNodeMessage(
     ws_client: anytype,
     node_ctx: *NodeContext,
     router: *CommandRouter,
+    cfg_path: []const u8,
+    cfg: *UnifiedConfig,
     text: []const u8,
 ) !void {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
@@ -452,6 +454,15 @@ fn handleNodeMessage(
                                         }
                                         node_ctx.device_token = try allocator.dupe(u8, token.string);
                                         logger.info("Device token received.", .{});
+
+                                        // Persist device token to config.json (single source of truth).
+                                        if (!std.mem.eql(u8, cfg.node.nodeToken, token.string)) {
+                                            allocator.free(cfg.node.nodeToken);
+                                            cfg.node.nodeToken = try allocator.dupe(u8, token.string);
+                                            saveUpdatedNodeToken(allocator, cfg_path, token.string) catch |err| {
+                                                logger.warn("Failed to persist node token to config: {s}", .{@errorName(err)});
+                                            };
+                                        }
                                     }
                                 }
                             }
@@ -480,6 +491,38 @@ fn handleNodeMessage(
             try handleNodeInvoke(allocator, ws_client, node_ctx, router, value);
         }
     }
+}
+
+fn saveUpdatedNodeToken(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    token: []const u8,
+) !void {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+
+    const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(data);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, data, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidArguments;
+    var root = parsed.value.object;
+    const node_val = root.getPtr("node") orelse return error.InvalidArguments;
+    if (node_val.* != .object) return error.InvalidArguments;
+
+    try node_val.object.put("nodeToken", std.json.Value{ .string = token });
+
+    const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
+    defer allocator.free(out);
+
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch {};
+    }
+    const wf = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer wf.close();
+    try wf.writeAll(out);
 }
 
 fn handleNodeInvoke(
