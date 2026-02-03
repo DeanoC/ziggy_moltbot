@@ -3,6 +3,8 @@ const zgui = @import("zgui");
 const types = @import("../protocol/types.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const image_cache = @import("image_cache.zig");
+const components = @import("components/components.zig");
+const theme = @import("theme.zig");
 
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
@@ -92,8 +94,6 @@ pub fn draw(
             });
         } else {
             const now_ms = std.time.milliTimestamp();
-            var last_role: ?[]const u8 = null;
-
             for (messages, 0..) |msg, index| {
                 if (inbox) |store| {
                     if (store.isCommandMessage(msg.id)) continue;
@@ -103,27 +103,20 @@ pub fn draw(
                 }
                 zgui.pushIntId(@intCast(index));
                 defer zgui.popId();
-                if (last_role == null or !std.mem.eql(u8, last_role.?, msg.role)) {
-                    if (last_role != null) {
-                        zgui.spacing();
-                    }
-                    renderGroupHeader(msg.role, now_ms, msg.timestamp);
-                    zgui.separator();
-                    last_role = msg.role;
-                }
-                const cursor = zgui.getCursorPos();
-                // Enforce wrapping to available width (some platforms end up with wrap disabled).
-                zgui.pushTextWrapPos(0.0);
-                zgui.textWrapped("{s}", .{msg.content});
-                zgui.popTextWrapPos();
-                const after_text = zgui.getCursorPos();
-                const avail = zgui.getContentRegionAvail();
-                const item_height = after_text[1] - cursor[1];
-                zgui.setCursorPos(cursor);
-                _ = zgui.invisibleButton(zgui.formatZ("##msg{d}", .{index}), .{
-                    .w = avail[0],
-                    .h = item_height,
+                const align_right = std.mem.eql(u8, msg.role, "user");
+                components.composite.message_bubble.draw(.{
+                    .id = msg.id,
+                    .role = msg.role,
+                    .content = msg.content,
+                    .timestamp_ms = msg.timestamp,
+                    .now_ms = now_ms,
+                    .align_right = align_right,
                 });
+
+                if (msg.attachments) |attachments| {
+                    drawAttachments(attachments, align_right);
+                }
+
                 if (zgui.beginPopupContextItem()) {
                     if (zgui.menuItem("Copy message", .{})) {
                         const msg_z = zgui.formatZ("{s}", .{msg.content});
@@ -132,55 +125,19 @@ pub fn draw(
                     }
                     zgui.endPopup();
                 }
-                zgui.setCursorPos(after_text);
 
-                if (msg.attachments) |attachments| {
-                    for (attachments) |attachment| {
-                        if (!isImageAttachment(attachment)) continue;
-                        image_cache.request(attachment.url);
-                        const max_width = @max(120.0, @min(320.0, zgui.getContentRegionAvail()[0]));
-                        const max_height: f32 = 240.0;
-                        if (image_cache.get(attachment.url)) |entry| {
-                            switch (entry.state) {
-                                .ready => {
-                                    const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
-                                    const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
-                                    const w = @as(f32, @floatFromInt(entry.width));
-                                    const h = @as(f32, @floatFromInt(entry.height));
-                                    const aspect = if (h > 0) w / h else 1.0;
-                                    var draw_w = @min(max_width, w);
-                                    var draw_h = draw_w / aspect;
-                                    if (draw_h > max_height) {
-                                        draw_h = max_height;
-                                        draw_w = draw_h * aspect;
-                                    }
-                                    zgui.image(tex_ref, .{ .w = draw_w, .h = draw_h });
-                                },
-                                .loading => {
-                                    zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
-                                    zgui.dummy(.{ .w = max_width, .h = 120.0 });
-                                },
-                                .failed => {
-                                    zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Image failed to load", .{});
-                                    if (entry.error_message) |err| {
-                                        zgui.sameLine(.{});
-                                        zgui.textDisabled("{s}", .{err});
-                                    }
-                                },
-                            }
-                        } else {
-                            zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
-                            zgui.dummy(.{ .w = max_width, .h = 120.0 });
-                        }
-                        zgui.spacing();
-                    }
-                }
+                zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
             }
             if (stream_text) |stream| {
-                zgui.separator();
-                zgui.textColored(.{ 0.6, 0.7, 1.0, 1.0 }, "[assistant]", .{});
-                zgui.sameLine(.{});
-                zgui.textWrapped("{s}", .{stream});
+                zgui.dummy(.{ .w = 0.0, .h = theme.activeTheme().spacing.sm });
+                components.composite.message_bubble.draw(.{
+                    .id = "streaming",
+                    .role = "assistant",
+                    .content = stream,
+                    .timestamp_ms = now_ms,
+                    .now_ms = now_ms,
+                    .align_right = false,
+                });
             }
         }
 
@@ -189,58 +146,6 @@ pub fn draw(
         }
     }
     zgui.endChild();
-}
-
-fn roleColor(role: []const u8) [4]f32 {
-    if (std.mem.eql(u8, role, "assistant")) return .{
-        0.5,
-        0.8,
-        1.0,
-        1.0,
-    };
-    if (std.mem.eql(u8, role, "system")) return .{
-        0.8,
-        0.8,
-        0.6,
-        1.0,
-    };
-    return .{
-        0.7,
-        0.7,
-        0.7,
-        1.0,
-    };
-}
-
-fn roleLabel(role: []const u8) []const u8 {
-    if (std.mem.eql(u8, role, "assistant")) return "Assistant";
-    if (std.mem.eql(u8, role, "user")) return "You";
-    if (std.mem.eql(u8, role, "system")) return "System";
-    return role;
-}
-
-fn renderGroupHeader(role: []const u8, now_ms: i64, ts_ms: i64) void {
-    const delta_ms = if (now_ms > ts_ms) now_ms - ts_ms else 0;
-    const seconds = @as(u64, @intCast(@divTrunc(delta_ms, 1000)));
-    const minutes = seconds / 60;
-    const hours = minutes / 60;
-    const days = hours / 24;
-    const label = roleLabel(role);
-    const color = roleColor(role);
-
-    if (seconds < 60) {
-        zgui.textColored(color, "{s} · {d}s ago", .{ label, seconds });
-        return;
-    }
-    if (minutes < 60) {
-        zgui.textColored(color, "{s} · {d}m ago", .{ label, minutes });
-        return;
-    }
-    if (hours < 24) {
-        zgui.textColored(color, "{s} · {d}h ago", .{ label, hours });
-        return;
-    }
-    zgui.textColored(color, "{s} · {d}d ago", .{ label, days });
 }
 
 fn endsWithIgnoreCase(value: []const u8, suffix: []const u8) bool {
@@ -265,6 +170,75 @@ fn isImageAttachment(att: types.ChatAttachment) bool {
 
 fn isToolRole(role: []const u8) bool {
     return std.mem.startsWith(u8, role, "tool") or std.mem.eql(u8, role, "toolResult");
+}
+
+fn drawAttachments(attachments: []const types.ChatAttachment, align_right: bool) void {
+    const t = theme.activeTheme();
+    const avail = zgui.getContentRegionAvail()[0];
+    const bubble_width = messageBubbleWidth(avail);
+    const cursor_start = zgui.getCursorPos();
+
+    if (align_right and avail > bubble_width) {
+        zgui.setCursorPosX(cursor_start[0] + (avail - bubble_width));
+    }
+
+    var has_non_image = false;
+    for (attachments) |attachment| {
+        if (isImageAttachment(attachment)) continue;
+        has_non_image = true;
+        const label = attachment.name orelse attachment.url;
+        components.core.badge.draw(label, .{ .variant = .neutral, .filled = false, .size = .small });
+        zgui.sameLine(.{ .spacing = t.spacing.xs });
+    }
+    if (has_non_image) {
+        zgui.newLine();
+    }
+
+    for (attachments) |attachment| {
+        if (!isImageAttachment(attachment)) continue;
+        image_cache.request(attachment.url);
+        const max_width = @max(120.0, @min(320.0, bubble_width));
+        const max_height: f32 = 240.0;
+        if (image_cache.get(attachment.url)) |entry| {
+            switch (entry.state) {
+                .ready => {
+                    const tex_id: zgui.TextureIdent = @enumFromInt(@as(u64, entry.texture_id));
+                    const tex_ref = zgui.TextureRef{ .tex_data = null, .tex_id = tex_id };
+                    const w = @as(f32, @floatFromInt(entry.width));
+                    const h = @as(f32, @floatFromInt(entry.height));
+                    const aspect = if (h > 0) w / h else 1.0;
+                    var draw_w = @min(max_width, w);
+                    var draw_h = draw_w / aspect;
+                    if (draw_h > max_height) {
+                        draw_h = max_height;
+                        draw_w = draw_h * aspect;
+                    }
+                    zgui.image(tex_ref, .{ .w = draw_w, .h = draw_h });
+                },
+                .loading => {
+                    zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
+                    zgui.dummy(.{ .w = max_width, .h = 120.0 });
+                },
+                .failed => {
+                    zgui.textColored(.{ 0.9, 0.4, 0.4, 1.0 }, "Image failed to load", .{});
+                    if (entry.error_message) |err| {
+                        zgui.sameLine(.{});
+                        zgui.textDisabled("{s}", .{err});
+                    }
+                },
+            }
+        } else {
+            zgui.textColored(.{ 0.6, 0.6, 0.6, 1.0 }, "Loading image...", .{});
+            zgui.dummy(.{ .w = max_width, .h = 120.0 });
+        }
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+    }
+
+    zgui.setCursorPosX(cursor_start[0]);
+}
+
+fn messageBubbleWidth(avail: f32) f32 {
+    return @min(560.0, avail * 0.82);
 }
 
 var last_message_count: usize = 0;

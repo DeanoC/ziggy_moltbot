@@ -175,6 +175,9 @@ pub fn draw(
                     .Chat => {
                         const chat_action = chat_panel.draw(allocator, ctx, inbox);
                         action.send_message = chat_action.send_message;
+                        action.refresh_sessions = chat_action.refresh_sessions;
+                        action.new_session = chat_action.new_session;
+                        action.select_session = chat_action.select_session;
                     },
                     .CodeEditor => {
                         if (code_editor_panel.draw(panel, allocator)) {
