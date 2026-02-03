@@ -400,31 +400,80 @@ pub fn main() !void {
             const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
             std.fs.cwd().makePath(cfg_dir) catch {};
 
-            const wrapper_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
-            defer allocator.free(wrapper_path);
-
             const log_path = try std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" });
             defer allocator.free(log_path);
 
-            // Write wrapper (ASCII/CRLF not strictly required, but Windows-friendly).
-            const wrapper = try std.fmt.allocPrint(
+            // Prefer a VBScript launcher (no console window). Fallback to cmd if Windows Script Host is missing.
+            const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
+            defer if (windir) |v| allocator.free(v);
+
+            const wscript_path = if (windir) |v|
+                try std.fs.path.join(allocator, &.{ v, "System32", "wscript.exe" })
+            else
+                try allocator.dupe(u8, "wscript.exe");
+            defer allocator.free(wscript_path);
+
+            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) == null;
+
+            if (wscript_ok) {
+                const vbs_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.vbs" });
+                defer allocator.free(vbs_path);
+
+                // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
+                // We still use cmd /c for output redirection.
+                const vbs = try std.fmt.allocPrint(
+                    allocator,
+                    "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
+                        "sh.Run \"cmd /c \"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator --log-level debug >> \"\"\"\"{s}\"\"\"\" 2>&1\"\"\", 0, False\r\n",
+                    .{ exe_path, node_cfg_path, log_path },
+                );
+                defer allocator.free(vbs);
+
+                {
+                    const f = try std.fs.cwd().createFile(vbs_path, .{ .truncate = true });
+                    defer f.close();
+                    try f.writeAll(vbs);
+                }
+
+                // Task scheduler runs wscript.exe "...\run-node.vbs"
+                const task_run = try std.fmt.allocPrint(allocator, "\"{s}\" \"{s}\"", .{ wscript_path, vbs_path });
+                defer allocator.free(task_run);
+
+                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
+                    if (err == win_service.ServiceError.AccessDenied) {
+                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                        return;
+                    }
+                    return err;
+                };
+
+                logger.info("Installed scheduled task for node-mode (hidden via wscript).", .{});
+                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+                _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+                return;
+            }
+
+            // Fallback: cmd wrapper (may open a console window)
+            const cmd_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
+            defer allocator.free(cmd_path);
+
+            const cmd = try std.fmt.allocPrint(
                 allocator,
                 "@echo off\r\nsetlocal\r\n\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug >> \"{s}\" 2>&1\r\n",
                 .{ exe_path, node_cfg_path, log_path },
             );
-            defer allocator.free(wrapper);
+            defer allocator.free(cmd);
 
             {
-                const f = try std.fs.cwd().createFile(wrapper_path, .{ .truncate = true });
+                const f = try std.fs.cwd().createFile(cmd_path, .{ .truncate = true });
                 defer f.close();
-                try f.writeAll(wrapper);
+                try f.writeAll(cmd);
             }
 
-            // Task scheduler should run the wrapper (keep /TR short)
-            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{wrapper_path});
+            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
             defer allocator.free(task_run);
 
-            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
+            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {  
                 if (err == win_service.ServiceError.AccessDenied) {
                     logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
                     return;
@@ -432,7 +481,7 @@ pub fn main() !void {
                 return err;
             };
 
-            logger.info("Installed scheduled task for node-mode.", .{});
+            logger.info("Installed scheduled task for node-mode (cmd wrapper).", .{});
             _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
             _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
             return;
