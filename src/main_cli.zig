@@ -382,6 +382,13 @@ pub fn main() !void {
         defer allocator.free(node_cfg_path);
 
         if (node_service_install) {
+            // Ensure the node is registered/persisted in the SAME config.json the service will use.
+            // This keeps manual runs and the scheduled task deterministic.
+            //
+            // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
+            // can approve without re-running commands.
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true);
+
             // Install a short wrapper script so we can:
             // - avoid schtasks /TR length limits
             // - always redirect logs to a file for debugging
