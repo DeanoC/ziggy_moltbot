@@ -372,22 +372,28 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
         var ws_client: ?websocket_client.WebSocketClient = null;
         if (config.enable_node_connection) {
-            // Node websocket: MUST use node token for both handshake + connect auth when gateway enforces auth.
-            const node_handshake_token = config.device_token orelse config.gateway_token orelse "";
+            // Node websocket:
+            // - WebSocket handshake token must be the *gateway* auth token (gateway_token)
+            // - Connect auth + device auth should be the *node/device* token (device_token)
+            // This allows token-auth gateways to validate the initial websocket, while still
+            // enforcing role=node auth for the node connection.
+            const gateway_handshake_token = config.gateway_token orelse "";
+            const node_auth_token = config.device_token orelse "";
             var ws = websocket_client.WebSocketClient.init(
                 allocator,
                 ws_url,
-                node_handshake_token,
+                gateway_handshake_token,
                 opts.insecure_tls,
                 null,
             );
-            // Keep connect auth token consistent with the handshake token.
-            if (node_handshake_token.len > 0) {
-                ws.setConnectAuthToken(node_handshake_token);
+            // connect.auth.token should be the node token when provided; otherwise fall back
+            // to the handshake token for gateways that don't distinguish.
+            const connect_token = if (node_auth_token.len > 0) node_auth_token else gateway_handshake_token;
+            if (connect_token.len > 0) {
+                ws.setConnectAuthToken(connect_token);
             }
-            // Device-auth token should also be the node token (if provided).
-            if (config.device_token) |tok| {
-                ws.setDeviceAuthToken(tok);
+            if (node_auth_token.len > 0) {
+                ws.setDeviceAuthToken(node_auth_token);
             }
             ws.setConnectProfile(.{
                 .role = "node",
