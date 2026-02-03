@@ -114,6 +114,25 @@ fn promptLineAlloc(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
     return allocator.dupe(u8, std.mem.trim(u8, line, " \t\r\n"));
 }
 
+fn backupConfigIfExists(allocator: std.mem.Allocator, path: []const u8) void {
+    _ = allocator;
+    // Best-effort: if file exists, rename to .bak.<unixms>
+    const now_ms: i64 = std.time.milliTimestamp();
+    const bak = std.fmt.allocPrint(std.heap.page_allocator, "{s}.bak.{d}", .{ path, now_ms }) catch return;
+    defer std.heap.page_allocator.free(bak);
+
+    std.fs.cwd().rename(path, bak) catch {
+        // If rename fails (e.g., cross-device), try copy+truncate.
+        const src = std.fs.cwd().openFile(path, .{}) catch return;
+        defer src.close();
+        const data = src.readToEndAlloc(std.heap.page_allocator, 1024 * 1024) catch return;
+        defer std.heap.page_allocator.free(data);
+        const dst = std.fs.cwd().createFile(bak, .{ .truncate = true }) catch return;
+        defer dst.close();
+        _ = dst.writeAll(data) catch {};
+    };
+}
+
 fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
@@ -156,9 +175,14 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("node-register using config: {s}", .{cfg_path});
 
     var cfg = unified_config.load(allocator, cfg_path) catch |err| blk: {
-        if (err != error.ConfigNotFound) return err;
+        if (err != error.ConfigNotFound and err != error.SyntaxError and err != error.UnknownField) return err;
 
-        logger.info("config not found; creating {s}", .{cfg_path});
+        if (err == error.ConfigNotFound) {
+            logger.info("config not found; creating {s}", .{cfg_path});
+        } else {
+            logger.err("config invalid ({s}); backing up and recreating {s}", .{ @errorName(err), cfg_path });
+            backupConfigIfExists(allocator, cfg_path);
+        }
 
         // Prompt for gateway info (required for pairing RPC).
         const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. ws://wizball.tail...:18789): ");
