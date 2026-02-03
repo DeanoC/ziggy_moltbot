@@ -23,7 +23,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
     if (opened) {
         const t = theme.activeTheme();
         if (components.layout.header_bar.begin(.{
-            .title = "Approvals Inbox",
+            .title = "Approvals Needed",
             .subtitle = "Human-in-the-loop",
             .show_notifications = true,
             .notification_count = ctx.approvals.items.len,

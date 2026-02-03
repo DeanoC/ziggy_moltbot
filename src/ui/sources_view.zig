@@ -244,13 +244,14 @@ fn collectFiles(
     while (index > 0 and len < buf.len) : (index -= 1) {
         const message = messages[index - 1];
         if (message.attachments) |attachments| {
+            const status = statusForRole(message.role);
             for (attachments) |attachment| {
                 if (len >= buf.len) break;
                 const name = attachment.name orelse attachment.url;
                 buf[len] = .{
                     .name = name,
                     .language = attachment.kind,
-                    .status = message.role,
+                    .status = status,
                     .dirty = false,
                 };
                 len += 1;
@@ -258,6 +259,16 @@ fn collectFiles(
         }
     }
     return buf[0..len];
+}
+
+fn statusForRole(role: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(role, "assistant") or std.ascii.eqlIgnoreCase(role, "tool")) {
+        return "indexed";
+    }
+    if (std.ascii.eqlIgnoreCase(role, "user")) {
+        return "pending";
+    }
+    return "indexed";
 }
 
 fn collectAttachmentPreviews(

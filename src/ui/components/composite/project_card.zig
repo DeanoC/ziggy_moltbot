@@ -32,13 +32,16 @@ pub fn draw(args: Args) void {
         const draw_list = zgui.getWindowDrawList();
         const pos = zgui.getWindowPos();
         const size = zgui.getWindowSize();
-        const accent_height = 48.0;
-        const accent = colors.withAlpha(t.colors.primary, 0.12);
-        draw_list.addRectFilled(.{
-            .pmin = pos,
-            .pmax = .{ pos[0] + size[0], pos[1] + accent_height },
-            .col = zgui.colorConvertFloat4ToU32(accent),
-            .rounding = t.radius.lg,
+        const accent_height = 56.0;
+        const top = colors.withAlpha(t.colors.primary, 0.18);
+        const bottom = colors.withAlpha(colors.blend(t.colors.primary, t.colors.surface, 0.65), 0.0);
+        draw_list.addRectFilledMultiColor(.{
+            .pmin = .{ pos[0] + 1.0, pos[1] + 1.0 },
+            .pmax = .{ pos[0] + size[0] - 1.0, pos[1] + accent_height },
+            .col_upr_left = zgui.colorConvertFloat4ToU32(top),
+            .col_upr_right = zgui.colorConvertFloat4ToU32(top),
+            .col_bot_right = zgui.colorConvertFloat4ToU32(bottom),
+            .col_bot_left = zgui.colorConvertFloat4ToU32(bottom),
         });
 
         theme.push(.heading);

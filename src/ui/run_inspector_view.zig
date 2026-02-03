@@ -18,7 +18,7 @@ pub fn draw(ctx: *state.ClientContext) void {
     const opened = zgui.beginChild("RunInspectorView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Run Inspector", .subtitle = "Task Progress" })) {
+        if (components.layout.header_bar.begin(.{ .title = "Task Progress", .subtitle = "Run Inspector" })) {
             components.layout.header_bar.end();
         }
 
