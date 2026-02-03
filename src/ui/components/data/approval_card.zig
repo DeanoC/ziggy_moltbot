@@ -20,31 +20,42 @@ pub const Args = struct {
 
 pub fn draw(args: Args) Decision {
     var decision: Decision = .none;
-    var title_buf: [128:0]u8 = undefined;
-    const title = std.fmt.bufPrintZ(&title_buf, "Request {s}", .{args.id}) catch args.id;
+    const t = theme.activeTheme();
+    const title = "Approval Needed";
 
     if (components.layout.card.begin(.{ .title = title, .id = args.id, .elevation = .raised })) {
         if (args.summary) |summary| {
-            zgui.textWrapped("Summary: {s}", .{summary});
+            theme.push(.heading);
+            zgui.textWrapped("{s}", .{summary});
+            theme.pop();
         }
         if (args.requested_at_ms) |ts| {
-            zgui.textWrapped("Requested At: {d}", .{ts});
+            var time_buf: [32]u8 = undefined;
+            const label = formatRelativeTime(std.time.milliTimestamp(), ts, &time_buf);
+            zgui.textDisabled("Requested {s}", .{label});
         }
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
         zgui.separator();
-        zgui.textWrapped("{s}", .{args.payload_json});
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+        var payload_id_buf: [96]u8 = undefined;
+        const payload_id = std.fmt.bufPrint(&payload_id_buf, "ApprovalPayload_{s}", .{args.id}) catch "ApprovalPayload";
+        if (components.layout.scroll_area.begin(.{ .id = payload_id, .height = 120.0, .border = true })) {
+            zgui.textWrapped("{s}", .{args.payload_json});
+        }
+        components.layout.scroll_area.end();
 
         if (args.can_resolve) {
-            zgui.separator();
-            if (components.core.button.draw("Allow Once", .{ .variant = .primary, .size = .small })) {
+            zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+            if (components.core.button.draw("Approve", .{ .variant = .success, .size = .small })) {
                 decision = .allow_once;
             }
-            zgui.sameLine(.{ .spacing = theme.activeTheme().spacing.sm });
+            zgui.sameLine(.{ .spacing = t.spacing.sm });
+            if (components.core.button.draw("Decline", .{ .variant = .danger, .size = .small })) {
+                decision = .deny;
+            }
+            zgui.sameLine(.{ .spacing = t.spacing.sm });
             if (components.core.button.draw("Allow Always", .{ .variant = .secondary, .size = .small })) {
                 decision = .allow_always;
-            }
-            zgui.sameLine(.{ .spacing = theme.activeTheme().spacing.sm });
-            if (components.core.button.draw("Deny", .{ .variant = .danger, .size = .small })) {
-                decision = .deny;
             }
         } else {
             zgui.textWrapped("Missing approval id in payload.", .{});
@@ -52,4 +63,22 @@ pub fn draw(args: Args) Decision {
     }
     components.layout.card.end();
     return decision;
+}
+
+fn formatRelativeTime(now_ms: i64, ts_ms: i64, buf: []u8) []const u8 {
+    const delta_ms = if (now_ms > ts_ms) now_ms - ts_ms else 0;
+    const seconds = @as(u64, @intCast(@divTrunc(delta_ms, 1000)));
+    const minutes = seconds / 60;
+    const hours = minutes / 60;
+    const days = hours / 24;
+    if (seconds < 60) {
+        return std.fmt.bufPrint(buf, "{d}s ago", .{seconds}) catch "just now";
+    }
+    if (minutes < 60) {
+        return std.fmt.bufPrint(buf, "{d}m ago", .{minutes}) catch "today";
+    }
+    if (hours < 24) {
+        return std.fmt.bufPrint(buf, "{d}h ago", .{hours}) catch "today";
+    }
+    return std.fmt.bufPrint(buf, "{d}d ago", .{days}) catch "days ago";
 }

@@ -161,15 +161,19 @@ fn drawStepRow(step: Step, index: usize, t: *const theme.Theme) void {
         .r = circle_size * 0.5,
         .col = zgui.colorConvertFloat4ToU32(color),
     });
-    var idx_buf: [8]u8 = undefined;
-    const idx_label = std.fmt.bufPrint(&idx_buf, "{d}", .{index}) catch "1";
-    const idx_size = zgui.calcTextSize(idx_label, .{});
-    draw_list.addText(
-        .{ center[0] - idx_size[0] * 0.5, center[1] - idx_size[1] * 0.5 },
-        zgui.colorConvertFloat4ToU32(t.colors.background),
-        "{s}",
-        .{idx_label},
-    );
+    if (step.state == .complete) {
+        drawCheckmark(draw_list, t, center, circle_size * 0.45);
+    } else {
+        var idx_buf: [8]u8 = undefined;
+        const idx_label = std.fmt.bufPrint(&idx_buf, "{d}", .{index}) catch "1";
+        const idx_size = zgui.calcTextSize(idx_label, .{});
+        draw_list.addText(
+            .{ center[0] - idx_size[0] * 0.5, center[1] - idx_size[1] * 0.5 },
+            zgui.colorConvertFloat4ToU32(t.colors.background),
+            "{s}",
+            .{idx_label},
+        );
+    }
 
     const label_size = zgui.calcTextSize(step.label, .{});
     const text_pos = .{
@@ -186,6 +190,24 @@ fn drawStepRow(step: Step, index: usize, t: *const theme.Theme) void {
     drawStepBadge(draw_list, t, statusLabel(step.state), variant, cursor_screen, avail[0], row_height);
     zgui.setCursorPos(.{ cursor_local[0], cursor_local[1] + row_height });
     zgui.dummy(.{ .w = 0.0, .h = 0.0 });
+}
+
+fn drawCheckmark(draw_list: zgui.DrawList, t: *const theme.Theme, center: [2]f32, size: f32) void {
+    const x = center[0] - size * 0.5;
+    const y = center[1] - size * 0.2;
+    const color = zgui.colorConvertFloat4ToU32(t.colors.background);
+    draw_list.addLine(.{
+        .p1 = .{ x, y + size * 0.4 },
+        .p2 = .{ x + size * 0.35, y + size },
+        .col = color,
+        .thickness = 2.0,
+    });
+    draw_list.addLine(.{
+        .p1 = .{ x + size * 0.35, y + size },
+        .p2 = .{ x + size, y },
+        .col = color,
+        .thickness = 2.0,
+    });
 }
 
 fn drawStepBadge(
