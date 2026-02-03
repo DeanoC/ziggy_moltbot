@@ -5,6 +5,7 @@ const colors = @import("theme/colors.zig");
 const components = @import("components/components.zig");
 const ui_systems = @import("ui_systems.zig");
 const undo_redo = @import("systems/undo_redo.zig");
+const systems = @import("systems/systems.zig");
 
 const ArtifactTab = enum {
     preview,
@@ -33,7 +34,6 @@ pub fn draw() void {
     const opened = zgui.beginChild("ArtifactWorkspaceView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        registerShortcuts();
         if (components.layout.header_bar.begin(.{ .title = "Artifact Workspace", .subtitle = "Preview & Edit" })) {
             components.layout.header_bar.end();
         }
@@ -173,6 +173,11 @@ fn drawEditor() void {
         .h = 340.0,
         .flags = .{ .allow_tab_input = true },
     });
+    if (zgui.isItemActive()) {
+        const sys = ui_systems.get();
+        sys.keyboard.setFocus("artifact_editor");
+        registerShortcuts(sys);
+    }
     if (changed) {
         edit_len = bufferLen();
         const after = captureState();
@@ -200,7 +205,7 @@ fn fillBuffer(buf: []u8, text: []const u8) void {
 
 fn ensureUndoStack() void {
     if (undo_stack == null) {
-        undo_stack = undo_redo.UndoRedoStack(EditState).init(std.heap.page_allocator, 64);
+        undo_stack = undo_redo.UndoRedoStack(EditState).init(std.heap.page_allocator, 64, null);
     }
 }
 
@@ -248,18 +253,21 @@ fn applyRedo() void {
     }
 }
 
-fn registerShortcuts() void {
-    const sys = ui_systems.get();
+fn registerShortcuts(sys: *systems.Systems) void {
     sys.keyboard.register(.{
         .id = "artifact.undo",
         .key = .z,
         .ctrl = true,
+        .scope = .focused,
+        .focus_id = "artifact_editor",
         .action = onUndoShortcut,
     }) catch {};
     sys.keyboard.register(.{
         .id = "artifact.redo",
         .key = .y,
         .ctrl = true,
+        .scope = .focused,
+        .focus_id = "artifact_editor",
         .action = onRedoShortcut,
     }) catch {};
     sys.keyboard.register(.{
@@ -267,6 +275,8 @@ fn registerShortcuts() void {
         .key = .z,
         .ctrl = true,
         .shift = true,
+        .scope = .focused,
+        .focus_id = "artifact_editor",
         .action = onRedoShortcut,
     }) catch {};
 }

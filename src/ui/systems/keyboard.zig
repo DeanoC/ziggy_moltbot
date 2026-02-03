@@ -15,6 +15,7 @@ pub const Shortcut = struct {
     super: bool = false,
     enabled: bool = true,
     scope: Scope = .global,
+    focus_id: ?[]const u8 = null,
     action: ?*const fn (?*anyopaque) void = null,
     ctx: ?*anyopaque = null,
 };
@@ -55,7 +56,7 @@ pub const KeyboardManager = struct {
     pub fn handle(self: *KeyboardManager) void {
         for (self.shortcuts.items) |shortcut| {
             if (!shortcut.enabled) continue;
-            if (!scopeMatches(shortcut.scope, self.focused_id)) continue;
+            if (!scopeMatches(shortcut, self.focused_id)) continue;
             if (!modifiersMatch(shortcut)) continue;
             if (zgui.isKeyPressed(shortcut.key, false)) {
                 if (shortcut.action) |action| {
@@ -66,10 +67,14 @@ pub const KeyboardManager = struct {
     }
 };
 
-fn scopeMatches(scope: Scope, focused_id: ?[]const u8) bool {
-    return switch (scope) {
+fn scopeMatches(shortcut: Shortcut, focused_id: ?[]const u8) bool {
+    return switch (shortcut.scope) {
         .global => true,
-        .focused => focused_id != null,
+        .focused => blk: {
+            if (focused_id == null) break :blk false;
+            if (shortcut.focus_id == null) break :blk true;
+            break :blk std.mem.eql(u8, shortcut.focus_id.?, focused_id.?);
+        },
     };
 }
 

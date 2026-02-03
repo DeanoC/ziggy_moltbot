@@ -1,5 +1,8 @@
 const std = @import("std");
 const zgui = @import("zgui");
+const ui_systems = @import("ui_systems.zig");
+const undo_redo = @import("systems/undo_redo.zig");
+const systems = @import("systems/systems.zig");
 
 // Leave headroom for multiline messages.
 var input_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
@@ -10,8 +13,16 @@ var pending_insert_newline: bool = false;
 
 const hint_z: [:0]const u8 = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
+const InputSnapshot = struct {
+    len: usize,
+    buf: [4096]u8,
+};
+
+var input_history: ?undo_redo.UndoRedoStack(InputSnapshot) = null;
+
 pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
     var send = false;
+    const before_state = captureInputState();
 
     const style = zgui.getStyle();
     const min_h: f32 = 56.0;
@@ -51,6 +62,11 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
         .callback = inputCallback,
     });
     zgui.popTextWrapPos();
+    if (zgui.isItemActive()) {
+        const sys = ui_systems.get();
+        sys.keyboard.setFocus("chat_input");
+        registerShortcuts(sys);
+    }
 
     // Placeholder/hint overlay for multiline
     if (!zgui.isItemActive() and text.len == 0) {
@@ -59,6 +75,19 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
         const pos = .{ min[0] + style.frame_padding[0], min[1] + style.frame_padding[1] };
         const dl = zgui.getWindowDrawList();
         dl.addTextExtendedUnformatted(pos, col, hint_z, .{ .font = null, .font_size = 0, .wrap_width = wrap_w });
+    }
+
+    if (changed) {
+        const after_state = captureInputState();
+        if (!statesEqual(before_state, after_state)) {
+            if (ensureUndoStack()) |stack| {
+                _ = stack.execute(.{
+                    .name = "edit",
+                    .state_before = before_state,
+                    .state_after = after_state,
+                }) catch {};
+            }
+        }
     }
 
     // Enter to send, Shift+Enter for newline.
@@ -101,6 +130,7 @@ pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
     const owned = allocator.dupe(u8, final_text) catch return null;
     input_buf[0] = 0;
     input_generation +%= 1;
+    clearUndoStack();
     return owned;
 }
 
@@ -126,4 +156,85 @@ fn inputCallback(data: *zgui.InputTextCallbackData) callconv(.c) i32 {
     data.selection_end = data.cursor_pos;
     data.buf_dirty = true;
     return 0;
+}
+
+fn ensureUndoStack() ?*undo_redo.UndoRedoStack(InputSnapshot) {
+    if (input_history == null) {
+        input_history = undo_redo.UndoRedoStack(InputSnapshot).init(std.heap.page_allocator, 64, null);
+    }
+    return &input_history.?;
+}
+
+fn clearUndoStack() void {
+    if (input_history) |*stack| {
+        stack.clear();
+    }
+}
+
+fn registerShortcuts(sys: *systems.Systems) void {
+    _ = sys.keyboard.register(.{
+        .id = "chat_input.undo",
+        .key = .z,
+        .ctrl = true,
+        .scope = .focused,
+        .focus_id = "chat_input",
+        .action = onUndoShortcut,
+    }) catch {};
+    _ = sys.keyboard.register(.{
+        .id = "chat_input.redo",
+        .key = .y,
+        .ctrl = true,
+        .scope = .focused,
+        .focus_id = "chat_input",
+        .action = onRedoShortcut,
+    }) catch {};
+    _ = sys.keyboard.register(.{
+        .id = "chat_input.redo_shift",
+        .key = .z,
+        .ctrl = true,
+        .shift = true,
+        .scope = .focused,
+        .focus_id = "chat_input",
+        .action = onRedoShortcut,
+    }) catch {};
+}
+
+fn onUndoShortcut(_: ?*anyopaque) void {
+    if (input_history) |*stack| {
+        if (stack.undo()) |state| {
+            applyState(state);
+        }
+    }
+}
+
+fn onRedoShortcut(_: ?*anyopaque) void {
+    if (input_history) |*stack| {
+        if (stack.redo()) |state| {
+            applyState(state);
+        }
+    }
+}
+
+fn captureInputState() InputSnapshot {
+    const slice = std.mem.sliceTo(&input_buf, 0);
+    var state = InputSnapshot{
+        .len = slice.len,
+        .buf = [_]u8{0} ** 4096,
+    };
+    std.mem.copyForwards(u8, state.buf[0..slice.len], slice);
+    return state;
+}
+
+fn applyState(state: InputSnapshot) void {
+    const len = @min(state.len, input_buf.len - 1);
+    std.mem.copyForwards(u8, input_buf[0..len], state.buf[0..len]);
+    input_buf[len] = 0;
+    if (len + 1 < input_buf.len) {
+        @memset(input_buf[len + 1 ..], 0);
+    }
+}
+
+fn statesEqual(a: InputSnapshot, b: InputSnapshot) bool {
+    if (a.len != b.len) return false;
+    return std.mem.eql(u8, a.buf[0..a.len], b.buf[0..b.len]);
 }

@@ -8,6 +8,7 @@ pub fn beginFrame() *systems.Systems {
     const sys = get();
     sys.beginFrame();
     sys.keyboard.clear();
+    sys.keyboard.setFocus(null);
     return sys;
 }
 
