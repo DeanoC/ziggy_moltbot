@@ -2,7 +2,9 @@ const std = @import("std");
 const zgui = @import("zgui");
 const state = @import("../../client/state.zig");
 const config = @import("../../client/config.zig");
-const sessions_panel = @import("sessions_panel.zig");
+const agent_registry = @import("../../client/agent_registry.zig");
+const agents_panel = @import("agents_panel.zig");
+const notifications_panel = @import("notifications_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const operator_view = @import("../operator_view.zig");
 const workspace = @import("../workspace.zig");
@@ -14,8 +16,12 @@ pub const ControlPanelAction = struct {
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
-    new_session: bool = false,
-    select_session: ?[]u8 = null,
+    new_chat_agent_id: ?[]u8 = null,
+    open_session: ?agents_panel.AgentSessionAction = null,
+    set_default_session: ?agents_panel.AgentSessionAction = null,
+    delete_session: ?[]u8 = null,
+    add_agent: ?agents_panel.AddAgentAction = null,
+    remove_agent_id: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
     download_update: bool = false,
@@ -35,6 +41,7 @@ pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
     cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
     is_connected: bool,
     app_version: []const u8,
     panel: *workspace.ControlPanel,
@@ -42,12 +49,22 @@ pub fn draw(
     var action = ControlPanelAction{};
 
     if (zgui.beginTabBar("ControlTabs", .{})) {
-        if (zgui.beginTabItem("Sessions", .{})) {
-            panel.active_tab = .Sessions;
-            const sessions_action = sessions_panel.draw(allocator, ctx);
-            action.refresh_sessions = sessions_action.refresh;
-            action.new_session = sessions_action.new_session;
-            action.select_session = sessions_action.selected_key;
+        if (zgui.beginTabItem("Agents", .{})) {
+            panel.active_tab = .Agents;
+            const agents_action = agents_panel.draw(allocator, ctx, registry, panel);
+            action.refresh_sessions = agents_action.refresh;
+            action.new_chat_agent_id = agents_action.new_chat_agent_id;
+            action.open_session = agents_action.open_session;
+            action.set_default_session = agents_action.set_default;
+            action.delete_session = agents_action.delete_session;
+            action.add_agent = agents_action.add_agent;
+            action.remove_agent_id = agents_action.remove_agent_id;
+            zgui.endTabItem();
+        }
+        if (zgui.beginTabItem("Notifications", .{})) {
+            panel.active_tab = .Notifications;
+            const notify_action = notifications_panel.draw(allocator, ctx);
+            action.refresh_sessions = action.refresh_sessions or notify_action.refresh;
             zgui.endTabItem();
         }
         if (zgui.beginTabItem("Settings", .{})) {

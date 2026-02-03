@@ -106,8 +106,8 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         const response_id = frame.value.id;
         const is_sessions = ctx.pending_sessions_request_id != null and
             std.mem.eql(u8, ctx.pending_sessions_request_id.?, response_id);
-        const is_history = ctx.pending_history_request_id != null and
-            std.mem.eql(u8, ctx.pending_history_request_id.?, response_id);
+        const history_session = ctx.findSessionForPendingHistory(response_id);
+        const is_history = history_session != null;
         const is_send = ctx.pending_send_request_id != null and
             std.mem.eql(u8, ctx.pending_send_request_id.?, response_id);
         const is_nodes = ctx.pending_nodes_request_id != null and
@@ -121,7 +121,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
         if (!frame.value.ok) {
             if (is_sessions) ctx.clearPendingSessionsRequest();
-            if (is_history) ctx.clearPendingHistoryRequest();
+            if (is_history) ctx.clearPendingHistoryById(response_id);
             if (is_send) ctx.clearPendingSendRequest();
             if (is_nodes) ctx.clearPendingNodesRequest();
             if (is_node_invoke) ctx.clearPendingNodeInvokeRequest();
@@ -176,8 +176,9 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             }
 
             if (is_history) {
-                ctx.clearPendingHistoryRequest();
-                handleChatHistory(ctx, payload) catch |err| {
+                ctx.clearPendingHistoryById(response_id);
+                const session_key = history_session.?;
+                handleChatHistory(ctx, session_key, payload) catch |err| {
                     logger.warn("chat.history handling failed ({s})", .{@errorName(err)});
                 };
                 return null;
@@ -260,10 +261,10 @@ fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void 
     }
 
     ctx.setSessionsOwned(list);
-    selectPreferredSession(ctx);
+    ctx.markSessionsUpdated();
 }
 
-fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
+fn handleChatHistory(ctx: *state.ClientContext, session_key: []const u8, payload: std.json.Value) !void {
     var parsed = try messages.parsePayload(ctx.allocator, payload, chat.ChatHistoryResult);
     defer parsed.deinit();
 
@@ -284,22 +285,20 @@ fn handleChatHistory(ctx: *state.ClientContext, payload: std.json.Value) !void {
         try list.append(ctx.allocator, try buildChatMessage(ctx.allocator, item));
     }
 
-    if (ctx.messages.items.len > 0) {
-        for (ctx.messages.items) |existing| {
-            if (!messageListHasId(list.items, existing.id)) {
-                try list.append(ctx.allocator, try cloneChatMessageExisting(ctx.allocator, existing));
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        if (state_ptr.messages.items.len > 0) {
+            for (state_ptr.messages.items) |existing| {
+                if (!messageListHasId(list.items, existing.id)) {
+                    try list.append(ctx.allocator, try cloneChatMessageExisting(ctx.allocator, existing));
+                }
             }
         }
     }
 
     const owned = try list.toOwnedSlice(ctx.allocator);
     list.deinit(ctx.allocator);
-    ctx.setMessagesOwned(owned);
-    if (ctx.current_session) |session| {
-        ctx.setHistorySession(session) catch {};
-    }
-    ctx.clearStreamText();
-    ctx.clearStreamRunId();
+    try ctx.setSessionMessagesOwned(session_key, owned);
+    ctx.clearSessionStream(session_key);
 }
 
 fn handleNodesList(ctx: *state.ClientContext, payload: std.json.Value) !void {
@@ -419,61 +418,14 @@ fn handleExecApprovalResolved(ctx: *state.ClientContext, payload: ?std.json.Valu
     }
 }
 
-fn selectPreferredSession(ctx: *state.ClientContext) void {
-    if (ctx.sessions.items.len == 0) return;
-
-    if (ctx.current_session != null) return;
-
-    var best_index: usize = 0;
-    var best_updated: i64 = -1;
-    for (ctx.sessions.items, 0..) |session, index| {
-        const updated = session.updated_at orelse 0;
-        if (updated > best_updated) {
-            best_updated = updated;
-            best_index = index;
-        }
-    }
-
-    const chosen = ctx.sessions.items[best_index].key;
-    ctx.setCurrentSession(chosen) catch |err| {
-        logger.warn("Failed to select session: {}", .{err});
-        return;
-    };
-    if (ctx.messages.items.len == 0) {
-        ctx.clearMessages();
-    }
-    ctx.clearStreamText();
-    ctx.clearStreamRunId();
-    ctx.clearPendingHistoryRequest();
-    ctx.clearHistorySession();
-}
-
 fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
     const value = payload orelse return;
     var parsed = try messages.parsePayload(ctx.allocator, value, chat.ChatEventPayload);
     defer parsed.deinit();
 
     const event = parsed.value;
-    if (ctx.current_session) |session| {
-        if (!std.mem.eql(u8, session, event.sessionKey)) {
-            if (ctx.messages.items.len == 0 and ctx.history_session == null) {
-                logger.warn(
-                    "Chat event session mismatch; switching session to {s} (was {s})",
-                    .{ event.sessionKey, session },
-                );
-                ctx.setCurrentSession(event.sessionKey) catch |err| {
-                    logger.warn("Failed to switch session: {}", .{err});
-                    return;
-                };
-            } else {
-                logger.debug(
-                    "Ignoring chat event for session {s} (current {s})",
-                    .{ event.sessionKey, session },
-                );
-                return;
-            }
-        }
-    }
+    const session_key = event.sessionKey;
+    _ = try ctx.getOrCreateSessionState(session_key);
 
     if (std.mem.eql(u8, event.state, "delta")) {
         const text = if (event.message) |message_val|
@@ -483,24 +435,29 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
         defer if (text) |value_text| ctx.allocator.free(value_text);
         if (text == null) return;
 
-        if (ctx.stream_run_id == null or !std.mem.eql(u8, ctx.stream_run_id.?, event.runId)) {
-            try ctx.setStreamRunId(event.runId);
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            if (state_ptr.stream_run_id == null or !std.mem.eql(u8, state_ptr.stream_run_id.?, event.runId)) {
+                try ctx.setSessionStreamRunId(session_key, event.runId);
+            }
         }
 
         var msg = try buildStreamMessage(ctx.allocator, event.runId, text.?);
         errdefer freeChatMessageOwned(ctx.allocator, &msg);
-        ctx.upsertMessageOwned(msg) catch |err| {
+        ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
             logger.warn("Failed to upsert stream message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &msg);
         };
         return;
     }
 
-    const had_stream = ctx.stream_run_id != null and std.mem.eql(u8, ctx.stream_run_id.?, event.runId);
-    if (had_stream) {
-        ctx.clearStreamRunId();
+    var had_stream = false;
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        had_stream = state_ptr.stream_run_id != null and std.mem.eql(u8, state_ptr.stream_run_id.?, event.runId);
     }
-    ctx.clearStreamText();
+    if (had_stream) {
+        ctx.clearSessionStreamRunId(session_key);
+    }
+    ctx.clearSessionStreamText(session_key);
 
     if (std.mem.eql(u8, event.state, "error")) {
         if (event.errorMessage) |msg| {
@@ -522,9 +479,9 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
         if (had_stream) {
             const stream_id = try makeStreamId(ctx.allocator, event.runId);
             defer ctx.allocator.free(stream_id);
-            _ = ctx.removeMessageById(stream_id);
+            _ = ctx.removeSessionMessageById(session_key, stream_id);
         }
-        ctx.upsertMessageOwned(message) catch |err| {
+        ctx.upsertSessionMessageOwned(session_key, message) catch |err| {
             logger.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &message);
         };

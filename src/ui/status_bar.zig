@@ -4,6 +4,7 @@ const state = @import("../client/state.zig");
 pub fn draw(
     client_state: state.ClientState,
     is_connected: bool,
+    agent_name: ?[]const u8,
     session_name: ?[]const u8,
     message_count: usize,
     last_error: ?[]const u8,
@@ -20,6 +21,12 @@ pub fn draw(
     zgui.textColored(status_color, "Status: {s}", .{@tagName(client_state)});
     zgui.sameLine(.{});
     zgui.text("Connection: {s}", .{if (is_connected) "online" else "offline"});
+    zgui.sameLine(.{});
+    if (agent_name) |name| {
+        zgui.text("Agent: {s}", .{name});
+    } else {
+        zgui.text("Agent: (none)", .{});
+    }
     zgui.sameLine(.{});
     if (session_name) |name| {
         zgui.text("Session: {s}", .{name});

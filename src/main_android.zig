@@ -12,6 +12,8 @@ const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
+const agent_registry = @import("client/agent_registry.zig");
+const session_keys = @import("client/session_keys.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -223,10 +225,8 @@ fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     }
 }
 
-fn makeNewSessionKey(allocator: std.mem.Allocator) ![]u8 {
-    const suffix = try requests.makeRequestId(allocator);
-    defer allocator.free(suffix);
-    return try std.fmt.allocPrint(allocator, "agent:main:{s}", .{suffix});
+fn makeNewSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
+    return try session_keys.buildChatSessionKey(allocator, agent_id);
 }
 
 fn sendSessionsResetRequest(
@@ -248,6 +248,29 @@ fn sendSessionsResetRequest(
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send sessions.reset: {}", .{err});
+        return;
+    };
+}
+
+fn sendSessionsDeleteRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+) void {
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+
+    const params = sessions_proto.SessionsDeleteParams{ .key = session_key };
+    const request = requests.buildRequestPayload(allocator, "sessions.delete", params) catch |err| {
+        logger.warn("Failed to build sessions.delete request: {}", .{err});
+        return;
+    };
+    defer allocator.free(request.payload);
+    defer allocator.free(request.id);
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send sessions.delete: {}", .{err});
         return;
     };
 }
@@ -318,7 +341,9 @@ fn sendChatHistoryRequest(
 ) void {
     if (!ws_client.is_connected) return;
     if (ctx.state != .connected) return;
-    if (ctx.pending_history_request_id != null) return;
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        if (state_ptr.pending_history_request_id != null) return;
+    }
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
@@ -339,7 +364,9 @@ fn sendChatHistoryRequest(
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingHistoryRequest(request.id);
+    ctx.setPendingHistoryRequestForSession(session_key, request.id) catch {
+        allocator.free(request.id);
+    };
 }
 
 fn sendNodeInvokeRequest(
@@ -521,7 +548,7 @@ fn sendChatMessageRequest(
         logger.warn("Failed to build user message: {}", .{err});
         return;
     };
-    ctx.upsertMessageOwned(msg) catch |err| {
+    ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
     };
@@ -535,23 +562,6 @@ fn sendChatMessageRequest(
     logger.info("chat.send queued for session {s} (id={s})", .{ session_key, request.id });
 }
 
-fn pickSessionForSend(ctx: *client_state.ClientContext) ?struct { key: []const u8, should_set: bool } {
-    if (ctx.current_session) |session| {
-        return .{ .key = session, .should_set = false };
-    }
-    if (ctx.sessions.items.len == 0) return null;
-
-    var best_index: usize = 0;
-    var best_updated: i64 = -1;
-    for (ctx.sessions.items, 0..) |session, index| {
-        const updated = session.updated_at orelse 0;
-        if (updated > best_updated) {
-            best_updated = updated;
-            best_index = index;
-        }
-    }
-    return .{ .key = ctx.sessions.items[best_index].key, .should_set = true };
-}
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
@@ -585,6 +595,134 @@ fn buildUserMessage(
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
     };
+}
+
+fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u8) []const u8 {
+    if (registry.find(agent_id)) |agent| return agent.display_name;
+    return agent_id;
+}
+
+fn isNotificationSession(session: types.Session) bool {
+    const kind = session.kind orelse return false;
+    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+}
+
+fn syncRegistryDefaults(
+    allocator: std.mem.Allocator,
+    registry: *agent_registry.AgentRegistry,
+    sessions: []const types.Session,
+) bool {
+    var changed = false;
+    for (registry.agents.items) |*agent| {
+        var default_valid = false;
+        if (agent.default_session_key) |key| {
+            for (sessions) |session| {
+                if (!std.mem.eql(u8, session.key, key)) continue;
+                if (isNotificationSession(session)) break;
+                const parts = session_keys.parse(session.key) orelse break;
+                if (std.mem.eql(u8, parts.agent_id, agent.id)) {
+                    default_valid = true;
+                }
+                break;
+            }
+        }
+
+        if (!default_valid) {
+            var best_key: ?[]const u8 = null;
+            var best_updated: i64 = -1;
+            for (sessions) |session| {
+                if (isNotificationSession(session)) continue;
+                const parts = session_keys.parse(session.key) orelse continue;
+                if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
+                const updated = session.updated_at orelse 0;
+                if (updated > best_updated) {
+                    best_updated = updated;
+                    best_key = session.key;
+                }
+            }
+            if (best_key) |key| {
+                if (agent.default_session_key) |existing| {
+                    allocator.free(existing);
+                }
+                agent.default_session_key = allocator.dupe(u8, key) catch agent.default_session_key;
+                changed = true;
+            } else if (agent.default_session_key != null) {
+                allocator.free(agent.default_session_key.?);
+                agent.default_session_key = null;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+fn ensureChatPanelsReady(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    registry: *agent_registry.AgentRegistry,
+    manager: *panel_manager.PanelManager,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) return;
+
+    var index: usize = 0;
+    while (index < manager.workspace.panels.items.len) : (index += 1) {
+        var panel = &manager.workspace.panels.items[index];
+        if (panel.kind != .Chat) continue;
+        const agent_id = panel.data.Chat.agent_id;
+        var session_key = panel.data.Chat.session_key;
+        if (session_key == null and agent_id != null) {
+            if (registry.find(agent_id.?)) |agent| {
+                if (agent.default_session_key) |default_key| {
+                    panel.data.Chat.session_key = allocator.dupe(u8, default_key) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    manager.workspace.markDirty();
+                }
+            }
+        }
+        if (session_key) |key| {
+            if (ctx.findSessionState(key)) |state_ptr| {
+                if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
+                    sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                }
+            } else {
+                sendChatHistoryRequest(allocator, ctx, ws_client, key);
+            }
+        }
+    }
+}
+
+fn closeAgentChatPanels(manager: *panel_manager.PanelManager, agent_id: []const u8) void {
+    var index: usize = 0;
+    while (index < manager.workspace.panels.items.len) {
+        const panel = &manager.workspace.panels.items[index];
+        if (panel.kind == .Chat) {
+            if (panel.data.Chat.agent_id) |existing| {
+                if (std.mem.eql(u8, existing, agent_id)) {
+                    _ = manager.closePanel(panel.id);
+                    continue;
+                }
+            }
+        }
+        index += 1;
+    }
+}
+
+fn clearChatPanelsForSession(
+    manager: *panel_manager.PanelManager,
+    allocator: std.mem.Allocator,
+    session_key: []const u8,
+) void {
+    for (manager.workspace.panels.items) |*panel| {
+        if (panel.kind != .Chat) continue;
+        if (panel.data.Chat.session_key) |existing| {
+            if (std.mem.eql(u8, existing, session_key)) {
+                allocator.free(existing);
+                panel.data.Chat.session_key = null;
+                manager.workspace.markDirty();
+            }
+        }
+    }
 }
 
 const Insets = struct {
@@ -763,6 +901,11 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         break :blk config.initDefault(allocator) catch return 1;
     };
     defer cfg.deinit(allocator);
+    var agents = agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json") catch |err| blk: {
+        logger.warn("Failed to load agents: {}", .{err});
+        break :blk agent_registry.AgentRegistry.initDefault(allocator) catch return 1;
+    };
+    defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
@@ -894,15 +1037,13 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
                 sendNodesListRequest(allocator, &ctx, &ws_client);
             }
-            if (ctx.current_session) |session_key| {
-                if (ctx.pending_history_request_id == null) {
-                    const needs_history = ctx.history_session == null or
-                        !std.mem.eql(u8, ctx.history_session.?, session_key);
-                    if (needs_history) {
-                        sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
-                    }
-                }
+        }
+
+        if (ctx.sessions_updated) {
+            if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
+            ctx.clearSessionsUpdated();
         }
 
         if (ws_client.is_connected and ctx.state == .connected) {
@@ -922,6 +1063,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             allocator,
             &ctx,
             &cfg,
+            &agents,
             ws_client.is_connected,
             build_options.app_version,
             &manager,
@@ -1034,8 +1176,7 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
             ctx.clearPendingRequests();
-            ctx.clearStreamText();
-            ctx.clearStreamRunId();
+            ctx.clearAllSessionStates();
             ctx.clearNodes();
             ctx.clearCurrentNode();
             ctx.clearApprovals();
@@ -1049,17 +1190,19 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             sendSessionsListRequest(allocator, &ctx, &ws_client);
         }
 
-        if (ui_action.new_session) {
+        if (ui_action.new_chat_agent_id) |agent_id| {
+            defer allocator.free(agent_id);
             if (ws_client.is_connected) {
-                const key = makeNewSessionKey(allocator) catch null;
+                const key = makeNewSessionKey(allocator, agent_id) catch null;
                 if (key) |session_key| {
                     defer allocator.free(session_key);
                     sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                    if (agents.setDefaultSession(allocator, agent_id, session_key) catch false) {
+                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                    }
+                    _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
+                    ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
-                    ctx.clearMessages();
-                    ctx.clearStreamText();
-                    ctx.clearStreamRunId();
-                    ctx.clearPendingHistoryRequest();
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
@@ -1070,18 +1213,72 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             sendNodesListRequest(allocator, &ctx, &ws_client);
         }
 
-        if (ui_action.select_session) |session_key| {
+        if (ui_action.open_session) |open| {
+            defer allocator.free(open.agent_id);
+            defer allocator.free(open.session_key);
+            ctx.setCurrentSession(open.session_key) catch |err| {
+                logger.warn("Failed to set session: {}", .{err});
+            };
+            _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
+            if (ws_client.is_connected) {
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+            }
+        }
+
+        if (ui_action.set_default_session) |choice| {
+            defer allocator.free(choice.agent_id);
+            defer allocator.free(choice.session_key);
+            if (agents.setDefaultSession(allocator, choice.agent_id, choice.session_key) catch false) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+            }
+        }
+
+        if (ui_action.delete_session) |session_key| {
+            defer allocator.free(session_key);
+            sendSessionsDeleteRequest(allocator, &ctx, &ws_client, session_key);
+            _ = ctx.removeSessionByKey(session_key);
+            ctx.clearSessionState(session_key);
+            clearChatPanelsForSession(&manager, allocator, session_key);
+            if (agents.clearDefaultIfMatches(allocator, session_key)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+            }
+            sendSessionsListRequest(allocator, &ctx, &ws_client);
+        }
+
+        if (ui_action.add_agent) |agent_action| {
+            const owned = agent_action;
+            if (agents.addOwned(allocator, .{
+                .id = owned.id,
+                .display_name = owned.display_name,
+                .icon = owned.icon,
+                .soul_path = null,
+                .config_path = null,
+                .personality_path = null,
+                .default_session_key = null,
+            })) |_| {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+            } else |err| {
+                logger.warn("Failed to add agent: {}", .{err});
+                allocator.free(owned.id);
+                allocator.free(owned.display_name);
+                allocator.free(owned.icon);
+            }
+        }
+
+        if (ui_action.remove_agent_id) |agent_id| {
+            defer allocator.free(agent_id);
+            if (agents.remove(allocator, agent_id)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                closeAgentChatPanels(&manager, agent_id);
+            }
+        }
+
+        if (ui_action.focus_session) |session_key| {
             defer allocator.free(session_key);
             ctx.setCurrentSession(session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
-            ctx.clearMessages();
-            ctx.clearStreamText();
-            ctx.clearStreamRunId();
-            ctx.clearPendingHistoryRequest();
-            if (ws_client.is_connected) {
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
-            }
         }
 
         if (ui_action.select_node) |node_id| {
@@ -1130,20 +1327,14 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             );
         }
 
-        if (ui_action.send_message) |message| {
-            defer allocator.free(message);
-            const resolved = pickSessionForSend(&ctx);
-            if (resolved) |choice| {
-                if (choice.should_set) {
-                    ctx.setCurrentSession(choice.key) catch |err| {
-                        logger.warn("Failed to set session: {}", .{err});
-                    };
-                }
-                sendChatMessageRequest(allocator, &ctx, &ws_client, choice.key, message);
-            } else {
-                sendChatMessageRequest(allocator, &ctx, &ws_client, "main", message);
-            }
+        if (ui_action.send_message) |payload| {
+            defer allocator.free(payload.session_key);
+            defer allocator.free(payload.message);
+            ctx.setCurrentSession(payload.session_key) catch {};
+            sendChatMessageRequest(allocator, &ctx, &ws_client, payload.session_key, payload.message);
         }
+
+        ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &manager);
 
         if (ui_action.clear_node_result) {
             ctx.clearNodeResult();

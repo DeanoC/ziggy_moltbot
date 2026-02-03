@@ -9,6 +9,10 @@ pub const SessionsResetParams = struct {
     key: []const u8,
 };
 
+pub const SessionsDeleteParams = struct {
+    key: []const u8,
+};
+
 pub const SessionRow = struct {
     key: []const u8,
     kind: ?[]const u8 = null,

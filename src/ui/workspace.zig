@@ -21,6 +21,7 @@ pub const PanelState = struct {
 pub const EditorOwner = enum { user, ai };
 
 pub const ChatPanel = struct {
+    agent_id: ?[]const u8 = null,
     session_key: ?[]const u8 = null,
 };
 
@@ -40,11 +41,13 @@ pub const ToolOutputPanel = struct {
 };
 
 pub const ControlPanel = struct {
-    active_tab: ControlTab = .Sessions,
+    active_tab: ControlTab = .Agents,
+    selected_agent_id: ?[]const u8 = null,
 };
 
 pub const ControlTab = enum {
-    Sessions,
+    Agents,
+    Notifications,
     Settings,
     Operator,
 };
@@ -58,6 +61,7 @@ pub const PanelData = union(enum) {
     pub fn deinit(self: *PanelData, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .Chat => |*chat| {
+                if (chat.agent_id) |id| allocator.free(id);
                 if (chat.session_key) |key| allocator.free(key);
             },
             .CodeEditor => |*editor| {
@@ -70,7 +74,9 @@ pub const PanelData = union(enum) {
                 out.stdout.deinit(allocator);
                 out.stderr.deinit(allocator);
             },
-            .Control => {},
+            .Control => |*ctrl| {
+                if (ctrl.selected_agent_id) |id| allocator.free(id);
+            },
         }
     }
 };
@@ -115,7 +121,7 @@ pub const Workspace = struct {
 
         try ws.panels.append(allocator, try makeControlPanel(allocator, 1));
         try ws.panels.append(allocator, try makeCodeEditorPanel(allocator, 2, "main.zig", "zig", ""));
-        try ws.panels.append(allocator, try makeChatPanel(allocator, 3, null));
+        try ws.panels.append(allocator, try makeChatPanel(allocator, 3, "main", null));
         try ws.panels.append(allocator, try makeToolOutputPanel(allocator, 4, "Tool Output", "", "", 0));
 
         ws.focused_panel_id = ws.panels.items[2].id;
@@ -188,6 +194,7 @@ pub const PanelStateSnapshot = struct {
 
 pub const ChatPanelSnapshot = struct {
     session: ?[]const u8 = null,
+    agent_id: ?[]const u8 = null,
 };
 
 pub const CodeEditorPanelSnapshot = struct {
@@ -206,7 +213,8 @@ pub const ToolOutputPanelSnapshot = struct {
 };
 
 pub const ControlPanelSnapshot = struct {
-    active_tab: []const u8 = "Sessions",
+    active_tab: []const u8 = "Agents",
+    selected_agent_id: ?[]const u8 = null,
 };
 
 pub const PanelSnapshot = struct {
@@ -253,7 +261,10 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
 
     switch (panel.data) {
         .Chat => |chat| {
-            snap.chat = .{ .session = if (chat.session_key) |key| try allocator.dupe(u8, key) else null };
+            snap.chat = .{
+                .session = if (chat.session_key) |key| try allocator.dupe(u8, key) else null,
+                .agent_id = if (chat.agent_id) |id| try allocator.dupe(u8, id) else null,
+            };
         },
         .CodeEditor => |editor| {
             snap.code_editor = .{
@@ -276,11 +287,15 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
             };
         },
         .Control => |ctrl| {
-            snap.control = .{ .active_tab = try allocator.dupe(u8, switch (ctrl.active_tab) {
-                .Sessions => "Sessions",
-                .Settings => "Settings",
-                .Operator => "Operator",
-            }) };
+            snap.control = .{
+                .active_tab = try allocator.dupe(u8, switch (ctrl.active_tab) {
+                    .Agents => "Agents",
+                    .Notifications => "Notifications",
+                    .Settings => "Settings",
+                    .Operator => "Operator",
+                }),
+                .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+            };
         },
     }
 
@@ -302,11 +317,15 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 if (chat.session) |session| try allocator.dupe(u8, session) else null
             else
                 null;
+            const agent_copy = if (snap.chat) |chat|
+                if (chat.agent_id) |agent| try allocator.dupe(u8, agent) else null
+            else
+                null;
             return .{
                 .id = snap.id,
                 .kind = .Chat,
                 .title = title_copy,
-                .data = .{ .Chat = .{ .session_key = session_copy } },
+                .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
                 .state = state_val,
             };
         },
@@ -358,7 +377,10 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 .id = snap.id,
                 .kind = .Control,
                 .title = title_copy,
-                .data = .{ .Control = .{ .active_tab = active_tab } },
+                .data = .{ .Control = .{
+                    .active_tab = active_tab,
+                    .selected_agent_id = if (ctrl_snap.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+                } },
                 .state = state_val,
             };
         },
@@ -368,13 +390,15 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
 fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
-    return .Sessions;
+    if (std.mem.eql(u8, label, "Notifications")) return .Notifications;
+    return .Agents;
 }
 
 fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
     allocator.free(panel.title);
     if (panel.chat) |chat| {
         if (chat.session) |session| allocator.free(session);
+        if (chat.agent_id) |agent| allocator.free(agent);
     }
     if (panel.code_editor) |editor| {
         allocator.free(editor.file_id);
@@ -389,17 +413,24 @@ fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
     }
     if (panel.control) |ctrl| {
         allocator.free(ctrl.active_tab);
+        if (ctrl.selected_agent_id) |id| allocator.free(id);
     }
 }
 
-pub fn makeChatPanel(allocator: std.mem.Allocator, id: PanelId, session_key: ?[]const u8) !Panel {
+pub fn makeChatPanel(
+    allocator: std.mem.Allocator,
+    id: PanelId,
+    agent_id: ?[]const u8,
+    session_key: ?[]const u8,
+) !Panel {
     const title = try allocator.dupe(u8, "Chat");
+    const agent_copy = if (agent_id) |id_value| try allocator.dupe(u8, id_value) else null;
     const session_copy = if (session_key) |key| try allocator.dupe(u8, key) else null;
     return .{
         .id = id,
         .kind = .Chat,
         .title = title,
-        .data = .{ .Chat = .{ .session_key = session_copy } },
+        .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
         .state = .{},
     };
 }
