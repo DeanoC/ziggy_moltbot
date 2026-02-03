@@ -10,6 +10,7 @@ const sources_view = @import("../sources_view.zig");
 const artifact_workspace_view = @import("../artifact_workspace_view.zig");
 const run_inspector_view = @import("../run_inspector_view.zig");
 const approvals_inbox_view = @import("../approvals_inbox_view.zig");
+const agents_view = @import("../agents_view.zig");
 const operator_view = @import("../operator_view.zig");
 const workspace = @import("../workspace.zig");
 const components = @import("../components/components.zig");
@@ -83,6 +84,11 @@ pub fn draw(
             panel.active_tab = .ApprovalsInbox;
             const approvals_action = approvals_inbox_view.draw(allocator, ctx);
             action.resolve_approval = approvals_action.resolve_approval;
+            components.core.tab_bar.endItem();
+        }
+        if (components.core.tab_bar.beginItem("Active Agents")) {
+            panel.active_tab = .ActiveAgents;
+            agents_view.draw(ctx);
             components.core.tab_bar.endItem();
         }
         if (components.core.tab_bar.beginItem("Sessions")) {
