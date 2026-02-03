@@ -4,8 +4,15 @@ pub const UnifiedConfig = struct {
     pub const Gateway = struct {
         /// Full ws/wss/http/https URL to the gateway (with or without /ws).
         wsUrl: []const u8,
-        /// OpenClaw gateway auth token (used for the initial websocket handshake and connect.auth.token).
+        /// OpenClaw gateway auth token (used for operator-mode websocket and node pairing RPCs).
         authToken: []const u8,
+
+        /// Optional override for the node bridge TCP host.
+        /// If null/empty, derived from wsUrl.
+        bridgeHost: ?[]const u8 = null,
+        /// Optional override for the node bridge TCP port.
+        /// If null, derived as (gateway ws port + 1).
+        bridgePort: ?u16 = null,
     };
 
     pub const Node = struct {
@@ -52,6 +59,7 @@ pub const UnifiedConfig = struct {
     pub fn deinit(self: *UnifiedConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.gateway.wsUrl);
         allocator.free(self.gateway.authToken);
+        if (self.gateway.bridgeHost) |v| allocator.free(v);
 
         allocator.free(self.node.nodeToken);
         allocator.free(self.node.deviceIdentityPath);
@@ -150,6 +158,14 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
     const gw_tok = try expandVarsAlloc(allocator, parsed.value.gateway.authToken);
     errdefer allocator.free(gw_tok);
 
+    const bridge_host = if (parsed.value.gateway.bridgeHost) |v|
+        try expandVarsAlloc(allocator, v)
+    else
+        null;
+    errdefer if (bridge_host) |v| allocator.free(v);
+
+    const bridge_port = parsed.value.gateway.bridgePort;
+
     // node.nodeToken (no backward compat)
     const raw_node_token = parsed.value.node.nodeToken;
 
@@ -194,7 +210,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
     errdefer if (log_file) |v| allocator.free(v);
 
     return .{
-        .gateway = .{ .wsUrl = gw_url, .authToken = gw_tok },
+        .gateway = .{ .wsUrl = gw_url, .authToken = gw_tok, .bridgeHost = bridge_host, .bridgePort = bridge_port },
         .node = .{
             .enabled = parsed.value.node.enabled,
             .nodeToken = node_tok,

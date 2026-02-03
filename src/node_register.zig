@@ -494,54 +494,52 @@ fn verifyNodeToken(
     cfg: *unified_config.UnifiedConfig,
     insecure_tls: bool,
 ) !bool {
-    var ws = websocket_client.WebSocketClient.init(
-        allocator,
-        ws_url,
-        cfg.gateway.authToken,
-        insecure_tls,
-        null,
-    );
-    defer ws.deinit();
+    _ = insecure_tls; // node bridge is plain TCP today
+    _ = ws_url;
 
-    ws.setConnectAuthToken(cfg.gateway.authToken);
-    ws.setDeviceAuthToken(cfg.node.nodeToken);
-    ws.setConnectProfile(.{
-        .role = "node",
-        .scopes = &.{},
-        .client_id = "node-host",
-        .client_mode = "node",
-    });
-    ws.setConnectNodeMetadata(.{
-        .caps = &.{"system"},
-        .commands = &.{
+    const bridge = @import("unified_config_bridge.zig");
+    const bridge_client = @import("client/bridge_client.zig");
+
+    var ep = bridge.getBridgeEndpoint(allocator, cfg.gateway) catch |err| {
+        logger.debug("bridge endpoint derivation failed: {s}", .{@errorName(err)});
+        return false;
+    };
+    defer ep.deinit(allocator);
+
+    const display_name = cfg.node.displayName orelse "ZiggyStarClaw Node";
+
+    var bc = bridge_client.BridgeClient.init(
+        allocator,
+        ep.host,
+        ep.port,
+        cfg.node.nodeId,
+        cfg.node.nodeToken,
+        display_name,
+        &.{"system"},
+        &.{
             "system.run",
             "system.which",
             "system.notify",
             "system.execApprovals.get",
             "system.execApprovals.set",
         },
-    });
-    ws.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
-    ws.setReadTimeout(250);
+    );
+    defer bc.deinit();
 
-    ws.connect() catch |err| {
-        logger.debug("node connect failed: {s}", .{@errorName(err)});
+    bc.connect() catch |err| {
+        logger.debug("bridge connect failed: {s}", .{@errorName(err)});
         return false;
     };
 
-    const start = std.time.milliTimestamp();
-    while (std.time.milliTimestamp() - start < 3000) {
-        _ = ws.receive() catch {};
-        if (!ws.is_connected) break;
-        std.Thread.sleep(50 * std.time.ns_per_ms);
-    }
+    bc.waitForHelloOk(2500) catch |err| {
+        logger.debug("bridge hello failed: {s}", .{@errorName(err)});
+        return false;
+    };
 
-    if (ws.is_connected) return true;
-
-    const reason = ws.last_close_reason orelse "";
-    if (reason.len > 0) logger.warn("node connect closed: {s}", .{reason});
-    return false;
+    return true;
 }
+
+// Legacy websocket-based verifier removed; OpenClaw node auth occurs on the node bridge.
 
 fn saveUpdatedNodeAuth(
     allocator: std.mem.Allocator,

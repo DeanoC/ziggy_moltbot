@@ -19,8 +19,8 @@ pub const WebSocketClient = struct {
     // Token used for the connect request auth payload (params.auth.token).
     // Defaults to `token`.
     connect_auth_token: ?[]const u8 = null,
-    // Token used inside the device-auth signed payload (distinct from gateway auth).
-    // For node-mode this should be the node device token.
+    // Token used inside the device-auth signed payload.
+    // OpenClaw includes the auth token in the signed payload; for node-mode this is the gateway token.
     device_auth_token: ?[]const u8 = null,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,
@@ -167,6 +167,9 @@ pub const WebSocketClient = struct {
             if (self.device_identity == null) {
                 self.device_identity = try identity.loadOrCreate(self.allocator, self.device_identity_path);
             }
+            // OpenClaw's GatewayClient sends "connect" even if we never receive a
+            // connect.challenge. In that case it uses a v1 device signature (no nonce).
+            try sendConnectRequest(self, null);
         } else {
             try sendConnectRequest(self, null);
         }
@@ -308,13 +311,12 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const device = blk: {
         if (!self.use_device_identity) break :blk null;
         const ident = self.device_identity orelse return error.MissingDeviceIdentity;
-        if (nonce == null) return error.MissingConnectNonce;
         const signed_at = std.time.milliTimestamp();
         const device_token = devtok: {
             if (self.device_auth_token) |t| {
                 if (t.len > 0) break :devtok t;
             }
-            // Default to gateway token for legacy behavior.
+            // Default to gateway token.
             break :devtok gateway_token;
         };
 
@@ -326,7 +328,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .scopes = scopes,
             .signed_at_ms = signed_at,
             .token = device_token,
-            .nonce = nonce.?,
+            .nonce = nonce,
         });
         defer self.allocator.free(payload);
         signature_buf = try identity.signPayload(self.allocator, ident, payload);
@@ -436,15 +438,36 @@ fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
     scopes: []const []const u8,
     signed_at_ms: i64,
     token: []const u8,
-    nonce: []const u8,
+    nonce: ?[]const u8 = null,
 }) ![]u8 {
+    // Match OpenClaw's buildDeviceAuthPayload() exactly:
+    // base = [version, deviceId, clientId, clientMode, role, scopesCsv, signedAtMs, token]
+    // + nonce if v2
     const scopes_joined = try std.mem.join(allocator, ",", params.scopes);
     defer allocator.free(scopes_joined);
 
-    const version = "v2";
+    const version: []const u8 = if (params.nonce != null) "v2" else "v1";
+    if (params.nonce) |nonce| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
+            .{
+                version,
+                params.device_id,
+                params.client_id,
+                params.client_mode,
+                params.role,
+                scopes_joined,
+                params.signed_at_ms,
+                params.token,
+                nonce,
+            },
+        );
+    }
+
     return std.fmt.allocPrint(
         allocator,
-        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
+        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}",
         .{
             version,
             params.device_id,
@@ -454,7 +477,6 @@ fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
             scopes_joined,
             params.signed_at_ms,
             params.token,
-            params.nonce,
         },
     );
 }

@@ -5,8 +5,6 @@ const unified_config = @import("unified_config.zig");
 const UnifiedConfig = unified_config.UnifiedConfig;
 const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
-const health_reporter = @import("node/health_reporter.zig");
-const HealthReporter = health_reporter.HealthReporter;
 const canvas = @import("node/canvas.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -206,10 +204,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         logger.err("Config missing gateway.wsUrl and/or gateway.authToken", .{});
         return error.InvalidArguments;
     }
-    if (cfg.node.enabled and cfg.node.nodeToken.len == 0) {
-        logger.err("Config missing node.nodeToken (role=node)", .{});
-        return error.InvalidArguments;
-    }
+    // node.nodeToken is not required for node-mode; OpenClaw's node-host uses the gateway token.
 
     const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.wsUrl);
     defer allocator.free(ws_url);
@@ -247,86 +242,67 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const base_delay_ms: u64 = 1000;
 
     while (reconnect_attempt < max_reconnect_attempts) {
-        logger.info("Connecting to gateway at {s} (attempt {d}/{d})...", .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts });
-
-        var ws_client: ?websocket_client.WebSocketClient = null;
-        if (cfg.node.enabled) {
-            const gateway_handshake_token = cfg.gateway.authToken;
-            const node_auth_token = cfg.node.nodeToken;
-
-            var ws = websocket_client.WebSocketClient.init(
-                allocator,
-                ws_url,
-                gateway_handshake_token,
-                opts.insecure_tls,
-                null,
-            );
-            // OpenClaw gateways enforce that the websocket handshake token matches connect.auth.token.
-            ws.setConnectAuthToken(gateway_handshake_token);
-            ws.setDeviceAuthToken(node_auth_token);
-
-            ws.setConnectProfile(.{
-                .role = "node",
-                .scopes = &.{},
-                .client_id = "node-host",
-                .client_mode = "node",
-            });
-            ws.setConnectNodeMetadata(.{
-                .caps = &.{"system"},
-                .commands = &.{
-                    "system.run",
-                    "system.which",
-                    "system.notify",
-                    "system.execApprovals.get",
-                    "system.execApprovals.set",
-                },
-            });
-            ws.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
-            ws.setReadTimeout(15000);
-
-            ws.connect() catch |err| {
-                logger.err("Node connection failed: {s}", .{@errorName(err)});
-                ws.deinit();
-                reconnect_attempt += 1;
-                if (reconnect_attempt >= max_reconnect_attempts) {
-                    logger.err("Max reconnection attempts reached", .{});
-                    return error.ConnectionFailed;
-                }
-                const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
-                logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
-                std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
-                continue;
-            };
-            ws_client = ws;
-        }
+        logger.info(
+            "Connecting to gateway at {s} (attempt {d}/{d})...",
+            .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts },
+        );
 
         if (cfg.operator.enabled) {
             logger.err("operator.enabled=true is not supported in node-mode yet (clean-break config refactor in progress).", .{});
             return error.NotImplemented;
         }
 
-        if (ws_client == null) {
+        if (!cfg.node.enabled) {
             logger.err("Node connection is disabled.", .{});
             return error.InvalidArguments;
         }
 
-        var ws_client_val = ws_client.?;
+        var ws_client_val = websocket_client.WebSocketClient.init(
+            allocator,
+            ws_url,
+            cfg.gateway.authToken,
+            false,
+            null,
+        );
         defer ws_client_val.deinit();
+
+        ws_client_val.setConnectProfile(.{
+            .role = "node",
+            .scopes = &.{},
+            .client_id = "node-host",
+            .client_mode = "node",
+        });
+        ws_client_val.setConnectNodeMetadata(.{
+            .caps = &.{"system"},
+            .commands = &.{
+                "system.run",
+                "system.which",
+                "system.notify",
+                "system.execApprovals.get",
+                "system.execApprovals.set",
+            },
+        });
+        // Use the gateway token for connect auth and the signed device payload (matches OpenClaw node-host).
+        ws_client_val.setConnectAuthToken(cfg.gateway.authToken);
+        ws_client_val.setDeviceAuthToken(cfg.gateway.authToken);
+
+        ws_client_val.connect() catch |err| {
+            logger.err("Gateway connection failed: {s}", .{@errorName(err)});
+            reconnect_attempt += 1;
+            if (reconnect_attempt >= max_reconnect_attempts) {
+                logger.err("Max reconnection attempts reached", .{});
+                return error.ConnectionFailed;
+            }
+            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+            logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
+            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+            continue;
+        };
 
         node_ctx.state = .connecting;
         reconnect_attempt = 0; // Reset on successful connection
 
-        logger.info("Connected, waiting for handshake...", .{});
-
-        // IMPORTANT: WebSocketClient handles the gateway handshake (connect.challenge -> connect req)
-        // internally when use_device_identity is enabled. Do not send a second connect here.
-
-        // Initialize health reporter
-        var health = HealthReporter.init(allocator, &node_ctx, &ws_client_val);
-        health.start() catch |err| {
-            logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
-        };
-        defer health.stop();
+        logger.info("Connected.", .{});
 
         // Main event loop
         const running = true;
@@ -349,8 +325,6 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             }
         }
 
-        // ws_client_val is deinit'd by defer.
-
         // If we got here due to disconnect, retry
         if (reconnect_attempt < max_reconnect_attempts) {
             reconnect_attempt += 1;
@@ -365,7 +339,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
 fn sendNodeConnectRequest(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     node_ctx: *NodeContext,
 ) !void {
     const request_id = try requests.makeRequestId(allocator);
@@ -420,7 +394,7 @@ fn sendNodeConnectRequest(
 
 fn handleNodeMessage(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     text: []const u8,
@@ -434,6 +408,13 @@ fn handleNodeMessage(
     if (msg_type != .string) return;
 
     const frame_type = msg_type.string;
+
+    // Node bridge may send direct hello-ok.
+    if (std.mem.eql(u8, frame_type, "hello-ok")) {
+        node_ctx.state = .idle;
+        logger.info("Node registered successfully!", .{});
+        return;
+    }
 
     if (std.mem.eql(u8, frame_type, "event")) {
         const event = value.object.get("event") orelse return;
@@ -501,7 +482,7 @@ fn handleNodeMessage(
 
 fn handleNodeInvoke(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     request: std.json.Value,
@@ -540,7 +521,7 @@ fn handleNodeInvoke(
 
 fn handleNodeInvokeRequestEvent(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     frame: std.json.Value,
@@ -584,7 +565,7 @@ fn handleNodeInvokeRequestEvent(
 
 fn sendNodeInvokeResultOk(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     invoke_id: []const u8,
     node_id: []const u8,
     payload: std.json.Value,
@@ -607,7 +588,7 @@ fn sendNodeInvokeResultOk(
 
 fn sendNodeInvokeResultError(
     allocator: std.mem.Allocator,
-    ws_client: *websocket_client.WebSocketClient,
+    ws_client: anytype,
     invoke_id: []const u8,
     node_id: []const u8,
     err: anyerror,
