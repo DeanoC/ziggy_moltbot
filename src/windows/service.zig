@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 pub const ServiceError = error{
     Unsupported,
     InvalidArguments,
+    AccessDenied,
     ExecFailed,
 };
 
@@ -20,7 +21,12 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     const term = try child.spawnAndWait();
     switch (term) {
         .Exited => |code| {
-            if (code != 0) return ServiceError.ExecFailed;
+            if (code != 0) {
+                // schtasks returns common Windows error codes.
+                // 5 = ACCESS_DENIED
+                if (code == 5) return ServiceError.AccessDenied;
+                return ServiceError.ExecFailed;
+            }
         },
         else => return ServiceError.ExecFailed,
     }

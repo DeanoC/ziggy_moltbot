@@ -374,7 +374,13 @@ pub fn main() !void {
         defer allocator.free(node_cfg_path);
 
         if (node_service_install) {
-            try win_service.installTask(allocator, node_cfg_path, node_service_mode, node_service_name);
+            win_service.installTask(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                    return;
+                }
+                return err;
+            };
             logger.info("Installed scheduled task for node-mode.", .{});
             return;
         }
