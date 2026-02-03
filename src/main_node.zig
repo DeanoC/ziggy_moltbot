@@ -271,6 +271,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             .scopes = &.{},
             .client_id = "node-host",
             .client_mode = "node",
+            .display_name = cfg.node.displayName orelse "ZiggyStarClaw",
         });
         ws_client_val.setConnectNodeMetadata(.{
             .caps = &.{"system"},

@@ -120,10 +120,49 @@ fn backupConfigIfExists(allocator: std.mem.Allocator, path: []const u8) void {
     };
 }
 
+fn bestEffortDefaultName(allocator: std.mem.Allocator) ![]u8 {
+    const platform = @tagName(builtin.target.os.tag);
+
+    // Prefer HOSTNAME/COMPUTERNAME env vars.
+    const host = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const v = std.process.getEnvVarOwned(allocator, "COMPUTERNAME") catch null;
+            if (v) |s| break :blk s;
+        }
+        const v = std.process.getEnvVarOwned(allocator, "HOSTNAME") catch null;
+        if (v) |s| break :blk s;
+
+        // POSIX fallback
+        if (builtin.target.os.tag != .windows) {
+            var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+            const name = std.posix.gethostname(&buf) catch null;
+            if (name) |slice| break :blk try allocator.dupe(u8, slice);
+        }
+        break :blk try allocator.dupe(u8, "node");
+    };
+
+    defer allocator.free(host);
+
+    return std.fmt.allocPrint(allocator, "{s}-{s}", .{ host, platform });
+}
+
 fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
+
+    const default_name = try bestEffortDefaultName(allocator);
+    defer allocator.free(default_name);
+
+    const identity_path: []const u8 = if (builtin.target.os.tag == .windows)
+        "%APPDATA%\\ZiggyStarClaw\\node-device.json"
+    else
+        "~/.config/ziggystarclaw/node-device.json";
+
+    const approvals_path: []const u8 = if (builtin.target.os.tag == .windows)
+        "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json"
+    else
+        "~/.config/ziggystarclaw/exec-approvals.json";
 
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
@@ -147,9 +186,9 @@ fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_ur
             .enabled = true,
             .nodeId = "",
             .nodeToken = "",
-            .displayName = "Deano Windows",
-            .deviceIdentityPath = "%APPDATA%\\ZiggyStarClaw\\node-device.json",
-            .execApprovalsPath = "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json",
+            .displayName = default_name,
+            .deviceIdentityPath = identity_path,
+            .execApprovalsPath = approvals_path,
         },
         .operator = .{ .enabled = false },
         .logging = .{ .level = "info" },
@@ -291,6 +330,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             .scopes = &.{},
             .client_id = "node-host",
             .client_mode = "node",
+            .display_name = cfg.node.displayName,
         });
         ws.setConnectNodeMetadata(.{
             .caps = &.{"system"},
