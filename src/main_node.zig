@@ -1,8 +1,8 @@
 const std = @import("std");
 const node_context = @import("node/node_context.zig");
 const NodeContext = node_context.NodeContext;
-const node_config = @import("node/config.zig");
-const NodeConfig = node_config.NodeConfig;
+const unified_config = @import("unified_config.zig");
+const UnifiedConfig = unified_config.UnifiedConfig;
 const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
 const health_reporter = @import("node/health_reporter.zig");
@@ -54,24 +54,17 @@ pub const usage =
     \\Usage:
     \\  ziggystarclaw-cli --node-mode [options]
     \\
+    \\Config:
+    \\  Uses a single config file (no legacy fallbacks):
+    \\    %APPDATA%\\ZiggyStarClaw\\config.json
+    \\
     \\Options:
-    \\  --url <url>                Gateway URL (ws://, wss://, http://, https://)
-    \\                            Examples:
-    \\                              --url http://100.101.192.123:18789
-    \\                              --url ws://127.0.0.1:18789/ws
-    \\  --gateway-token <token>   Token for the initial websocket handshake (gateway auth)
-    \\  --node-token <token>      Token for node connect auth (role=node)
-    \\  --operator-token <token>  Token for operator connect auth (role=operator) when --as-operator
-    \\  --token <token>           Back-compat alias for --gateway-token (NOT node auth)
-    \\  --host <host>              Gateway host (default: 127.0.0.1)
-    \\  --port <port>              Gateway port (default: 18789)
-    \\  --display-name <name>      Node display name
-    \\  --node-id <id>             Override node ID
-    \\  --config <path>            Node config path
-    \\  --save-config              Save config after successful connection
-    \\  --as-node / --no-node      Enable/disable the node connection (default: on)
-    \\  --as-operator / --no-operator  Enable/disable the operator connection (default: off)
-    \\  --tls                      Use TLS for connection (ignored if --url is provided)
+    \\  --config <path>            Path to config.json (default: %APPDATA%\\ZiggyStarClaw\\config.json)
+    \\  --url <url>                Override gateway URL (ws/wss/http/https; with or without /ws)
+    \\  --gateway-token <token>    Override gateway auth token (handshake + connect auth)
+    \\  --node-token <token>       Override node device token (role=node)
+    \\  --as-node / --no-node      Enable/disable node connection (default: from config)
+    \\  --as-operator / --no-operator  Enable/disable operator connection (default: from config)
     \\  --insecure-tls             Disable TLS verification
     \\  --log-level <level>        Log level (debug|info|warn|error)
     \\  -h, --help                 Show help
@@ -128,33 +121,14 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.operator_token = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token")) {
-            // Back-compat: treat --token as the gateway websocket auth token.
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.gateway_token = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--host")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.gateway_host = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--port")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.gateway_port = try std.fmt.parseInt(u16, args[i], 10);
-        } else if (std.mem.eql(u8, arg, "--display-name")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.display_name = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--node-id")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.node_id = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--host") or std.mem.eql(u8, arg, "--port") or std.mem.eql(u8, arg, "--tls") or std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--save-config") or std.mem.eql(u8, arg, "--display-name") or std.mem.eql(u8, arg, "--node-id")) {
+            // Clean break: legacy flags removed.
+            logger.err("Unsupported legacy flag in node-mode: {s}", .{arg});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.config_path = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--save-config")) {
-            opts.save_config = true;
         } else if (std.mem.eql(u8, arg, "--as-node")) {
             opts.as_node = true;
         } else if (std.mem.eql(u8, arg, "--no-node")) {
@@ -190,169 +164,78 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
     return opts;
 }
 
-fn applyUrlToConfig(allocator: std.mem.Allocator, config: *NodeConfig, url: []const u8) !void {
-    // Accept ws://, wss://, http://, https:// and normalize into host/port/tls.
-    // If the URL includes a path, we ignore it (we always connect to /ws).
-    const uri = try std.Uri.parse(url);
-
-    // Some users may pass a bare host:port; in that case parsing may treat it as a path.
-    // We only support full URLs for now to keep behavior predictable.
-    const scheme = uri.scheme;
-    const host_comp = uri.host orelse return error.InvalidArguments;
-    const host = switch (host_comp) {
-        .raw => |s| s,
-        .percent_encoded => |s| s,
-    };
-
-    const tls = std.mem.eql(u8, scheme, "wss") or std.mem.eql(u8, scheme, "https");
-
-    const port: u16 = if (uri.port) |p| @intCast(p) else if (tls) 443 else 80;
-
-    allocator.free(config.gateway_host);
-    config.gateway_host = try allocator.dupe(u8, host);
-    config.gateway_port = port;
-    config.tls = tls;
-}
-
-fn readEnvOwned(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
-    return std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => null,
-        else => null,
-    };
-}
+// (Legacy NodeConfig helpers removed; node-mode uses unified_config.json only.)
 
 pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     logger.setLevel(opts.log_level);
 
-    // Determine config path
-    const config_path = opts.config_path orelse try NodeConfig.defaultPath(allocator);
+    // Determine config path (single unified config)
+    const config_path = opts.config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (opts.config_path == null) allocator.free(config_path);
 
-    logger.info("Using node config path: {s}", .{config_path});
+    logger.info("Using config path: {s}", .{config_path});
 
-    // Load or create config.
-    // If the user explicitly provided --config and it can't be found, fail loudly.
-    var config = blk: {
-        const loaded_opt = NodeConfig.load(allocator, config_path) catch |err| {
-            logger.err("Failed to load node config {s}: {s}", .{ config_path, @errorName(err) });
-            return err;
-        };
-        if (loaded_opt) |loaded| {
-            logger.info("Loaded node config from {s}", .{config_path});
-            break :blk loaded;
-        }
-        if (opts.config_path != null) {
-            logger.err("Node config not found at {s} (use an absolute path; relative paths depend on the current working directory)", .{config_path});
-            return error.ConfigNotFound;
-        }
-        logger.info("No existing node config found, creating new one...", .{});
-        const node_id = if (opts.node_id) |id|
-            try allocator.dupe(u8, id)
-        else
-            try generateNodeIdAlloc(allocator);
-        errdefer allocator.free(node_id);
-        const display_name = if (opts.display_name) |name|
-            try allocator.dupe(u8, name)
-        else
-            try allocator.dupe(u8, "ZiggyStarClaw Node");
-        errdefer allocator.free(display_name);
-        const host_for_default = opts.gateway_host orelse "127.0.0.1";
-        break :blk try NodeConfig.initDefault(allocator, node_id, display_name, host_for_default);
+    var cfg = unified_config.load(allocator, config_path) catch |err| {
+        logger.err("Failed to load config {s}: {s}", .{ config_path, @errorName(err) });
+        return err;
     };
+    defer cfg.deinit(allocator);
 
-    // Override config with CLI options
-    if (opts.node_id) |id| {
-        allocator.free(config.node_id);
-        config.node_id = try allocator.dupe(u8, id);
+    // Apply explicit overrides
+    if (opts.gateway_url) |u| {
+        allocator.free(cfg.gateway.url);
+        cfg.gateway.url = try allocator.dupe(u8, u);
     }
-    if (opts.display_name) |name| {
-        allocator.free(config.display_name);
-        config.display_name = try allocator.dupe(u8, name);
+    if (opts.gateway_token) |t| {
+        allocator.free(cfg.gateway.authToken);
+        cfg.gateway.authToken = try allocator.dupe(u8, t);
     }
+    if (opts.node_token) |t| {
+        allocator.free(cfg.node.deviceToken);
+        cfg.node.deviceToken = try allocator.dupe(u8, t);
+    }
+    if (opts.as_node) |v| cfg.node.enabled = v;
+    if (opts.as_operator) |v| cfg.operator.enabled = v;
 
-    // Gateway url/host/port/tls
-    if (opts.gateway_url) |value| {
-        try applyUrlToConfig(allocator, &config, value);
-    } else {
-        // Only override values loaded from config if the user explicitly set flags.
-        if (opts.gateway_host) |h| {
-            allocator.free(config.gateway_host);
-            config.gateway_host = try allocator.dupe(u8, h);
-        }
-        if (opts.gateway_port) |p| {
-            config.gateway_port = p;
-        }
-        if (opts.tls) |t| {
-            if (t) config.tls = true;
-        }
+    if (!cfg.node.enabled and !cfg.operator.enabled) {
+        logger.err("No connections enabled (--no-node and --no-operator).", .{});
+        return error.InvalidArguments;
     }
 
-    // Websocket handshake token (gateway auth):
-    // 1) CLI --gateway-token / --token
-    // 2) MOLT_TOKEN env var
-    if (opts.gateway_token) |tok| {
-        if (config.gateway_token) |old| allocator.free(old);
-        config.gateway_token = try allocator.dupe(u8, tok);
-    } else if (config.gateway_token == null) {
-        if (readEnvOwned(allocator, "MOLT_TOKEN")) |tok| {
-            config.gateway_token = tok;
-        }
+    if (cfg.gateway.url.len == 0 or cfg.gateway.authToken.len == 0) {
+        logger.err("Config missing gateway.url and/or gateway.authToken", .{});
+        return error.InvalidArguments;
+    }
+    if (cfg.node.enabled and cfg.node.deviceToken.len == 0) {
+        logger.err("Config missing node.deviceToken (role=node)", .{});
+        return error.InvalidArguments;
     }
 
-    // Node auth token (role=node). Used for the node websocket handshake + connect auth + device auth.
-    if (opts.node_token) |tok| {
-        if (config.device_token) |old| allocator.free(old);
-        config.device_token = try allocator.dupe(u8, tok);
+    const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.url);
+    defer allocator.free(ws_url);
+
+    const node_id = cfg.node.nodeId orelse "";
+    if (cfg.node.enabled and node_id.len == 0) {
+        logger.err("Config missing node.nodeId (required for node-mode)", .{});
+        return error.InvalidArguments;
     }
 
-    // Operator token (role=operator) for the operator websocket.
-    // If not provided, fall back to gateway_token.
-    if (opts.operator_token) |tok| {
-        // Reuse gateway_token storage for operator token (separate field can come later).
-        if (config.gateway_token) |old| allocator.free(old);
-        config.gateway_token = try allocator.dupe(u8, tok);
-    }
-
-    if (opts.as_node) |v| {
-        config.enable_node_connection = v;
-    }
-    if (opts.as_operator) |v| {
-        config.enable_operator_connection = v;
-    }
+    const display_name = if (cfg.node.displayName) |n| n else "ZiggyStarClaw Node";
 
     // Initialize node context
-    var node_ctx = try NodeContext.init(allocator, config.node_id, config.display_name);
+    var node_ctx = try NodeContext.init(allocator, node_id, display_name);
     defer node_ctx.deinit();
-    const approvals_path = expandUserPath(allocator, config.exec_approvals_path) catch |err| blk: {
+
+    const approvals_path = expandUserPath(allocator, cfg.node.execApprovalsPath) catch |err| blk: {
         logger.warn("Failed to expand exec approvals path: {s}", .{@errorName(err)});
-        break :blk allocator.dupe(u8, config.exec_approvals_path) catch return err;
+        break :blk allocator.dupe(u8, cfg.node.execApprovalsPath) catch return err;
     };
     allocator.free(node_ctx.exec_approvals_path);
     node_ctx.exec_approvals_path = approvals_path;
 
-    // Register capabilities based on config
-    if (config.system_enabled) {
-        try node_ctx.registerSystemCapabilities();
-        try node_ctx.registerProcessCapabilities();
-    }
-    if (config.canvas_enabled) {
-        try node_ctx.registerCanvasCapabilities();
-
-        // Initialize canvas with configured backend
-        const canvas_config = canvas.CanvasConfig{
-            .backend = parseCanvasBackend(config.canvas_backend),
-            .width = config.canvas_width,
-            .height = config.canvas_height,
-            .headless = true,
-            .chrome_path = config.chrome_path,
-            .chrome_debug_port = config.chrome_debug_port,
-        };
-
-        node_ctx.canvas_manager.initialize(canvas_config) catch |err| {
-            logger.warn("Failed to initialize canvas: {s}", .{@errorName(err)});
-            logger.warn("Canvas commands will return errors", .{});
-        };
-    }
+    // Register capabilities (currently always-on for node-mode)
+    try node_ctx.registerSystemCapabilities();
+    try node_ctx.registerProcessCapabilities();
 
     // Initialize command router
     var router = try command_router.initStandardRouter(allocator);
@@ -364,21 +247,13 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const base_delay_ms: u64 = 1000;
 
     while (reconnect_attempt < max_reconnect_attempts) {
-        // Connect to gateway
-        const ws_url = try config.getWebSocketUrl(allocator);
-        defer allocator.free(ws_url);
-
         logger.info("Connecting to gateway at {s} (attempt {d}/{d})...", .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts });
 
         var ws_client: ?websocket_client.WebSocketClient = null;
-        if (config.enable_node_connection) {
-            // Node websocket:
-            // - WebSocket handshake token must be the *gateway* auth token (gateway_token)
-            // - Connect auth + device auth should be the *node/device* token (device_token)
-            // This allows token-auth gateways to validate the initial websocket, while still
-            // enforcing role=node auth for the node connection.
-            const gateway_handshake_token = config.gateway_token orelse "";
-            const node_auth_token = config.device_token orelse "";
+        if (cfg.node.enabled) {
+            const gateway_handshake_token = cfg.gateway.authToken;
+            const node_auth_token = cfg.node.deviceToken;
+
             var ws = websocket_client.WebSocketClient.init(
                 allocator,
                 ws_url,
@@ -386,23 +261,16 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 opts.insecure_tls,
                 null,
             );
-            // IMPORTANT: OpenClaw gateways enforce that the websocket handshake token matches
-            // connect.params.auth.token. So connect auth must use the gateway token.
-            // The node/device token is carried separately as device auth.
-            const connect_token = if (gateway_handshake_token.len > 0) gateway_handshake_token else node_auth_token;
-            if (connect_token.len > 0) {
-                ws.setConnectAuthToken(connect_token);
-            }
-            if (node_auth_token.len > 0) {
-                ws.setDeviceAuthToken(node_auth_token);
-            }
+            // OpenClaw gateways enforce that the websocket handshake token matches connect.auth.token.
+            ws.setConnectAuthToken(gateway_handshake_token);
+            ws.setDeviceAuthToken(node_auth_token);
+
             ws.setConnectProfile(.{
                 .role = "node",
                 .scopes = &.{},
                 .client_id = "node-host",
                 .client_mode = "node",
             });
-            // Declare what this node can do (gateway requires a declared command list)
             ws.setConnectNodeMetadata(.{
                 .caps = &.{"system"},
                 .commands = &.{
@@ -413,7 +281,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                     "system.execApprovals.set",
                 },
             });
-            ws.setDeviceIdentityPath(config.node_device_identity_path);
+            ws.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
             ws.setReadTimeout(15000);
 
             ws.connect() catch |err| {
@@ -432,57 +300,18 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             ws_client = ws;
         }
 
-        // Optional operator connection (second websocket) for "both" mode.
-        // This mirrors real usage: a controller client and a node host.
-        var op_ws_client: ?websocket_client.WebSocketClient = null;
-        if (config.enable_operator_connection) {
-            // Operator websocket: uses operator/gateway token for both handshake + connect auth.
-            const operator_handshake_token = config.gateway_token orelse "";
-            var op = websocket_client.WebSocketClient.init(
-                allocator,
-                ws_url,
-                operator_handshake_token,
-                opts.insecure_tls,
-                null,
-            );
-            if (operator_handshake_token.len > 0) {
-                op.setConnectAuthToken(operator_handshake_token);
-            }
-            op.setConnectProfile(.{
-                .role = "operator",
-                .scopes = config.operator_scopes,
-                .client_id = "cli",
-                .client_mode = "cli",
-            });
-            op.setDeviceIdentityPath(config.operator_device_identity_path);
-            op.setReadTimeout(15000);
-            op.connect() catch |err| {
-                logger.warn("Operator connection failed (continuing): {s}", .{@errorName(err)});
-                op.deinit();
-            };
-            if (op.is_connected) {
-                op_ws_client = op;
-                logger.info("Operator connection established.", .{});
-            }
-        }
-
-        if (ws_client == null and op_ws_client == null) {
-            logger.err("No connections enabled (--no-node and --no-operator).", .{});
-            return error.InvalidArguments;
-        }
-
-        // Move the node websocket into a concrete variable for existing code paths.
-        // (If node is disabled, we'll exit early for now.)
-        if (ws_client == null) {
-            logger.err("Operator-only mode is not yet fully supported in node-mode loop.", .{});
+        if (cfg.operator.enabled) {
+            logger.err("operator.enabled=true is not supported in node-mode yet (clean-break config refactor in progress).", .{});
             return error.NotImplemented;
+        }
+
+        if (ws_client == null) {
+            logger.err("Node connection is disabled.", .{});
+            return error.InvalidArguments;
         }
 
         var ws_client_val = ws_client.?;
         defer ws_client_val.deinit();
-        if (op_ws_client) |*op| {
-            defer op.deinit();
-        }
 
         node_ctx.state = .connecting;
         reconnect_attempt = 0; // Reset on successful connection
@@ -531,12 +360,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         }
     }
 
-    // Save config if requested and we got a device token
-    if (opts.save_config and node_ctx.device_token != null) {
-        config.device_token = try allocator.dupe(u8, node_ctx.device_token.?);
-        try config.save(allocator, config_path);
-        logger.info("Config saved to {s}", .{config_path});
-    }
+    // Clean break: no save-config behavior in node-mode.
 }
 
 fn sendNodeConnectRequest(
