@@ -386,9 +386,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 opts.insecure_tls,
                 null,
             );
-            // connect.auth.token should be the node token when provided; otherwise fall back
-            // to the handshake token for gateways that don't distinguish.
-            const connect_token = if (node_auth_token.len > 0) node_auth_token else gateway_handshake_token;
+            // IMPORTANT: OpenClaw gateways enforce that the websocket handshake token matches
+            // connect.params.auth.token. So connect auth must use the gateway token.
+            // The node/device token is carried separately as device auth.
+            const connect_token = if (gateway_handshake_token.len > 0) gateway_handshake_token else node_auth_token;
             if (connect_token.len > 0) {
                 ws.setConnectAuthToken(connect_token);
             }
