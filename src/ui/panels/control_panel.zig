@@ -50,7 +50,7 @@ pub fn draw(
 ) ControlPanelAction {
     var action = ControlPanelAction{};
 
-    if (components.core.tab_bar.begin("ControlTabs")) {
+    if (components.core.tab_bar.begin("WorkspaceTabs")) {
         if (components.core.tab_bar.beginItem("Projects")) {
             panel.active_tab = .Projects;
             const projects_action = projects_view.draw(allocator, ctx);

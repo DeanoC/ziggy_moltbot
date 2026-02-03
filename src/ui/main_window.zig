@@ -97,7 +97,7 @@ pub fn draw(
             const has_tool = manager.hasPanel(.ToolOutput);
             const has_editor = manager.hasPanel(.CodeEditor);
 
-            if (zgui.menuItem("Control", .{ .selected = has_control })) {
+            if (zgui.menuItem("Workspace", .{ .selected = has_control })) {
                 manager.ensurePanel(.Control);
             }
             if (zgui.menuItem("Chat", .{ .selected = has_chat })) {

@@ -292,7 +292,7 @@ pub const PanelManager = struct {
                     return;
                 }
                 const panel_data = workspace.PanelData{ .Control = .{} };
-                _ = try self.openPanel(.Control, open.title orelse "Control", panel_data);
+                _ = try self.openPanel(.Control, open.title orelse "Workspace", panel_data);
             },
         }
     }

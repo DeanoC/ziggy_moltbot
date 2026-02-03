@@ -475,7 +475,7 @@ pub fn makeToolOutputPanel(
 }
 
 pub fn makeControlPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
-    const title = try allocator.dupe(u8, "Control");
+    const title = try allocator.dupe(u8, "Workspace");
     return .{
         .id = id,
         .kind = .Control,
