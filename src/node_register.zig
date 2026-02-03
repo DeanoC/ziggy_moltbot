@@ -342,7 +342,10 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("", .{});
 
     // 3) Poll node.pair.list until the node appears in paired, then store the minted token.
+    logger.info("Waiting for approval...", .{});
     const verify_deadline_ms: i64 = std.time.milliTimestamp() + (5 * 60 * 1000);
+
+    var last_paired_count: ?usize = null;
     while (std.time.milliTimestamp() < verify_deadline_ms) {
         const list_payload = sendRequestAwait(
             allocator,
@@ -359,13 +362,30 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         };
         defer allocator.free(list_payload);
 
-        const tok = extractTokenFromPairList(allocator, list_payload, node_id) catch null;
-        if (tok) |t| {
+        // Parse pairing list for diagnostics + token.
+        var info = parsePairListInfo(allocator, list_payload, node_id) catch |perr| {
+            logger.warn("failed to parse node.pair.list payload ({s}); will retry", .{@errorName(perr)});
+            std.Thread.sleep(1500 * std.time.ns_per_ms);
+            continue;
+        };
+        defer info.deinit(allocator);
+
+        if (last_paired_count == null or last_paired_count.? != info.paired_count) {
+            last_paired_count = info.paired_count;
+            logger.info("pairing status: paired={d} (looking for our nodeId)", .{info.paired_count});
+            if (info.paired_count > 0 and !info.found_node) {
+                logger.warn("paired nodes exist but not ours yet; first nodeId={s}", .{info.first_node_id orelse "(none)"});
+            }
+        }
+
+        if (info.token) |t| {
             defer allocator.free(t);
+
+            logger.info("Approved detected; writing config.json...", .{});
 
             // Persist node.id + node.token.
             try saveUpdatedNodeAuth(allocator, cfg_path, node_id, t);
-            logger.info("Approved! Saved node auth to config.json (node.id + node.token).", .{});
+            logger.info("Saved node auth to config.json (node.id + node.token).", .{});
 
             // Update in-memory cfg for immediate verify.
             allocator.free(cfg.node.token);
@@ -384,7 +404,6 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             return error.ConnectionFailed;
         }
 
-        // Not approved yet.
         std.Thread.sleep(1500 * std.time.ns_per_ms);
     }
 
@@ -392,17 +411,48 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     return error.Timeout;
 }
 
-fn extractTokenFromPairList(
+const PairListInfo = struct {
+    paired_count: usize,
+    found_node: bool,
+    token: ?[]u8,
+    first_node_id: ?[]u8,
+
+    fn deinit(self: *PairListInfo, allocator: std.mem.Allocator) void {
+        if (self.token) |t| allocator.free(t);
+        if (self.first_node_id) |s| allocator.free(s);
+    }
+};
+
+fn parsePairListInfo(
     allocator: std.mem.Allocator,
     json_payload: []const u8,
     node_id: []const u8,
-) !?[]u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, json_payload, .{}) catch return null;
+) !PairListInfo {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_payload, .{});
     defer parsed.deinit();
 
-    if (parsed.value != .object) return null;
-    const pairedv = parsed.value.object.get("paired") orelse return null;
-    if (pairedv != .array) return null;
+    if (parsed.value != .object) return error.InvalidFormat;
+    const pairedv = parsed.value.object.get("paired") orelse return error.InvalidFormat;
+    if (pairedv != .array) return error.InvalidFormat;
+
+    var out = PairListInfo{
+        .paired_count = pairedv.array.items.len,
+        .found_node = false,
+        .token = null,
+        .first_node_id = null,
+    };
+
+    // best-effort: capture first nodeId for debug
+    if (pairedv.array.items.len > 0) {
+        const first = pairedv.array.items[0];
+        if (first == .object) {
+            if (first.object.get("nodeId")) |nidv| {
+                if (nidv == .string and nidv.string.len > 0) {
+                    out.first_node_id = try allocator.dupe(u8, nidv.string);
+                }
+            }
+        }
+    }
 
     for (pairedv.array.items) |item| {
         if (item != .object) continue;
@@ -410,13 +460,15 @@ fn extractTokenFromPairList(
         if (nidv != .string) continue;
         if (!std.mem.eql(u8, nidv.string, node_id)) continue;
 
+        out.found_node = true;
+
         const tokv = item.object.get("token") orelse continue;
         if (tokv != .string or tokv.string.len == 0) continue;
-
-        return try allocator.dupe(u8, tokv.string);
+        out.token = try allocator.dupe(u8, tokv.string);
+        break;
     }
 
-    return null;
+    return out;
 }
 
 fn verifyNodeToken(
