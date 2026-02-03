@@ -15,6 +15,9 @@ const main_operator = @import("main_operator.zig");
 const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
+const win_service = @import("windows/service.zig");
+const node_register = @import("node_register.zig");
+const unified_config = @import("unified_config.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -67,7 +70,19 @@ const usage =
     \\  --check-update-only      Fetch update manifest and exit
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
+    \\  --node-register          Interactive: pair as node (connect role=node and persist token)
+    \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
+    \\
+    \\Windows "always-on" (Task Scheduler)
+    \\  --node-service-install    Install a scheduled task to run node-mode automatically
+    \\  --node-service-uninstall  Uninstall the scheduled task
+    \\  --node-service-start      Start the scheduled task now
+    \\  --node-service-stop       Stop the running task
+    \\  --node-service-status     Show task status
+    \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
+    \\  --node-service-name <n>   Override task name (default: ZiggyStarClaw Node)
+    \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
@@ -144,12 +159,25 @@ pub fn main() !void {
     var check_update_only = false;
     var print_update_url = false;
     var interactive = false;
+    var node_register_mode = false;
+    var node_register_wait = false;
+
+    // Windows task-scheduler "service" helpers
+    var node_service_install = false;
+    var node_service_uninstall = false;
+    var node_service_start = false;
+    var node_service_stop = false;
+    var node_service_status = false;
+    var node_service_mode: win_service.InstallMode = .onlogon;
+    var node_service_name: ?[]const u8 = null;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
     var operator_mode = false;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--node-mode")) node_mode = true;
         if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
+        if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
+        if (std.mem.eql(u8, a, "--wait-for-approval")) node_register_wait = true;
     }
     var save_config = false;
 
@@ -283,6 +311,31 @@ pub fn main() !void {
             check_update_only = true;
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-install")) {
+            node_service_install = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-uninstall")) {
+            node_service_uninstall = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-start")) {
+            node_service_start = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-stop")) {
+            node_service_stop = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-status")) {
+            node_service_status = true;
+        } else if (std.mem.eql(u8, arg, "--node-service-mode")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "onlogon")) {
+                node_service_mode = .onlogon;
+            } else if (std.mem.eql(u8, v, "onstart")) {
+                node_service_mode = .onstart;
+            } else {
+                return error.InvalidArguments;
+            }
+        } else if (std.mem.eql(u8, arg, "--node-service-name")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            node_service_name = args[i];
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
@@ -299,7 +352,7 @@ pub fn main() !void {
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
-            if (!(node_mode or operator_mode)) {
+            if (!(node_mode or operator_mode or node_register_mode)) {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
@@ -310,10 +363,160 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        check_update_only or print_update_url or interactive or node_mode or save_config;
+        check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
+        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
+        return;
+    }
+
+    // Windows node service helpers (Task Scheduler)
+    if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node service helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const node_cfg_path = try unified_config.defaultConfigPath(allocator);
+        defer allocator.free(node_cfg_path);
+
+        if (node_service_install) {
+            // Ensure the node is registered/persisted in the SAME config.json the service will use.
+            // This keeps manual runs and the scheduled task deterministic.
+            //
+            // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
+            // can approve without re-running commands.
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true);
+
+            // Install a short wrapper script so we can:
+            // - avoid schtasks /TR length limits
+            // - always redirect logs to a file for debugging
+            // - avoid relying on Task Scheduler working directory
+            const exe_path = try std.fs.selfExePathAlloc(allocator);
+            defer allocator.free(exe_path);
+
+            // Best-effort: place wrapper + logs alongside the config (typically %APPDATA%\ZiggyStarClaw).
+            const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
+            std.fs.cwd().makePath(cfg_dir) catch {};
+
+            const log_path = try std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" });
+            defer allocator.free(log_path);
+
+            // Prefer a VBScript launcher (no console window). Fallback to cmd if Windows Script Host is missing.
+            const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
+            defer if (windir) |v| allocator.free(v);
+
+            const wscript_path = if (windir) |v|
+                try std.fs.path.join(allocator, &.{ v, "System32", "wscript.exe" })
+            else
+                try allocator.dupe(u8, "wscript.exe");
+            defer allocator.free(wscript_path);
+
+            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) == null;
+
+            if (wscript_ok) {
+                const vbs_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.vbs" });
+                defer allocator.free(vbs_path);
+
+                // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
+                // We still use cmd /c for output redirection.
+                const vbs = try std.fmt.allocPrint(
+                    allocator,
+                    "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
+                        "sh.Run \"cmd /c \"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator --log-level debug >> \"\"\"\"{s}\"\"\"\" 2>&1\"\"\", 0, False\r\n",
+                    .{ exe_path, node_cfg_path, log_path },
+                );
+                defer allocator.free(vbs);
+
+                {
+                    const f = try std.fs.cwd().createFile(vbs_path, .{ .truncate = true });
+                    defer f.close();
+                    try f.writeAll(vbs);
+                }
+
+                // Task scheduler runs wscript.exe "...\run-node.vbs"
+                const task_run = try std.fmt.allocPrint(allocator, "\"{s}\" \"{s}\"", .{ wscript_path, vbs_path });
+                defer allocator.free(task_run);
+
+                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
+                    if (err == win_service.ServiceError.AccessDenied) {
+                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                        return;
+                    }
+                    return err;
+                };
+
+                logger.info("Installed scheduled task for node-mode (hidden via wscript).", .{});
+                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+                _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+                return;
+            }
+
+            // Fallback: cmd wrapper (may open a console window)
+            const cmd_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
+            defer allocator.free(cmd_path);
+
+            const cmd = try std.fmt.allocPrint(
+                allocator,
+                "@echo off\r\nsetlocal\r\n\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug >> \"{s}\" 2>&1\r\n",
+                .{ exe_path, node_cfg_path, log_path },
+            );
+            defer allocator.free(cmd);
+
+            {
+                const f = try std.fs.cwd().createFile(cmd_path, .{ .truncate = true });
+                defer f.close();
+                try f.writeAll(cmd);
+            }
+
+            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
+            defer allocator.free(task_run);
+
+            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {  
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                    return;
+                }
+                return err;
+            };
+
+            logger.info("Installed scheduled task for node-mode (cmd wrapper).", .{});
+            _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+            _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+            return;
+        }
+        if (node_service_uninstall) {
+            try win_service.uninstallTask(allocator, node_service_name);
+            logger.info("Uninstalled scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Uninstalled scheduled task.\n") catch {};
+            return;
+        }
+        if (node_service_start) {
+            try win_service.startTask(allocator, node_service_name);
+            logger.info("Started scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Started scheduled task.\n") catch {};
+            return;
+        }
+        if (node_service_stop) {
+            try win_service.stopTask(allocator, node_service_name);
+            logger.info("Stopped scheduled task.", .{});
+            _ = std.fs.File.stdout().write("Stopped scheduled task.\n") catch {};
+            return;
+        }
+        if (node_service_status) {
+            try win_service.queryTask(allocator, node_service_name);
+            return;
+        }
+    }
+
+    // Handle node register (interactive helper)
+    if (node_register_mode) {
+        const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
+        // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
+        // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
+        // user to paste the node token explicitly.
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait);
         return;
     }
 

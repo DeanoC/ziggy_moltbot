@@ -98,6 +98,17 @@ pub const NodeConfig = struct {
         }
 
         // Windows fallback
+        // Prefer per-user roaming AppData so the config location is stable regardless
+        // of current working directory and matches user expectations on Windows.
+        const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (appdata) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, "ZiggyStarClaw", "node.json" });
+        }
+
         const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| switch (err) {
             error.EnvironmentVariableNotFound => null,
             else => return err,
