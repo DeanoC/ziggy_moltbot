@@ -23,7 +23,7 @@ pub fn draw(args: Args) Decision {
     var title_buf: [128:0]u8 = undefined;
     const title = std.fmt.bufPrintZ(&title_buf, "Request {s}", .{args.id}) catch args.id;
 
-    if (components.layout.card.begin(.{ .title = title, .id = args.id })) {
+    if (components.layout.card.begin(.{ .title = title, .id = args.id, .elevation = .raised })) {
         if (args.summary) |summary| {
             zgui.textWrapped("Summary: {s}", .{summary});
         }

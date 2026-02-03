@@ -22,7 +22,12 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
     const opened = zgui.beginChild("ApprovalsInboxView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Approvals Inbox", .subtitle = "Human-in-the-loop" })) {
+        if (components.layout.header_bar.begin(.{
+            .title = "Approvals Inbox",
+            .subtitle = "Human-in-the-loop",
+            .show_notifications = true,
+            .notification_count = ctx.approvals.items.len,
+        })) {
             var count_buf: [32]u8 = undefined;
             const label = std.fmt.bufPrint(&count_buf, "{d} pending", .{ctx.approvals.items.len}) catch "0 pending";
             components.core.badge.draw(label, .{ .variant = .primary, .filled = false, .size = .small });
@@ -31,16 +36,29 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
+        const pending_count = ctx.approvals.items.len;
+        const resolved_count: usize = 0;
+        const all_count = pending_count + resolved_count;
+        var all_buf: [24]u8 = undefined;
+        var pending_buf: [24]u8 = undefined;
+        var resolved_buf: [24]u8 = undefined;
+        const all_label = std.fmt.bufPrint(&all_buf, "All ({d})", .{all_count}) catch "All";
+        const pending_label = std.fmt.bufPrint(&pending_buf, "Pending ({d})", .{pending_count}) catch "Pending";
+        const resolved_label = std.fmt.bufPrint(&resolved_buf, "Resolved ({d})", .{resolved_count}) catch "Resolved";
+        const all_label_z = zgui.formatZ("{s}", .{all_label});
+        const pending_label_z = zgui.formatZ("{s}", .{pending_label});
+        const resolved_label_z = zgui.formatZ("{s}", .{resolved_label});
+
         if (components.core.tab_bar.begin("ApprovalsFilters")) {
-            if (components.core.tab_bar.beginItem("All")) {
+            if (components.core.tab_bar.beginItem(all_label_z)) {
                 active_filter = .all;
                 components.core.tab_bar.endItem();
             }
-            if (components.core.tab_bar.beginItem("Pending")) {
+            if (components.core.tab_bar.beginItem(pending_label_z)) {
                 active_filter = .pending;
                 components.core.tab_bar.endItem();
             }
-            if (components.core.tab_bar.beginItem("Resolved")) {
+            if (components.core.tab_bar.beginItem(resolved_label_z)) {
                 active_filter = .resolved;
                 components.core.tab_bar.endItem();
             }
