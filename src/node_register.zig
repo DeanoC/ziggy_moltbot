@@ -193,7 +193,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     );
     defer allocator.free(req_payload);
 
-    var request_id: ?[]const u8 = null;
+    var request_id: ?[]u8 = null;
+    defer if (request_id) |v| allocator.free(v);
     {
         var parsed = std.json.parseFromSlice(std.json.Value, allocator, req_payload, .{}) catch null;
         if (parsed) |*p| {
@@ -202,7 +203,9 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
                 if (p.value.object.get("request")) |rv| {
                     if (rv == .object) {
                         if (rv.object.get("requestId")) |ridv| {
-                            if (ridv == .string and ridv.string.len > 0) request_id = ridv.string;
+                            if (ridv == .string and ridv.string.len > 0) {
+                                request_id = try allocator.dupe(u8, ridv.string);
+                            }
                         }
                     }
                 }
@@ -211,7 +214,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     }
 
     if (request_id == null) {
-        logger.warn("node.pair.request response did not include requestId. Raw payload:", .{});
+        logger.warn("node.pair.request response did not include request.requestId. Raw payload:", .{});
         logger.warn("{s}", .{req_payload});
     }
 
@@ -219,10 +222,11 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("Next steps:", .{});
     logger.info("  1) Open Control UI on the gateway", .{});
     logger.info("  2) Go to Nodes / Pairing requests (or similar)", .{});
+    logger.info("  3) Approve the pending node request for nodeId={s}", .{node_id});
     if (request_id) |rid| {
-        logger.info("  3) Approve requestId={s}", .{rid});
+        logger.info("     (CLI: openclaw nodes approve {s})", .{rid});
     } else {
-        logger.info("  3) Approve the pending node request for device_id={s}", .{identity.device_id});
+        logger.info("     (CLI: openclaw nodes pending  # then approve the requestId shown)", .{});
     }
     logger.info("  4) Leave this window open; we'll poll until the node is paired", .{});
     logger.info("", .{});
