@@ -225,12 +225,24 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const config_path = opts.config_path orelse try NodeConfig.defaultPath(allocator);
     defer if (opts.config_path == null) allocator.free(config_path);
 
-    // Load or create config
+    logger.info("Using node config path: {s}", .{config_path});
+
+    // Load or create config.
+    // If the user explicitly provided --config and it can't be found, fail loudly.
     var config = blk: {
-        if (try NodeConfig.load(allocator, config_path)) |loaded| {
+        const loaded_opt = NodeConfig.load(allocator, config_path) catch |err| {
+            logger.err("Failed to load node config {s}: {s}", .{ config_path, @errorName(err) });
+            return err;
+        };
+        if (loaded_opt) |loaded| {
+            logger.info("Loaded node config from {s}", .{config_path});
             break :blk loaded;
         }
-        logger.info("No existing node config, creating new one...", .{});
+        if (opts.config_path != null) {
+            logger.err("Node config not found at {s} (use an absolute path; relative paths depend on the current working directory)", .{config_path});
+            return error.ConfigNotFound;
+        }
+        logger.info("No existing node config found, creating new one...", .{});
         const node_id = if (opts.node_id) |id|
             try allocator.dupe(u8, id)
         else
