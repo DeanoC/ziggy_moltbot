@@ -63,6 +63,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
                 components.core.badge.draw("Loading", .{ .variant = .primary, .filled = false, .size = .small });
             }
 
+            zgui.separator();
             zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
             if (components.layout.scroll_area.begin(.{ .id = "ProjectsList", .border = true })) {
                 if (ctx.sessions.items.len == 0) {
@@ -158,7 +159,7 @@ fn drawMainContent(
     }
     components.layout.card.end();
 
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+    zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
     if (components.layout.card.begin(.{ .title = "Recent Artifacts", .id = "projects_artifacts" })) {
         if (previews.len == 0) {
@@ -181,7 +182,10 @@ fn drawMainContent(
                         action.open_url = allocator.dupe(u8, preview.url) catch null;
                     }
                 }
-                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+                if (idx + 1 < previews.len) {
+                    zgui.separator();
+                }
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
             }
         }
     }

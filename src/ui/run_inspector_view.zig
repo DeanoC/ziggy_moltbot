@@ -14,7 +14,7 @@ pub fn draw(ctx: *state.ClientContext) void {
             components.layout.header_bar.end();
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         const split_args = components.layout.split_pane.Args{
             .id = "run_inspector",
@@ -71,28 +71,29 @@ pub fn draw(ctx: *state.ClientContext) void {
 
         if (components.layout.split_pane.beginSecondary(split_args, &split_state)) {
             if (components.layout.scroll_area.begin(.{ .id = "RunInspectorSide", .border = false })) {
-                theme.push(.heading);
-                zgui.text("Agent Notifications", .{});
-                theme.pop();
-                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
-
-                if (ctx.nodes.items.len == 0) {
-                    zgui.textDisabled("No active agents yet.", .{});
-                } else {
-                    for (ctx.nodes.items, 0..) |node, idx| {
-                        zgui.pushIntId(@intCast(idx));
-                        defer zgui.popId();
-                        const label = node.display_name orelse node.id;
-                        components.data.agent_status.draw(.{
-                            .label = label,
-                            .subtitle = node.platform,
-                            .connected = node.connected,
-                            .paired = node.paired,
-                            .platform = node.platform,
-                        });
-                        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+                if (components.layout.card.begin(.{ .title = "Agent Notifications", .id = "run_inspector_agents" })) {
+                    if (ctx.nodes.items.len == 0) {
+                        zgui.textDisabled("No active agents yet.", .{});
+                    } else {
+                        for (ctx.nodes.items, 0..) |node, idx| {
+                            zgui.pushIntId(@intCast(idx));
+                            defer zgui.popId();
+                            const label = node.display_name orelse node.id;
+                            components.data.agent_status.draw(.{
+                                .label = label,
+                                .subtitle = node.platform,
+                                .connected = node.connected,
+                                .paired = node.paired,
+                                .platform = node.platform,
+                            });
+                            if (idx + 1 < ctx.nodes.items.len) {
+                                zgui.separator();
+                            }
+                            zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
+                        }
                     }
                 }
+                components.layout.card.end();
             }
             components.layout.scroll_area.end();
         }

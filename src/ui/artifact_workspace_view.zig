@@ -20,6 +20,7 @@ pub fn draw() void {
             components.layout.header_bar.end();
         }
 
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
         if (components.core.tab_bar.begin("ArtifactTabs")) {
             if (components.core.tab_bar.beginItem("Preview")) {
                 active_tab = .preview;
@@ -43,6 +44,7 @@ pub fn draw() void {
         components.layout.scroll_area.end();
 
         zgui.separator();
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
         if (components.core.icon_button.draw("C", .{ .tooltip = "Copy" })) {}
         zgui.sameLine(.{ .spacing = t.spacing.sm });
         if (components.core.icon_button.draw("U", .{ .tooltip = "Undo" })) {}

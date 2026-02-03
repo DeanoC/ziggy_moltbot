@@ -29,7 +29,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
             components.layout.header_bar.end();
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         if (components.core.tab_bar.begin("ApprovalsFilters")) {
             if (components.core.tab_bar.beginItem("All")) {
@@ -47,7 +47,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
             components.core.tab_bar.end();
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         if (components.layout.scroll_area.begin(.{ .id = "ApprovalsInboxList", .border = false })) {
             if (active_filter == .resolved) {
@@ -79,6 +79,9 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
                                 .none => unreachable,
                             },
                         };
+                    }
+                    if (idx + 1 < ctx.approvals.items.len) {
+                        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
                     }
                 }
             }

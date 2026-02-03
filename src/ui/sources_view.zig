@@ -36,7 +36,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
             components.layout.header_bar.end();
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         var sources_buf: [24]components.composite.source_browser.Source = undefined;
         var sources_map: [24]?usize = undefined;
@@ -113,15 +113,18 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
             selected_file_index = idx;
         }
 
-        zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+        zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
         if (components.layout.card.begin(.{ .title = "Selected File", .id = "sources_selected_file" })) {
             if (selected_file_index == null or selected_file_index.? >= previews.len) {
                 zgui.textDisabled("Select a file to see details and actions.", .{});
             } else {
                 const preview = previews[selected_file_index.?];
                 zgui.textWrapped("Name: {s}", .{preview.name});
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
                 zgui.textWrapped("Type: {s}", .{preview.kind});
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.xs });
                 zgui.textWrapped("Role: {s}", .{preview.role});
+                zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
                 if (components.core.button.draw("Open in Editor", .{ .variant = .secondary, .size = .small })) {
                     action.open_attachment = preview;
                 }
