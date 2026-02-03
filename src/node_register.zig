@@ -141,11 +141,11 @@ fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_ur
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
     const Doc = struct {
-        gateway: struct { url: []const u8, authToken: []const u8 },
+        gateway: struct { wsUrl: []const u8, authToken: []const u8 },
         node: struct {
             enabled: bool,
-            id: []const u8,
-            token: []const u8,
+            nodeId: []const u8,
+            nodeToken: []const u8,
             displayName: []const u8,
             deviceIdentityPath: []const u8,
             execApprovalsPath: []const u8,
@@ -155,11 +155,11 @@ fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_ur
     };
 
     const doc: Doc = .{
-        .gateway = .{ .url = gateway_url, .authToken = gateway_token },
+        .gateway = .{ .wsUrl = gateway_url, .authToken = gateway_token },
         .node = .{
             .enabled = true,
-            .id = "",
-            .token = "",
+            .nodeId = "",
+            .nodeToken = "",
             .displayName = "Deano Windows",
             .deviceIdentityPath = "%APPDATA%\\ZiggyStarClaw\\node-device.json",
             .execApprovalsPath = "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json",
@@ -220,7 +220,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     ensureParentDir(cfg.node.execApprovalsPath);
     if (cfg.logging.file) |p| ensureParentDir(p);
 
-    const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.url);
+    const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.wsUrl);
     defer allocator.free(ws_url);
 
     // Ensure identity exists and print the device id so we can mint the correct node token.
@@ -233,7 +233,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("node-register public_key={s}", .{identity.public_key_b64});
 
     // 1) If we already have a token, verify it by attempting a node connect.
-    if (cfg.node.token.len > 0) {
+    if (cfg.node.nodeToken.len > 0) {
         if (try verifyNodeToken(allocator, ws_url, &cfg, insecure_tls)) {
             logger.info("node-register: node token verified (connected as node).", .{});
             return;
@@ -275,8 +275,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     const node_id = identity.device_id;
 
     // If config.json contains a different node.id, we'll overwrite it after approval.
-    if (cfg.node.id.len > 0 and !std.mem.eql(u8, cfg.node.id, node_id)) {
-        logger.warn("config node.id differs from device identity; will overwrite: {s} -> {s}", .{ cfg.node.id, node_id });
+    if (cfg.node.nodeId.len > 0 and !std.mem.eql(u8, cfg.node.nodeId, node_id)) {
+        logger.warn("config node.nodeId differs from device identity; will overwrite: {s} -> {s}", .{ cfg.node.nodeId, node_id });
     }
 
     const req_payload = try sendRequestAwait(
@@ -385,13 +385,13 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
 
             // Persist node.id + node.token.
             try saveUpdatedNodeAuth(allocator, cfg_path, node_id, t);
-            logger.info("Saved node auth to config.json (node.id + node.token).", .{});
+            logger.info("Saved node auth to config.json (node.nodeId + node.nodeToken).", .{});
 
             // Update in-memory cfg for immediate verify.
-            allocator.free(cfg.node.token);
-            cfg.node.token = try allocator.dupe(u8, t);
-            allocator.free(cfg.node.id);
-            cfg.node.id = try allocator.dupe(u8, node_id);
+            allocator.free(cfg.node.nodeToken);
+            cfg.node.nodeToken = try allocator.dupe(u8, t);
+            allocator.free(cfg.node.nodeId);
+            cfg.node.nodeId = try allocator.dupe(u8, node_id);
 
             // Finally: verify node can connect.
             if (try verifyNodeToken(allocator, ws_url, &cfg, insecure_tls)) {
@@ -487,7 +487,7 @@ fn verifyNodeToken(
     defer ws.deinit();
 
     ws.setConnectAuthToken(cfg.gateway.authToken);
-    ws.setDeviceAuthToken(cfg.node.token);
+    ws.setDeviceAuthToken(cfg.node.nodeToken);
     ws.setConnectProfile(.{
         .role = "node",
         .scopes = &.{},
@@ -546,9 +546,9 @@ fn saveUpdatedNodeAuth(
     const node_val = root.getPtr("node") orelse return error.InvalidArguments;
     if (node_val.* != .object) return error.InvalidArguments;
 
-    try node_val.object.put("token", std.json.Value{ .string = token });
+    try node_val.object.put("nodeToken", std.json.Value{ .string = token });
     if (node_id) |nid| {
-        try node_val.object.put("id", std.json.Value{ .string = nid });
+        try node_val.object.put("nodeId", std.json.Value{ .string = nid });
     }
 
     const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });

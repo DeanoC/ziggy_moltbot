@@ -183,16 +183,16 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
     // Apply explicit overrides
     if (opts.gateway_url) |u| {
-        allocator.free(cfg.gateway.url);
-        cfg.gateway.url = try allocator.dupe(u8, u);
+        allocator.free(cfg.gateway.wsUrl);
+        cfg.gateway.wsUrl = try allocator.dupe(u8, u);
     }
     if (opts.gateway_token) |t| {
         allocator.free(cfg.gateway.authToken);
         cfg.gateway.authToken = try allocator.dupe(u8, t);
     }
     if (opts.node_token) |t| {
-        allocator.free(cfg.node.token);
-        cfg.node.token = try allocator.dupe(u8, t);
+        allocator.free(cfg.node.nodeToken);
+        cfg.node.nodeToken = try allocator.dupe(u8, t);
     }
     if (opts.as_node) |v| cfg.node.enabled = v;
     if (opts.as_operator) |v| cfg.operator.enabled = v;
@@ -202,21 +202,21 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         return error.InvalidArguments;
     }
 
-    if (cfg.gateway.url.len == 0 or cfg.gateway.authToken.len == 0) {
-        logger.err("Config missing gateway.url and/or gateway.authToken", .{});
+    if (cfg.gateway.wsUrl.len == 0 or cfg.gateway.authToken.len == 0) {
+        logger.err("Config missing gateway.wsUrl and/or gateway.authToken", .{});
         return error.InvalidArguments;
     }
-    if (cfg.node.enabled and cfg.node.token.len == 0) {
-        logger.err("Config missing node.token (role=node)", .{});
+    if (cfg.node.enabled and cfg.node.nodeToken.len == 0) {
+        logger.err("Config missing node.nodeToken (role=node)", .{});
         return error.InvalidArguments;
     }
 
-    const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.url);
+    const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.wsUrl);
     defer allocator.free(ws_url);
 
-    const node_id = cfg.node.id;
+    const node_id = cfg.node.nodeId;
     if (cfg.node.enabled and node_id.len == 0) {
-        logger.err("Config missing node.id (required for node-mode)", .{});
+        logger.err("Config missing node.nodeId (required for node-mode)", .{});
         return error.InvalidArguments;
     }
 
@@ -252,7 +252,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         var ws_client: ?websocket_client.WebSocketClient = null;
         if (cfg.node.enabled) {
             const gateway_handshake_token = cfg.gateway.authToken;
-            const node_auth_token = cfg.node.token;
+            const node_auth_token = cfg.node.nodeToken;
 
             var ws = websocket_client.WebSocketClient.init(
                 allocator,

@@ -3,7 +3,7 @@ const std = @import("std");
 pub const UnifiedConfig = struct {
     pub const Gateway = struct {
         /// Full ws/wss/http/https URL to the gateway (with or without /ws).
-        url: []const u8,
+        wsUrl: []const u8,
         /// OpenClaw gateway auth token (used for the initial websocket handshake and connect.auth.token).
         authToken: []const u8,
     };
@@ -12,12 +12,12 @@ pub const UnifiedConfig = struct {
         enabled: bool = true,
 
         /// Node token (role=node). Used inside device-auth signed payload.
-        /// Stored in config.json as: node.token
-        token: []const u8 = "",
+        /// Stored in config.json as: node.nodeToken
+        nodeToken: []const u8 = "",
 
-        /// Optional stable node id (what the gateway calls nodeId).
-        /// Stored in config.json as: node.id
-        id: []const u8 = "",
+        /// Stable node id (what the gateway calls nodeId).
+        /// Stored in config.json as: node.nodeId
+        nodeId: []const u8 = "",
 
         // (no backward compat)
 
@@ -50,14 +50,14 @@ pub const UnifiedConfig = struct {
     logging: Logging = .{},
 
     pub fn deinit(self: *UnifiedConfig, allocator: std.mem.Allocator) void {
-        allocator.free(self.gateway.url);
+        allocator.free(self.gateway.wsUrl);
         allocator.free(self.gateway.authToken);
 
-        allocator.free(self.node.token);
+        allocator.free(self.node.nodeToken);
         allocator.free(self.node.deviceIdentityPath);
         allocator.free(self.node.execApprovalsPath);
         if (self.node.displayName) |v| allocator.free(v);
-        allocator.free(self.node.id);
+        allocator.free(self.node.nodeId);
 
         if (self.operator.token) |v| allocator.free(v);
         if (self.operator.deviceIdentityPath) |v| allocator.free(v);
@@ -145,13 +145,13 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
     defer parsed.deinit();
 
     // Deep-copy + env expansion
-    const gw_url = try expandVarsAlloc(allocator, parsed.value.gateway.url);
+    const gw_url = try expandVarsAlloc(allocator, parsed.value.gateway.wsUrl);
     errdefer allocator.free(gw_url);
     const gw_tok = try expandVarsAlloc(allocator, parsed.value.gateway.authToken);
     errdefer allocator.free(gw_tok);
 
-    // node.token (no backward compat)
-    const raw_node_token = parsed.value.node.token;
+    // node.nodeToken (no backward compat)
+    const raw_node_token = parsed.value.node.nodeToken;
 
     const node_tok = try expandVarsAlloc(allocator, raw_node_token);
     errdefer allocator.free(node_tok);
@@ -166,7 +166,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
         null;
     errdefer if (display) |v| allocator.free(v);
 
-    const node_id = try expandVarsAlloc(allocator, parsed.value.node.id);
+    const node_id = try expandVarsAlloc(allocator, parsed.value.node.nodeId);
     errdefer allocator.free(node_id);
 
     const op_token = if (parsed.value.operator.token) |v|
@@ -194,11 +194,11 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
     errdefer if (log_file) |v| allocator.free(v);
 
     return .{
-        .gateway = .{ .url = gw_url, .authToken = gw_tok },
+        .gateway = .{ .wsUrl = gw_url, .authToken = gw_tok },
         .node = .{
             .enabled = parsed.value.node.enabled,
-            .token = node_tok,
-            .id = node_id,
+            .nodeToken = node_tok,
+            .nodeId = node_id,
             .displayName = display,
             .deviceIdentityPath = node_identity,
             .execApprovalsPath = approvals,
