@@ -258,11 +258,11 @@ fn drawAgentSessions(
 
         const legacy = session_keys.parse(session.key) == null;
         const base_label = session.display_name orelse session.label orelse session.key;
-        const label = if (legacy)
-            zgui.formatZ("[legacy] {s}", .{base_label})
-        else
-            zgui.formatZ("{s}", .{base_label});
-        zgui.text("{s}", .{label});
+        if (legacy) {
+            zgui.text("[legacy] {s}", .{base_label});
+        } else {
+            zgui.text("{s}", .{base_label});
+        }
         zgui.sameLine(.{ .spacing = 12.0 });
         renderRelativeTime(now_ms, session.updated_at);
 
