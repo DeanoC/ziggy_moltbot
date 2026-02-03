@@ -51,6 +51,18 @@ fn waitForHelloOkAndToken(
                         }
                     }
                 }
+                // Surface pairing required as a distinct error so the caller can guide UX.
+                if (parsed.value.object.get("error")) |errv| {
+                    if (errv == .object) {
+                        if (errv.object.get("message")) |mv| {
+                            if (mv == .string) {
+                                if (std.mem.indexOf(u8, mv.string, "pairing required") != null) {
+                                    return error.PairingRequired;
+                                }
+                            }
+                        }
+                    }
+                }
                 return error.ConnectionFailed;
             }
 
@@ -196,7 +208,7 @@ fn saveUpdatedNodeConfig(
     try wf.writeAll("\n");
 }
 
-pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool) !void {
+pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
@@ -255,56 +267,78 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         cfg.node.nodeId = try allocator.dupe(u8, identity.device_id);
     }
 
-    logger.info("Connecting once as node-host to obtain/verify device token...", .{});
+    logger.info("Connecting as node-host to obtain/verify device token...", .{});
 
-    var ws = websocket_client.WebSocketClient.init(
-        allocator,
-        ws_url,
-        // Keep websocket handshake token as the shared gateway token.
-        cfg.gateway.authToken,
-        insecure_tls,
-        null,
-    );
-    defer ws.deinit();
+    const max_wait_ms: i64 = if (wait_for_approval) 5 * 60 * 1000 else 0;
+    const start_ms: i64 = std.time.milliTimestamp();
+    var attempt: u32 = 0;
 
-    ws.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
-    ws.setConnectProfile(.{
-        .role = "node",
-        .scopes = &.{},
-        .client_id = "node-host",
-        .client_mode = "node",
-    });
-    ws.setConnectNodeMetadata(.{
-        .caps = &.{"system"},
-        .commands = &.{
-            "system.run",
-            "system.which",
-            "system.notify",
-            "system.execApprovals.get",
-            "system.execApprovals.set",
-        },
-    });
+    while (true) {
+        attempt += 1;
+        var ws = websocket_client.WebSocketClient.init(
+            allocator,
+            ws_url,
+            // Keep websocket handshake token as the shared gateway token.
+            cfg.gateway.authToken,
+            insecure_tls,
+            null,
+        );
+        defer ws.deinit();
 
-    // IMPORTANT: the gateway requires connect.auth.token to match the websocket Authorization token.
-    // For ZiggyStarClaw, the websocket Authorization token is gateway.authToken.
-    // The per-device token returned in hello-ok (auth.deviceToken) is stored in node.nodeToken for
-    // future use, but we do NOT use it as the gateway auth token.
-    ws.setConnectAuthToken(cfg.gateway.authToken);
-    ws.setDeviceAuthToken(cfg.gateway.authToken);
+        ws.setDeviceIdentityPath(cfg.node.deviceIdentityPath);
+        ws.setConnectProfile(.{
+            .role = "node",
+            .scopes = &.{},
+            .client_id = "node-host",
+            .client_mode = "node",
+        });
+        ws.setConnectNodeMetadata(.{
+            .caps = &.{"system"},
+            .commands = &.{
+                "system.run",
+                "system.which",
+                "system.notify",
+                "system.execApprovals.get",
+                "system.execApprovals.set",
+            },
+        });
 
-    try ws.connect();
+        // IMPORTANT: connect.auth.token must match the websocket Authorization token.
+        ws.setConnectAuthToken(cfg.gateway.authToken);
+        ws.setDeviceAuthToken(cfg.gateway.authToken);
 
-    const token = try waitForHelloOkAndToken(allocator, &ws, 10_000);
-    defer if (token) |t| allocator.free(t);
+        try ws.connect();
 
-    if (token) |t| {
-        if (!std.mem.eql(u8, cfg.node.nodeToken, t)) {
-            logger.info("Saving node.nodeToken to config.json (device token)", .{});
-            try saveUpdatedNodeConfig(allocator, cfg_path, null, t);
-            allocator.free(cfg.node.nodeToken);
-            cfg.node.nodeToken = try allocator.dupe(u8, t);
+        const token = waitForHelloOkAndToken(allocator, &ws, 10_000) catch |err| switch (err) {
+            error.PairingRequired => {
+                logger.err("Pairing required for this device identity.", .{});
+                logger.info("Approve this device in the gateway Control UI, then re-run.", .{});
+                logger.info("Device id to approve: {s}", .{identity.device_id});
+                if (!wait_for_approval) return error.PairingRequired;
+
+                const elapsed = std.time.milliTimestamp() - start_ms;
+                if (elapsed > max_wait_ms) {
+                    logger.err("Timed out waiting for approval.", .{});
+                    return error.Timeout;
+                }
+                logger.info("Waiting for approval... (attempt {d})", .{attempt});
+                std.Thread.sleep(1500 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        defer if (token) |t| allocator.free(t);
+
+        if (token) |t| {
+            if (!std.mem.eql(u8, cfg.node.nodeToken, t)) {
+                logger.info("Saving node.nodeToken to config.json (device token)", .{});
+                try saveUpdatedNodeConfig(allocator, cfg_path, null, t);
+                allocator.free(cfg.node.nodeToken);
+                cfg.node.nodeToken = try allocator.dupe(u8, t);
+            }
         }
-    }
 
-    logger.info("node-register complete.", .{});
+        logger.info("node-register complete.", .{});
+        return;
+    }
 }

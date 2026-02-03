@@ -70,7 +70,8 @@ const usage =
     \\  --check-update-only      Fetch update manifest and exit
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
-    \\  --node-register          Interactive: pair as node + prompt for role=node token if needed
+    \\  --node-register          Interactive: pair as node (connect role=node and persist token)
+    \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
     \\Windows "always-on" (Task Scheduler)
@@ -159,6 +160,7 @@ pub fn main() !void {
     var print_update_url = false;
     var interactive = false;
     var node_register_mode = false;
+    var node_register_wait = false;
 
     // Windows task-scheduler "service" helpers
     var node_service_install = false;
@@ -175,6 +177,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, a, "--node-mode")) node_mode = true;
         if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
         if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
+        if (std.mem.eql(u8, a, "--wait-for-approval")) node_register_wait = true;
     }
     var save_config = false;
 
@@ -457,7 +460,7 @@ pub fn main() !void {
         // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
         // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
         // user to paste the node token explicitly.
-        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls);
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait);
         return;
     }
 
