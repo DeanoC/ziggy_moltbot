@@ -13,10 +13,11 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     var restore_mode: ?u32 = null;
     if (builtin.os.tag == .windows) {
         const w = std.os.windows;
-        const handle = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
-        if (handle != w.INVALID_HANDLE_VALUE) {
-            var mode: u32 = 0;
-            if (w.kernel32.GetConsoleMode(handle, &mode) != 0) {
+        const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
+        if (handle_opt) |handle| {
+            if (handle != w.INVALID_HANDLE_VALUE) {
+                var mode: u32 = 0;
+                if (w.kernel32.GetConsoleMode(handle, &mode) != 0) {
                 restore_mode = mode;
                 // Disable echo
                 const ENABLE_ECHO_INPUT: u32 = 0x0004;
@@ -28,9 +29,11 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     defer {
         if (restore_mode) |m| {
             const w = std.os.windows;
-            const handle = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
-            if (handle != w.INVALID_HANDLE_VALUE) {
-                _ = w.kernel32.SetConsoleMode(handle, m);
+            const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
+            if (handle_opt) |handle| {
+                if (handle != w.INVALID_HANDLE_VALUE) {
+                    _ = w.kernel32.SetConsoleMode(handle, m);
+                }
             }
         }
     }
@@ -46,9 +49,11 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     // Re-enable echo before printing newline
     if (builtin.os.tag == .windows and restore_mode != null) {
         const w = std.os.windows;
-        const handle = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
-        if (handle != w.INVALID_HANDLE_VALUE) {
-            _ = w.kernel32.SetConsoleMode(handle, restore_mode.?);
+        const handle_opt = w.kernel32.GetStdHandle(w.STD_INPUT_HANDLE);
+        if (handle_opt) |handle| {
+            if (handle != w.INVALID_HANDLE_VALUE) {
+                _ = w.kernel32.SetConsoleMode(handle, restore_mode.?);
+            }
         }
     }
     try stdout.writeAll("\n");
