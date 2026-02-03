@@ -139,33 +139,47 @@ fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_ur
     }
 
     // Keep it minimal + strict. No legacy keys.
-    const content = try std.fmt.allocPrint(
-        allocator,
-        \\
-        \\{{
-        \\  \"gateway\": {{
-        \\    \"url\": \"{s}\",
-        \\    \"authToken\": \"{s}\"
-        \\  }},
-        \\  \"node\": {{
-        \\    \"enabled\": true,
-        \\    \"id\": \"\",
-        \\    \"token\": \"\",
-        \\    \"displayName\": \"Deano Windows\",
-        \\    \"deviceIdentityPath\": \"%APPDATA%\\\\ZiggyStarClaw\\\\node-device.json\",
-        \\    \"execApprovalsPath\": \"%APPDATA%\\\\ZiggyStarClaw\\\\exec-approvals.json\"
-        \\  }},
-        \\  \"operator\": {{ \"enabled\": false }},
-        \\  \"logging\": {{ \"level\": \"info\" }}
-        \\}}\n
-    ,
-        .{ gateway_url, gateway_token },
-    );
+    // IMPORTANT: build JSON via stringify to ensure proper escaping.
+    const Doc = struct {
+        gateway: struct { url: []const u8, authToken: []const u8 },
+        node: struct {
+            enabled: bool,
+            id: []const u8,
+            token: []const u8,
+            displayName: []const u8,
+            deviceIdentityPath: []const u8,
+            execApprovalsPath: []const u8,
+        },
+        operator: struct { enabled: bool },
+        logging: struct { level: []const u8 },
+    };
+
+    const doc: Doc = .{
+        .gateway = .{ .url = gateway_url, .authToken = gateway_token },
+        .node = .{
+            .enabled = true,
+            .id = "",
+            .token = "",
+            .displayName = "Deano Windows",
+            .deviceIdentityPath = "%APPDATA%\\ZiggyStarClaw\\node-device.json",
+            .execApprovalsPath = "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json",
+        },
+        .operator = .{ .enabled = false },
+        .logging = .{ .level = "info" },
+    };
+
+    var out: std.io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+
+    const writer = &out.writer;
+    try std.json.Stringify.value(doc, .{ .whitespace = .indent_2, .emit_null_optional_fields = false }, writer);
+    const content = try out.toOwnedSlice();
     defer allocator.free(content);
 
     const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer f.close();
     try f.writeAll(content);
+    try f.writeAll("\n");
 }
 
 pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool) !void {
