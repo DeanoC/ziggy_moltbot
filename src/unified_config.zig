@@ -227,10 +227,13 @@ fn ensureWsPath(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         return std.fmt.allocPrint(allocator, "ws://{s}/ws", .{raw});
     };
 
-    // IMPORTANT: use toRawAlloc (always allocates) so freeing is valid.
-    const path_raw = try uri.path.toRawAlloc(allocator);
-    defer allocator.free(path_raw);
+    // IMPORTANT: toRawMaybeAlloc may return a borrowed slice; use an arena allocator
+    // so any allocations are owned by the arena and we never free a borrowed slice.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
 
+    const path_raw = try uri.path.toRawMaybeAlloc(aa);
     if (std.mem.eql(u8, path_raw, "/ws")) {
         return allocator.dupe(u8, raw);
     }
