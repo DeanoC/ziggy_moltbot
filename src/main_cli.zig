@@ -16,6 +16,7 @@ const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
+const node_register = @import("node_register.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -68,6 +69,7 @@ const usage =
     \\  --check-update-only      Fetch update manifest and exit
     \\  --interactive            Start interactive REPL mode
     \\  --node-mode              Run as a capability node (see --node-mode-help)
+    \\  --node-register          Interactive: pair as node + prompt for role=node token if needed
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
     \\Windows "always-on" (Task Scheduler)
@@ -155,6 +157,7 @@ pub fn main() !void {
     var check_update_only = false;
     var print_update_url = false;
     var interactive = false;
+    var node_register_mode = false;
 
     // Windows task-scheduler "service" helpers
     var node_service_install = false;
@@ -170,6 +173,7 @@ pub fn main() !void {
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--node-mode")) node_mode = true;
         if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
+        if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
     }
     var save_config = false;
 
@@ -355,7 +359,7 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        check_update_only or print_update_url or interactive or node_mode or save_config or
+        check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -445,6 +449,16 @@ pub fn main() !void {
             try win_service.queryTask(allocator, node_service_name);
             return;
         }
+    }
+
+    // Handle node register (interactive helper)
+    if (node_register_mode) {
+        const node_opts = try main_node.parseNodeOptions(allocator, args[1..]);
+        // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
+        // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
+        // user to paste the node token explicitly.
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls);
+        return;
     }
 
     // Handle node mode

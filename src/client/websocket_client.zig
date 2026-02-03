@@ -12,6 +12,10 @@ pub const WebSocketClient = struct {
     url: []const u8,
     // Token used for the initial WebSocket handshake (Authorization header)
     token: []const u8,
+
+    // Last close info (useful for diagnosing pairing/auth issues in node-register flows)
+    last_close_code: ?u16 = null,
+    last_close_reason: ?[]u8 = null,
     // Token used for the connect request auth payload (params.auth.token).
     // Defaults to `token`.
     connect_auth_token: ?[]const u8 = null,
@@ -157,6 +161,7 @@ pub const WebSocketClient = struct {
         self.is_connected = true;
         self.connect_sent = false;
         clearConnectNonce(self);
+        self.clearLastClose();
 
         if (self.use_device_identity) {
             if (self.device_identity == null) {
@@ -202,9 +207,12 @@ pub const WebSocketClient = struct {
                 },
                 .pong => null,
                 .close => blk: {
+                    self.clearLastClose();
                     if (message.data.len >= 2) {
                         const code = (@as(u16, message.data[0]) << 8) | message.data[1];
                         const reason = message.data[2..];
+                        self.last_close_code = code;
+                        self.last_close_reason = self.allocator.dupe(u8, reason) catch null;
                         logger.warn("WebSocket closed by server code={} reason={s}", .{ code, reason });
                     } else {
                         logger.warn("WebSocket closed by server (no close payload)", .{});
@@ -229,6 +237,14 @@ pub const WebSocketClient = struct {
         return error.NotConnected;
     }
 
+    pub fn clearLastClose(self: *WebSocketClient) void {
+        self.last_close_code = null;
+        if (self.last_close_reason) |r| {
+            self.allocator.free(r);
+            self.last_close_reason = null;
+        }
+    }
+
     pub fn disconnect(self: *WebSocketClient) void {
         if (self.client) |*client| {
             client.close(.{}) catch {};
@@ -238,6 +254,7 @@ pub const WebSocketClient = struct {
         self.is_connected = false;
         self.connect_sent = false;
         clearConnectNonce(self);
+        self.clearLastClose();
     }
 
     pub fn signalClose(self: *WebSocketClient) void {
@@ -257,6 +274,7 @@ pub const WebSocketClient = struct {
             self.device_identity = null;
         }
         clearConnectNonce(self);
+        self.clearLastClose();
     }
 };
 
