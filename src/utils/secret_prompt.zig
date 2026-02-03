@@ -39,7 +39,7 @@ pub fn readSecretAlloc(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
         }
     }
 
-    const line = try stdin.reader().readUntilDelimiterOrEofAlloc(allocator, '\n', 4096);
+    const line = try stdin.deprecatedReader().readUntilDelimiterOrEofAlloc(allocator, '\n', 4096);
     if (line == null) return error.EndOfStream;
     var s = line.?;
     // Trim \r
