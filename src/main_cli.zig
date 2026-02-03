@@ -17,6 +17,7 @@ const build_options = @import("build_options");
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
 const node_register = @import("node_register.zig");
+const unified_config = @import("unified_config.zig");
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,
@@ -374,8 +375,7 @@ pub fn main() !void {
             return error.InvalidArguments;
         }
 
-        const NodeConfig = @import("node/config.zig").NodeConfig;
-        const node_cfg_path = try NodeConfig.defaultPath(allocator);
+        const node_cfg_path = try unified_config.defaultConfigPath(allocator);
         defer allocator.free(node_cfg_path);
 
         if (node_service_install) {
@@ -424,7 +424,7 @@ pub fn main() !void {
 
             logger.info("Installed scheduled task for node-mode.", .{});
             _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-            _ = std.fs.File.stdout().write("Logs: node-service.log (next to node.json)\n") catch {};
+            _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
             return;
         }
         if (node_service_uninstall) {
