@@ -43,6 +43,9 @@ pub const WebSocketClient = struct {
     connect_client_id: []const u8 = "cli",
     connect_client_mode: []const u8 = "cli",
 
+    // Optional client display name shown in Control UI.
+    connect_client_display_name: ?[]const u8 = null,
+
     // Node metadata (used when connect_role == "node")
     connect_caps: []const []const u8 = &.{},
     connect_commands: []const []const u8 = &.{},
@@ -77,11 +80,13 @@ pub const WebSocketClient = struct {
         scopes: []const []const u8,
         client_id: []const u8,
         client_mode: []const u8,
+        display_name: ?[]const u8 = null,
     }) void {
         self.connect_role = params.role;
         self.connect_scopes = params.scopes;
         self.connect_client_id = params.client_id;
         self.connect_client_mode = params.client_mode;
+        self.connect_client_display_name = params.display_name;
     }
 
     pub fn setConnectNodeMetadata(self: *WebSocketClient, params: struct {
@@ -425,7 +430,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
             .id = client_id,
-            .displayName = "ZiggyStarClaw",
+            .displayName = self.connect_client_display_name,
             .version = "0.1.0",
             .platform = @tagName(builtin.os.tag),
             .mode = client_mode,

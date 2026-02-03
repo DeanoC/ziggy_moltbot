@@ -387,7 +387,7 @@ pub fn main() !void {
             //
             // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
             // can approve without re-running commands.
-            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true);
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
 
             // Install a short wrapper script so we can:
             // - avoid schtasks /TR length limits
@@ -516,7 +516,7 @@ pub fn main() !void {
         // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
         // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
         // user to paste the node token explicitly.
-        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait);
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait, node_opts.display_name);
         return;
     }
 

@@ -207,6 +207,7 @@ pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !
         .scopes = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
         .client_id = "cli",
         .client_mode = "cli",
+        .display_name = "ZiggyStarClaw Operator",
     });
     ws_client.setDeviceIdentityPath(opts.device_identity_path);
     ws_client.setReadTimeout(15000);

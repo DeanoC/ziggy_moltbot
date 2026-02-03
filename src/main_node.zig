@@ -61,6 +61,7 @@ pub const usage =
     \\  --url <url>                Override gateway URL (ws/wss/http/https; with or without /ws)
     \\  --gateway-token <token>    Override gateway auth token (handshake + connect auth)
     \\  --node-token <token>       Override node device token (role=node)
+    \\  --display-name <name>      Override node display name shown in gateway UI
     \\  --as-node / --no-node      Enable/disable node connection (default: from config)
     \\  --as-operator / --no-operator  Enable/disable operator connection (default: from config)
     \\  --insecure-tls             Disable TLS verification
@@ -119,7 +120,11 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.operator_token = try allocator.dupe(u8, args[i]);
-        } else if (std.mem.eql(u8, arg, "--host") or std.mem.eql(u8, arg, "--port") or std.mem.eql(u8, arg, "--tls") or std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--save-config") or std.mem.eql(u8, arg, "--display-name") or std.mem.eql(u8, arg, "--node-id")) {
+        } else if (std.mem.eql(u8, arg, "--display-name")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.display_name = try allocator.dupe(u8, args[i]);
+        } else if (std.mem.eql(u8, arg, "--host") or std.mem.eql(u8, arg, "--port") or std.mem.eql(u8, arg, "--tls") or std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--save-config") or std.mem.eql(u8, arg, "--node-id")) {
             // Clean break: legacy flags removed.
             logger.err("Unsupported legacy flag in node-mode: {s}", .{arg});
             return error.InvalidArguments;
@@ -191,6 +196,10 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     if (opts.node_token) |t| {
         allocator.free(cfg.node.nodeToken);
         cfg.node.nodeToken = try allocator.dupe(u8, t);
+    }
+    if (opts.display_name) |n| {
+        if (cfg.node.displayName) |old| allocator.free(old);
+        cfg.node.displayName = try allocator.dupe(u8, n);
     }
     if (opts.as_node) |v| cfg.node.enabled = v;
     if (opts.as_operator) |v| cfg.operator.enabled = v;
@@ -271,6 +280,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             .scopes = &.{},
             .client_id = "node-host",
             .client_mode = "node",
+            .display_name = cfg.node.displayName orelse "ZiggyStarClaw",
         });
         ws_client_val.setConnectNodeMetadata(.{
             .caps = &.{"system"},

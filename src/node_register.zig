@@ -120,10 +120,49 @@ fn backupConfigIfExists(allocator: std.mem.Allocator, path: []const u8) void {
     };
 }
 
+fn bestEffortDefaultName(allocator: std.mem.Allocator) ![]u8 {
+    const platform = @tagName(builtin.target.os.tag);
+
+    // Prefer HOSTNAME/COMPUTERNAME env vars.
+    const host = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const v = std.process.getEnvVarOwned(allocator, "COMPUTERNAME") catch null;
+            if (v) |s| break :blk s;
+        }
+        const v = std.process.getEnvVarOwned(allocator, "HOSTNAME") catch null;
+        if (v) |s| break :blk s;
+
+        // POSIX fallback
+        if (builtin.target.os.tag != .windows) {
+            var buf: [std.posix.HOST_NAME_MAX]u8 = undefined;
+            const name = std.posix.gethostname(&buf) catch null;
+            if (name) |slice| break :blk try allocator.dupe(u8, slice);
+        }
+        break :blk try allocator.dupe(u8, "node");
+    };
+
+    defer allocator.free(host);
+
+    return std.fmt.allocPrint(allocator, "{s}-{s}", .{ host, platform });
+}
+
 fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
+
+    const default_name = try bestEffortDefaultName(allocator);
+    defer allocator.free(default_name);
+
+    const identity_path: []const u8 = if (builtin.target.os.tag == .windows)
+        "%APPDATA%\\ZiggyStarClaw\\node-device.json"
+    else
+        "~/.config/ziggystarclaw/node-device.json";
+
+    const approvals_path: []const u8 = if (builtin.target.os.tag == .windows)
+        "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json"
+    else
+        "~/.config/ziggystarclaw/exec-approvals.json";
 
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
@@ -147,9 +186,9 @@ fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_ur
             .enabled = true,
             .nodeId = "",
             .nodeToken = "",
-            .displayName = "Deano Windows",
-            .deviceIdentityPath = "%APPDATA%\\ZiggyStarClaw\\node-device.json",
-            .execApprovalsPath = "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json",
+            .displayName = default_name,
+            .deviceIdentityPath = identity_path,
+            .execApprovalsPath = approvals_path,
         },
         .operator = .{ .enabled = false },
         .logging = .{ .level = "info" },
@@ -174,6 +213,7 @@ fn saveUpdatedNodeConfig(
     path: []const u8,
     node_id: ?[]const u8,
     node_token: ?[]const u8,
+    display_name: ?[]const u8,
 ) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
@@ -195,6 +235,9 @@ fn saveUpdatedNodeConfig(
     if (node_token) |tok| {
         try node_val.object.put("nodeToken", std.json.Value{ .string = tok });
     }
+    if (display_name) |name| {
+        try node_val.object.put("displayName", std.json.Value{ .string = name });
+    }
 
     const out = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
     defer allocator.free(out);
@@ -208,7 +251,7 @@ fn saveUpdatedNodeConfig(
     try wf.writeAll("\n");
 }
 
-pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool) !void {
+pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool, display_name: ?[]const u8) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
@@ -262,9 +305,17 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
 
     if (cfg.node.nodeId.len == 0 or !std.mem.eql(u8, cfg.node.nodeId, identity.device_id)) {
         logger.info("Saving node.nodeId to config.json: {s}", .{identity.device_id});
-        try saveUpdatedNodeConfig(allocator, cfg_path, identity.device_id, null);
+        try saveUpdatedNodeConfig(allocator, cfg_path, identity.device_id, null, display_name);
         allocator.free(cfg.node.nodeId);
         cfg.node.nodeId = try allocator.dupe(u8, identity.device_id);
+    }
+
+    // Apply display name override (optional)
+    if (display_name) |name| {
+        if (cfg.node.displayName) |old| allocator.free(old);
+        cfg.node.displayName = try allocator.dupe(u8, name);
+        // Best-effort persist so future runs show the same name.
+        saveUpdatedNodeConfig(allocator, cfg_path, null, null, name) catch {};
     }
 
     logger.info("Connecting as node-host to obtain/verify device token...", .{});
@@ -291,6 +342,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             .scopes = &.{},
             .client_id = "node-host",
             .client_mode = "node",
+            .display_name = cfg.node.displayName,
         });
         ws.setConnectNodeMetadata(.{
             .caps = &.{"system"},
@@ -332,7 +384,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         if (token) |t| {
             if (!std.mem.eql(u8, cfg.node.nodeToken, t)) {
                 logger.info("Saving node.nodeToken to config.json (device token)", .{});
-                try saveUpdatedNodeConfig(allocator, cfg_path, null, t);
+                try saveUpdatedNodeConfig(allocator, cfg_path, null, t, display_name);
                 allocator.free(cfg.node.nodeToken);
                 cfg.node.nodeToken = try allocator.dupe(u8, t);
             }
