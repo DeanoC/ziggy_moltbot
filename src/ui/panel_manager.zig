@@ -2,6 +2,7 @@ const std = @import("std");
 const workspace = @import("workspace.zig");
 const ui_command = @import("ui_command.zig");
 const text_buffer = @import("text_buffer.zig");
+const session_keys = @import("../client/session_keys.zig");
 
 pub const PanelManager = struct {
     allocator: std.mem.Allocator,
@@ -128,10 +129,15 @@ pub const PanelManager = struct {
         switch (kind) {
             .Chat => {
                 if (key) |session| {
+                    const agent_id = if (session_keys.parse(session)) |parts| parts.agent_id else null;
                     for (self.workspace.panels.items) |*panel| {
                         if (panel.kind != .Chat) continue;
                         const data = panel.data.Chat;
-                        if (data.session_key) |existing| {
+                        if (agent_id) |agent| {
+                            if (data.agent_id) |existing_agent| {
+                                if (std.mem.eql(u8, existing_agent, agent)) return panel;
+                            }
+                        } else if (data.session_key) |existing| {
                             if (std.mem.eql(u8, existing, session)) return panel;
                         }
                     }
@@ -158,6 +164,44 @@ pub const PanelManager = struct {
         return null;
     }
 
+    pub fn ensureChatPanelForAgent(
+        self: *PanelManager,
+        agent_id: []const u8,
+        title: []const u8,
+        session_key: ?[]const u8,
+    ) !workspace.PanelId {
+        for (self.workspace.panels.items) |*panel| {
+            if (panel.kind != .Chat) continue;
+            if (panel.data.Chat.agent_id) |existing| {
+                if (!std.mem.eql(u8, existing, agent_id)) continue;
+            } else {
+                panel.data.Chat.agent_id = try self.allocator.dupe(u8, agent_id);
+            }
+
+            if (!std.mem.eql(u8, panel.title, title)) {
+                self.allocator.free(panel.title);
+                panel.title = try self.allocator.dupe(u8, title);
+            }
+
+            if (session_key) |session| {
+                if (panel.data.Chat.session_key) |prev| self.allocator.free(prev);
+                panel.data.Chat.session_key = try self.allocator.dupe(u8, session);
+            }
+
+            self.workspace.markDirty();
+            self.focusPanel(panel.id);
+            return panel.id;
+        }
+
+        const data = workspace.PanelData{ .Chat = .{
+            .agent_id = try self.allocator.dupe(u8, agent_id),
+            .session_key = if (session_key) |session| try self.allocator.dupe(u8, session) else null,
+        } };
+        const panel_id = try self.openPanel(.Chat, title, data);
+        self.focusPanel(panel_id);
+        return panel_id;
+    }
+
     fn findPanelByKind(self: *PanelManager, kind: workspace.PanelKind) ?*workspace.Panel {
         for (self.workspace.panels.items) |*panel| {
             if (panel.kind == kind) return panel;
@@ -168,7 +212,10 @@ pub const PanelManager = struct {
     fn openDefaultPanel(self: *PanelManager, kind: workspace.PanelKind) !workspace.PanelId {
         switch (kind) {
             .Chat => {
-                const data = workspace.PanelData{ .Chat = .{ .session_key = null } };
+                const data = workspace.PanelData{ .Chat = .{
+                    .agent_id = try self.allocator.dupe(u8, "main"),
+                    .session_key = null,
+                } };
                 return try self.openPanel(.Chat, "Chat", data);
             },
             .Control => {
@@ -217,6 +264,12 @@ pub const PanelManager = struct {
         switch (open.kind) {
             .Chat => {
                 const session = if (payload) |data| data.Chat.session else null;
+                if (session) |key| {
+                    if (session_keys.parse(key)) |parts| {
+                        _ = try self.ensureChatPanelForAgent(parts.agent_id, open.title orelse "Chat", key);
+                        return;
+                    }
+                }
                 if (self.findReusablePanel(.Chat, session)) |panel| {
                     if (session) |key| {
                         if (panel.data.Chat.session_key) |prev| self.allocator.free(prev);
@@ -360,6 +413,7 @@ pub const PanelManager = struct {
 };
 
 fn parseControlTab(label: []const u8) workspace.ControlTab {
+    if (std.mem.eql(u8, label, "Agents")) return .Agents;
     if (std.mem.eql(u8, label, "Projects")) return .Projects;
     if (std.mem.eql(u8, label, "Sources")) return .Sources;
     if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;

@@ -26,7 +26,6 @@ pub const websocket = transport.websocket;
 pub const WebSocketClient = transport.WebSocketClient;
 
 pub const ui = struct {
-    pub const imgui_wrapper = @import("ui/imgui_wrapper.zig");
     pub const imgui_bridge = @import("ui/imgui_bridge.zig");
     pub const main_window = @import("ui/main_window.zig");
     pub const chat_view = @import("ui/chat_view.zig");
@@ -44,6 +43,7 @@ pub const ui = struct {
     pub const dock_layout = @import("ui/dock_layout.zig");
     pub const workspace_store = @import("ui/workspace_store.zig");
     pub const components = @import("ui/components/components.zig");
+    pub const widgets = @import("ui/widgets/widgets.zig");
 };
 
 pub const platform = struct {

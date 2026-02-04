@@ -14,6 +14,15 @@ pub const Args = struct {
     use_markdown: bool = true,
 };
 
+pub const bubble_fill_ratio: f32 = 0.82;
+pub const min_bubble_width: f32 = 300.0;
+
+pub const BubbleColors = struct {
+    bg: colors.Color,
+    border: colors.Color,
+    accent: colors.Color,
+};
+
 pub fn draw(args: Args) void {
     const t = theme.activeTheme();
     const avail = zgui.getContentRegionAvail();
@@ -24,15 +33,13 @@ pub fn draw(args: Args) void {
         zgui.setCursorPosX(cursor_start[0] + (avail[0] - bubble_width));
     }
 
-    const base = roleBaseColor(args.role, t);
-    const bg = colors.withAlpha(base, 0.12);
-    const border = colors.withAlpha(base, 0.32);
+    const bubble = bubbleColors(args.role, t);
 
     zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, t.spacing.xs } });
     zgui.pushStyleVar1f(.{ .idx = .child_rounding, .v = t.radius.md });
     zgui.pushStyleVar1f(.{ .idx = .child_border_size, .v = 1.0 });
-    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = bg });
-    zgui.pushStyleColor4f(.{ .idx = .border, .c = border });
+    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = bubble.bg });
+    zgui.pushStyleColor4f(.{ .idx = .border, .c = bubble.border });
 
     const id_z = zgui.formatZ("##bubble_{s}", .{args.id});
     if (zgui.beginChild(id_z, .{
@@ -41,7 +48,7 @@ pub fn draw(args: Args) void {
         .child_flags = .{ .border = true, .auto_resize_y = true, .always_use_window_padding = true },
     })) {
         theme.push(.heading);
-        zgui.textColored(roleAccentColor(args.role, t), "{s}", .{roleLabel(args.role)});
+        zgui.textColored(bubble.accent, "{s}", .{roleLabel(args.role)});
         theme.pop();
         if (args.timestamp_ms) |ts| {
             var time_buf: [32]u8 = undefined;
@@ -49,6 +56,8 @@ pub fn draw(args: Args) void {
             zgui.sameLine(.{ .spacing = t.spacing.sm });
             zgui.textDisabled("{s}", .{label});
         }
+        zgui.pushTextWrapPos(0.0);
+        defer zgui.popTextWrapPos();
         if (args.use_markdown) {
             markdown_basic.draw(.{ .text = args.content });
         } else {
@@ -63,11 +72,16 @@ pub fn draw(args: Args) void {
     zgui.setCursorPosX(cursor_start[0]);
 }
 
-fn bubbleWidth(avail: f32) f32 {
-    return @min(560.0, avail * 0.82);
+pub fn bubbleWidth(avail: f32) f32 {
+    const target = @max(min_bubble_width, avail * bubble_fill_ratio);
+    return @min(target, avail);
 }
 
-fn roleLabel(role: []const u8) []const u8 {
+pub fn minPanelWidth() f32 {
+    return min_bubble_width / bubble_fill_ratio;
+}
+
+pub fn roleLabel(role: []const u8) []const u8 {
     if (std.mem.eql(u8, role, "assistant")) return "Assistant";
     if (std.mem.eql(u8, role, "user")) return "You";
     if (std.mem.eql(u8, role, "system")) return "System";
@@ -89,7 +103,7 @@ fn roleAccentColor(role: []const u8, t: *const theme.Theme) colors.Color {
     return t.colors.text_secondary;
 }
 
-fn formatRelativeTime(now_ms: i64, ts_ms: i64, buf: []u8) []const u8 {
+pub fn formatRelativeTime(now_ms: i64, ts_ms: i64, buf: []u8) []const u8 {
     const delta_ms = if (now_ms > ts_ms) now_ms - ts_ms else 0;
     const seconds = @as(u64, @intCast(@divTrunc(delta_ms, 1000)));
     const minutes = seconds / 60;
@@ -105,4 +119,13 @@ fn formatRelativeTime(now_ms: i64, ts_ms: i64, buf: []u8) []const u8 {
         return std.fmt.bufPrint(buf, "{d}h ago", .{hours}) catch "today";
     }
     return std.fmt.bufPrint(buf, "{d}d ago", .{days}) catch "days ago";
+}
+
+pub fn bubbleColors(role: []const u8, t: *const theme.Theme) BubbleColors {
+    const base = roleBaseColor(role, t);
+    return .{
+        .bg = colors.withAlpha(base, 0.12),
+        .border = colors.withAlpha(base, 0.32),
+        .accent = roleAccentColor(role, t),
+    };
 }

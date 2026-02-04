@@ -138,6 +138,12 @@ pub const DrawContext = struct {
         }
     }
 
+    pub fn measureText(self: *DrawContext, text: []const u8, wrap_width: f32) Vec2 {
+        _ = self;
+        const size = zgui.calcTextSize(text, .{ .wrap_width = wrap_width });
+        return .{ size[0], size[1] };
+    }
+
     pub fn drawLine(self: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void {
         switch (self.backend) {
             .imgui => {

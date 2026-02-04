@@ -6,6 +6,7 @@ const components = @import("components/components.zig");
 pub fn draw(
     client_state: state.ClientState,
     is_connected: bool,
+    agent_name: ?[]const u8,
     session_name: ?[]const u8,
     message_count: usize,
     last_error: ?[]const u8,
@@ -37,6 +38,14 @@ pub fn draw(
         .filled = true,
         .size = .small,
     });
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textColored(label, "Agent:", .{});
+    zgui.sameLine(.{ .spacing = spacing });
+    if (agent_name) |name| {
+        zgui.textColored(value, "{s}", .{name});
+    } else {
+        zgui.textColored(label, "(none)", .{});
+    }
     zgui.sameLine(.{ .spacing = spacing });
     zgui.textColored(label, "Session:", .{});
     zgui.sameLine(.{ .spacing = spacing });

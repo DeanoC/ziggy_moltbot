@@ -16,25 +16,33 @@ pub const NodeDescribe = struct {
     updated_at_ms: i64,
 };
 
+pub const ChatSessionState = struct {
+    messages: std.ArrayList(types.ChatMessage),
+    stream_text: ?[]const u8 = null,
+    stream_run_id: ?[]const u8 = null,
+    pending_history_request_id: ?[]const u8 = null,
+    messages_loading: bool = false,
+    history_loaded: bool = false,
+
+    pub fn init() ChatSessionState {
+        return .{ .messages = std.ArrayList(types.ChatMessage).empty };
+    }
+};
+
 pub const ClientContext = struct {
     allocator: std.mem.Allocator,
     state: ClientState,
     current_session: ?[]const u8,
-    history_session: ?[]const u8,
-    stream_run_id: ?[]const u8,
     sessions: std.ArrayList(types.Session),
-    messages: std.ArrayList(types.ChatMessage),
+    session_states: std.StringHashMap(ChatSessionState),
     current_node: ?[]const u8,
     nodes: std.ArrayList(types.Node),
     node_describes: std.ArrayList(NodeDescribe),
     approvals: std.ArrayList(types.ExecApproval),
     users: std.ArrayList(types.User),
-    stream_text: ?[]const u8 = null,
     sessions_loading: bool = false,
-    messages_loading: bool = false,
     nodes_loading: bool = false,
     pending_sessions_request_id: ?[]const u8 = null,
-    pending_history_request_id: ?[]const u8 = null,
     pending_send_request_id: ?[]const u8 = null,
     pending_nodes_request_id: ?[]const u8 = null,
     pending_node_invoke_request_id: ?[]const u8 = null,
@@ -44,6 +52,7 @@ pub const ClientContext = struct {
     last_error: ?[]const u8 = null,
     operator_notice: ?[]const u8 = null,
     node_result: ?[]const u8 = null,
+    sessions_updated: bool = false,
     update_state: update_checker.UpdateState = .{},
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
@@ -51,21 +60,16 @@ pub const ClientContext = struct {
             .allocator = allocator,
             .state = .disconnected,
             .current_session = null,
-            .history_session = null,
-            .stream_run_id = null,
             .sessions = std.ArrayList(types.Session).empty,
-            .messages = std.ArrayList(types.ChatMessage).empty,
+            .session_states = std.StringHashMap(ChatSessionState).init(allocator),
             .current_node = null,
             .nodes = std.ArrayList(types.Node).empty,
             .node_describes = std.ArrayList(NodeDescribe).empty,
             .approvals = std.ArrayList(types.ExecApproval).empty,
             .users = std.ArrayList(types.User).empty,
-            .stream_text = null,
             .sessions_loading = false,
-            .messages_loading = false,
             .nodes_loading = false,
             .pending_sessions_request_id = null,
-            .pending_history_request_id = null,
             .pending_send_request_id = null,
             .pending_nodes_request_id = null,
             .pending_node_invoke_request_id = null,
@@ -75,6 +79,7 @@ pub const ClientContext = struct {
             .last_error = null,
             .operator_notice = null,
             .node_result = null,
+            .sessions_updated = false,
             .update_state = .{},
         };
     }
@@ -85,12 +90,6 @@ pub const ClientContext = struct {
             self.allocator.free(session);
             self.current_session = null;
         }
-        if (self.history_session) |session| {
-            self.allocator.free(session);
-            self.history_session = null;
-        }
-        self.clearStreamRunId();
-        self.clearStreamText();
         self.clearPendingRequests();
         self.clearError();
         self.clearOperatorNotice();
@@ -101,9 +100,8 @@ pub const ClientContext = struct {
         for (self.sessions.items) |*session| {
             freeSession(self.allocator, session);
         }
-        for (self.messages.items) |*message| {
-            freeChatMessage(self.allocator, message);
-        }
+        self.clearAllSessionStates();
+        self.session_states.deinit();
         for (self.nodes.items) |*node| {
             freeNode(self.allocator, node);
         }
@@ -111,7 +109,6 @@ pub const ClientContext = struct {
             freeUser(self.allocator, user);
         }
         self.sessions.deinit(self.allocator);
-        self.messages.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.node_describes.deinit(self.allocator);
         self.approvals.deinit(self.allocator);
@@ -132,16 +129,169 @@ pub const ClientContext = struct {
         self.sessions = std.ArrayList(types.Session).fromOwnedSlice(sessions);
     }
 
-    pub fn setMessagesOwned(self: *ClientContext, messages: []types.ChatMessage) void {
-        clearMessagesInternal(self);
-        self.messages.deinit(self.allocator);
-        self.messages = std.ArrayList(types.ChatMessage).fromOwnedSlice(messages);
-    }
-
     pub fn setNodesOwned(self: *ClientContext, nodes: []types.Node) void {
         clearNodesInternal(self);
         self.nodes.deinit(self.allocator);
         self.nodes = std.ArrayList(types.Node).fromOwnedSlice(nodes);
+    }
+
+    pub fn findSessionState(self: *ClientContext, session_key: []const u8) ?*ChatSessionState {
+        return self.session_states.getPtr(session_key);
+    }
+
+    pub fn getOrCreateSessionState(self: *ClientContext, session_key: []const u8) !*ChatSessionState {
+        if (self.session_states.getPtr(session_key)) |state| return state;
+        const key_copy = try self.allocator.dupe(u8, session_key);
+        errdefer self.allocator.free(key_copy);
+        try self.session_states.put(key_copy, ChatSessionState.init());
+        return self.session_states.getPtr(key_copy).?;
+    }
+
+    pub fn clearSessionState(self: *ClientContext, session_key: []const u8) void {
+        if (self.session_states.fetchRemove(session_key)) |entry| {
+            var state = entry.value;
+            deinitSessionState(self.allocator, &state);
+            self.allocator.free(entry.key);
+        }
+    }
+
+    pub fn clearAllSessionStates(self: *ClientContext) void {
+        var it = self.session_states.iterator();
+        while (it.next()) |entry| {
+            deinitSessionState(self.allocator, entry.value_ptr);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.session_states.clearRetainingCapacity();
+    }
+
+    pub fn setSessionMessagesOwned(self: *ClientContext, session_key: []const u8, messages: []types.ChatMessage) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        clearMessagesInState(self.allocator, state);
+        state.messages.deinit(self.allocator);
+        state.messages = std.ArrayList(types.ChatMessage).fromOwnedSlice(messages);
+        state.history_loaded = true;
+    }
+
+    pub fn upsertSessionMessage(self: *ClientContext, session_key: []const u8, msg: types.ChatMessage) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        try upsertMessageInList(self.allocator, &state.messages, msg);
+    }
+
+    pub fn upsertSessionMessageOwned(self: *ClientContext, session_key: []const u8, msg: types.ChatMessage) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        try upsertMessageOwnedInList(self.allocator, &state.messages, msg);
+    }
+
+    pub fn removeSessionMessageById(self: *ClientContext, session_key: []const u8, id: []const u8) bool {
+        if (self.session_states.getPtr(session_key)) |state| {
+            return removeMessageByIdInList(self.allocator, &state.messages, id);
+        }
+        return false;
+    }
+
+    pub fn setSessionStreamRunId(self: *ClientContext, session_key: []const u8, run_id: []const u8) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        if (state.stream_run_id) |existing| {
+            if (std.mem.eql(u8, existing, run_id)) return;
+            self.allocator.free(existing);
+        }
+        state.stream_run_id = try self.allocator.dupe(u8, run_id);
+    }
+
+    pub fn clearSessionStreamRunId(self: *ClientContext, session_key: []const u8) void {
+        if (self.session_states.getPtr(session_key)) |state| {
+            if (state.stream_run_id) |value| {
+                self.allocator.free(value);
+                state.stream_run_id = null;
+            }
+        }
+    }
+
+    pub fn setSessionStreamText(self: *ClientContext, session_key: []const u8, text: []const u8) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        if (state.stream_text) |existing| {
+            self.allocator.free(existing);
+        }
+        state.stream_text = try self.allocator.dupe(u8, text);
+    }
+
+    pub fn clearSessionStreamText(self: *ClientContext, session_key: []const u8) void {
+        if (self.session_states.getPtr(session_key)) |state| {
+            if (state.stream_text) |value| {
+                self.allocator.free(value);
+                state.stream_text = null;
+            }
+        }
+    }
+
+    pub fn clearSessionStream(self: *ClientContext, session_key: []const u8) void {
+        self.clearSessionStreamRunId(session_key);
+        self.clearSessionStreamText(session_key);
+    }
+
+    pub fn setPendingHistoryRequestForSession(self: *ClientContext, session_key: []const u8, id: []const u8) !void {
+        var state = try self.getOrCreateSessionState(session_key);
+        if (state.pending_history_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        state.pending_history_request_id = id;
+        state.messages_loading = true;
+    }
+
+    pub fn clearPendingHistoryRequestForSession(self: *ClientContext, session_key: []const u8) void {
+        if (self.session_states.getPtr(session_key)) |state| {
+            if (state.pending_history_request_id) |pending| {
+                self.allocator.free(pending);
+            }
+            state.pending_history_request_id = null;
+            state.messages_loading = false;
+        }
+    }
+
+    pub fn clearPendingHistoryById(self: *ClientContext, id: []const u8) void {
+        var it = self.session_states.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr;
+            if (state.pending_history_request_id) |pending| {
+                if (std.mem.eql(u8, pending, id)) {
+                    self.allocator.free(pending);
+                    state.pending_history_request_id = null;
+                    state.messages_loading = false;
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn findSessionForPendingHistory(self: *ClientContext, id: []const u8) ?[]const u8 {
+        var it = self.session_states.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr;
+            if (state.pending_history_request_id) |pending| {
+                if (std.mem.eql(u8, pending, id)) return entry.key_ptr.*;
+            }
+        }
+        return null;
+    }
+
+    pub fn markSessionsUpdated(self: *ClientContext) void {
+        self.sessions_updated = true;
+    }
+
+    pub fn clearSessionsUpdated(self: *ClientContext) void {
+        self.sessions_updated = false;
+    }
+
+    pub fn removeSessionByKey(self: *ClientContext, key: []const u8) bool {
+        var index: usize = 0;
+        while (index < self.sessions.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.sessions.items[index].key, key)) {
+                var removed = self.sessions.orderedRemove(index);
+                freeSession(self.allocator, &removed);
+                return true;
+            }
+        }
+        return false;
     }
 
     pub fn upsertNodeDescribeOwned(self: *ClientContext, node_id: []const u8, payload_json: []u8) !void {
@@ -199,7 +349,7 @@ pub const ClientContext = struct {
     }
 
     pub fn clearMessages(self: *ClientContext) void {
-        clearMessagesInternal(self);
+        self.clearAllSessionStates();
     }
 
     pub fn clearNodes(self: *ClientContext) void {
@@ -220,35 +370,12 @@ pub const ClientContext = struct {
         self.approvals.clearRetainingCapacity();
     }
 
-    pub fn upsertMessage(self: *ClientContext, msg: types.ChatMessage) !void {
-        for (self.messages.items, 0..) |*existing, index| {
-            if (std.mem.eql(u8, existing.id, msg.id)) {
-                freeChatMessage(self.allocator, existing);
-                self.messages.items[index] = try cloneChatMessage(self.allocator, msg);
-                return;
-            }
-        }
-        try self.messages.append(self.allocator, try cloneChatMessage(self.allocator, msg));
-    }
-
-    pub fn upsertMessageOwned(self: *ClientContext, msg: types.ChatMessage) !void {
-        for (self.messages.items, 0..) |*existing, index| {
-            if (std.mem.eql(u8, existing.id, msg.id)) {
-                freeChatMessage(self.allocator, existing);
-                self.messages.items[index] = msg;
-                return;
-            }
-        }
-        try self.messages.append(self.allocator, msg);
-    }
-
     pub fn setCurrentSession(self: *ClientContext, key: []const u8) !void {
         if (self.current_session) |session| {
             if (std.mem.eql(u8, session, key)) return;
             self.allocator.free(session);
         }
         self.current_session = try self.allocator.dupe(u8, key);
-        self.clearHistorySession();
     }
 
     pub fn setCurrentNode(self: *ClientContext, node_id: []const u8) !void {
@@ -266,52 +393,8 @@ pub const ClientContext = struct {
         }
     }
 
-    pub fn clearHistorySession(self: *ClientContext) void {
-        if (self.history_session) |session| {
-            self.allocator.free(session);
-            self.history_session = null;
-        }
-    }
-
-    pub fn setHistorySession(self: *ClientContext, key: []const u8) !void {
-        self.clearHistorySession();
-        self.history_session = try self.allocator.dupe(u8, key);
-    }
-
-    pub fn setStreamRunId(self: *ClientContext, run_id: []const u8) !void {
-        self.clearStreamRunId();
-        self.stream_run_id = try self.allocator.dupe(u8, run_id);
-    }
-
-    pub fn clearStreamRunId(self: *ClientContext) void {
-        if (self.stream_run_id) |run_id| {
-            self.allocator.free(run_id);
-            self.stream_run_id = null;
-        }
-    }
-
-    pub fn setStreamText(self: *ClientContext, text: []const u8) !void {
-        self.clearStreamText();
-        self.stream_text = try self.allocator.dupe(u8, text);
-    }
-
-    pub fn clearStreamText(self: *ClientContext) void {
-        if (self.stream_text) |text| {
-            self.allocator.free(text);
-            self.stream_text = null;
-        }
-    }
-
-    pub fn removeMessageById(self: *ClientContext, id: []const u8) bool {
-        var index: usize = 0;
-        while (index < self.messages.items.len) : (index += 1) {
-            if (std.mem.eql(u8, self.messages.items[index].id, id)) {
-                var removed = self.messages.orderedRemove(index);
-                freeChatMessage(self.allocator, &removed);
-                return true;
-            }
-        }
-        return false;
+    pub fn removeMessageById(self: *ClientContext, session_key: []const u8, id: []const u8) bool {
+        return self.removeSessionMessageById(session_key, id);
     }
 
     pub fn setPendingSessionsRequest(self: *ClientContext, id: []const u8) void {
@@ -330,20 +413,16 @@ pub const ClientContext = struct {
         self.sessions_loading = false;
     }
 
-    pub fn setPendingHistoryRequest(self: *ClientContext, id: []const u8) void {
-        if (self.pending_history_request_id) |pending| {
-            self.allocator.free(pending);
+    pub fn clearAllPendingHistoryRequests(self: *ClientContext) void {
+        var it = self.session_states.iterator();
+        while (it.next()) |entry| {
+            const state = entry.value_ptr;
+            if (state.pending_history_request_id) |pending| {
+                self.allocator.free(pending);
+            }
+            state.pending_history_request_id = null;
+            state.messages_loading = false;
         }
-        self.pending_history_request_id = id;
-        self.messages_loading = true;
-    }
-
-    pub fn clearPendingHistoryRequest(self: *ClientContext) void {
-        if (self.pending_history_request_id) |pending| {
-            self.allocator.free(pending);
-        }
-        self.pending_history_request_id = null;
-        self.messages_loading = false;
     }
 
     pub fn setPendingSendRequest(self: *ClientContext, id: []const u8) void {
@@ -428,7 +507,7 @@ pub const ClientContext = struct {
 
     pub fn clearPendingRequests(self: *ClientContext) void {
         self.clearPendingSessionsRequest();
-        self.clearPendingHistoryRequest();
+        self.clearAllPendingHistoryRequests();
         self.clearPendingSendRequest();
         self.clearPendingNodesRequest();
         self.clearPendingNodeInvokeRequest();
@@ -480,11 +559,70 @@ fn clearSessions(self: *ClientContext) void {
     self.sessions.clearRetainingCapacity();
 }
 
-fn clearMessagesInternal(self: *ClientContext) void {
-    for (self.messages.items) |*message| {
-        freeChatMessage(self.allocator, message);
+fn deinitSessionState(allocator: std.mem.Allocator, state: *ChatSessionState) void {
+    clearMessagesInState(allocator, state);
+    state.messages.deinit(allocator);
+    if (state.stream_text) |text| allocator.free(text);
+    if (state.stream_run_id) |run_id| allocator.free(run_id);
+    if (state.pending_history_request_id) |pending| allocator.free(pending);
+    state.stream_text = null;
+    state.stream_run_id = null;
+    state.pending_history_request_id = null;
+    state.messages_loading = false;
+    state.history_loaded = false;
+}
+
+fn clearMessagesInState(allocator: std.mem.Allocator, state: *ChatSessionState) void {
+    for (state.messages.items) |*message| {
+        freeChatMessage(allocator, message);
     }
-    self.messages.clearRetainingCapacity();
+    state.messages.clearRetainingCapacity();
+}
+
+fn upsertMessageInList(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(types.ChatMessage),
+    msg: types.ChatMessage,
+) !void {
+    for (list.items, 0..) |*existing, index| {
+        if (std.mem.eql(u8, existing.id, msg.id)) {
+            freeChatMessage(allocator, existing);
+            list.items[index] = try cloneChatMessage(allocator, msg);
+            return;
+        }
+    }
+    try list.append(allocator, try cloneChatMessage(allocator, msg));
+}
+
+fn upsertMessageOwnedInList(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(types.ChatMessage),
+    msg: types.ChatMessage,
+) !void {
+    for (list.items, 0..) |*existing, index| {
+        if (std.mem.eql(u8, existing.id, msg.id)) {
+            freeChatMessage(allocator, existing);
+            list.items[index] = msg;
+            return;
+        }
+    }
+    try list.append(allocator, msg);
+}
+
+fn removeMessageByIdInList(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(types.ChatMessage),
+    id: []const u8,
+) bool {
+    var index: usize = 0;
+    while (index < list.items.len) : (index += 1) {
+        if (std.mem.eql(u8, list.items[index].id, id)) {
+            var removed = list.orderedRemove(index);
+            freeChatMessage(allocator, &removed);
+            return true;
+        }
+    }
+    return false;
 }
 
 fn clearNodesInternal(self: *ClientContext) void {

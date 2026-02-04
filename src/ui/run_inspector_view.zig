@@ -18,9 +18,8 @@ pub fn draw(ctx: *state.ClientContext) void {
     const opened = zgui.beginChild("RunInspectorView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Task Progress", .subtitle = "Run Inspector" })) {
-            components.layout.header_bar.end();
-        }
+        _ = components.layout.header_bar.begin(.{ .title = "Task Progress", .subtitle = "Run Inspector" });
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
@@ -276,9 +275,10 @@ fn statusLabel(step_state: components.data.progress_step.State) []const u8 {
 
 fn collectReferenceNames(ctx: *state.ClientContext, buf: [][]const u8) [][]const u8 {
     var len: usize = 0;
-    var index: usize = ctx.messages.items.len;
+    const messages = messagesForCurrentSession(ctx);
+    var index: usize = messages.len;
     while (index > 0 and len < buf.len) : (index -= 1) {
-        const message: types.ChatMessage = ctx.messages.items[index - 1];
+        const message: types.ChatMessage = messages[index - 1];
         if (message.attachments) |attachments| {
             for (attachments) |attachment| {
                 if (len >= buf.len) break;
@@ -288,4 +288,13 @@ fn collectReferenceNames(ctx: *state.ClientContext, buf: [][]const u8) [][]const
         }
     }
     return buf[0..len];
+}
+
+fn messagesForCurrentSession(ctx: *state.ClientContext) []const types.ChatMessage {
+    if (ctx.current_session) |session_key| {
+        if (ctx.findSessionState(session_key)) |session_state| {
+            return session_state.messages.items;
+        }
+    }
+    return &[_]types.ChatMessage{};
 }

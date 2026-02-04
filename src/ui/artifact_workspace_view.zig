@@ -34,9 +34,8 @@ pub fn draw() void {
     const opened = zgui.beginChild("ArtifactWorkspaceView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Artifact Workspace", .subtitle = "Preview & Edit" })) {
-            components.layout.header_bar.end();
-        }
+        _ = components.layout.header_bar.begin(.{ .title = "Artifact Workspace", .subtitle = "Preview & Edit" });
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
         if (drawTabToggle("Preview", active_tab == .preview)) {

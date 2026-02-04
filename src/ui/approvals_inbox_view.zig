@@ -22,17 +22,18 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ApprovalsIn
     const opened = zgui.beginChild("ApprovalsInboxView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{
+        const header_open = components.layout.header_bar.begin(.{
             .title = "Approvals Needed",
             .subtitle = "Human-in-the-loop",
             .show_notifications = true,
             .notification_count = ctx.approvals.items.len,
-        })) {
+        });
+        if (header_open) {
             var count_buf: [32]u8 = undefined;
             const label = std.fmt.bufPrint(&count_buf, "{d} pending", .{ctx.approvals.items.len}) catch "0 pending";
             components.core.badge.draw(label, .{ .variant = .primary, .filled = false, .size = .small });
-            components.layout.header_bar.end();
         }
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 

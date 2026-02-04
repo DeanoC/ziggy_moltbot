@@ -24,7 +24,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
     const opened = zgui.beginChild("ProjectsView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{
+        const header_open = components.layout.header_bar.begin(.{
             .title = "Projects Overview",
             .subtitle = "ZiggyStarClaw",
             .show_traffic_lights = true,
@@ -32,7 +32,8 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
             .search_buffer = search_buf[0.. :0],
             .show_notifications = true,
             .notification_count = ctx.approvals.items.len,
-        })) {
+        });
+        if (header_open) {
             if (components.core.button.draw("Refresh", .{ .variant = .secondary, .size = .small })) {
                 action.refresh_sessions = true;
             }
@@ -40,8 +41,8 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) ProjectsVie
             if (components.core.button.draw("New Project", .{ .variant = .primary, .size = .small })) {
                 action.new_session = true;
             }
-            components.layout.header_bar.end();
         }
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
 
@@ -123,8 +124,9 @@ fn drawMainContent(
     }
 
     const session = ctx.sessions.items[selected_index.?];
+    const messages = messagesForSession(ctx, session.key);
     var previews_buf: [12]sessions_panel.AttachmentOpen = undefined;
-    const previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
+    const previews = collectAttachmentPreviews(messages, &previews_buf);
     var artifacts_buf: [6]components.composite.project_card.Artifact = undefined;
     const artifacts = previewsToArtifacts(previews, &artifacts_buf);
     theme.push(.title);
@@ -338,6 +340,13 @@ fn findSessionIndex(sessions: []const types.Session, key: []const u8) ?usize {
         if (std.mem.eql(u8, session.key, key)) return idx;
     }
     return null;
+}
+
+fn messagesForSession(ctx: *state.ClientContext, session_key: []const u8) []const types.ChatMessage {
+    if (ctx.findSessionState(session_key)) |session_state| {
+        return session_state.messages.items;
+    }
+    return &[_]types.ChatMessage{};
 }
 
 fn displayName(session: types.Session) []const u8 {

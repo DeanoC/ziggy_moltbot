@@ -29,14 +29,14 @@ pub fn draw(ctx: *state.ClientContext) void {
     const opened = zgui.beginChild("MediaGalleryView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Media Gallery", .subtitle = "Images & Previews" })) {
-            components.layout.header_bar.end();
-        }
+        _ = components.layout.header_bar.begin(.{ .title = "Media Gallery", .subtitle = "Images & Previews" });
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
         var items_buf: [64]MediaItem = undefined;
-        const items = collectImages(ctx.messages.items, &items_buf);
+        const messages = messagesForCurrentSession(ctx);
+        const items = collectImages(messages, &items_buf);
         if (items.len == 0) {
             zgui.textDisabled("No media available yet.", .{});
             zgui.endChild();
@@ -392,6 +392,15 @@ fn drawDragPreview(pos: [2]f32) void {
         "{s}",
         .{label},
     );
+}
+
+fn messagesForCurrentSession(ctx: *state.ClientContext) []const types.ChatMessage {
+    if (ctx.current_session) |session_key| {
+        if (ctx.findSessionState(session_key)) |session_state| {
+            return session_state.messages.items;
+        }
+    }
+    return &[_]types.ChatMessage{};
 }
 
 fn collectImages(messages: []const types.ChatMessage, buf: []MediaItem) []MediaItem {

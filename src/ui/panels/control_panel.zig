@@ -2,6 +2,8 @@ const std = @import("std");
 const zgui = @import("zgui");
 const state = @import("../../client/state.zig");
 const config = @import("../../client/config.zig");
+const agent_registry = @import("../../client/agent_registry.zig");
+const agents_panel = @import("agents_panel.zig");
 const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const showcase_panel = @import("showcase_panel.zig");
@@ -25,6 +27,12 @@ pub const ControlPanelAction = struct {
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
+    new_chat_agent_id: ?[]u8 = null,
+    open_session: ?agents_panel.AgentSessionAction = null,
+    set_default_session: ?agents_panel.AgentSessionAction = null,
+    delete_session: ?[]u8 = null,
+    add_agent: ?agents_panel.AddAgentAction = null,
+    remove_agent_id: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
     download_update: bool = false,
@@ -46,6 +54,7 @@ pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
     cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
     is_connected: bool,
     app_version: []const u8,
     panel: *workspace.ControlPanel,
@@ -53,6 +62,18 @@ pub fn draw(
     var action = ControlPanelAction{};
 
     if (components.core.tab_bar.begin("WorkspaceTabs")) {
+        if (components.core.tab_bar.beginItem("Agents")) {
+            panel.active_tab = .Agents;
+            const agents_action = agents_panel.draw(allocator, ctx, registry, panel);
+            action.refresh_sessions = agents_action.refresh;
+            action.new_chat_agent_id = agents_action.new_chat_agent_id;
+            action.open_session = agents_action.open_session;
+            action.set_default_session = agents_action.set_default;
+            action.delete_session = agents_action.delete_session;
+            action.add_agent = agents_action.add_agent;
+            action.remove_agent_id = agents_action.remove_agent_id;
+            components.core.tab_bar.endItem();
+        }
         if (components.core.tab_bar.beginItem("Projects")) {
             panel.active_tab = .Projects;
             const projects_action = projects_view.draw(allocator, ctx);

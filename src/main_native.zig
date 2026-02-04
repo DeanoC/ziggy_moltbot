@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
-const imgui_gl = @import("ui/imgui_wrapper.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
 const imgui_bridge = @import("ui/imgui_bridge.zig");
@@ -14,6 +12,8 @@ const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
 const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
+const agent_registry = @import("client/agent_registry.zig");
+const session_keys = @import("client/session_keys.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -27,13 +27,10 @@ const chat_proto = @import("protocol/chat.zig");
 const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
+const sdl = @import("platform/sdl3.zig").c;
 
-const use_webgpu = build_options.use_webgpu;
-const webgpu_renderer = if (use_webgpu) @import("client/renderer.zig") else struct {
-    pub const Renderer = struct {};
-    pub const depth_format_undefined: u32 = 0;
-};
-const imgui_wgpu = if (use_webgpu) @import("ui/imgui_wrapper_wgpu.zig") else struct {};
+const webgpu_renderer = @import("client/renderer.zig");
+const imgui_wgpu = @import("ui/imgui_wrapper_wgpu.zig");
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
@@ -41,32 +38,40 @@ const icon = @cImport({
 
 const startup_log_path = "ziggystarclaw_startup.log";
 
-extern fn zgui_opengl_load() c_int;
-extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
-extern fn zgui_glClearColor(r: f32, g: f32, b: f32, a: f32) void;
-extern fn zgui_glClear(mask: c_uint) void;
-
-fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) void {
-    if (desc) |d| {
-        logger.err("GLFW error {d}: {s}", .{ @as(i32, @intCast(code)), d });
-    } else {
-        logger.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
-    }
-}
-
-fn setWindowIcon(window: *glfw.Window) void {
+fn setWindowIcon(window: *sdl.SDL_Window) void {
     const icon_png = @embedFile("icons/ZiggyStarClaw_Icon.png");
     var width: c_int = 0;
     var height: c_int = 0;
     const pixels = icon.zsc_load_icon_rgba_from_memory(icon_png.ptr, @intCast(icon_png.len), &width, &height);
     if (pixels == null or width <= 0 or height <= 0) return;
     defer icon.zsc_free_icon(pixels);
-    const image = glfw.Image{
-        .width = width,
-        .height = height,
-        .pixels = @ptrCast(pixels),
-    };
-    glfw.setWindowIcon(window, &.{image});
+    const pitch: c_int = width * 4;
+    const surface = sdl.SDL_CreateSurfaceFrom(width, height, sdl.SDL_PIXELFORMAT_RGBA32, pixels, pitch);
+    if (surface == null) return;
+    defer sdl.SDL_DestroySurface(surface);
+    _ = sdl.SDL_SetWindowIcon(window, surface);
+}
+
+fn logSurfaceBackend(window: *sdl.SDL_Window) void {
+    const props = sdl.SDL_GetWindowProperties(window);
+    const win32 = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
+    const cocoa = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
+    const wayland_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, null);
+    const wayland_surface = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, null);
+    const x11_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_X11_DISPLAY_POINTER, null);
+    const x11_window = sdl.SDL_GetNumberProperty(props, sdl.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+
+    var backend: []const u8 = "unknown";
+    if (win32 != null) {
+        backend = "win32";
+    } else if (cocoa != null) {
+        backend = "cocoa";
+    } else if (wayland_display != null or wayland_surface != null) {
+        backend = "wayland";
+    } else if (x11_display != null or x11_window != 0) {
+        backend = "x11";
+    }
+    logger.info("WebGPU surface backend: {s}", .{backend});
 }
 
 fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
@@ -291,12 +296,8 @@ fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     }
 }
 
-fn makeNewSessionKey(allocator: std.mem.Allocator) ![]u8 {
-    // The gateway session store uses keys like: agent:<agentId>:<label>.
-    // We generate a unique label.
-    const suffix = try requests.makeRequestId(allocator);
-    defer allocator.free(suffix);
-    return try std.fmt.allocPrint(allocator, "agent:main:{s}", .{suffix});
+fn makeNewSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
+    return try session_keys.buildChatSessionKey(allocator, agent_id);
 }
 
 fn sendSessionsResetRequest(
@@ -320,6 +321,15 @@ fn sendSessionsResetRequest(
         logger.err("Failed to send sessions.reset: {}", .{err});
         return;
     };
+}
+
+fn sendSessionsDeleteRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    session_key: []const u8,
+) void {
+    sendSessionsResetRequest(allocator, ctx, ws_client, session_key);
 }
 
 fn sendSessionsListRequest(
@@ -388,7 +398,9 @@ fn sendChatHistoryRequest(
 ) void {
     if (!ws_client.is_connected) return;
     if (ctx.state != .connected) return;
-    if (ctx.pending_history_request_id != null) return;
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        if (state_ptr.pending_history_request_id != null) return;
+    }
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
@@ -409,7 +421,9 @@ fn sendChatHistoryRequest(
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingHistoryRequest(request.id);
+    ctx.setPendingHistoryRequestForSession(session_key, request.id) catch {
+        allocator.free(request.id);
+    };
 }
 
 fn sendNodeInvokeRequest(
@@ -591,7 +605,7 @@ fn sendChatMessageRequest(
         logger.warn("Failed to build user message: {}", .{err});
         return;
     };
-    ctx.upsertMessageOwned(msg) catch |err| {
+    ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
     };
@@ -604,23 +618,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-fn pickSessionForSend(ctx: *client_state.ClientContext) ?struct { key: []const u8, should_set: bool } {
-    if (ctx.current_session) |session| {
-        return .{ .key = session, .should_set = false };
-    }
-    if (ctx.sessions.items.len == 0) return null;
-
-    var best_index: usize = 0;
-    var best_updated: i64 = -1;
-    for (ctx.sessions.items, 0..) |session, index| {
-        const updated = session.updated_at orelse 0;
-        if (updated > best_updated) {
-            best_updated = updated;
-            best_index = index;
-        }
-    }
-    return .{ .key = ctx.sessions.items[best_index].key, .should_set = true };
-}
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
@@ -656,13 +653,152 @@ fn buildUserMessage(
     };
 }
 
-pub fn main() void {
-    mainImpl() catch |err| {
-        fatalExit("Startup failed: {}", .{err});
-    };
+fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u8) []const u8 {
+    if (registry.find(agent_id)) |agent| return agent.display_name;
+    return agent_id;
 }
 
-fn mainImpl() !void {
+fn isNotificationSession(session: types.Session) bool {
+    const kind = session.kind orelse return false;
+    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+}
+
+fn syncRegistryDefaults(
+    allocator: std.mem.Allocator,
+    registry: *agent_registry.AgentRegistry,
+    sessions: []const types.Session,
+) bool {
+    var changed = false;
+    for (registry.agents.items) |*agent| {
+        var default_valid = false;
+        if (agent.default_session_key) |key| {
+            for (sessions) |session| {
+                if (!std.mem.eql(u8, session.key, key)) continue;
+                if (isNotificationSession(session)) break;
+                const parts = session_keys.parse(session.key) orelse break;
+                if (std.mem.eql(u8, parts.agent_id, agent.id)) {
+                    default_valid = true;
+                }
+                break;
+            }
+        }
+
+        if (!default_valid) {
+            var best_key: ?[]const u8 = null;
+            var best_updated: i64 = -1;
+            for (sessions) |session| {
+                if (isNotificationSession(session)) continue;
+                const parts = session_keys.parse(session.key) orelse continue;
+                if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
+                const updated = session.updated_at orelse 0;
+                if (updated > best_updated) {
+                    best_updated = updated;
+                    best_key = session.key;
+                }
+            }
+            if (best_key) |key| {
+                if (agent.default_session_key) |existing| {
+                    allocator.free(existing);
+                }
+                agent.default_session_key = allocator.dupe(u8, key) catch agent.default_session_key;
+                changed = true;
+            } else if (agent.default_session_key != null) {
+                allocator.free(agent.default_session_key.?);
+                agent.default_session_key = null;
+                changed = true;
+            }
+        }
+    }
+    return changed;
+}
+
+fn ensureChatPanelsReady(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    registry: *agent_registry.AgentRegistry,
+    manager: *panel_manager.PanelManager,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) return;
+
+    var index: usize = 0;
+    while (index < manager.workspace.panels.items.len) : (index += 1) {
+        var panel = &manager.workspace.panels.items[index];
+        if (panel.kind != .Chat) continue;
+        const agent_id = panel.data.Chat.agent_id;
+        var session_key = panel.data.Chat.session_key;
+        if (session_key == null and agent_id != null) {
+            if (registry.find(agent_id.?)) |agent| {
+                if (agent.default_session_key) |default_key| {
+                    panel.data.Chat.session_key = allocator.dupe(u8, default_key) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    manager.workspace.markDirty();
+                }
+            }
+        }
+        if (session_key == null) {
+            if (ctx.current_session) |current| {
+                var matches_agent = true;
+                if (agent_id) |id| {
+                    if (session_keys.parse(current)) |parts| {
+                        matches_agent = std.mem.eql(u8, parts.agent_id, id);
+                    } else {
+                        matches_agent = std.mem.eql(u8, id, "main");
+                    }
+                }
+                if (matches_agent) {
+                    panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    manager.workspace.markDirty();
+                }
+            }
+        }
+        if (session_key) |key| {
+            if (ctx.findSessionState(key)) |state_ptr| {
+                if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
+                    sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                }
+            } else {
+                sendChatHistoryRequest(allocator, ctx, ws_client, key);
+            }
+        }
+    }
+}
+
+fn closeAgentChatPanels(manager: *panel_manager.PanelManager, agent_id: []const u8) void {
+    var index: usize = 0;
+    while (index < manager.workspace.panels.items.len) {
+        const panel = &manager.workspace.panels.items[index];
+        if (panel.kind == .Chat) {
+            if (panel.data.Chat.agent_id) |existing| {
+                if (std.mem.eql(u8, existing, agent_id)) {
+                    _ = manager.closePanel(panel.id);
+                    continue;
+                }
+            }
+        }
+        index += 1;
+    }
+}
+
+fn clearChatPanelsForSession(
+    manager: *panel_manager.PanelManager,
+    allocator: std.mem.Allocator,
+    session_key: []const u8,
+) void {
+    for (manager.workspace.panels.items) |*panel| {
+        if (panel.kind != .Chat) continue;
+        if (panel.data.Chat.session_key) |existing| {
+            if (std.mem.eql(u8, existing, session_key)) {
+                allocator.free(existing);
+                panel.data.Chat.session_key = null;
+                manager.workspace.markDirty();
+            }
+        }
+    }
+}
+
+pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
 
@@ -671,15 +807,13 @@ fn mainImpl() !void {
     try initLogging(allocator);
     defer logger.deinit();
 
-    var instance_lock = acquireSingleInstance(allocator) catch |err| switch (err) {
-        error.AlreadyRunning => fatalExit("ZiggyStarClaw is already running.", .{}),
-        else => fatalExit("Failed to acquire single-instance lock: {}", .{err}),
-    };
-    defer instance_lock.close();
-
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
-    theme.setMode(theme.modeFromLabel(cfg.ui_theme));
+    if (cfg.ui_theme) |label| {
+        theme.setMode(theme.modeFromLabel(label));
+    }
+    var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
+    defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
@@ -694,21 +828,12 @@ fn mainImpl() !void {
     ws_client.setReadTimeout(15_000);
     defer ws_client.deinit();
 
-    _ = glfw.setErrorCallback(glfwErrorCallback);
-    try glfw.init();
-    defer glfw.terminate();
-
-    if (use_webgpu) {
-        glfw.windowHint(.client_api, .no_api);
-    } else {
-        glfw.windowHint(.client_api, .opengl_api);
-        glfw.windowHint(.context_version_major, 3);
-        glfw.windowHint(.context_version_minor, 3);
-        glfw.windowHint(.opengl_profile, .opengl_core_profile);
-        if (builtin.os.tag == .macos) {
-            glfw.windowHint(.opengl_forward_compat, true);
-        }
+    if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMEPAD)) {
+        logger.err("SDL init failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlInitFailed;
     }
+    defer sdl.SDL_Quit();
+    _ = sdl.SDL_SetHint("SDL_IME_SHOW_UI", "1");
 
     var window_width: c_int = 1280;
     var window_height: c_int = 720;
@@ -719,74 +844,48 @@ fn mainImpl() !void {
         if (h > 200) window_height = @intCast(h);
     }
 
-    const window = try glfw.Window.create(window_width, window_height, "ZiggyStarClaw", null, null);
-    defer window.destroy();
+    const window_flags: sdl.SDL_WindowFlags = @intCast(
+        sdl.SDL_WINDOW_RESIZABLE | sdl.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    );
+    const window = sdl.SDL_CreateWindow("ZiggyStarClaw", window_width, window_height, window_flags) orelse {
+        logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlWindowCreateFailed;
+    };
+    defer sdl.SDL_DestroyWindow(window);
     setWindowIcon(window);
     if (app_state_state.window_maximized) {
-        window.maximize();
+        _ = sdl.SDL_MaximizeWindow(window);
     } else if (app_state_state.window_pos_x != null and app_state_state.window_pos_y != null) {
-        window.setPos(
+        _ = sdl.SDL_SetWindowPosition(
+            window,
             @intCast(app_state_state.window_pos_x.?),
             @intCast(app_state_state.window_pos_y.?),
         );
     }
 
-    var renderer: ?webgpu_renderer.Renderer = null;
-    if (use_webgpu) {
-        renderer = try webgpu_renderer.Renderer.init(allocator, window);
+    var renderer = try webgpu_renderer.Renderer.init(allocator, window);
+    logSurfaceBackend(window);
 
-        imgui_wgpu.init(
-            allocator,
-            window,
-            @ptrCast(renderer.?.gctx.device),
-            @intFromEnum(renderer.?.gctx.swapchain_descriptor.format),
-            webgpu_renderer.depth_format_undefined,
-        );
-        const scale = window.getContentScale();
-        const dpi_scale: f32 = @max(scale[0], scale[1]);
-        if (dpi_scale > 0.0) {
-            imgui_wgpu.applyDpiScale(dpi_scale);
-        }
-    } else {
-        glfw.makeContextCurrent(window);
-        glfw.swapInterval(1);
-        if (glfw.getCurrentContext() == null) {
-            logger.err(
-                "OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.",
-                .{},
-            );
-            return error.OpenGLContextUnavailable;
-        }
-        const missing = zgui_opengl_load();
-        if (missing != 0) {
-            logger.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
-            return error.OpenGLLoaderFailed;
-        }
-
-        imgui_gl.init(allocator, window);
-        const scale = window.getContentScale();
-        const dpi_scale: f32 = @max(scale[0], scale[1]);
-        if (dpi_scale > 0.0) {
-            imgui_gl.applyDpiScale(dpi_scale);
-        }
+    imgui_wgpu.init(
+        allocator,
+        window,
+        @ptrCast(renderer.gctx.device),
+        @intFromEnum(renderer.gctx.swapchain_descriptor.format),
+        webgpu_renderer.depth_format_undefined,
+    );
+    const dpi_scale: f32 = sdl.SDL_GetWindowDisplayScale(window);
+    if (dpi_scale > 0.0) {
+        imgui_wgpu.applyDpiScale(dpi_scale);
     }
     image_cache.init(allocator);
     attachment_cache.init(allocator);
-    if (use_webgpu) {
-        image_cache.setEnabled(false);
-    }
+    image_cache.setEnabled(false);
     defer image_cache.deinit();
     defer attachment_cache.deinit();
     defer {
-        if (use_webgpu) {
-            imgui_wgpu.deinit();
-        } else {
-            imgui_gl.deinit();
-        }
+        imgui_wgpu.deinit();
     }
-    if (use_webgpu) {
-        defer if (renderer) |*active| active.deinit();
-    }
+    defer renderer.deinit();
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
@@ -819,16 +918,21 @@ fn mainImpl() !void {
     var next_ping_at_ms: i64 = 0;
     defer {
         app_state_state.last_connected = auto_connect_enabled;
-        const iconified = window.getAttribute(.iconified);
+        const flags = sdl.SDL_GetWindowFlags(window);
+        const iconified = (flags & sdl.SDL_WINDOW_MINIMIZED) != 0;
         if (!iconified) {
-            const size = window.getSize();
-            const pos = window.getPos();
-            app_state_state.window_width = size[0];
-            app_state_state.window_height = size[1];
-            app_state_state.window_pos_x = pos[0];
-            app_state_state.window_pos_y = pos[1];
+            var size_w: c_int = 0;
+            var size_h: c_int = 0;
+            _ = sdl.SDL_GetWindowSize(window, &size_w, &size_h);
+            var pos_x: c_int = 0;
+            var pos_y: c_int = 0;
+            _ = sdl.SDL_GetWindowPosition(window, &pos_x, &pos_y);
+            app_state_state.window_width = size_w;
+            app_state_state.window_height = size_h;
+            app_state_state.window_pos_x = pos_x;
+            app_state_state.window_pos_y = pos_y;
         }
-        app_state_state.window_maximized = window.getAttribute(.maximized);
+        app_state_state.window_maximized = (flags & sdl.SDL_WINDOW_MAXIMIZED) != 0;
         app_state.save(allocator, "ziggystarclaw_state.json", app_state_state) catch |err| {
             logger.warn("Failed to save app state: {}", .{err});
         };
@@ -861,8 +965,18 @@ fn mainImpl() !void {
         auto_connect_pending = false;
     }
 
-    while (!window.shouldClose()) {
-        glfw.pollEvents();
+    var should_close = false;
+    while (!should_close) {
+        var event: sdl.SDL_Event = undefined;
+        while (sdl.SDL_PollEvent(&event)) {
+            _ = imgui_wgpu.processEvent(&event);
+            switch (event.type) {
+                sdl.SDL_EVENT_QUIT,
+                sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                => should_close = true,
+                else => {},
+            }
+        }
 
         if (read_thread != null and !read_loop.running.load(.monotonic)) {
             stopReadThread(&read_loop, &read_thread);
@@ -876,20 +990,11 @@ fn mainImpl() !void {
             }
         }
 
-        const fb = window.getFramebufferSize();
-        const fb_width: u32 = if (fb[0] > 0) @intCast(fb[0]) else 1;
-        const fb_height: u32 = if (fb[1] > 0) @intCast(fb[1]) else 1;
-
-        var win_width: u32 = 0;
-        var win_height: u32 = 0;
-        if (!use_webgpu) {
-            const win = window.getSize();
-            win_width = if (win[0] > 0) @intCast(win[0]) else 1;
-            win_height = if (win[1] > 0) @intCast(win[1]) else 1;
-            zgui_glViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            zgui_glClearColor(0.08, 0.08, 0.1, 1.0);
-            zgui_glClear(0x00004000);
-        }
+        var fb_w: c_int = 0;
+        var fb_h: c_int = 0;
+        _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
+        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
 
         var drained = message_queue.drain();
         defer {
@@ -923,15 +1028,13 @@ fn mainImpl() !void {
             if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
                 sendNodesListRequest(allocator, &ctx, &ws_client);
             }
-            if (ctx.current_session) |session_key| {
-                if (ctx.pending_history_request_id == null) {
-                    const needs_history = ctx.history_session == null or
-                        !std.mem.eql(u8, ctx.history_session.?, session_key);
-                    if (needs_history) {
-                        sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
-                    }
-                }
+        }
+
+        if (ctx.sessions_updated) {
+            if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
+            ctx.clearSessionsUpdated();
         }
 
         if (ws_client.is_connected and ctx.state == .connected) {
@@ -946,15 +1049,12 @@ fn mainImpl() !void {
             next_ping_at_ms = 0;
         }
 
-        if (use_webgpu) {
-            renderer.?.beginFrame(fb_width, fb_height);
-        } else {
-            imgui_gl.beginFrame(win_width, win_height, fb_width, fb_height);
-        }
+        renderer.beginFrame(fb_width, fb_height);
         const ui_action = ui.draw(
             allocator,
             &ctx,
             &cfg,
+            &agents,
             ws_client.is_connected,
             build_options.app_version,
             &manager,
@@ -967,6 +1067,9 @@ fn mainImpl() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
+            if (cfg.ui_theme) |label| {
+                theme.setMode(theme.modeFromLabel(label));
+            }
         }
 
         if (ui_action.save_config) {
@@ -1022,7 +1125,7 @@ fn mainImpl() !void {
             const snapshot = ctx.update_state.snapshot();
             if (snapshot.download_path) |path| {
                 if (installUpdate(allocator, path)) {
-                    glfw.setWindowShouldClose(window, true);
+                    should_close = true;
                 }
             }
         }
@@ -1032,6 +1135,9 @@ fn mainImpl() !void {
                 logger.err("Failed to reset config: {}", .{err});
                 return;
             };
+            if (cfg.ui_theme) |label| {
+                theme.setMode(theme.modeFromLabel(label));
+            }
             _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
             app_state_state.last_connected = false;
             auto_connect_enabled = false;
@@ -1077,8 +1183,7 @@ fn mainImpl() !void {
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
             ctx.clearPendingRequests();
-            ctx.clearStreamText();
-            ctx.clearStreamRunId();
+            ctx.clearAllSessionStates();
             ctx.clearNodes();
             ctx.clearCurrentNode();
             ctx.clearApprovals();
@@ -1094,16 +1199,36 @@ fn mainImpl() !void {
 
         if (ui_action.new_session) {
             if (ws_client.is_connected) {
-                const key = makeNewSessionKey(allocator) catch null;
+                const key = makeNewSessionKey(allocator, "main") catch null;
                 if (key) |session_key| {
                     defer allocator.free(session_key);
                     sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
-                    // Switch immediately; history will be empty initially.
+                    if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                    }
+                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                    ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
-                    ctx.clearMessages();
-                    ctx.clearStreamText();
-                    ctx.clearStreamRunId();
-                    ctx.clearPendingHistoryRequest();
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendSessionsListRequest(allocator, &ctx, &ws_client);
+                }
+            }
+        }
+
+        if (ui_action.new_chat_agent_id) |agent_id| {
+            defer allocator.free(agent_id);
+            if (ws_client.is_connected) {
+                const key = makeNewSessionKey(allocator, agent_id) catch null;
+                if (key) |session_key| {
+                    defer allocator.free(session_key);
+                    sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                    if (agents.setDefaultSession(allocator, agent_id, session_key) catch false) {
+                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                    }
+
+                    _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
+                    ctx.clearSessionState(session_key);
+                    ctx.setCurrentSession(session_key) catch {};
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
@@ -1114,18 +1239,87 @@ fn mainImpl() !void {
             sendNodesListRequest(allocator, &ctx, &ws_client);
         }
 
+        if (ui_action.open_session) |open| {
+            defer allocator.free(open.agent_id);
+            defer allocator.free(open.session_key);
+            ctx.setCurrentSession(open.session_key) catch |err| {
+                logger.warn("Failed to set session: {}", .{err});
+            };
+            _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
+            if (ws_client.is_connected) {
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+            }
+        }
+
         if (ui_action.select_session) |session_key| {
             defer allocator.free(session_key);
             ctx.setCurrentSession(session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
-            ctx.clearMessages();
-            ctx.clearStreamText();
-            ctx.clearStreamRunId();
-            ctx.clearPendingHistoryRequest();
+            if (session_keys.parse(session_key)) |parts| {
+                _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+            } else {
+                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+            }
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
             }
+        }
+
+        if (ui_action.set_default_session) |choice| {
+            defer allocator.free(choice.agent_id);
+            defer allocator.free(choice.session_key);
+            if (agents.setDefaultSession(allocator, choice.agent_id, choice.session_key) catch false) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+            }
+        }
+
+        if (ui_action.delete_session) |session_key| {
+            defer allocator.free(session_key);
+            sendSessionsDeleteRequest(allocator, &ctx, &ws_client, session_key);
+            _ = ctx.removeSessionByKey(session_key);
+            ctx.clearSessionState(session_key);
+            clearChatPanelsForSession(&manager, allocator, session_key);
+            if (agents.clearDefaultIfMatches(allocator, session_key)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+            }
+            sendSessionsListRequest(allocator, &ctx, &ws_client);
+        }
+
+        if (ui_action.add_agent) |agent_action| {
+            const owned = agent_action;
+            if (agents.addOwned(allocator, .{
+                .id = owned.id,
+                .display_name = owned.display_name,
+                .icon = owned.icon,
+                .soul_path = null,
+                .config_path = null,
+                .personality_path = null,
+                .default_session_key = null,
+            })) |_| {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+            } else |err| {
+                logger.warn("Failed to add agent: {}", .{err});
+                allocator.free(owned.id);
+                allocator.free(owned.display_name);
+                allocator.free(owned.icon);
+            }
+        }
+
+        if (ui_action.remove_agent_id) |agent_id| {
+            defer allocator.free(agent_id);
+            if (agents.remove(allocator, agent_id)) {
+                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                closeAgentChatPanels(&manager, agent_id);
+            }
+        }
+
+        if (ui_action.focus_session) |session_key| {
+            defer allocator.free(session_key);
+            ctx.setCurrentSession(session_key) catch |err| {
+                logger.warn("Failed to set session: {}", .{err});
+            };
         }
 
         if (ui_action.select_node) |node_id| {
@@ -1174,20 +1368,14 @@ fn mainImpl() !void {
             );
         }
 
-        if (ui_action.send_message) |message| {
-            defer allocator.free(message);
-            const resolved = pickSessionForSend(&ctx);
-            if (resolved) |choice| {
-                if (choice.should_set) {
-                    ctx.setCurrentSession(choice.key) catch |err| {
-                        logger.warn("Failed to set session: {}", .{err});
-                    };
-                }
-                sendChatMessageRequest(allocator, &ctx, &ws_client, choice.key, message);
-            } else {
-                sendChatMessageRequest(allocator, &ctx, &ws_client, "main", message);
-            }
+        if (ui_action.send_message) |payload| {
+            defer allocator.free(payload.session_key);
+            defer allocator.free(payload.message);
+            ctx.setCurrentSession(payload.session_key) catch {};
+            sendChatMessageRequest(allocator, &ctx, &ws_client, payload.session_key, payload.message);
         }
+
+        ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &manager);
 
         if (ui_action.clear_node_result) {
             ctx.clearNodeResult();
@@ -1231,12 +1419,7 @@ fn mainImpl() !void {
             }
         }
 
-        if (use_webgpu) {
-            renderer.?.render();
-        } else {
-            imgui_gl.endFrame();
-            window.swapBuffers();
-        }
+        renderer.render();
     }
 }
 
@@ -1270,36 +1453,10 @@ fn initLogging(allocator: std.mem.Allocator) !void {
             logger.warn("Failed to open log file: {}", .{err});
         };
     } else {
-        logger.initFile(startup_log_path) catch {};
+        logger.initFile(startup_log_path) catch |err| {
+            logger.warn("Failed to open startup log: {}", .{err});
+        };
     }
-}
-
-fn acquireSingleInstance(allocator: std.mem.Allocator) !std.fs.File {
-    const app_dir = try std.fs.getAppDataDir(allocator, "ZiggyStarClaw");
-    defer allocator.free(app_dir);
-    try std.fs.cwd().makePath(app_dir);
-    const lock_path = try std.fs.path.join(allocator, &.{ app_dir, "client.lock" });
-    defer allocator.free(lock_path);
-
-    return std.fs.cwd().createFile(lock_path, .{
-        .read = true,
-        .truncate = false,
-        .lock = .exclusive,
-        .lock_nonblocking = true,
-    }) catch |err| switch (err) {
-        error.WouldBlock, error.AccessDenied => error.AlreadyRunning,
-        else => err,
-    };
-}
-
-fn fatalExit(comptime fmt: []const u8, args: anytype) noreturn {
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch "Startup failed.";
-    logger.err("{s}", .{msg});
-    var stderr_buf: [520]u8 = undefined;
-    const line = std.fmt.bufPrint(&stderr_buf, "{s}\n", .{msg}) catch msg;
-    _ = std.fs.File.stderr().writeAll(line) catch {};
-    std.process.exit(1);
 }
 
 fn parseLogLevel(value: []const u8) ?logger.Level {

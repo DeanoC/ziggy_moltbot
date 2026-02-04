@@ -14,12 +14,13 @@ pub fn draw(ctx: *state.ClientContext) void {
     const opened = zgui.beginChild("AgentsView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{ .title = "Active Agents", .subtitle = "Live status" })) {
+        const header_open = components.layout.header_bar.begin(.{ .title = "Active Agents", .subtitle = "Live status" });
+        if (header_open) {
             var total_buf: [32]u8 = undefined;
             const total_label = std.fmt.bufPrint(&total_buf, "{d} agents", .{ctx.nodes.items.len}) catch "0 agents";
             components.core.badge.draw(total_label, .{ .variant = .primary, .filled = false, .size = .small });
-            components.layout.header_bar.end();
         }
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 

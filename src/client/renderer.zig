@@ -1,7 +1,7 @@
 const std = @import("std");
 const zgpu = @import("zgpu");
-const zglfw = @import("zglfw");
 const imgui = @import("../ui/imgui_wrapper_wgpu.zig");
+const sdl = @import("../platform/sdl3.zig").c;
 
 pub const depth_format_undefined: u32 = @intFromEnum(zgpu.wgpu.TextureFormat.undef);
 
@@ -9,17 +9,18 @@ pub const Renderer = struct {
     allocator: std.mem.Allocator,
     gctx: *zgpu.GraphicsContext,
 
-    pub fn init(allocator: std.mem.Allocator, window: *zglfw.Window) !Renderer {
+    pub fn init(allocator: std.mem.Allocator, window: *sdl.SDL_Window) !Renderer {
+        cachePlatformHandles(window);
         const window_provider = zgpu.WindowProvider{
             .window = window,
-            .fn_getTime = @ptrCast(&zglfw.getTime),
-            .fn_getFramebufferSize = @ptrCast(&zglfw.Window.getFramebufferSize),
-            .fn_getWin32Window = @ptrCast(&zglfw.getWin32Window),
-            .fn_getX11Display = @ptrCast(&zglfw.getX11Display),
-            .fn_getX11Window = @ptrCast(&zglfw.getX11Window),
-            .fn_getWaylandDisplay = @ptrCast(&zglfw.getWaylandDisplay),
-            .fn_getWaylandSurface = @ptrCast(&zglfw.getWaylandWindow),
-            .fn_getCocoaWindow = @ptrCast(&zglfw.getCocoaWindow),
+            .fn_getTime = &sdlGetTime,
+            .fn_getFramebufferSize = &sdlGetFramebufferSize,
+            .fn_getWin32Window = &sdlGetWin32Window,
+            .fn_getX11Display = &sdlGetX11Display,
+            .fn_getX11Window = &sdlGetX11Window,
+            .fn_getWaylandDisplay = if (g_wayland_display != null) &sdlGetWaylandDisplay else null,
+            .fn_getWaylandSurface = if (g_wayland_display != null) &sdlGetWaylandSurface else null,
+            .fn_getCocoaWindow = &sdlGetCocoaWindow,
         };
 
         const gctx = try zgpu.GraphicsContext.create(allocator, window_provider, .{});
@@ -68,3 +69,55 @@ pub const Renderer = struct {
         _ = gctx.present();
     }
 };
+
+var g_x11_display: ?*anyopaque = null;
+var g_wayland_display: ?*anyopaque = null;
+
+fn cachePlatformHandles(window: *sdl.SDL_Window) void {
+    const props = sdl.SDL_GetWindowProperties(window);
+    g_x11_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_X11_DISPLAY_POINTER, null);
+    g_wayland_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, null);
+}
+
+fn sdlGetTime() f64 {
+    const ticks = sdl.SDL_GetTicks();
+    return @as(f64, @floatFromInt(ticks)) / 1000.0;
+}
+
+fn sdlGetFramebufferSize(window_ptr: *const anyopaque) [2]u32 {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(@constCast(@ptrCast(window_ptr)), &w, &h);
+    const w_u32: u32 = @intCast(if (w > 0) w else 1);
+    const h_u32: u32 = @intCast(if (h > 0) h else 1);
+    return .{ w_u32, h_u32 };
+}
+
+fn sdlGetWin32Window(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
+    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null) orelse unreachable;
+}
+
+fn sdlGetX11Display() callconv(.c) *anyopaque {
+    return g_x11_display orelse unreachable;
+}
+
+fn sdlGetX11Window(window_ptr: *const anyopaque) callconv(.c) u32 {
+    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const value = sdl.SDL_GetNumberProperty(props, sdl.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+    return @intCast(value);
+}
+
+fn sdlGetWaylandDisplay() callconv(.c) *anyopaque {
+    return g_wayland_display orelse unreachable;
+}
+
+fn sdlGetWaylandSurface(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
+    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, null) orelse unreachable;
+}
+
+fn sdlGetCocoaWindow(window_ptr: *const anyopaque) callconv(.c) ?*anyopaque {
+    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
+}

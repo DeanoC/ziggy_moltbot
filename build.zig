@@ -26,10 +26,8 @@ pub fn build(b: *std.Build) void {
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
     const app_version = readAppVersion(b);
-    const use_webgpu = b.option(bool, "webgpu", "Enable WebGPU renderer") orelse false;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
-    build_options.addOption(bool, "use_webgpu", use_webgpu);
     const imgui_cpp_flags = &.{
         "-std=c++17",
         "-DIMGUI_ENABLE_FREETYPE",
@@ -49,30 +47,13 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("websocket", ws_native);
 
 
-    const zgui_pkg = blk: {
-        if (use_webgpu) {
-            break :blk b.dependency("zgui", .{
-                .target = target,
-                .optimize = optimize,
-                .backend = .glfw_wgpu,
-                .use_wchar32 = true,
-            });
-        } else {
-            break :blk b.dependency("zgui", .{
-                .target = target,
-                .optimize = optimize,
-                .backend = .glfw_opengl3,
-                .use_wchar32 = true,
-            });
-        }
-    };
-    const zgui_native = zgui_pkg.module("root");
-
-    const zglfw_pkg = b.dependency("zglfw", .{
+    const zgui_pkg = b.dependency("zgui", .{
         .target = target,
         .optimize = optimize,
+        .backend = .no_backend,
+        .use_wchar32 = true,
     });
-    const zglfw_native = zglfw_pkg.module("root");
+    const zgui_native = zgui_pkg.module("root");
 
     if (!build_wasm) {
         const native_module = b.createModule(.{
@@ -82,7 +63,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "zgui", .module = zgui_native },
-                .{ .name = "zglfw", .module = zglfw_native },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -93,9 +73,15 @@ pub fn build(b: *std.Build) void {
         });
         native_exe.root_module.addOptions("build_options", build_options);
         const freetype_native = addFreetype(b, target, optimize);
+        const sdl3_pkg = b.dependency("sdl3", .{
+            .target = target,
+            .optimize = optimize,
+        });
 
         native_exe.root_module.addIncludePath(b.path("src"));
         native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui"));
+        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
+        native_exe.root_module.addIncludePath(sdl3_pkg.path("include"));
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
             .flags = &.{},
@@ -118,62 +104,65 @@ pub fn build(b: *std.Build) void {
             .file = zgui_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
             .flags = imgui_cpp_flags,
         });
-        if (use_webgpu) {
-            const zgpu_pkg = b.dependency("zgpu", .{
-                .target = target,
-                .optimize = optimize,
-            });
-            native_module.addImport("zgpu", zgpu_pkg.module("root"));
-            if (target.result.os.tag != .emscripten) {
-                zgui_imgui.root_module.addCMacro("IMGUI_IMPL_WEBGPU_BACKEND_DAWN", "");
-            }
-            native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
-            native_exe.root_module.addCSourceFile(.{
-                .file = zgpu_pkg.path("src/dawn.cpp"),
-                .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },
-            });
-            native_exe.root_module.addCSourceFile(.{
-                .file = zgpu_pkg.path("src/dawn_proc.c"),
-                .flags = &.{"-fno-sanitize=undefined"},
-            });
-            if (target.result.abi != .msvc) {
-                native_exe.root_module.link_libcpp = true;
-            }
-            @import("zgpu").addLibraryPathsTo(native_exe);
-            native_exe.root_module.linkSystemLibrary("dawn", .{});
-            switch (target.result.os.tag) {
-                .windows => {
-                    native_exe.root_module.linkSystemLibrary("ole32", .{});
-                    native_exe.root_module.linkSystemLibrary("dxguid", .{});
-                },
-                .macos => {
-                    native_exe.root_module.linkSystemLibrary("objc", .{});
-                    native_exe.root_module.linkFramework("Metal", .{});
-                    native_exe.root_module.linkFramework("CoreGraphics", .{});
-                    native_exe.root_module.linkFramework("Foundation", .{});
-                    native_exe.root_module.linkFramework("IOKit", .{});
-                    native_exe.root_module.linkFramework("IOSurface", .{});
-                    native_exe.root_module.linkFramework("QuartzCore", .{});
-                },
-                else => {},
-            }
-        } else {
-            native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
-            native_exe.root_module.addCSourceFile(.{
-                .file = b.path("src/opengl_loader.c"),
-                .flags = &.{},
-            });
-            switch (target.result.os.tag) {
-                .linux => native_exe.root_module.linkSystemLibrary("GL", .{}),
-                .windows => native_exe.root_module.linkSystemLibrary("opengl32", .{}),
-                .macos => native_exe.root_module.linkFramework("OpenGL", .{}),
-                else => {},
-            }
+        const zgpu_pkg = b.dependency("zgpu", .{
+            .target = target,
+            .optimize = optimize,
+        });
+        native_module.addImport("zgpu", zgpu_pkg.module("root"));
+        if (target.result.os.tag != .emscripten) {
+            zgui_imgui.root_module.addCMacro("IMGUI_IMPL_WEBGPU_BACKEND_DAWN", "");
         }
+        native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
+        native_exe.root_module.addCSourceFile(.{
+            .file = zgpu_pkg.path("src/dawn.cpp"),
+            .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },
+        });
+        native_exe.root_module.addCSourceFile(.{
+            .file = zgpu_pkg.path("src/dawn_proc.c"),
+            .flags = &.{"-fno-sanitize=undefined"},
+        });
+        if (target.result.abi != .msvc) {
+            native_exe.root_module.link_libcpp = true;
+        }
+        @import("zgpu").addLibraryPathsTo(native_exe);
+        native_exe.root_module.linkSystemLibrary("dawn", .{});
+        switch (target.result.os.tag) {
+            .windows => {
+                native_exe.root_module.linkSystemLibrary("ole32", .{});
+                native_exe.root_module.linkSystemLibrary("dxguid", .{});
+            },
+            .macos => {
+                native_exe.root_module.linkSystemLibrary("objc", .{});
+                native_exe.root_module.linkFramework("Metal", .{});
+                native_exe.root_module.linkFramework("CoreGraphics", .{});
+                native_exe.root_module.linkFramework("Foundation", .{});
+                native_exe.root_module.linkFramework("IOKit", .{});
+                native_exe.root_module.linkFramework("IOSurface", .{});
+                native_exe.root_module.linkFramework("QuartzCore", .{});
+            },
+            .linux => {
+                native_exe.root_module.linkSystemLibrary("X11", .{});
+            },
+            else => {},
+        }
+
+        const imgui_backend_flags = &(imgui_cpp_flags.* ++ .{
+            "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+            "-DIMGUI_IMPL_API=extern \"C\"",
+            "-DIMGUI_IMPL_WEBGPU_BACKEND_DAWN",
+        });
+        native_exe.root_module.addCSourceFile(.{
+            .file = zgui_pkg.path("libs/imgui/backends/imgui_impl_sdl3.cpp"),
+            .flags = imgui_backend_flags,
+        });
+        native_exe.root_module.addCSourceFile(.{
+            .file = zgui_pkg.path("libs/imgui/backends/imgui_impl_wgpu.cpp"),
+            .flags = imgui_backend_flags,
+        });
 
         native_exe.linkLibrary(zgui_imgui);
         native_exe.linkLibrary(freetype_native.lib);
-        native_exe.linkLibrary(zglfw_pkg.artifact("glfw"));
+        native_exe.linkLibrary(sdl3_pkg.artifact("SDL3"));
         if (target.result.os.tag == .windows) {
             native_exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("assets/icons/ziggystarclaw.rc"),

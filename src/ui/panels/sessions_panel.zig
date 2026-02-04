@@ -98,6 +98,7 @@ fn drawSessionDetails(
     const session = ctx.sessions.items[selected_index.?];
     const name = displayName(session);
     const description = session.label orelse session.kind;
+    const messages = messagesForSession(ctx, session.key);
 
     var categories_buf: [3]components.composite.project_card.Category = undefined;
     var categories_len: usize = 0;
@@ -111,7 +112,7 @@ fn drawSessionDetails(
     }
 
     var artifacts_buf: [6]components.composite.project_card.Artifact = undefined;
-    const artifacts = collectArtifacts(ctx.messages.items, &artifacts_buf);
+    const artifacts = collectArtifacts(messages, &artifacts_buf);
 
     components.composite.project_card.draw(.{
         .id = "session_project_card",
@@ -145,9 +146,9 @@ fn drawSessionDetails(
     }
 
     var files_buf: [12]components.composite.source_browser.FileEntry = undefined;
-    const files = collectFiles(ctx.messages.items, &files_buf);
+    const files = collectFiles(messages, &files_buf);
     var previews_buf: [12]AttachmentOpen = undefined;
-    const previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
+    const previews = collectAttachmentPreviews(messages, &previews_buf);
 
     const source_action = components.composite.source_browser.draw(.{
         .id = "session_source_browser",
@@ -216,6 +217,13 @@ fn findSessionIndex(sessions: []const types.Session, key: []const u8) ?usize {
         if (std.mem.eql(u8, session.key, key)) return idx;
     }
     return null;
+}
+
+fn messagesForSession(ctx: *state.ClientContext, session_key: []const u8) []const types.ChatMessage {
+    if (ctx.findSessionState(session_key)) |session_state| {
+        return session_state.messages.items;
+    }
+    return &[_]types.ChatMessage{};
 }
 
 fn displayName(session: types.Session) []const u8 {

@@ -25,19 +25,20 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
     const opened = zgui.beginChild("SourcesView", .{ .h = 0.0, .child_flags = .{ .border = true } });
     if (opened) {
         const t = theme.activeTheme();
-        if (components.layout.header_bar.begin(.{
+        const header_open = components.layout.header_bar.begin(.{
             .title = "Sources",
             .subtitle = "Indexed Content",
             .show_search = true,
             .search_buffer = search_buf[0.. :0],
             .show_notifications = true,
             .notification_count = ctx.approvals.items.len,
-        })) {
+        });
+        if (header_open) {
             if (components.core.button.draw("Add Source", .{ .variant = .secondary, .size = .small })) {
                 // Placeholder for future action.
             }
-            components.layout.header_bar.end();
         }
+        components.layout.header_bar.end();
 
         zgui.dummy(.{ .w = 0.0, .h = t.spacing.md });
 
@@ -76,9 +77,10 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext) SourcesView
 
         var files_buf: [16]components.composite.source_browser.FileEntry = undefined;
         var fallback = fallbackFiles();
-        var files = collectFiles(ctx.messages.items, &files_buf);
+        const messages = messagesForActiveSession(ctx, active_index, sources_map[0..sources_len]);
+        var files = collectFiles(messages, &files_buf);
         var previews_buf: [16]sessions_panel.AttachmentOpen = undefined;
-        var previews = collectAttachmentPreviews(ctx.messages.items, &previews_buf);
+        var previews = collectAttachmentPreviews(messages, &previews_buf);
         var sections_buf: [3]components.composite.source_browser.Section = undefined;
         var sections_len: usize = 0;
         if (active_index == null or sources_map[active_index.?] == null) {
@@ -229,6 +231,24 @@ fn resolveSelectedIndex(ctx: *state.ClientContext, map: []?usize) ?usize {
     }
     selected_source_index = 0;
     return 0;
+}
+
+fn messagesForActiveSession(
+    ctx: *state.ClientContext,
+    active_index: ?usize,
+    map: []?usize,
+) []const types.ChatMessage {
+    if (active_index) |idx| {
+        if (idx < map.len) {
+            if (map[idx]) |session_index| {
+                const session_key = ctx.sessions.items[session_index].key;
+                if (ctx.findSessionState(session_key)) |session_state| {
+                    return session_state.messages.items;
+                }
+            }
+        }
+    }
+    return &[_]types.ChatMessage{};
 }
 
 fn displayName(session: types.Session) []const u8 {
