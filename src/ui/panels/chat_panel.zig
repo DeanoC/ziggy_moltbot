@@ -1,188 +1,242 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const state = @import("../../client/state.zig");
-const types = @import("../../protocol/types.zig");
 const chat_view = @import("../chat_view.zig");
 const input_panel = @import("../input_panel.zig");
 const ui_command_inbox = @import("../ui_command_inbox.zig");
-const components = @import("../components/components.zig");
+const types = @import("../../protocol/types.zig");
 const theme = @import("../theme.zig");
+const draw_context = @import("../draw_context.zig");
+const input_router = @import("../input/input_router.zig");
+const input_state = @import("../input/input_state.zig");
+const widgets = @import("../widgets/widgets.zig");
+const workspace = @import("../workspace.zig");
 
 pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
-    refresh_sessions: bool = false,
-    new_session: bool = false,
-    select_session: ?[]u8 = null,
+};
+
+const HeaderAction = struct {
+    copy_selection: bool = false,
+    copy_all: bool = false,
 };
 
 var select_copy_mode: bool = false;
 var show_tool_output: bool = false;
-var input_split_state = components.layout.split_pane.SplitState{ .size = 0.0 };
-var threads_split_state = components.layout.split_pane.SplitState{ .size = 0.0 };
 
 pub fn draw(
     allocator: std.mem.Allocator,
-    ctx: *state.ClientContext,
+    panel_state: *workspace.ChatPanel,
+    session_key: ?[]const u8,
+    session_state: ?*const state.ChatSessionState,
+    agent_icon: []const u8,
+    agent_name: []const u8,
+    session_label: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
 ) ChatPanelAction {
     var action = ChatPanelAction{};
-
     const t = theme.activeTheme();
-    if (components.layout.header_bar.begin(.{ .title = "Chat" })) {
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = zgui.checkbox("Select/Copy Mode", .{ .v = &select_copy_mode });
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        _ = zgui.checkbox("Show tool output", .{ .v = &show_tool_output });
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        zgui.beginDisabled(.{ .disabled = !select_copy_mode or !chat_view.hasSelection() });
-        if (components.core.button.draw("Copy Selection", .{ .variant = .secondary, .size = .small })) {
-            chat_view.copySelectionToClipboard(allocator);
+
+    var subtitle_buf: [256]u8 = undefined;
+    const subtitle = if (session_key) |key| blk: {
+        const label = session_label orelse key;
+        break :blk std.fmt.bufPrint(
+            &subtitle_buf,
+            "{s} {s} — {s}",
+            .{ agent_icon, agent_name, label },
+        ) catch label;
+    } else "No session selected.";
+
+    const has_session = session_key != null;
+    const messages = if (session_state) |state_val| state_val.messages.items else &[_]types.ChatMessage{};
+    const stream_text = if (session_state) |state_val| state_val.stream_text else null;
+    const has_selection_select = chat_view.hasSelectCopySelection(&panel_state.view);
+    const has_selection_custom = chat_view.hasSelection(&panel_state.view);
+
+    const panel_pos = zgui.getCursorScreenPos();
+    const panel_avail = zgui.getContentRegionAvail();
+    if (panel_avail[0] <= 0.0 or panel_avail[1] <= 0.0) {
+        return action;
+    }
+    _ = zgui.invisibleButton("##chat_panel_canvas", .{ .w = panel_avail[0], .h = panel_avail[1] });
+    const panel_rect = draw_context.Rect.fromMinSize(panel_pos, .{ panel_avail[0], panel_avail[1] });
+    var panel_ctx = draw_context.DrawContext.init(allocator, .{ .imgui = .{} }, t, panel_rect);
+    defer panel_ctx.deinit();
+    panel_ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
+
+    const queue = input_router.getQueue();
+
+    const header_width = panel_rect.size()[0];
+    const title = "Chat";
+    theme.push(.title);
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    theme.pop();
+    const subtitle_height = zgui.getTextLineHeightWithSpacing();
+    const control_height = @max(subtitle_height, 20.0);
+    const top_pad = t.spacing.xs;
+    const title_gap = t.spacing.xs * 0.5;
+    const controls_gap = t.spacing.xs;
+    const bottom_pad = t.spacing.xs;
+    const header_height = top_pad + title_height + title_gap + subtitle_height + controls_gap + control_height + bottom_pad;
+    const header_rect = draw_context.Rect.fromMinSize(panel_rect.min, .{ header_width, header_height });
+    const header_action = drawHeader(
+        &panel_ctx,
+        header_rect,
+        queue,
+        title,
+        subtitle,
+        has_session,
+        &select_copy_mode,
+        &show_tool_output,
+        has_selection_select,
+        has_selection_custom,
+        control_height,
+    );
+    if (header_action.copy_selection) {
+        if (select_copy_mode) {
+            chat_view.copySelectCopySelectionToClipboard(allocator, &panel_state.view);
+        } else {
+            chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, show_tool_output);
         }
-        zgui.endDisabled();
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        if (components.core.button.draw("Copy All", .{ .variant = .secondary, .size = .small })) {
-            chat_view.copyAllToClipboard(allocator, ctx.messages.items, ctx.stream_text, inbox, show_tool_output);
-        }
-    components.layout.header_bar.end();
+    }
+    if (header_action.copy_all) {
+        chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, show_tool_output);
     }
 
-    zgui.separator();
+    const separator_h: f32 = 1.0;
+    const separator_gap = t.spacing.xs;
+    const separator_block = separator_h + separator_gap * 2.0;
 
-    const center_avail = zgui.getContentRegionAvail();
-    const show_threads = center_avail[0] > 640.0;
-    if (threads_split_state.size == 0.0) {
-        threads_split_state.size = @min(260.0, center_avail[0] * 0.28);
-    }
+    var cursor_y = header_rect.max[1];
+    const sep1_y = cursor_y + separator_gap;
+    const sep1_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], sep1_y }, .{ panel_rect.size()[0], separator_h });
+    panel_ctx.drawRect(sep1_rect, .{ .fill = t.colors.divider });
+    cursor_y = sep1_rect.max[1] + separator_gap;
 
-    if (show_threads) {
-        components.layout.split_pane.begin(.{
-            .id = "chat_threads",
-            .axis = .vertical,
-            .primary_size = threads_split_state.size,
-            .min_primary = 200.0,
-            .min_secondary = 260.0,
-            .border = false,
-            .padded = false,
-        }, &threads_split_state);
-        if (components.layout.split_pane.beginPrimary(.{
-            .id = "chat_threads",
-            .axis = .vertical,
-        }, &threads_split_state)) {
-            drawThreadList(allocator, ctx, &action);
-        }
-        components.layout.split_pane.endPrimary();
-        components.layout.split_pane.handleSplitter(.{
-            .id = "chat_threads",
-            .axis = .vertical,
-        }, &threads_split_state);
-        if (components.layout.split_pane.beginSecondary(.{
-            .id = "chat_threads",
-            .axis = .vertical,
-        }, &threads_split_state)) {
-            drawChatMain(allocator, ctx, inbox, &action);
-        }
-        components.layout.split_pane.endSecondary();
-        components.layout.split_pane.end();
+    const remaining = @max(0.0, panel_rect.max[1] - cursor_y);
+    const available_for_history_input = if (remaining > separator_block) remaining - separator_block else 0.0;
+    const min_input_height: f32 = 160.0;
+    const desired_input_height = @min(available_for_history_input, @max(min_input_height, available_for_history_input * 0.4));
+    const input_height = @max(0.0, desired_input_height);
+    const history_height = @max(0.0, available_for_history_input - input_height);
+
+    const history_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], history_height });
+    if (select_copy_mode) {
+        chat_view.drawSelectCopy(
+            allocator,
+            &panel_ctx,
+            history_rect,
+            queue,
+            &panel_state.view,
+            session_key,
+            messages,
+            stream_text,
+            inbox,
+            .{
+                .select_copy_mode = select_copy_mode,
+                .show_tool_output = show_tool_output,
+            },
+        );
     } else {
-        drawChatMain(allocator, ctx, inbox, &action);
+        chat_view.drawCustom(
+            allocator,
+            &panel_ctx,
+            history_rect,
+            queue,
+            &panel_state.view,
+            session_key,
+            messages,
+            stream_text,
+            inbox,
+            .{
+                .select_copy_mode = select_copy_mode,
+                .show_tool_output = show_tool_output,
+            },
+        );
     }
+
+    cursor_y = history_rect.max[1];
+    const sep2_y = cursor_y + separator_gap;
+    const sep2_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], sep2_y }, .{ panel_rect.size()[0], separator_h });
+    panel_ctx.drawRect(sep2_rect, .{ .fill = t.colors.divider });
+    cursor_y = sep2_rect.max[1] + separator_gap;
+
+    const input_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], input_height });
+    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, has_session)) |message| {
+        action.send_message = message;
+    }
+
     return action;
 }
 
-fn drawChatMain(
-    allocator: std.mem.Allocator,
-    ctx: *state.ClientContext,
-    inbox: ?*const ui_command_inbox.UiCommandInbox,
-    action: *ChatPanelAction,
-) void {
-    const avail = zgui.getContentRegionAvail();
-    if (input_split_state.size == 0.0) {
-        const desired_input: f32 = 160.0;
-        input_split_state.size = @max(avail[1] - desired_input, 200.0);
-    }
-    components.layout.split_pane.begin(.{
-        .id = "chat_split",
-        .axis = .horizontal,
-        .primary_size = input_split_state.size,
-        .min_primary = 160.0,
-        .min_secondary = 120.0,
-        .border = false,
-        .padded = false,
-    }, &input_split_state);
-    if (components.layout.split_pane.beginPrimary(.{
-        .id = "chat_split",
-        .axis = .horizontal,
-    }, &input_split_state)) {
-        const history_avail = zgui.getContentRegionAvail();
-        chat_view.draw(allocator, ctx.messages.items, ctx.stream_text, inbox, history_avail[1], .{
-            .select_copy_mode = select_copy_mode,
-            .show_tool_output = show_tool_output,
-        });
-    }
-    components.layout.split_pane.endPrimary();
-    components.layout.split_pane.handleSplitter(.{
-        .id = "chat_split",
-        .axis = .horizontal,
-    }, &input_split_state);
-    if (components.layout.split_pane.beginSecondary(.{
-        .id = "chat_split",
-        .axis = .horizontal,
-    }, &input_split_state)) {
-        const input_avail = zgui.getContentRegionAvail();
-        if (input_panel.draw(allocator, input_avail[0], input_avail[1])) |message| {
-            action.send_message = message;
-        }
-    }
-    components.layout.split_pane.endSecondary();
-    components.layout.split_pane.end();
-}
-
-fn drawThreadList(
-    allocator: std.mem.Allocator,
-    ctx: *state.ClientContext,
-    action: *ChatPanelAction,
-) void {
+fn drawHeader(
+    ctx: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    title: []const u8,
+    subtitle: []const u8,
+    has_session: bool,
+    select_copy_mode_ref: *bool,
+    show_tool_output_ref: *bool,
+    has_selection_select: bool,
+    has_selection_custom: bool,
+    control_height: f32,
+) HeaderAction {
     const t = theme.activeTheme();
-    theme.push(.heading);
-    zgui.text("Threads", .{});
+    const top_pad = t.spacing.xs;
+    const title_gap = t.spacing.xs * 0.5;
+    const controls_gap = t.spacing.xs;
+    const start_x = rect.min[0] + t.spacing.sm;
+    const start_y = rect.min[1] + top_pad;
+
+    theme.push(.title);
+    const title_height = zgui.getTextLineHeightWithSpacing();
+    ctx.drawText(title, .{ start_x, start_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
-    zgui.beginDisabled(.{ .disabled = ctx.sessions_loading });
-    if (components.core.button.draw("Refresh", .{ .variant = .secondary, .size = .small })) {
-        action.refresh_sessions = true;
-    }
-    zgui.sameLine(.{ .spacing = t.spacing.sm });
-    if (components.core.button.draw("New", .{ .variant = .primary, .size = .small })) {
-        action.new_session = true;
-    }
-    zgui.endDisabled();
+    const subtitle_y = start_y + title_height + title_gap;
+    ctx.drawText(subtitle, .{ start_x, subtitle_y }, .{ .color = t.colors.text_secondary });
 
-    if (ctx.sessions_loading) {
-        zgui.sameLine(.{ .spacing = t.spacing.sm });
-        components.core.badge.draw("Loading", .{ .variant = .primary, .filled = false, .size = .small });
-    }
+    const controls_y = subtitle_y + zgui.getTextLineHeightWithSpacing() + controls_gap;
+    var cursor_x = start_x;
+    const line_h = zgui.getTextLineHeightWithSpacing();
+    const box_size = @min(control_height, line_h);
+    const checkbox_spacing = t.spacing.xs;
+    const item_spacing = t.spacing.xs;
 
-    zgui.separator();
-    zgui.dummy(.{ .w = 0.0, .h = t.spacing.sm });
+    const select_label = "Select/Copy Mode";
+    const select_width = box_size + checkbox_spacing + ctx.measureText(select_label, 0.0)[0];
+    const select_rect = draw_context.Rect.fromMinSize(.{ cursor_x, controls_y }, .{ select_width, control_height });
+    _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
+    cursor_x += select_width + item_spacing;
 
-    if (components.layout.scroll_area.begin(.{ .id = "ChatThreadsList", .border = true })) {
-        if (ctx.sessions.items.len == 0) {
-            zgui.textDisabled("No threads yet.", .{});
-        } else {
-            for (ctx.sessions.items, 0..) |session, idx| {
-                zgui.pushIntId(@intCast(idx));
-                defer zgui.popId();
-                const selected = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
-                const label = displayName(session);
-                if (components.data.list_item.draw(.{ .label = label, .selected = selected, .id = session.key })) {
-                    action.select_session = allocator.dupe(u8, session.key) catch null;
-                }
-            }
-        }
-    }
-    components.layout.scroll_area.end();
-}
+    const tool_label = "Show tool output";
+    const tool_width = box_size + checkbox_spacing + ctx.measureText(tool_label, 0.0)[0];
+    const tool_rect = draw_context.Rect.fromMinSize(.{ cursor_x, controls_y }, .{ tool_width, control_height });
+    _ = widgets.checkbox.draw(ctx, tool_rect, tool_label, show_tool_output_ref, queue, .{ .disabled = !has_session });
+    cursor_x += tool_width + item_spacing;
 
-fn displayName(session: types.Session) []const u8 {
-    return session.display_name orelse session.label orelse session.key;
+    const has_selection = if (select_copy_mode_ref.*) has_selection_select else has_selection_custom;
+
+    const copy_label = "Copy Selection";
+    const copy_width = ctx.measureText(copy_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const copy_rect = draw_context.Rect.fromMinSize(.{ cursor_x, controls_y }, .{ copy_width, control_height });
+    const copy_clicked = widgets.button.draw(ctx, copy_rect, copy_label, queue, .{
+        .disabled = !has_session or !has_selection,
+        .variant = .secondary,
+    });
+    cursor_x += copy_width + item_spacing;
+
+    const all_label = "Copy All";
+    const all_width = ctx.measureText(all_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const all_rect = draw_context.Rect.fromMinSize(.{ cursor_x, controls_y }, .{ all_width, control_height });
+    const all_clicked = widgets.button.draw(ctx, all_rect, all_label, queue, .{
+        .disabled = !has_session,
+        .variant = .secondary,
+    });
+
+    return .{
+        .copy_selection = copy_clicked,
+        .copy_all = all_clicked,
+    };
 }

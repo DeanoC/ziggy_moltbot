@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
+const components = @import("components/components.zig");
 const panel_manager = @import("panel_manager.zig");
 const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
@@ -14,6 +15,10 @@ const ui_command_inbox = @import("ui_command_inbox.zig");
 const imgui_bridge = @import("imgui_bridge.zig");
 const image_cache = @import("image_cache.zig");
 const ui_systems = @import("ui_systems.zig");
+const input_router = @import("input/input_router.zig");
+const agent_registry = @import("../client/agent_registry.zig");
+const session_keys = @import("../client/session_keys.zig");
+const types = @import("../protocol/types.zig");
 const chat_panel = @import("panels/chat_panel.zig");
 const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
@@ -21,8 +26,13 @@ const control_panel = @import("panels/control_panel.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const status_bar = @import("status_bar.zig");
 
+pub const SendMessageAction = struct {
+    session_key: []u8,
+    message: []u8,
+};
+
 pub const UiAction = struct {
-    send_message: ?[]u8 = null,
+    send_message: ?SendMessageAction = null,
     connect: bool = false,
     disconnect: bool = false,
     save_config: bool = false,
@@ -31,6 +41,13 @@ pub const UiAction = struct {
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
+    new_chat_agent_id: ?[]u8 = null,
+    open_session: ?@import("panels/agents_panel.zig").AgentSessionAction = null,
+    set_default_session: ?@import("panels/agents_panel.zig").AgentSessionAction = null,
+    delete_session: ?[]u8 = null,
+    add_agent: ?@import("panels/agents_panel.zig").AddAgentAction = null,
+    remove_agent_id: ?[]u8 = null,
+    focus_session: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
     download_update: bool = false,
@@ -72,6 +89,7 @@ pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
     cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
     is_connected: bool,
     app_version: []const u8,
     manager: *panel_manager.PanelManager,
@@ -82,8 +100,13 @@ pub fn draw(
     var pending_attachment: ?sessions_panel.AttachmentOpen = null;
     image_cache.beginFrame();
     _ = ui_systems.beginFrame();
+    _ = input_router.beginFrame(allocator);
+    input_router.collect(allocator);
 
-    inbox.collectFromMessages(allocator, ctx.messages.items, manager);
+    var session_it = ctx.session_states.iterator();
+    while (session_it.next()) |entry| {
+        inbox.collectFromMessages(allocator, entry.value_ptr.messages.items, manager);
+    }
 
     var menu_height: f32 = 0.0;
     const t = theme.activeTheme();
@@ -156,9 +179,14 @@ pub fn draw(
         const dockspace_id = zgui.dockSpace("MainDockSpace", dock_size, .{});
         dock_layout.ensureDockLayout(dock_state, &manager.workspace, dockspace_id, dock_pos, dock_size);
 
+        var focused_session_key: ?[]const u8 = null;
+        var focused_agent_id: ?[]const u8 = null;
+
         var index: usize = 0;
         while (index < manager.workspace.panels.items.len) {
             var panel = &manager.workspace.panels.items[index];
+            var panel_session_key: ?[]const u8 = null;
+            var panel_agent_id: ?[]const u8 = null;
             if (panel.state.dock_node == 0 and dock_state.dockspace_id != 0) {
                 imgui_bridge.setNextWindowDockId(
                     dock_layout.defaultDockForKind(dock_state, panel.kind),
@@ -172,14 +200,92 @@ pub fn draw(
 
             var open = true;
             const label = zgui.formatZ("{s}##panel_{d}", .{ panel.title, panel.id });
-            if (zgui.begin(label, .{ .popen = &open })) {
+            var panel_flags = zgui.WindowFlags{};
+            if (panel.kind == .Chat) {
+                panel_flags.no_scrollbar = true;
+                panel_flags.no_scroll_with_mouse = true;
+                const min_width = components.composite.message_bubble.minPanelWidth();
+                const min_height: f32 = 360.0;
+                imgui_bridge.setNextWindowSizeConstraints(
+                    .{ min_width, min_height },
+                    .{ 10000.0, 10000.0 },
+                );
+            }
+            if (zgui.begin(label, .{ .popen = &open, .flags = panel_flags })) {
                 switch (panel.kind) {
                     .Chat => {
-                        const chat_action = chat_panel.draw(allocator, ctx, inbox);
-                        action.send_message = chat_action.send_message;
-                        action.refresh_sessions = chat_action.refresh_sessions;
-                        action.new_session = chat_action.new_session;
-                        replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
+                        var agent_id = panel.data.Chat.agent_id;
+                        if (agent_id == null) {
+                            if (panel.data.Chat.session_key) |session_key| {
+                                if (session_keys.parse(session_key)) |parts| {
+                                    panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
+                                    agent_id = panel.data.Chat.agent_id;
+                                    manager.workspace.markDirty();
+                                }
+                            }
+                        }
+
+                        var resolved_session_key = panel.data.Chat.session_key;
+                        if (resolved_session_key == null and agent_id != null) {
+                            if (registry.find(agent_id.?)) |agent| {
+                                if (agent.default_session_key) |default_key| {
+                                    resolved_session_key = default_key;
+                                }
+                            }
+                        }
+                        if (resolved_session_key == null) {
+                            if (ctx.current_session) |current| {
+                                resolved_session_key = current;
+                                if (panel.data.Chat.session_key == null) {
+                                    panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
+                                    manager.workspace.markDirty();
+                                }
+                                if (agent_id == null) {
+                                    if (session_keys.parse(current)) |parts| {
+                                        panel.data.Chat.agent_id = allocator.dupe(u8, parts.agent_id) catch panel.data.Chat.agent_id;
+                                        agent_id = panel.data.Chat.agent_id;
+                                        manager.workspace.markDirty();
+                                    }
+                                }
+                            }
+                        }
+
+                        const agent_info = resolveAgentInfo(registry, agent_id);
+                        const session_label = if (resolved_session_key) |session_key|
+                            resolveSessionLabel(ctx.sessions.items, session_key)
+                        else
+                            null;
+
+                        const session_state = if (resolved_session_key) |session_key|
+                            ctx.getOrCreateSessionState(session_key) catch null
+                        else
+                            null;
+
+                        const chat_action = chat_panel.draw(
+                            allocator,
+                            &panel.data.Chat,
+                            resolved_session_key,
+                            session_state,
+                            agent_info.icon,
+                            agent_info.name,
+                            session_label,
+                            inbox,
+                        );
+                        if (chat_action.send_message) |message| {
+                            if (resolved_session_key) |session_key| {
+                                const key_copy = allocator.dupe(u8, session_key) catch null;
+                                if (key_copy) |owned| {
+                                    action.send_message = .{ .session_key = owned, .message = message };
+                                } else {
+                                    allocator.free(message);
+                                }
+                            } else {
+                                allocator.free(message);
+                            }
+                        }
+
+                        panel_session_key = resolved_session_key;
+                        panel_agent_id = agent_id;
                     },
                     .CodeEditor => {
                         if (code_editor_panel.draw(panel, allocator)) {
@@ -194,6 +300,7 @@ pub fn draw(
                             allocator,
                             ctx,
                             cfg,
+                            registry,
                             is_connected,
                             app_version,
                             &panel.data.Control,
@@ -205,6 +312,12 @@ pub fn draw(
                         action.config_updated = control_action.config_updated;
                         action.refresh_sessions = control_action.refresh_sessions;
                         action.new_session = control_action.new_session;
+                        action.new_chat_agent_id = control_action.new_chat_agent_id;
+                        action.open_session = control_action.open_session;
+                        action.set_default_session = control_action.set_default_session;
+                        action.delete_session = control_action.delete_session;
+                        action.add_agent = control_action.add_agent;
+                        action.remove_agent_id = control_action.remove_agent_id;
                         action.check_updates = control_action.check_updates;
                         action.open_release = control_action.open_release;
                         action.download_update = control_action.download_update;
@@ -240,6 +353,12 @@ pub fn draw(
                     manager.workspace.focused_panel_id = panel.id;
                     manager.workspace.markDirty();
                 }
+                if (panel_session_key != null) {
+                    focused_session_key = panel_session_key;
+                }
+                if (panel_agent_id != null) {
+                    focused_agent_id = panel_agent_id;
+                }
             }
 
             zgui.end();
@@ -258,12 +377,44 @@ pub fn draw(
 
         syncAttachmentFetches(allocator, manager);
 
+        var status_agent: ?[]const u8 = null;
+        var status_session: ?[]const u8 = null;
+        var status_messages: usize = 0;
+
+        if (focused_session_key) |session_key| {
+            status_session = resolveSessionLabel(ctx.sessions.items, session_key) orelse session_key;
+            if (ctx.findSessionState(session_key)) |session_state| {
+                status_messages = session_state.messages.items.len;
+            }
+        } else if (ctx.current_session) |session_key| {
+            status_session = resolveSessionLabel(ctx.sessions.items, session_key) orelse session_key;
+            if (ctx.findSessionState(session_key)) |session_state| {
+                status_messages = session_state.messages.items.len;
+            }
+        }
+
+        var agent_id = focused_agent_id;
+        if (agent_id == null) {
+            if (focused_session_key) |session_key| {
+                if (session_keys.parse(session_key)) |parts| {
+                    agent_id = parts.agent_id;
+                }
+            }
+        }
+        if (agent_id) |agent| {
+            if (registry.find(agent)) |profile| {
+                status_agent = profile.display_name;
+            } else {
+                status_agent = agent;
+            }
+        }
+
         zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
         zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ t.spacing.sm, status_padding_y } });
         zgui.pushStyleVar2f(.{ .idx = .item_spacing, .v = .{ t.spacing.sm, 0.0 } });
         if (zgui.beginChild("StatusBar", .{ .h = status_height, .child_flags = .{ .border = false } })) {
             theme.push(.body);
-            status_bar.draw(ctx.state, is_connected, ctx.current_session, ctx.messages.items.len, ctx.last_error);
+            status_bar.draw(ctx.state, is_connected, status_agent, status_session, status_messages, ctx.last_error);
             theme.pop();
         }
         zgui.endChild();
@@ -289,6 +440,30 @@ fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8)
         allocator.free(existing);
     }
     target.* = value;
+}
+
+const AgentInfo = struct {
+    name: []const u8,
+    icon: []const u8,
+};
+
+fn resolveAgentInfo(registry: *agent_registry.AgentRegistry, agent_id: ?[]const u8) AgentInfo {
+    if (agent_id) |id| {
+        if (registry.find(id)) |agent| {
+            return .{ .name = agent.display_name, .icon = agent.icon };
+        }
+        return .{ .name = id, .icon = "?" };
+    }
+    return .{ .name = "Agent", .icon = "?" };
+}
+
+fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]const u8 {
+    for (sessions) |session| {
+        if (std.mem.eql(u8, session.key, key)) {
+            return session.display_name orelse session.label orelse session.key;
+        }
+    }
+    return null;
 }
 
 pub fn syncSettings(cfg: config.Config) void {

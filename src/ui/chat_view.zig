@@ -7,6 +7,7 @@ const components = @import("components/components.zig");
 const theme = @import("theme.zig");
 const draw_context = @import("draw_context.zig");
 const input_state = @import("input/input_state.zig");
+const text_editor = @import("widgets/text_editor.zig");
 
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
@@ -29,6 +30,7 @@ pub const ViewState = struct {
     last_last_len: usize = 0,
     last_stream_len: usize = 0,
     last_show_tool_output: bool = false,
+    select_copy_editor: ?text_editor.TextEditor = null,
 };
 
 const Line = struct {
@@ -75,18 +77,24 @@ const MessageLayout = struct {
     hover_index: ?usize,
 };
 
-pub fn hasSelectCopySelection() bool {
-    return chat_select_start != chat_select_end;
+pub fn deinit(state: *ViewState, allocator: std.mem.Allocator) void {
+    if (state.select_copy_editor) |*editor| {
+        editor.deinit(allocator);
+    }
+    state.select_copy_editor = null;
 }
 
-pub fn copySelectCopySelectionToClipboard(allocator: std.mem.Allocator) void {
-    const selection = selectionSlice() orelse return;
-    if (selection.len == 0) return;
-    const buf = allocator.alloc(u8, selection.len + 1) catch return;
-    defer allocator.free(buf);
-    @memcpy(buf[0..selection.len], selection);
-    buf[selection.len] = 0;
-    zgui.setClipboardText(buf[0.. :0]);
+pub fn hasSelectCopySelection(state: *const ViewState) bool {
+    if (state.select_copy_editor) |editor| {
+        return editor.hasSelection();
+    }
+    return false;
+}
+
+pub fn copySelectCopySelectionToClipboard(allocator: std.mem.Allocator, state: *ViewState) void {
+    if (state.select_copy_editor) |*editor| {
+        _ = editor.copySelectionToClipboard(allocator);
+    }
 }
 
 pub fn hasSelection(state: *const ViewState) bool {
@@ -130,64 +138,68 @@ pub fn copySelectionToClipboard(
 
 pub fn drawSelectCopy(
     allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
     state: *ViewState,
     session_key: ?[]const u8,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    height: f32,
     opts: ChatViewOptions,
 ) void {
-    const clamped = if (height > 24.0) height else 24.0;
-    if (zgui.beginChild("ChatHistory", .{ .h = clamped, .child_flags = .{ .border = true } })) {
-        const session_hash = if (session_key) |key| std.hash.Wyhash.hash(0, key) else 0;
-        const session_changed = session_hash != state.last_session_hash;
-        if (session_changed) {
-            state.last_session_hash = session_hash;
-            state.last_message_count = 0;
-            state.last_last_id_hash = 0;
-            state.last_last_len = 0;
-            state.last_stream_len = 0;
-        }
-
-        var content_changed = false;
-        const last_id_hash = if (messages.len > 0)
-            std.hash.Wyhash.hash(0, messages[messages.len - 1].id)
-        else
-            0;
-        const last_len = if (messages.len > 0) messages[messages.len - 1].content.len else 0;
-        if (messages.len != state.last_message_count or last_id_hash != state.last_last_id_hash or last_len != state.last_last_len) {
-            content_changed = true;
-        }
-        if (stream_text) |stream| {
-            if (stream.len != state.last_stream_len) {
-                content_changed = true;
-            }
-        } else if (state.last_stream_len != 0) {
-            content_changed = true;
-        }
-        state.last_message_count = messages.len;
-        state.last_last_id_hash = last_id_hash;
-        state.last_last_len = last_len;
-        state.last_stream_len = if (stream_text) |stream| stream.len else 0;
-        if (opts.show_tool_output != state.last_show_tool_output) {
-            content_changed = true;
-        }
-        state.last_show_tool_output = opts.show_tool_output;
-
-        if (content_changed or chat_buffer.items.len == 0) {
-            _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.show_tool_output);
-            resetSelection();
-        }
-        const zbuf = bufferZ();
-        _ = zgui.inputTextMultiline("##chat_select", .{
-            .buf = zbuf,
-            .h = clamped - 20.0,
-            .flags = .{ .read_only = true, .callback_always = true },
-            .callback = chatSelectCallback,
-        });
+    if (state.select_copy_editor == null) {
+        state.select_copy_editor = text_editor.TextEditor.init(allocator) catch null;
     }
-    zgui.endChild();
+    if (state.select_copy_editor == null) return;
+    const editor = &state.select_copy_editor.?;
+
+    const session_hash = if (session_key) |key| std.hash.Wyhash.hash(0, key) else 0;
+    const session_changed = session_hash != state.last_session_hash;
+    if (session_changed) {
+        state.last_session_hash = session_hash;
+        state.last_message_count = 0;
+        state.last_last_id_hash = 0;
+        state.last_last_len = 0;
+        state.last_stream_len = 0;
+    }
+
+    var content_changed = false;
+    const last_id_hash = if (messages.len > 0)
+        std.hash.Wyhash.hash(0, messages[messages.len - 1].id)
+    else
+        0;
+    const last_len = if (messages.len > 0) messages[messages.len - 1].content.len else 0;
+    if (messages.len != state.last_message_count or last_id_hash != state.last_last_id_hash or last_len != state.last_last_len) {
+        content_changed = true;
+    }
+    if (stream_text) |stream| {
+        if (stream.len != state.last_stream_len) {
+            content_changed = true;
+        }
+    } else if (state.last_stream_len != 0) {
+        content_changed = true;
+    }
+    state.last_message_count = messages.len;
+    state.last_last_id_hash = last_id_hash;
+    state.last_last_len = last_len;
+    state.last_stream_len = if (stream_text) |stream| stream.len else 0;
+    if (opts.show_tool_output != state.last_show_tool_output) {
+        content_changed = true;
+    }
+    state.last_show_tool_output = opts.show_tool_output;
+
+    if (content_changed or editor.isEmpty()) {
+        _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.show_tool_output);
+        const zbuf = bufferZ();
+        const slice = std.mem.sliceTo(zbuf, 0);
+        editor.setText(allocator, slice);
+    }
+
+    _ = editor.draw(allocator, ctx, rect, queue, .{
+        .submit_on_enter = false,
+        .read_only = true,
+    });
 }
 
 pub fn drawCustom(
@@ -1102,9 +1114,6 @@ fn nextCharIndex(text: []const u8, index: usize) usize {
 }
 
 var chat_buffer: std.ArrayList(u8) = .empty;
-var chat_select_start: usize = 0;
-var chat_select_end: usize = 0;
-
 fn ensureChatBuffer(
     allocator: std.mem.Allocator,
     messages: []const types.ChatMessage,
@@ -1158,27 +1167,6 @@ fn isEmptyMessage(msg: types.ChatMessage) bool {
     return trimmed.len == 0;
 }
 
-fn selectionSlice() ?[]const u8 {
-    if (chat_buffer.items.len == 0) return null;
-    const text_len = chat_buffer.items.len - 1;
-    if (text_len == 0) return null;
-    var start = chat_select_start;
-    var end = chat_select_end;
-    if (start > end) {
-        const tmp = start;
-        start = end;
-        end = tmp;
-    }
-    if (start >= text_len or end > text_len) return null;
-    if (start == end) return null;
-    return chat_buffer.items[start..end];
-}
-
-fn resetSelection() void {
-    chat_select_start = 0;
-    chat_select_end = 0;
-}
-
 fn selectionRange(state: *const ViewState) ?[2]usize {
     const anchor = state.selection_anchor orelse return null;
     const focus = state.selection_focus orelse return null;
@@ -1227,14 +1215,6 @@ fn buildSelectableBuffer(
         return null;
     };
     return owned;
-}
-
-fn chatSelectCallback(data: *zgui.InputTextCallbackData) callconv(.c) i32 {
-    const start_i = if (data.selection_start < 0) 0 else data.selection_start;
-    const end_i = if (data.selection_end < 0) 0 else data.selection_end;
-    chat_select_start = @intCast(start_i);
-    chat_select_end = @intCast(end_i);
-    return 0;
 }
 
 const empty_z = [_:0]u8{};

@@ -1,240 +1,167 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const ui_systems = @import("ui_systems.zig");
-const undo_redo = @import("systems/undo_redo.zig");
-const systems = @import("systems/systems.zig");
+const draw_context = @import("draw_context.zig");
+const text_editor = @import("widgets/text_editor.zig");
+const theme = @import("theme.zig");
+const widgets = @import("widgets/widgets.zig");
+const input_state = @import("input/input_state.zig");
 
-// Leave headroom for multiline messages.
-var input_buf: [4096:0]u8 = [_:0]u8{0} ** 4096;
-// Bump this to force ImGui to treat the input as a fresh widget (resets internal state),
-// which is necessary to reliably clear the field immediately after sending.
-var input_generation: u32 = 0;
-var pending_insert_newline: bool = false;
+const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
-const hint_z: [:0]const u8 = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
+var editor_state: ?text_editor.TextEditor = null;
+var emoji_open = false;
 
-const InputSnapshot = struct {
-    len: usize,
-    buf: [4096]u8,
-};
+pub fn draw(
+    allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    enabled: bool,
+) ?[]u8 {
+    if (editor_state == null) {
+        editor_state = text_editor.TextEditor.init(allocator) catch null;
+    }
+    if (editor_state == null) return null;
+    const editor = &editor_state.?;
 
-var input_history: ?undo_redo.UndoRedoStack(InputSnapshot) = null;
-
-pub fn draw(allocator: std.mem.Allocator, avail_w: f32, avail_h: f32) ?[]u8 {
-    var send = false;
-    const before_state = captureInputState();
-
+    const t = theme.activeTheme();
     const style = zgui.getStyle();
-    const min_h: f32 = 56.0;
-    const button_height = zgui.getFrameHeight();
-    const button_spacing = style.item_spacing[1];
-    const max_box_h = @max(0.0, avail_h - button_height - button_spacing);
-    const max_h_clamped: f32 = @min(180.0, max_box_h);
-    const min_box_h: f32 = @min(min_h, max_box_h);
+    const line_h = zgui.getTextLineHeightWithSpacing();
+    const button_height = @max(28.0, line_h + t.spacing.xs * 2.0);
+    const gap = t.spacing.xs;
+    var editor_height = rect.size()[1] - button_height - gap;
+    if (editor_height < 40.0) {
+        editor_height = @max(20.0, rect.size()[1] - button_height);
+    }
 
-    const text = std.mem.sliceTo(&input_buf, 0);
-    const wrap_w = @max(40.0, avail_w - style.frame_padding[0] * 2.0);
-    const text_size = if (text.len > 0)
-        zgui.calcTextSize(text, .{ .wrap_width = wrap_w })
-    else
-        zgui.calcTextSize(hint_z, .{ .wrap_width = wrap_w });
+    const editor_rect = draw_context.Rect.fromMinSize(rect.min, .{ rect.size()[0], editor_height });
+    const row_y = editor_rect.max[1] + gap;
 
-    var input_h = text_size[1] + style.frame_padding[1] * 2.0 + 8.0;
-    input_h = @max(@max(1.0, min_box_h), @min(max_h_clamped, input_h));
+    var disabled_queue = input_state.InputQueue{ .events = .empty, .state = .{} };
+    disabled_queue.state.mouse_pos = .{ -10000.0, -10000.0 };
+    const active_queue = if (enabled) queue else &disabled_queue;
 
-    // Dear ImGui's InputTextMultiline doesn't always soft-wrap as expected across backends.
-    // Try to enforce wrapping by pushing a wrap position for the duration of the widget.
-    const input_id = zgui.formatZ("##message_input_{d}", .{input_generation});
+    if (!enabled) {
+        editor.focused = false;
+        editor.dragging = false;
+    }
 
-    zgui.pushTextWrapPos(0.0);
-    const changed = zgui.inputTextMultiline(input_id, .{
-        .buf = input_buf[0.. :0],
-        .w = avail_w,
-        .h = input_h,
-        .flags = .{
-            .allow_tab_input = true,
-            // Treat Enter as "submit"; we re-insert newlines on Shift+Enter.
-            .enter_returns_true = true,
-            // Avoid horizontal scrolling; wrap instead.
-            .no_horizontal_scroll = true,
-            .callback_always = true,
-        },
-        .callback = inputCallback,
-    });
-    zgui.popTextWrapPos();
-    if (zgui.isItemActive()) {
+    const action = editor.draw(allocator, ctx, editor_rect, active_queue, .{ .submit_on_enter = true });
+
+    if (editor.focused) {
         const sys = ui_systems.get();
         sys.keyboard.setFocus("chat_input");
-        registerShortcuts(sys);
     }
 
-    // Placeholder/hint overlay for multiline
-    if (!zgui.isItemActive() and text.len == 0) {
-        const min = zgui.getItemRectMin();
-        const col = zgui.colorConvertFloat4ToU32(.{ 0.55, 0.55, 0.55, 1.0 });
-        const pos = .{ min[0] + style.frame_padding[0], min[1] + style.frame_padding[1] };
-        const dl = zgui.getWindowDrawList();
-        dl.addTextExtendedUnformatted(pos, col, hint_z, .{ .font = null, .font_size = 0, .wrap_width = wrap_w });
+    if (!editor.focused and editor.isEmpty()) {
+        const pad = style.frame_padding;
+        const pos = .{ editor_rect.min[0] + pad[0], editor_rect.min[1] + pad[1] };
+        ctx.drawText(hint, pos, .{ .color = t.colors.text_secondary });
     }
 
-    if (changed) {
-        const after_state = captureInputState();
-        if (!statesEqual(before_state, after_state)) {
-            if (ensureUndoStack()) |stack| {
-                _ = stack.execute(.{
-                    .name = "edit",
-                    .state_before = before_state,
-                    .state_after = after_state,
-                }) catch {};
-            }
-        }
+    var send = action.send;
+    const emoji_label = "😀";
+    const emoji_width = button_height;
+    const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
+    if (widgets.button.draw(ctx, emoji_rect, emoji_label, active_queue, .{
+        .variant = .ghost,
+        .disabled = !enabled,
+        .radius = t.radius.sm,
+    })) {
+        emoji_open = !emoji_open;
+    }
+    if (!enabled) {
+        emoji_open = false;
     }
 
-    // Enter to send, Shift+Enter for newline.
-    // We also handle keypad enter.
-    if (zgui.isItemActive()) {
-        const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
-
-        const enter_pressed = zgui.isKeyPressed(.enter, false) or zgui.isKeyPressed(.keypad_enter, false);
-
-        if (enter_pressed and shift_down) {
-            pending_insert_newline = true;
-        } else if (enter_pressed and !shift_down) {
-            send = true;
-            // Strip trailing newline(s)
-            var buf = std.mem.sliceTo(&input_buf, 0);
-            while (buf.len > 0 and (buf[buf.len - 1] == '\n' or buf[buf.len - 1] == '\r')) {
-                input_buf[buf.len - 1] = 0;
-                buf = std.mem.sliceTo(&input_buf, 0);
-            }
-        }
-
-        // Fallback: if ImGui reports submit via enter_returns_true.
-        if (!send and changed and !shift_down) {
-            if (zgui.isKeyPressed(.enter, false) or zgui.isKeyPressed(.keypad_enter, false)) {
-                send = true;
-            }
-        }
-    }
-
-    // Button (kept for discoverability)
-    if (zgui.button("Send", .{})) {
+    const send_label = "Send";
+    const send_width = ctx.measureText(send_label, 0.0)[0] + t.spacing.md * 2.0;
+    const send_rect = draw_context.Rect.fromMinSize(
+        .{ rect.max[0] - send_width, row_y },
+        .{ send_width, button_height },
+    );
+    if (widgets.button.draw(ctx, send_rect, send_label, active_queue, .{
+        .variant = .primary,
+        .disabled = !enabled,
+        .radius = t.radius.sm,
+    })) {
         send = true;
     }
 
-    if (!send) return null;
-
-    const final_text = std.mem.sliceTo(&input_buf, 0);
-    if (final_text.len == 0) return null;
-
-    const owned = allocator.dupe(u8, final_text) catch return null;
-    input_buf[0] = 0;
-    input_generation +%= 1;
-    clearUndoStack();
-    return owned;
-}
-
-fn inputCallback(data: *zgui.InputTextCallbackData) callconv(.c) i32 {
-    if (!pending_insert_newline) return 0;
-    pending_insert_newline = false;
-
-    var start = data.selection_start;
-    var end = data.selection_end;
-    if (end < start) {
-        const tmp = start;
-        start = end;
-        end = tmp;
-    }
-    if (start != end) {
-        data.deleteChars(start, end - start);
-        data.cursor_pos = start;
+    if (emoji_open and enabled) {
+        drawEmojiPicker(allocator, ctx, active_queue, emoji_rect, editor);
     }
 
-    data.insertChars(data.cursor_pos, "\n");
-    data.cursor_pos += 1;
-    data.selection_start = data.cursor_pos;
-    data.selection_end = data.cursor_pos;
-    data.buf_dirty = true;
-    return 0;
+    if (!send or !enabled) return null;
+    return editor.takeText(allocator);
 }
 
-fn ensureUndoStack() ?*undo_redo.UndoRedoStack(InputSnapshot) {
-    if (input_history == null) {
-        input_history = undo_redo.UndoRedoStack(InputSnapshot).init(std.heap.page_allocator, 64, null);
-    }
-    return &input_history.?;
-}
-
-fn clearUndoStack() void {
-    if (input_history) |*stack| {
-        stack.clear();
-    }
-}
-
-fn registerShortcuts(sys: *systems.Systems) void {
-    _ = sys.keyboard.register(.{
-        .id = "chat_input.undo",
-        .key = .z,
-        .ctrl = true,
-        .scope = .focused,
-        .focus_id = "chat_input",
-        .action = onUndoShortcut,
-    }) catch {};
-    _ = sys.keyboard.register(.{
-        .id = "chat_input.redo",
-        .key = .y,
-        .ctrl = true,
-        .scope = .focused,
-        .focus_id = "chat_input",
-        .action = onRedoShortcut,
-    }) catch {};
-    _ = sys.keyboard.register(.{
-        .id = "chat_input.redo_shift",
-        .key = .z,
-        .ctrl = true,
-        .shift = true,
-        .scope = .focused,
-        .focus_id = "chat_input",
-        .action = onRedoShortcut,
-    }) catch {};
-}
-
-fn onUndoShortcut(_: ?*anyopaque) void {
-    if (input_history) |*stack| {
-        if (stack.undo()) |state| {
-            applyState(state);
-        }
-    }
-}
-
-fn onRedoShortcut(_: ?*anyopaque) void {
-    if (input_history) |*stack| {
-        if (stack.redo()) |state| {
-            applyState(state);
-        }
-    }
-}
-
-fn captureInputState() InputSnapshot {
-    const slice = std.mem.sliceTo(&input_buf, 0);
-    var state = InputSnapshot{
-        .len = slice.len,
-        .buf = [_]u8{0} ** 4096,
+fn drawEmojiPicker(
+    allocator: std.mem.Allocator,
+    ctx: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    anchor: draw_context.Rect,
+    editor: *text_editor.TextEditor,
+) void {
+    const t = theme.activeTheme();
+    const emojis = [_][]const u8{
+        "😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "🙌", "👍", "🔥", "🎉",
+        "✅", "⚠️", "❌", "💡", "🧪", "🛠️", "📌", "📎", "📝", "🚀", "🐛", "🧠",
     };
-    std.mem.copyForwards(u8, state.buf[0..slice.len], slice);
-    return state;
-}
+    const cols: usize = 6;
+    const rows: usize = (emojis.len + cols - 1) / cols;
+    const cell = anchor.size()[1];
+    const gap = t.spacing.xs;
+    const padding = t.spacing.xs;
+    const picker_w = @as(f32, @floatFromInt(cols)) * cell + @as(f32, @floatFromInt(cols - 1)) * gap + padding * 2.0;
+    const picker_h = @as(f32, @floatFromInt(rows)) * cell + @as(f32, @floatFromInt(rows - 1)) * gap + padding * 2.0;
 
-fn applyState(state: InputSnapshot) void {
-    const len = @min(state.len, input_buf.len - 1);
-    std.mem.copyForwards(u8, input_buf[0..len], state.buf[0..len]);
-    input_buf[len] = 0;
-    if (len + 1 < input_buf.len) {
-        @memset(input_buf[len + 1 ..], 0);
+    var picker_min = .{ anchor.min[0], anchor.min[1] - picker_h - gap };
+    if (picker_min[1] < 0.0) {
+        picker_min[1] = anchor.max[1] + gap;
     }
-}
+    const picker_rect = draw_context.Rect.fromMinSize(picker_min, .{ picker_w, picker_h });
 
-fn statesEqual(a: InputSnapshot, b: InputSnapshot) bool {
-    if (a.len != b.len) return false;
-    return std.mem.eql(u8, a.buf[0..a.len], b.buf[0..b.len]);
+    var clicked_outside = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and !picker_rect.contains(md.pos) and !anchor.contains(md.pos)) {
+                    clicked_outside = true;
+                }
+            },
+            else => {},
+        }
+    }
+    if (clicked_outside) {
+        emoji_open = false;
+        return;
+    }
+
+    ctx.drawRoundedRect(picker_rect, t.radius.sm, .{
+        .fill = t.colors.surface,
+        .stroke = t.colors.border,
+        .thickness = 1.0,
+    });
+
+    var index: usize = 0;
+    var row: usize = 0;
+    while (row < rows) : (row += 1) {
+        var col: usize = 0;
+        while (col < cols) : (col += 1) {
+            if (index >= emojis.len) break;
+            const x = picker_min[0] + padding + @as(f32, @floatFromInt(col)) * (cell + gap);
+            const y = picker_min[1] + padding + @as(f32, @floatFromInt(row)) * (cell + gap);
+            const cell_rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ cell, cell });
+            if (widgets.button.draw(ctx, cell_rect, emojis[index], queue, .{
+                .variant = .ghost,
+                .radius = t.radius.sm,
+            })) {
+                editor.insertText(allocator, emojis[index]);
+                emoji_open = false;
+            }
+            index += 1;
+        }
+    }
 }
