@@ -67,7 +67,7 @@ const usage =
     \\  --token <token>          Override auth token (alias: --auth-token)
     \\  --gateway-token <token>  Alias for --token
     \\  --log-level <level>      Log level (debug|info|warn|error)
-    \\  --config <path>          Config file path (default: ziggystarclaw_config.json)
+    \\  --config <path>          Config file path (default: ~/.config/ziggystarclaw/config.json or %APPDATA%\\ZiggyStarClaw\\config.json)
     \\  --update-url <url>       Override update manifest URL
     \\  --print-update-url       Print normalized update manifest URL and exit
     \\  --insecure-tls           Disable TLS verification
@@ -114,6 +114,7 @@ const usage =
     \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
     \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
+    \\  --version                Print version and exit
     \\  -h, --help               Show help
     \\  --node-mode-help         Show node mode help
     \\  --operator-mode-help     Show operator mode help
@@ -218,6 +219,10 @@ pub fn main() !void {
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.writeAll(usage);
+            return;
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
+            var stdout = std.fs.File.stdout().deprecatedWriter();
+            try stdout.print("ziggystarclaw-cli {s}\n", .{build_options.app_version});
             return;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
