@@ -7,7 +7,8 @@ const logger = @import("../utils/logger.zig");
 
 /// Health reporter for node status updates
 pub const HealthReporter = struct {
-    allocator: std.mem.Allocator,
+    // NOTE: This struct runs on a background thread. Do not use a non-thread-safe
+    // allocator from the main thread here.
     node_ctx: *NodeContext,
     ws_client: *websocket_client.WebSocketClient,
     running: bool = false,
@@ -19,8 +20,8 @@ pub const HealthReporter = struct {
         node_ctx: *NodeContext,
         ws_client: *websocket_client.WebSocketClient,
     ) HealthReporter {
+        _ = allocator;
         return .{
-            .allocator = allocator,
             .node_ctx = node_ctx,
             .ws_client = ws_client,
             .interval_ms = 30000,
@@ -65,43 +66,34 @@ pub const HealthReporter = struct {
             else => return,
         }
 
-        const request_id = try makeRequestId(self.allocator);
-        defer self.allocator.free(request_id);
-        
+        // Avoid sharing the main thread allocator: use a per-heartbeat arena backed by
+        // the global page allocator (thread-safe).
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+
+        const request_id = try makeRequestId(a);
+
         // Build health payload
-        var health_data = std.json.ObjectMap.init(self.allocator);
-        defer health_data.deinit();
+        var health_data = std.json.ObjectMap.init(a);
         
         // Node state
-        try health_data.put("state", std.json.Value{ .string = try self.allocator.dupe(u8, @tagName(self.node_ctx.state)) });
+        try health_data.put("state", std.json.Value{ .string = @tagName(self.node_ctx.state) });
         
         // Stats
         try health_data.put("commandsExecuted", std.json.Value{ .integer = @intCast(self.node_ctx.commands_executed) });
         try health_data.put("commandsFailed", std.json.Value{ .integer = @intCast(self.node_ctx.commands_failed) });
         
         // System metrics
-        const mem_info = try getMemoryInfo(self.allocator);
-        defer {
-            self.allocator.free(mem_info.total);
-            self.allocator.free(mem_info.available);
-        }
+        const mem_info = try getMemoryInfo(a);
         try health_data.put("memoryTotal", std.json.Value{ .string = mem_info.total });
         try health_data.put("memoryAvailable", std.json.Value{ .string = mem_info.available });
         
-        const load = try getLoadAverage(self.allocator);
-        defer self.allocator.free(load);
+        const load = try getLoadAverage(a);
         try health_data.put("loadAverage", std.json.Value{ .string = load });
         
         // Active processes count
-        const process_list = try self.node_ctx.process_manager.listProcesses(self.allocator);
-        defer {
-            for (process_list.array.items) |*item| {
-                if (item.* == .object) {
-                    item.object.deinit();
-                }
-            }
-            process_list.array.deinit();
-        }
+        const process_list = try self.node_ctx.process_manager.listProcesses(a);
         try health_data.put("activeProcesses", std.json.Value{ .integer = @intCast(process_list.array.items.len) });
         
         // Build heartbeat frame
@@ -115,9 +107,7 @@ pub const HealthReporter = struct {
             },
         };
         
-        const payload = try messages.serializeMessage(self.allocator, frame);
-        defer self.allocator.free(payload);
-        
+        const payload = try messages.serializeMessage(a, frame);
         try self.ws_client.send(payload);
         logger.debug("Heartbeat sent", .{});
     }
