@@ -14,8 +14,8 @@ pub const HealthReporter = struct {
     ws_mutex: ?*std.Thread.Mutex = null,
     running: bool = false,
     thread: ?std.Thread = null,
-    interval_ms: i64 = 30000, // 30 seconds
-    
+    interval_ms: i64 = 10000, // 10 seconds (gateway liveness is fairly aggressive)
+
     pub fn init(
         allocator: std.mem.Allocator,
         node_ctx: *NodeContext,
@@ -25,7 +25,7 @@ pub const HealthReporter = struct {
         return .{
             .node_ctx = node_ctx,
             .ws_client = ws_client,
-            .interval_ms = 30000,
+            .interval_ms = 10000,
         };
     }
 
