@@ -123,8 +123,12 @@ jobs:
       
       - name: Build all targets
         run: zig build
+
+      - name: Build node port scaffolds (cross-compile, no NDK/emsdk)
+        run: zig build node-ports
       
       - name: Check binary
         run: |
+          ./zig-out/bin/ziggystarclaw-cli --version
           ./zig-out/bin/ziggystarclaw-cli --help
           ./zig-out/bin/ziggystarclaw-cli --node-mode-help
