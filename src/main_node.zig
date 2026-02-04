@@ -248,11 +248,18 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     defer router.deinit();
 
     // Connection retry loop
+    // max_reconnect_attempts = 0 means unlimited retries.
     var reconnect_attempt: u32 = 0;
-    const max_reconnect_attempts: u32 = 10;
+    const max_reconnect_attempts: u32 = 0;
     const base_delay_ms: u64 = 1000;
 
-    while (reconnect_attempt < max_reconnect_attempts) {
+    // Precompute advertised caps/commands once.
+    const caps = try node_ctx.getCapabilitiesArray();
+    defer node_context.freeStringArray(allocator, caps);
+    const commands = try node_ctx.getCommandsArray();
+    defer node_context.freeStringArray(allocator, commands);
+
+    while (max_reconnect_attempts == 0 or reconnect_attempt < max_reconnect_attempts) {
         logger.info(
             "Connecting to gateway at {s} (attempt {d}/{d})...",
             .{ ws_url, reconnect_attempt + 1, max_reconnect_attempts },
@@ -284,13 +291,6 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             .client_mode = "node",
             .display_name = cfg.node.displayName orelse "ZiggyStarClaw",
         });
-        // Advertise capabilities/commands based on what we've actually registered in NodeContext.
-        // This keeps the gateway UI + validation in sync with what the router can handle.
-        const caps = try node_ctx.getCapabilitiesArray();
-        defer node_context.freeStringArray(allocator, caps);
-        const commands = try node_ctx.getCommandsArray();
-        defer node_context.freeStringArray(allocator, commands);
-
         ws_client_val.setConnectNodeMetadata(.{
             .caps = caps,
             .commands = commands,
@@ -306,13 +306,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         ws_client_val.connect() catch |err| {
             logger.err("Gateway connection failed: {s}", .{@errorName(err)});
             reconnect_attempt += 1;
-            if (reconnect_attempt >= max_reconnect_attempts) {
+            if (max_reconnect_attempts != 0 and reconnect_attempt >= max_reconnect_attempts) {
                 logger.err("Max reconnection attempts reached", .{});
                 return error.ConnectionFailed;
             }
-            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
-            logger.info("Retrying in {d}ms...", .{@min(delay_ms, 30000)});
-            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+            var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+            delay_ms = @min(delay_ms, 30000);
+            // Add a bit of jitter so fleets don't thundering-herd.
+            const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
+            delay_ms += jitter;
+            logger.info("Retrying in {d}ms...", .{delay_ms});
+            std.Thread.sleep(delay_ms * std.time.ns_per_ms);
             continue;
         };
 
@@ -353,12 +357,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         }
 
         // If we got here due to disconnect, retry
-        if (reconnect_attempt < max_reconnect_attempts) {
-            reconnect_attempt += 1;
-            const delay_ms = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
-            logger.info("Reconnecting in {d}ms...", .{@min(delay_ms, 30000)});
-            std.Thread.sleep(@as(u64, @min(delay_ms, 30000)) * std.time.ns_per_ms);
+        reconnect_attempt += 1;
+        if (max_reconnect_attempts != 0 and reconnect_attempt >= max_reconnect_attempts) {
+            logger.err("Max reconnection attempts reached", .{});
+            return error.ConnectionFailed;
         }
+        var delay_ms: u64 = base_delay_ms * std.math.pow(u64, 2, reconnect_attempt);
+        delay_ms = @min(delay_ms, 30000);
+        const jitter: u64 = @intFromFloat(std.crypto.random.float(f64) * 250.0);
+        delay_ms += jitter;
+        logger.info("Reconnecting in {d}ms...", .{delay_ms});
+        std.Thread.sleep(delay_ms * std.time.ns_per_ms);
     }
 
     // Clean break: no save-config behavior in node-mode.
