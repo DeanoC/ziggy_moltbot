@@ -28,6 +28,9 @@ const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
 const sdl = @import("platform/sdl3.zig").c;
+const input_backend = @import("ui/input/input_backend.zig");
+const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
+const input_router = @import("ui/input/input_router.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
 const imgui_wgpu = @import("ui/imgui_wrapper_wgpu.zig");
@@ -834,6 +837,9 @@ pub fn main() !void {
     }
     defer sdl.SDL_Quit();
     _ = sdl.SDL_SetHint("SDL_IME_SHOW_UI", "1");
+    sdl_input_backend.init(allocator);
+    input_router.setBackend(input_backend.sdl3);
+    defer sdl_input_backend.deinit();
 
     var window_width: c_int = 1280;
     var window_height: c_int = 720;
@@ -970,6 +976,7 @@ pub fn main() !void {
         var event: sdl.SDL_Event = undefined;
         while (sdl.SDL_PollEvent(&event)) {
             _ = imgui_wgpu.processEvent(&event);
+            sdl_input_backend.pushEvent(&event);
             switch (event.type) {
                 sdl.SDL_EVENT_QUIT,
                 sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,

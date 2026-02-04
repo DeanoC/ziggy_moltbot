@@ -36,7 +36,19 @@ pub const Renderer = struct {
     }
 
     pub fn beginFrame(self: *Renderer, framebuffer_width: u32, framebuffer_height: u32) void {
-        _ = self;
+        if (framebuffer_width > 0 and framebuffer_height > 0) {
+            if (self.gctx.swapchain_descriptor.width != framebuffer_width or
+                self.gctx.swapchain_descriptor.height != framebuffer_height)
+            {
+                self.gctx.swapchain_descriptor.width = framebuffer_width;
+                self.gctx.swapchain_descriptor.height = framebuffer_height;
+                self.gctx.swapchain.release();
+                self.gctx.swapchain = self.gctx.device.createSwapChain(
+                    self.gctx.surface,
+                    self.gctx.swapchain_descriptor,
+                );
+            }
+        }
         imgui.beginFrame(framebuffer_width, framebuffer_height);
     }
 
