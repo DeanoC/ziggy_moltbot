@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const unified_config = @import("unified_config.zig");
+const node_platform = @import("node/node_platform.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const logger = @import("utils/logger.zig");
 
@@ -15,8 +16,8 @@ fn waitForHelloOkAndToken(
     ws: *websocket_client.WebSocketClient,
     timeout_ms: u64,
 ) !?[]u8 {
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    while (ws.is_connected and std.time.milliTimestamp() < deadline) {
+    const deadline = node_platform.nowMs() + @as(i64, @intCast(timeout_ms));
+    while (ws.is_connected and node_platform.nowMs() < deadline) {
         ws.poll() catch {};
 
         const msg = try ws.receive();
@@ -85,7 +86,7 @@ fn waitForHelloOkAndToken(
             return null;
         }
 
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        node_platform.sleepMs(20);
     }
 
     return error.Timeout;
@@ -104,7 +105,7 @@ fn promptLineAlloc(allocator: std.mem.Allocator, label: []const u8) ![]u8 {
 fn backupConfigIfExists(allocator: std.mem.Allocator, path: []const u8) void {
     _ = allocator;
     // Best-effort: if file exists, rename to .bak.<unixms>
-    const now_ms: i64 = std.time.milliTimestamp();
+    const now_ms: i64 = node_platform.nowMs();
     const bak = std.fmt.allocPrint(std.heap.page_allocator, "{s}.bak.{d}", .{ path, now_ms }) catch return;
     defer std.heap.page_allocator.free(bak);
 
@@ -154,15 +155,8 @@ pub fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gatewa
     const default_name = try bestEffortDefaultName(allocator);
     defer allocator.free(default_name);
 
-    const identity_path: []const u8 = if (builtin.target.os.tag == .windows)
-        "%APPDATA%\\ZiggyStarClaw\\node-device.json"
-    else
-        "~/.config/ziggystarclaw/node-device.json";
-
-    const approvals_path: []const u8 = if (builtin.target.os.tag == .windows)
-        "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json"
-    else
-        "~/.config/ziggystarclaw/exec-approvals.json";
+    const identity_path: []const u8 = node_platform.defaultNodeDeviceIdentityPathTemplate();
+    const approvals_path: []const u8 = node_platform.defaultExecApprovalsPathTemplate();
 
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
@@ -321,7 +315,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     logger.info("Connecting as node-host to obtain/verify device token...", .{});
 
     const max_wait_ms: i64 = if (wait_for_approval) 5 * 60 * 1000 else 0;
-    const start_ms: i64 = std.time.milliTimestamp();
+    const start_ms: i64 = node_platform.nowMs();
     var attempt: u32 = 0;
 
     while (true) {
@@ -368,13 +362,13 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
                 logger.info("Device id to approve: {s}", .{identity.device_id});
                 if (!wait_for_approval) return error.PairingRequired;
 
-                const elapsed = std.time.milliTimestamp() - start_ms;
+                const elapsed = node_platform.nowMs() - start_ms;
                 if (elapsed > max_wait_ms) {
                     logger.err("Timed out waiting for approval.", .{});
                     return error.Timeout;
                 }
                 logger.info("Waiting for approval... (attempt {d})", .{attempt});
-                std.Thread.sleep(1500 * std.time.ns_per_ms);
+                node_platform.sleepMs(1500);
                 continue;
             },
             else => return err,

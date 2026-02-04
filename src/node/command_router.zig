@@ -7,6 +7,7 @@ const websocket_client = @import("../client/websocket_client.zig");
 const requests = @import("../protocol/requests.zig");
 const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
+const node_platform = @import("node_platform.zig");
 
 /// Command handler function signature
 pub const CommandHandler = *const fn (
@@ -234,7 +235,7 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     }.readAll, .{ stderr_reader, &stderr_buf, allocator });
 
     // Wait with timeout
-    const start_time = std.time.milliTimestamp();
+    const start_time = node_platform.nowMs();
     var timed_out = false;
     var reaped_status: ?u32 = null;
 
@@ -244,7 +245,7 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
         reaped_status = null;
     } else {
         while (true) {
-            const elapsed = std.time.milliTimestamp() - start_time;
+            const elapsed = node_platform.nowMs() - start_time;
             if (elapsed > timeout_ms) {
                 timed_out = true;
                 _ = child.kill() catch {};
@@ -258,7 +259,7 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
                 break;
             }
 
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            node_platform.sleepMs(50);
         }
     }
 
@@ -410,13 +411,13 @@ fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.
             logger.err("canvas.present failed: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
-        
+
         var result = std.json.ObjectMap.init(allocator);
         try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
         try result.put("backend", std.json.Value{ .string = try allocator.dupe(u8, @tagName(canvas.config.backend)) });
         return std.json.Value{ .object = result };
     }
-    
+
     return CommandError.NotAllowed;
 }
 
@@ -426,12 +427,12 @@ fn canvasHideHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.jso
             logger.err("canvas.hide failed: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
-        
+
         var result = std.json.ObjectMap.init(allocator);
         try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
         return std.json.Value{ .object = result };
     }
-    
+
     return CommandError.NotAllowed;
 }
 
@@ -442,19 +443,19 @@ fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params
     if (url_param != .string) {
         return CommandError.InvalidParams;
     }
-    
+
     if (ctx.canvas_manager.getCanvas()) |canvas| {
         canvas.navigate(url_param.string) catch |err| {
             logger.err("canvas.navigate failed: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
-        
+
         var result = std.json.ObjectMap.init(allocator);
         try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
         try result.put("url", std.json.Value{ .string = try allocator.dupe(u8, url_param.string) });
         return std.json.Value{ .object = result };
     }
-    
+
     return CommandError.NotAllowed;
 }
 
@@ -465,20 +466,20 @@ fn canvasEvalHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: st
     if (js_param != .string) {
         return CommandError.InvalidParams;
     }
-    
+
     if (ctx.canvas_manager.getCanvas()) |canvas| {
         const result_str = canvas.eval(js_param.string) catch |err| {
             logger.err("canvas.eval failed: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
         defer allocator.free(result_str);
-        
+
         var result = std.json.ObjectMap.init(allocator);
         try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "success") });
         try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, result_str) });
         return std.json.Value{ .object = result };
     }
-    
+
     return CommandError.NotAllowed;
 }
 
@@ -489,19 +490,19 @@ fn canvasSnapshotHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params
     if (path_param != .string) {
         return CommandError.InvalidParams;
     }
-    
+
     if (ctx.canvas_manager.getCanvas()) |canvas| {
         canvas.snapshot(path_param.string) catch |err| {
             logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
             return CommandError.ExecutionFailed;
         };
-        
+
         var result = std.json.ObjectMap.init(allocator);
         try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "saved") });
         try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, path_param.string) });
         return std.json.Value{ .object = result };
     }
-    
+
     return CommandError.NotAllowed;
 }
 

@@ -7,6 +7,7 @@ const command_router = @import("node/command_router.zig");
 const CommandRouter = command_router.CommandRouter;
 const canvas = @import("node/canvas.zig");
 const websocket_client = @import("client/websocket_client.zig");
+const node_platform = @import("node/node_platform.zig");
 const SingleThreadConnectionManager = @import("node/connection_manager_singlethread.zig").SingleThreadConnectionManager;
 const event_handler = @import("client/event_handler.zig");
 const requests = @import("protocol/requests.zig");
@@ -342,7 +343,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         conn.step();
 
         if (!conn.is_connected) {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            node_platform.sleepMs(100);
             continue;
         }
 
@@ -361,7 +362,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 logger.err("Node message handling failed: {s}", .{@errorName(err)});
             };
         } else {
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            node_platform.sleepMs(50);
         }
     }
 }

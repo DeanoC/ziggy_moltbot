@@ -1,6 +1,7 @@
 const std = @import("std");
 const websocket_client = @import("../client/websocket_client.zig");
 const logger = @import("../utils/logger.zig");
+const node_platform = @import("node_platform.zig");
 
 /// Single-threaded connection manager for node-mode.
 ///
@@ -52,7 +53,7 @@ pub const SingleThreadConnectionManager = struct {
             .token = tok_copy,
             .insecure_tls = insecure_tls,
             .ws_client = client,
-            .next_attempt_at_ms = std.time.milliTimestamp(),
+            .next_attempt_at_ms = node_platform.nowMs(),
         };
     }
 
@@ -97,11 +98,11 @@ pub const SingleThreadConnectionManager = struct {
         // Re-init client in a clean state (preserves url/token copies).
         self.ws_client = websocket_client.WebSocketClient.init(self.allocator, self.ws_url, self.token, self.insecure_tls, null);
         self.ws_client.setReadTimeout(15_000);
-        self.next_attempt_at_ms = std.time.milliTimestamp() + @as(i64, @intCast(self.computeDelayMs()));
+        self.next_attempt_at_ms = node_platform.nowMs() + @as(i64, @intCast(self.computeDelayMs()));
     }
 
     pub fn step(self: *SingleThreadConnectionManager) void {
-        const now = std.time.milliTimestamp();
+        const now = node_platform.nowMs();
 
         if (!self.is_connected) {
             if (now < self.next_attempt_at_ms) return;
