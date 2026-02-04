@@ -11,6 +11,8 @@ const event_handler = @import("client/event_handler.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const gateway = @import("protocol/gateway.zig");
+const health_reporter = @import("node/health_reporter.zig");
+const HealthReporter = health_reporter.HealthReporter;
 const logger = @import("utils/logger.zig");
 
 fn expandUserPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -318,6 +320,14 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         reconnect_attempt = 0; // Reset on successful connection
 
         logger.info("Connected.", .{});
+
+        // Start the health reporter. It will only emit heartbeats once hello-ok was received
+        // and NodeContext transitions into idle/executing.
+        var reporter = HealthReporter.init(allocator, &node_ctx, &ws_client_val);
+        reporter.start() catch |err| {
+            logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
+        };
+        defer reporter.stop();
 
         // Main event loop
         const running = true;
