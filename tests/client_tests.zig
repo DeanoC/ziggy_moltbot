@@ -18,6 +18,7 @@ test "client context message removal" {
     var ctx = try state.ClientContext.init(allocator);
     defer ctx.deinit();
 
+    const session_key = "s1";
     const msg = moltbot.protocol.types.ChatMessage{
         .id = "m1",
         .role = "user",
@@ -25,10 +26,12 @@ test "client context message removal" {
         .timestamp = 1,
         .attachments = null,
     };
-    try ctx.upsertMessage(msg);
-    try std.testing.expectEqual(@as(usize, 1), ctx.messages.items.len);
 
-    const removed = ctx.removeMessageById("m1");
+    try ctx.upsertSessionMessage(session_key, msg);
+    const state_ptr = ctx.session_states.getPtr(session_key).?;
+    try std.testing.expectEqual(@as(usize, 1), state_ptr.messages.items.len);
+
+    const removed = ctx.removeSessionMessageById(session_key, "m1");
     try std.testing.expect(removed);
-    try std.testing.expectEqual(@as(usize, 0), ctx.messages.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state_ptr.messages.items.len);
 }
