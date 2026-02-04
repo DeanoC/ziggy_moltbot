@@ -26,6 +26,10 @@ pub const UnifiedConfig = struct {
         /// Optional display name (falls back to "ZiggyStarClaw Node").
         displayName: ?[]const u8 = null,
 
+        /// Health reporter interval (node.heartbeat) in milliseconds.
+        /// Keep this reasonably frequent so the gateway doesn't mark the node as stale.
+        healthReporterIntervalMs: i64 = 10000,
+
         /// Where to store the node device identity JSON.
         deviceIdentityPath: []const u8,
         /// Exec approvals JSON path (used by system.run allowlist).
@@ -205,6 +209,7 @@ pub fn load(allocator: std.mem.Allocator, path: []const u8) !UnifiedConfig {
             .nodeToken = node_tok,
             .nodeId = node_id,
             .displayName = display,
+            .healthReporterIntervalMs = parsed.value.node.healthReporterIntervalMs,
             .deviceIdentityPath = node_identity,
             .execApprovalsPath = approvals,
         },

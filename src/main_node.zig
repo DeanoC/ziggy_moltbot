@@ -212,11 +212,18 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         return error.InvalidArguments;
     }
 
-    if (cfg.gateway.wsUrl.len == 0 or cfg.gateway.authToken.len == 0) {
-        logger.err("Config missing gateway.wsUrl and/or gateway.authToken", .{});
+    if (cfg.gateway.wsUrl.len == 0) {
+        logger.err("Config missing gateway.wsUrl", .{});
         return error.InvalidArguments;
     }
-    // node.nodeToken is not required for node-mode; OpenClaw's node-host uses the gateway token.
+
+    // Token selection for node-mode:
+    // - Prefer node.nodeToken (role=node) when present.
+    // - Fall back to gateway.authToken for legacy configs.
+    if (cfg.gateway.authToken.len == 0 and cfg.node.nodeToken.len == 0) {
+        logger.err("Config missing auth token(s): need gateway.authToken and/or node.nodeToken", .{});
+        return error.InvalidArguments;
+    }
 
     const ws_url = try unified_config.normalizeGatewayWsUrl(allocator, cfg.gateway.wsUrl);
     defer allocator.free(ws_url);
@@ -264,17 +271,23 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const commands = try node_ctx.getCommandsArray();
     defer node_context.freeStringArray(allocator, commands);
 
+    const node_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
+    if (cfg.node.nodeToken.len == 0) {
+        logger.warn("node.nodeToken is empty; falling back to gateway.authToken for node-mode auth", .{});
+    }
+
     // Single-thread connection manager (no background threads).
-    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, cfg.gateway.authToken, false);
+    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, node_token, false);
     defer conn.deinit();
 
     const Ctx = struct {
         cfg: *UnifiedConfig,
+        node_token: []const u8,
         node_ctx: *NodeContext,
         caps: []const []const u8,
         commands: []const []const u8,
     };
-    var cb_ctx = Ctx{ .cfg = &cfg, .node_ctx = &node_ctx, .caps = caps, .commands = commands };
+    var cb_ctx = Ctx{ .cfg = &cfg, .node_token = node_token, .node_ctx = &node_ctx, .caps = caps, .commands = commands };
     conn.user_ctx = @ptrCast(&cb_ctx);
 
     conn.onConfigureClient = struct {
@@ -289,8 +302,8 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             });
             client.setConnectNodeMetadata(.{ .caps = ctx.caps, .commands = ctx.commands });
             client.setDeviceIdentityPath(ctx.cfg.node.deviceIdentityPath);
-            client.setConnectAuthToken(ctx.cfg.gateway.authToken);
-            client.setDeviceAuthToken(ctx.cfg.gateway.authToken);
+            client.setConnectAuthToken(ctx.node_token);
+            client.setDeviceAuthToken(ctx.node_token);
         }
     }.cb;
 
@@ -316,6 +329,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     conn.ws_mutex = &ws_mutex;
 
     var reporter = HealthReporter.init(allocator, &node_ctx, &conn.ws_client);
+    reporter.interval_ms = cfg.node.healthReporterIntervalMs;
     reporter.setMutex(&ws_mutex);
     reporter.start() catch |err| {
         logger.warn("Failed to start health reporter: {s}", .{@errorName(err)});
