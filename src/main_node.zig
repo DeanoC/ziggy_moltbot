@@ -282,15 +282,16 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             .client_mode = "node",
             .display_name = cfg.node.displayName orelse "ZiggyStarClaw",
         });
+        // Advertise capabilities/commands based on what we've actually registered in NodeContext.
+        // This keeps the gateway UI + validation in sync with what the router can handle.
+        const caps = try node_ctx.getCapabilitiesArray();
+        defer node_context.freeStringArray(allocator, caps);
+        const commands = try node_ctx.getCommandsArray();
+        defer node_context.freeStringArray(allocator, commands);
+
         ws_client_val.setConnectNodeMetadata(.{
-            .caps = &.{"system"},
-            .commands = &.{
-                "system.run",
-                "system.which",
-                "system.notify",
-                "system.execApprovals.get",
-                "system.execApprovals.set",
-            },
+            .caps = caps,
+            .commands = commands,
         });
         // Critical: ensure node-mode uses the SAME device identity file as node-register/config.
         // Otherwise it will generate a new device id and trigger pairing again.
