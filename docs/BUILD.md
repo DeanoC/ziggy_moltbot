@@ -38,3 +38,15 @@ zig build -Dwasm=true
 ```
 
 Outputs are installed under `zig-out/web/` (HTML/JS/WASM).
+
+## WASM Node Runtime (connect-only skeleton; no emsdk)
+
+This is **not** the browser UI build. It produces a standalone `.wasm` module
+intended for a future node runtime (likely hosted by JS, e.g. WebWorker).
+
+```bash
+zig build node-wasm
+```
+
+Output:
+- `zig-out/bin/ziggystarclaw-node.wasm`

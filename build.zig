@@ -617,6 +617,36 @@ pub fn build(b: *std.Build) void {
     });
     const android_scaffold_install = b.addInstallArtifact(android_scaffold_lib, .{});
     node_ports_step.dependOn(&android_scaffold_install.step);
+
+    // ---------------------------------------------------------------------
+    // WASM node runtime (connect-only skeleton)
+    //
+    // This produces a standalone `.wasm` module for a future node runtime.
+    // It is intentionally freestanding-friendly and does not require emsdk.
+    //
+    // Usage:
+    //   zig build node-wasm
+    //
+    const node_wasm_step = b.step("node-wasm", "Build WASM node runtime (connect-only skeleton)");
+    const wasm_node_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const wasm_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/wasm/main.zig"),
+        .target = wasm_node_target,
+        .optimize = optimize,
+    });
+    const wasm_node_exe = b.addExecutable(.{
+        .name = "ziggystarclaw-node",
+        .root_module = wasm_node_mod,
+    });
+    wasm_node_exe.root_module.addOptions("build_options", build_options);
+
+    // No `_start`/`main` entrypoint yet; this module is driven by exports.
+    wasm_node_exe.entry = .disabled;
+    // Keep exports visible when linking; exports are also marked `export`.
+    wasm_node_exe.rdynamic = true;
+
+    const wasm_node_install = b.addInstallArtifact(wasm_node_exe, .{});
+    node_wasm_step.dependOn(&wasm_node_install.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
