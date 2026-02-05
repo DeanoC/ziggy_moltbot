@@ -68,6 +68,8 @@ pub const usage =
     \\  --display-name <name>      Override node display name shown in gateway UI
     \\  --as-node / --no-node      Enable/disable node connection (default: from config)
     \\  --as-operator / --no-operator  Enable/disable operator connection (default: from config)
+    \\  --auto-approve-pairing    Auto-approve pairing requests (node-mode only)
+    \\  --pairing-timeout <sec>   Pairing approval timeout in seconds (default: 120)
     \\  --insecure-tls             Disable TLS verification
     \\  --log-level <level>        Log level (debug|info|warn|error)
     \\  -h, --help                 Show help
@@ -97,6 +99,9 @@ pub const NodeCliOptions = struct {
     // Connect role toggles (checkboxes)
     as_node: ?bool = null,
     as_operator: ?bool = null,
+
+    auto_approve_pairing: bool = false,
+    pairing_timeout_seconds: u32 = 120,
 
     insecure_tls: bool = false,
     log_level: logger.Level = .info,
@@ -144,6 +149,12 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             opts.as_operator = true;
         } else if (std.mem.eql(u8, arg, "--no-operator")) {
             opts.as_operator = false;
+        } else if (std.mem.eql(u8, arg, "--auto-approve-pairing")) {
+            opts.auto_approve_pairing = true;
+        } else if (std.mem.eql(u8, arg, "--pairing-timeout")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            opts.pairing_timeout_seconds = std.fmt.parseInt(u32, args[i], 10) catch return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--tls")) {
             opts.tls = true;
         } else if (std.mem.eql(u8, arg, "--insecure-tls")) {
@@ -172,6 +183,55 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
 }
 
 // (Legacy NodeConfig helpers removed; node-mode uses unified_config.json only.)
+
+const PairingDecision = enum { approved, rejected };
+
+const PairingState = struct {
+    auto_approve: bool,
+    timeout_ms: i64,
+    interactive: bool,
+
+    request_id: ?[]const u8 = null,
+    requested_at_ms: i64 = 0,
+    last_decision: ?PairingDecision = null,
+
+    fn deinit(self: *PairingState, allocator: std.mem.Allocator) void {
+        if (self.request_id) |rid| {
+            allocator.free(rid);
+        }
+    }
+
+    fn setPending(self: *PairingState, allocator: std.mem.Allocator, request_id: []const u8) !void {
+        if (self.request_id) |rid| {
+            allocator.free(rid);
+        }
+        self.request_id = try allocator.dupe(u8, request_id);
+        self.requested_at_ms = node_platform.nowMs();
+        self.last_decision = null;
+    }
+
+    fn clear(self: *PairingState, allocator: std.mem.Allocator) void {
+        if (self.request_id) |rid| {
+            allocator.free(rid);
+        }
+        self.request_id = null;
+        self.requested_at_ms = 0;
+    }
+
+    fn isPending(self: *const PairingState) bool {
+        return self.request_id != null;
+    }
+
+    fn deadlineMs(self: *const PairingState) i64 {
+        return self.requested_at_ms + self.timeout_ms;
+    }
+};
+
+fn isInteractive() bool {
+    const stdin = std.fs.File.stdin();
+    const stdout = std.fs.File.stdout();
+    return stdin.isTty() and stdout.isTty();
+}
 
 pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     logger.setLevel(opts.log_level);
@@ -237,6 +297,13 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
 
     const display_name = if (cfg.node.displayName) |n| n else "ZiggyStarClaw Node";
 
+    var pairing = PairingState{
+        .auto_approve = opts.auto_approve_pairing,
+        .timeout_ms = @as(i64, @intCast(opts.pairing_timeout_seconds)) * std.time.ms_per_s,
+        .interactive = isInteractive(),
+    };
+    defer pairing.deinit(allocator);
+
     // Initialize node context
     var node_ctx = try NodeContext.init(allocator, node_id, display_name);
     defer node_ctx.deinit();
@@ -273,13 +340,15 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const commands = try node_ctx.getCommandsArray();
     defer node_context.freeStringArray(allocator, commands);
 
-    const node_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
+    const handshake_token = cfg.gateway.authToken;
+    const connect_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
     if (cfg.node.nodeToken.len == 0) {
-        logger.warn("node.nodeToken is empty; falling back to gateway.authToken for node-mode auth", .{});
+        logger.warn("node.nodeToken is empty; connect auth will fall back to gateway.authToken", .{});
     }
 
     // Single-thread connection manager (no background threads).
-    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, node_token, false);
+    // IMPORTANT: handshake token (gateway auth) is distinct from connect auth token (node pairing token).
+    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, handshake_token, connect_auth_token, false);
     defer conn.deinit();
 
     const Ctx = struct {
@@ -303,10 +372,14 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             });
             client.setConnectNodeMetadata(.{ .caps = ctx.caps, .commands = ctx.commands });
             client.setDeviceIdentityPath(ctx.cfg.node.deviceIdentityPath);
-            // Use the connection manager's current token. This may be refreshed at runtime
-            // when the gateway issues a new device token.
-            client.setConnectAuthToken(cm.token);
-            client.setDeviceAuthToken(cm.token);
+            // Token separation:
+            // - WS handshake uses the gateway auth token (WebSocketClient.token), set in the connection manager init.
+            // - Connect auth (params.auth.token) for role=node should be the paired node token.
+            //   The gateway will validate it via verifyDeviceToken() after device signature checks.
+            // - Device-auth signed payload must use the SAME token as connect auth (gateway signs/validates
+            //   buildDeviceAuthPayload(..., token=connectParams.auth.token)).
+            client.setConnectAuthToken(cm.connect_auth_token);
+            client.setDeviceAuthToken(cm.connect_auth_token);
         }
     }.cb;
 
@@ -357,12 +430,24 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         };
         ws_mutex.unlock();
 
+        var got_payload = false;
         if (payload) |text| {
+            got_payload = true;
             defer allocator.free(text);
-            handleNodeMessage(allocator, &conn.ws_client, &conn, &node_ctx, &router, config_path, &cfg, text) catch |err| {
+            handleNodeMessage(allocator, &conn.ws_client, &conn, &pairing, &node_ctx, &router, config_path, &cfg, text) catch |err| {
                 logger.err("Node message handling failed: {s}", .{@errorName(err)});
             };
-        } else {
+        }
+
+        if (pairing.isPending() and node_platform.nowMs() > pairing.deadlineMs()) {
+            logger.err(
+                "Pairing request {s} timed out after {d}s.",
+                .{ pairing.request_id.?, opts.pairing_timeout_seconds },
+            );
+            pairing.clear(allocator);
+        }
+
+        if (!got_payload) {
             node_platform.sleepMs(50);
         }
     }
@@ -427,6 +512,7 @@ fn handleNodeMessage(
     allocator: std.mem.Allocator,
     ws_client: anytype,
     conn: ?*SingleThreadConnectionManager,
+    pairing: *PairingState,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     cfg_path: []const u8,
@@ -457,8 +543,14 @@ fn handleNodeMessage(
         if (std.mem.eql(u8, event.string, "connect.challenge")) {
             logger.info("Received connect challenge", .{});
             // Handled by WebSocketClient
-        } else if (std.mem.eql(u8, event.string, "device.pair.requested")) {
-            logger.warn("Device pairing required. Approve via gateway UI or CLI.", .{});
+        } else if (std.mem.eql(u8, event.string, "device.pair.requested") or
+            std.mem.eql(u8, event.string, "node.pair.requested"))
+        {
+            try handlePairingRequested(allocator, ws_client, pairing, value);
+        } else if (std.mem.eql(u8, event.string, "device.pair.resolved") or
+            std.mem.eql(u8, event.string, "node.pair.resolved"))
+        {
+            try handlePairingResolved(allocator, conn, pairing, value);
         } else if (std.mem.eql(u8, event.string, "node.invoke.request")) {
             try handleNodeInvokeRequestEvent(allocator, ws_client, node_ctx, router, value);
         }
@@ -487,13 +579,18 @@ fn handleNodeMessage(
 
                                         // Persist device token to config.json (single source of truth).
                                         // Also refresh the connection manager token so reconnects use the updated value.
+                                        if (pairing.isPending()) {
+                                            logger.info("Pairing completed; clearing pending request before persisting token.", .{});
+                                            pairing.clear(allocator);
+                                        }
+
                                         if (!std.mem.eql(u8, cfg.node.nodeToken, token.string)) {
                                             allocator.free(cfg.node.nodeToken);
                                             cfg.node.nodeToken = try allocator.dupe(u8, token.string);
 
                                             if (conn) |cm| {
-                                                cm.setToken(cfg.node.nodeToken) catch |err| {
-                                                    logger.warn("Failed to update connection token: {s}", .{@errorName(err)});
+                                                cm.setConnectAuthToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update connect auth token: {s}", .{@errorName(err)});
                                                 };
                                             }
 
@@ -509,15 +606,35 @@ fn handleNodeMessage(
                 }
             }
         } else {
-            logger.err("Connect request failed", .{});
+            var handled_pairing = false;
             if (value.object.get("error")) |err| {
                 if (err == .object) {
                     if (err.object.get("message")) |msg| {
                         if (msg == .string) {
-                            logger.err("Error: {s}", .{msg.string});
+                            if (std.mem.indexOf(u8, msg.string, "pairing required") != null or
+                                std.mem.indexOf(u8, msg.string, "pairing pending") != null)
+                            {
+                                logger.warn(
+                                    "Pairing required. Await approval or run with --auto-approve-pairing.",
+                                    .{},
+                                );
+                                handled_pairing = true;
+                            } else if (std.mem.indexOf(u8, msg.string, "pairing rejected") != null or
+                                std.mem.indexOf(u8, msg.string, "pairing denied") != null)
+                            {
+                                logger.err("Pairing rejected by gateway.", .{});
+                                pairing.last_decision = .rejected;
+                                handled_pairing = true;
+                            }
+                            if (!handled_pairing) {
+                                logger.err("Error: {s}", .{msg.string});
+                            }
                         }
                     }
                 }
+            }
+            if (!handled_pairing) {
+                logger.err("Connect request failed", .{});
             }
         }
     } else if (std.mem.eql(u8, frame_type, "req")) {
@@ -529,6 +646,137 @@ fn handleNodeMessage(
             try handleNodeInvoke(allocator, ws_client, node_ctx, router, value);
         }
     }
+}
+
+fn handlePairingRequested(
+    allocator: std.mem.Allocator,
+    ws_client: anytype,
+    pairing: *PairingState,
+    frame: std.json.Value,
+) !void {
+    const ev_val = frame.object.get("event") orelse return;
+    if (ev_val != .string) return;
+    const approve_method = if (std.mem.eql(u8, ev_val.string, "node.pair.requested"))
+        "node.pair.approve"
+    else
+        "device.pair.approve";
+    const reject_method = if (std.mem.eql(u8, ev_val.string, "node.pair.requested"))
+        "node.pair.reject"
+    else
+        "device.pair.reject";
+
+    const payload = frame.object.get("payload") orelse return;
+    if (payload != .object) return;
+    const rid_val = payload.object.get("requestId") orelse payload.object.get("id") orelse {
+        logger.warn("Pairing requested but no requestId provided.", .{});
+        return;
+    };
+    if (rid_val != .string) return;
+
+    try pairing.setPending(allocator, rid_val.string);
+    logger.warn("Pairing request received (requestId={s}).", .{rid_val.string});
+
+    if (pairing.auto_approve) {
+        try sendPairingDecision(allocator, ws_client, approve_method, rid_val.string);
+        logger.info("Auto-approved pairing request {s}.", .{rid_val.string});
+        return;
+    }
+
+    if (!pairing.interactive) {
+        logger.warn(
+            "Pairing pending. Re-run with --auto-approve-pairing or approve via operator CLI.",
+            .{},
+        );
+        return;
+    }
+
+    const approve = try promptPairingApproval(allocator, rid_val.string);
+    if (approve) {
+        try sendPairingDecision(allocator, ws_client, approve_method, rid_val.string);
+        logger.info("Approved pairing request {s}.", .{rid_val.string});
+    } else {
+        try sendPairingDecision(allocator, ws_client, reject_method, rid_val.string);
+        pairing.last_decision = .rejected;
+        logger.err("Rejected pairing request {s}.", .{rid_val.string});
+    }
+}
+
+fn handlePairingResolved(
+    allocator: std.mem.Allocator,
+    conn: ?*SingleThreadConnectionManager,
+    pairing: *PairingState,
+    frame: std.json.Value,
+) !void {
+    const payload = frame.object.get("payload") orelse return;
+    if (payload != .object) return;
+    const rid_val = payload.object.get("requestId") orelse payload.object.get("id");
+    const decision_val = payload.object.get("decision") orelse payload.object.get("status");
+
+    var decision: ?PairingDecision = null;
+    if (decision_val) |dv| {
+        if (dv == .string) {
+            if (std.mem.eql(u8, dv.string, "approved")) decision = .approved;
+            if (std.mem.eql(u8, dv.string, "rejected")) decision = .rejected;
+        }
+    }
+
+    if (decision == .approved) {
+        pairing.last_decision = .approved;
+        if (rid_val) |rv| {
+            if (rv == .string) {
+                logger.info("Pairing approved (requestId={s}).", .{rv.string});
+            } else {
+                logger.info("Pairing approved.", .{});
+            }
+        } else {
+            logger.info("Pairing approved.", .{});
+        }
+        pairing.clear(allocator);
+        if (conn) |cm| {
+            logger.info("Reconnecting to finalize pairing.", .{});
+            cm.disconnect();
+        }
+        return;
+    }
+
+    if (decision == .rejected) {
+        pairing.last_decision = .rejected;
+        if (rid_val) |rv| {
+            if (rv == .string) {
+                logger.err("Pairing rejected (requestId={s}).", .{rv.string});
+            } else {
+                logger.err("Pairing rejected.", .{});
+            }
+        } else {
+            logger.err("Pairing rejected.", .{});
+        }
+        pairing.clear(allocator);
+        return;
+    }
+}
+
+fn sendPairingDecision(
+    allocator: std.mem.Allocator,
+    ws_client: anytype,
+    method: []const u8,
+    request_id: []const u8,
+) !void {
+    const req = try requests.buildRequestPayload(allocator, method, .{ .requestId = request_id });
+    defer allocator.free(req.id);
+    defer allocator.free(req.payload);
+    try ws_client.send(req.payload);
+}
+
+fn promptPairingApproval(allocator: std.mem.Allocator, request_id: []const u8) !bool {
+    _ = allocator;
+    var out = std.fs.File.stderr().deprecatedWriter();
+    try out.print("Approve pairing request {s}? [y/N]: ", .{request_id});
+    var in = std.fs.File.stdin().deprecatedReader();
+    var buf: [64]u8 = undefined;
+    const line = (try in.readUntilDelimiterOrEof(&buf, '\n')) orelse "";
+    const trimmed = std.mem.trim(u8, line, " \t\r\n");
+    if (trimmed.len == 0) return false;
+    return trimmed[0] == 'y' or trimmed[0] == 'Y';
 }
 
 fn saveUpdatedNodeToken(

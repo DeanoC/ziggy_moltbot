@@ -27,6 +27,27 @@ $cfg = Join-Path $env:APPDATA 'ZiggyStarClaw\config.json'
 ziggystarclaw-cli --node-mode --config ~/.config/ziggystarclaw/config.json
 ```
 
+## Pairing (node-mode)
+
+If the gateway requires device pairing, node-mode can handle it in one of three ways:
+
+1) Auto-approve (when allowed by gateway policy):
+
+```bash
+ziggystarclaw-cli --node-mode --auto-approve-pairing
+```
+
+2) Interactive prompt: run node-mode in a terminal and confirm the prompt when a pairing request arrives.
+
+3) Operator CLI approval:
+
+```bash
+ziggystarclaw-cli --operator-mode --pair-list
+ziggystarclaw-cli --operator-mode --pair-approve <requestId>
+```
+
+The pairing prompt respects `--pairing-timeout <sec>` (default: 120).
+
 ## Exec approvals (allowlist)
 
 By default, the node runs in **allowlist** mode for `system.run`.
@@ -103,3 +124,21 @@ Get-Content (Join-Path $env:APPDATA 'ZiggyStarClaw\node-service.log') -Tail 200
 - Keep allowlists tight; prefer scripts over arbitrary shells.
 - Use TLS when exposing gateways beyond localhost.
 - Treat `gateway.authToken` as a secret.
+
+## Manual test plan
+
+1) Run node-mode without pairing approval:
+
+```bash
+ziggystarclaw-cli --node-mode --pairing-timeout 5
+```
+
+Verify it logs a pairing request and times out after 5 seconds.
+
+2) Run node-mode with auto-approve:
+
+```bash
+ziggystarclaw-cli --node-mode --auto-approve-pairing
+```
+
+Verify it auto-approves, reconnects, and logs `hello-ok` with token persistence.
