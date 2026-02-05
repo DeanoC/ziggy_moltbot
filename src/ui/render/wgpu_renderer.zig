@@ -4,6 +4,7 @@ const command_list = @import("command_list.zig");
 const image_cache = @import("../image_cache.zig");
 const font_system = @import("../font_system.zig");
 const logger = @import("../../utils/logger.zig");
+const profiler = @import("../../utils/profiler.zig");
 const c = @cImport({
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
@@ -447,6 +448,8 @@ pub const Renderer = struct {
     }
 
     pub fn beginFrame(self: *Renderer, width: u32, height: u32) void {
+        const zone = profiler.zone("wgpu.beginFrame");
+        defer zone.end();
         self.screen_width = if (width > 0) width else 1;
         self.screen_height = if (height > 0) height else 1;
         self.shape_vertices.clearRetainingCapacity();
@@ -457,6 +460,8 @@ pub const Renderer = struct {
     }
 
     pub fn record(self: *Renderer, list: *command_list.CommandList) void {
+        const zone = profiler.zone("wgpu.record");
+        defer zone.end();
         self.shape_vertices.clearRetainingCapacity();
         self.textured_vertices.clearRetainingCapacity();
         self.render_items.clearRetainingCapacity();
@@ -534,6 +539,8 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Renderer, pass: zgpu.wgpu.RenderPassEncoder) void {
+        const zone = profiler.zone("wgpu.render");
+        defer zone.end();
         if (self.render_items.items.len == 0) return;
 
         self.ensureShapeCapacity(self.shape_vertices.items.len);

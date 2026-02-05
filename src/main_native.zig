@@ -20,6 +20,7 @@ const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
+const profiler = @import("utils/profiler.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
@@ -1059,14 +1060,21 @@ pub fn main() !void {
 
     var should_close = false;
     while (!should_close) {
-        var event: sdl.SDL_Event = undefined;
-        while (sdl.SDL_PollEvent(&event)) {
-            sdl_input_backend.pushEvent(&event);
-            switch (event.type) {
-                sdl.SDL_EVENT_QUIT,
-                sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-                => should_close = true,
-                else => {},
+        profiler.frameMark();
+        const frame_zone = profiler.zone("frame");
+        defer frame_zone.end();
+        {
+            const zone = profiler.zone("frame.events");
+            defer zone.end();
+            var event: sdl.SDL_Event = undefined;
+            while (sdl.SDL_PollEvent(&event)) {
+                sdl_input_backend.pushEvent(&event);
+                switch (event.type) {
+                    sdl.SDL_EVENT_QUIT,
+                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                    => should_close = true,
+                    else => {},
+                }
             }
         }
 
@@ -1095,21 +1103,25 @@ pub fn main() !void {
             }
             drained.deinit(allocator);
         }
-        for (drained.items) |payload| {
-            const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
-                logger.err("Failed to handle server message: {}", .{err});
-                break :blk null;
-            };
-            if (update) |auth_update| {
-                defer auth_update.deinit(allocator);
-                ws_client.storeDeviceToken(
-                    auth_update.device_token,
-                    auth_update.role,
-                    auth_update.scopes,
-                    auth_update.issued_at_ms,
-                ) catch |err| {
-                    logger.warn("Failed to store device token: {}", .{err});
+        {
+            const zone = profiler.zone("frame.net");
+            defer zone.end();
+            for (drained.items) |payload| {
+                const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
+                    logger.err("Failed to handle server message: {}", .{err});
+                    break :blk null;
                 };
+                if (update) |auth_update| {
+                    defer auth_update.deinit(allocator);
+                    ws_client.storeDeviceToken(
+                        auth_update.device_token,
+                        auth_update.role,
+                        auth_update.scopes,
+                        auth_update.issued_at_ms,
+                    ) catch |err| {
+                        logger.warn("Failed to store device token: {}", .{err});
+                    };
+                }
             }
         }
 
@@ -1141,20 +1153,25 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        renderer.beginFrame(fb_width, fb_height);
-        const ui_action = ui.draw(
-            allocator,
-            &ctx,
-            &cfg,
-            &agents,
-            ws_client.is_connected,
-            build_options.app_version,
-            fb_width,
-            fb_height,
-            true,
-            &manager,
-            &command_inbox,
-        );
+        var ui_action: ui.UiAction = undefined;
+        {
+            const zone = profiler.zone("frame.ui");
+            defer zone.end();
+            renderer.beginFrame(fb_width, fb_height);
+            ui_action = ui.draw(
+                allocator,
+                &ctx,
+                &cfg,
+                &agents,
+                ws_client.is_connected,
+                build_options.app_version,
+                fb_width,
+                fb_height,
+                true,
+                &manager,
+                &command_inbox,
+            );
+        }
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
@@ -1535,7 +1552,11 @@ pub fn main() !void {
             }
         }
 
-        renderer.render();
+        {
+            const zone = profiler.zone("frame.render");
+            defer zone.end();
+            renderer.render();
+        }
     }
 }
 

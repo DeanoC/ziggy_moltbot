@@ -3,6 +3,7 @@ const zgpu = @import("zgpu");
 const command_queue = @import("../ui/render/command_queue.zig");
 const ui_wgpu_renderer = @import("../ui/render/wgpu_renderer.zig");
 const sdl = @import("../platform/sdl3.zig").c;
+const profiler = @import("../utils/profiler.zig");
 
 pub const depth_format_undefined: u32 = @intFromEnum(zgpu.wgpu.TextureFormat.undef);
 
@@ -43,6 +44,8 @@ pub const Renderer = struct {
     }
 
     pub fn beginFrame(self: *Renderer, framebuffer_width: u32, framebuffer_height: u32) void {
+        const zone = profiler.zone("renderer.beginFrame");
+        defer zone.end();
         self.framebuffer_width = framebuffer_width;
         self.framebuffer_height = framebuffer_height;
         if (framebuffer_width > 0 and framebuffer_height > 0) {
@@ -62,6 +65,8 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Renderer) void {
+        const zone = profiler.zone("renderer.render");
+        defer zone.end();
         const gctx = self.gctx;
         const back_view = gctx.swapchain.getCurrentTextureView();
         defer back_view.release();
@@ -81,6 +86,8 @@ pub const Renderer = struct {
         });
 
         if (command_queue.get()) |list| {
+            const record_zone = profiler.zone("renderer.record");
+            defer record_zone.end();
             self.ui_renderer.record(list);
             self.ui_renderer.render(pass);
         }

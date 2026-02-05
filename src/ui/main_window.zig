@@ -45,6 +45,7 @@ const sessions_panel = @import("panels/sessions_panel.zig");
 const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
+const profiler = @import("../utils/profiler.zig");
 
 pub const SendMessageAction = struct {
     session_key: []u8,
@@ -285,6 +286,8 @@ pub fn draw(
     inbox: *ui_command_inbox.UiCommandInbox,
 ) UiAction {
     var action = UiAction{};
+    const zone = profiler.zone("ui.draw");
+    defer zone.end();
     var pending_attachment: ?sessions_panel.AttachmentOpen = null;
     image_cache.beginFrame();
     _ = ui_systems.beginFrame();
@@ -407,6 +410,8 @@ fn drawWorkspaceHost(
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
 ) void {
+    const zone = profiler.zone("ui.workspace");
+    defer zone.end();
     _ = command_queue.beginFrame(allocator);
     defer command_queue.endFrame();
 
@@ -592,6 +597,8 @@ fn drawPanelContents(
     pending_attachment: *?sessions_panel.AttachmentOpen,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
+    const zone = profiler.zone("ui.panel");
+    defer zone.end();
     switch (panel.kind) {
         .Chat => {
             var agent_id = panel.data.Chat.agent_id;

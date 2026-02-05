@@ -8,6 +8,7 @@ const draw_context = @import("draw_context.zig");
 const clipboard = @import("clipboard.zig");
 const input_state = @import("input/input_state.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const profiler = @import("../utils/profiler.zig");
 
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
@@ -226,6 +227,8 @@ pub fn drawCustom(
     inbox: ?*const ui_command_inbox.UiCommandInbox,
     opts: ChatViewOptions,
 ) void {
+    const zone = profiler.zone("chat.draw");
+    defer zone.end();
     const t = theme.activeTheme();
     ctx.drawRect(rect, .{
         .fill = t.colors.surface,

@@ -31,10 +31,14 @@ pub fn build(b: *std.Build) void {
     const build_wasm = b.option(bool, "wasm", "Build wasm target") orelse false;
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
+    const enable_ztracy = b.option(bool, "enable_ztracy", "Enable Tracy profile markers") orelse false;
+    const enable_tracy_fibers = b.option(bool, "enable_tracy_fibers", "Enable Tracy fiber support") orelse false;
+    const tracy_on_demand = b.option(bool, "tracy_on_demand", "Build Tracy with TRACY_ON_DEMAND") orelse false;
     const app_version = readAppVersion(b);
     const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
+    build_options.addOption(bool, "enable_ztracy", enable_ztracy);
     const imgui_cpp_flags = &.{
         "-std=c++17",
         "-DIMGUI_ENABLE_FREETYPE",
@@ -46,6 +50,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     app_module.addIncludePath(b.path("src"));
+    app_module.addOptions("build_options", build_options);
 
     const ws_native = b.dependency("websocket", .{
         .target = target,
@@ -150,6 +155,15 @@ pub fn build(b: *std.Build) void {
             zgui_imgui.root_module.addCMacro("IMGUI_IMPL_WEBGPU_BACKEND_DAWN", "");
         }
         native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
+        if (enable_ztracy) {
+            const ztracy_pkg = b.dependency("ztracy", .{
+                .enable_ztracy = enable_ztracy,
+                .enable_fibers = enable_tracy_fibers,
+                .on_demand = tracy_on_demand,
+            });
+            native_module.addImport("ztracy", ztracy_pkg.module("root"));
+            native_exe.linkLibrary(ztracy_pkg.artifact("tracy"));
+        }
         native_exe.root_module.addCSourceFile(.{
             .file = zgpu_pkg.path("src/dawn.cpp"),
             .flags = &.{ "-std=c++17", "-fno-sanitize=undefined" },

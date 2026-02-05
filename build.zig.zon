@@ -51,6 +51,10 @@
             .url = "https://github.com/castholm/SDL/archive/refs/heads/main.zip",
             .hash = "sdl-0.3.3+3.2.28-7uIn9MiRfwFhqxnwBi_vCQlKr82YpwkQBVwdz2uy46S1",
         },
+        .ztracy = .{
+            .url = "https://github.com/zig-gamedev/ztracy/archive/refs/heads/main.zip",
+            .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
+        },
     },
     .paths = .{
         "build.zig",

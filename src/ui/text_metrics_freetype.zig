@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("text_metrics_types.zig");
 const font_system = @import("font_system.zig");
 const theme = @import("theme.zig");
+const profiler = @import("../utils/profiler.zig");
 const c = @cImport({
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
@@ -215,6 +216,8 @@ fn glyphAdvance(face: c.FT_Face, codepoint: u21, size_px: u32) f32 {
 }
 
 fn measure(text: []const u8, wrap_width: f32) types.Vec2 {
+    const zone = profiler.zone("text.measure");
+    defer zone.end();
     const size_px = currentSizePx();
     const role = font_system.currentRole();
     const face = ensureFace(role, size_px) orelse return .{ 0.0, 0.0 };
