@@ -557,9 +557,71 @@ fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: st
     return std.json.Value{ .object = result };
 }
 
+fn discoverPlaywrightBinaryAlloc(allocator: std.mem.Allocator, prefix: []const u8, subpath: []const []const u8) !?[]u8 {
+    // Best-effort scan ~/.cache/ms-playwright for the highest numeric version that matches `prefix`.
+    // Example prefixes:
+    // - "chromium-"
+    // - "chromium_headless_shell-"
+
+    if (builtin.os.tag == .windows) return null;
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(home);
+
+    const base = try std.fs.path.join(allocator, &.{ home, ".cache", "ms-playwright" });
+    defer allocator.free(base);
+
+    var dir = std.fs.openDirAbsolute(base, .{ .iterate = true }) catch {
+        return null;
+    };
+    defer dir.close();
+
+    var best_ver: i64 = -1;
+    var best_name: ?[]u8 = null;
+    defer if (best_name) |n| allocator.free(n);
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+
+        const rest = entry.name[prefix.len..];
+        const ver = std.fmt.parseInt(i64, rest, 10) catch continue;
+        if (ver > best_ver) {
+            best_ver = ver;
+            if (best_name) |old| allocator.free(old);
+            best_name = try allocator.dupe(u8, entry.name);
+        }
+    }
+
+    if (best_name == null) return null;
+
+    // Build candidate path and check it exists.
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+
+    try parts.append(allocator, base);
+    try parts.append(allocator, best_name.?);
+    for (subpath) |p| try parts.append(allocator, p);
+
+    const full = try std.fs.path.join(allocator, parts.items);
+
+    // Confirm executable exists.
+    const f = std.fs.openFileAbsolute(full, .{}) catch {
+        allocator.free(full);
+        return null;
+    };
+    f.close();
+
+    return full;
+}
+
 fn chromeScreenshotPngAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
-    // This is a minimal implementation using Chromium/Chrome's --headless --screenshot.
-    // It intentionally avoids CDP/WebKit complexity for the first useful milestone.
+    // Minimal screenshot implementation using Chromium/Chrome --headless --screenshot.
+    // First preference on Linux: Playwright-managed Chromium in ~/.cache/ms-playwright.
 
     const tmp_dir = blk: {
         const envs = if (builtin.os.tag == .windows)
@@ -581,7 +643,6 @@ fn chromeScreenshotPngAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8
     };
     defer allocator.free(tmp_dir);
 
-    // Random-ish filename.
     const ts = @as(u64, @intCast(node_platform.nowMs()));
     const file_name = try std.fmt.allocPrint(allocator, "zsc-canvas-{d}.png", .{ts});
     defer allocator.free(file_name);
@@ -589,7 +650,73 @@ fn chromeScreenshotPngAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8
     const out_path = try std.fs.path.join(allocator, &.{ tmp_dir, file_name });
     defer allocator.free(out_path);
 
-    // Try a small set of common Chrome/Chromium entrypoints.
+    const window_size = "--window-size=1280,720";
+    const screenshot_arg = try std.fmt.allocPrint(allocator, "--screenshot={s}", .{out_path});
+    defer allocator.free(screenshot_arg);
+
+    const attempt = struct {
+        fn run(alloc: std.mem.Allocator, exe: []const u8, out_path_abs: []const u8, screenshot_arg_: []const u8, url_: []const u8, window_size_: []const u8) !?[]u8 {
+            var child = std.process.Child.init(
+                &[_][]const u8{
+                    exe,
+                    "--headless",
+                    "--disable-gpu",
+                    "--hide-scrollbars",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    window_size_,
+                    screenshot_arg_,
+                    url_,
+                },
+                alloc,
+            );
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            child.spawn() catch |err| {
+                if (err == error.FileNotFound) return null;
+                return err;
+            };
+
+            const term = try child.wait();
+            switch (term) {
+                .Exited => |code| if (code != 0) return error.Unexpected,
+                else => return error.Unexpected,
+            }
+
+            const f = try std.fs.openFileAbsolute(out_path_abs, .{});
+            defer f.close();
+            const bytes = try f.readToEndAlloc(alloc, 20 * 1024 * 1024);
+            std.fs.deleteFileAbsolute(out_path_abs) catch {};
+            return bytes;
+        }
+    }.run;
+
+    // Dynamic candidates (Playwright cache)
+    const pw_headless = try discoverPlaywrightBinaryAlloc(
+        allocator,
+        "chromium_headless_shell-",
+        &.{ "chrome-headless-shell-linux64", "chrome-headless-shell" },
+    );
+    defer if (pw_headless) |p| allocator.free(p);
+
+    if (pw_headless) |exe| {
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
+    }
+
+    const pw_chrome = try discoverPlaywrightBinaryAlloc(
+        allocator,
+        "chromium-",
+        &.{ "chrome-linux64", "chrome" },
+    );
+    defer if (pw_chrome) |p| allocator.free(p);
+
+    if (pw_chrome) |exe| {
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
+    }
+
+    // Static candidates
     const candidates = if (builtin.os.tag == .windows)
         &[_][]const u8{ "chrome.exe", "chrome", "msedge.exe", "msedge" }
     else if (builtin.os.tag == .macos)
@@ -597,49 +724,8 @@ fn chromeScreenshotPngAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8
     else
         &[_][]const u8{ "google-chrome", "google-chrome-stable", "chromium", "chromium-browser" };
 
-    const window_size = "--window-size=1280,720";
-    const screenshot_arg = try std.fmt.allocPrint(allocator, "--screenshot={s}", .{out_path});
-    defer allocator.free(screenshot_arg);
-
     for (candidates) |exe| {
-        var child = std.process.Child.init(
-            &[_][]const u8{
-                exe,
-                "--headless",
-                "--disable-gpu",
-                "--hide-scrollbars",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                window_size,
-                screenshot_arg,
-                url,
-            },
-            allocator,
-        );
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-
-        child.spawn() catch |err| {
-            if (err == error.FileNotFound) continue;
-            return err;
-        };
-
-        const term = try child.wait();
-        switch (term) {
-            .Exited => |code| if (code != 0) return error.Unexpected,
-            else => return error.Unexpected,
-        }
-
-        // Read file
-        const f = try std.fs.openFileAbsolute(out_path, .{});
-        defer f.close();
-        const bytes = try f.readToEndAlloc(allocator, 20 * 1024 * 1024);
-
-        // Best-effort cleanup
-        std.fs.deleteFileAbsolute(out_path) catch {};
-
-        return bytes;
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
     }
 
     return error.FileNotFound;
