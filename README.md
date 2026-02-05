@@ -23,6 +23,9 @@ Highlights:
 ## User Guide
 Start here: `docs/user/README.md`
 
+## Work tracker
+- `docs/WORK_ITEMS.md` (shared backlog / next-up list)
+
 ## Quick Start
 
 ```bash
