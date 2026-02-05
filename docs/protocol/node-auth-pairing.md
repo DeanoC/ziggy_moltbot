@@ -93,23 +93,61 @@ Notes:
 
 Node-mode has a second authentication concept: a signed device payload.
 
-**Current behavior (node-mode):**
+On the wire, this appears inside `connect.params.device` as:
 
-- If `node.nodeToken` exists, use it as the device-auth token.
+- `device.id`
+- `device.publicKey`
+- `device.signature`
+- `device.signedAt`
+- `device.nonce` (optional; only present when the gateway has sent `connect.challenge`)
+
+(See `src/protocol/gateway.zig` `DeviceAuth` and `src/client/websocket_client.zig` `sendConnectRequest()`.)
+
+**Which token is used inside the signed payload?**
+
+- If `node.nodeToken` exists, use it as the **device-auth token**.
 - Otherwise fall back to `gateway.authToken` and warn.
 
 See `src/main_node.zig`:
 
 - `device_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;`
 
-And `src/main_node.zig` comment:
+#### 2.3.1 Signed payload schema (exact)
 
-- `Device-auth signed payload should use the paired node token when available.`
+Despite the name, the signed payload is **not JSON**. It is a UTF-8 string with pipe (`|`) separators built by `buildDeviceAuthPayload()`.
 
-TODO (confirm):
+Base fields:
 
-- Exact JSON shape of the device-auth payload (field names + where it appears on the wire).
-- How the gateway validates it (ordering, algorithm, replay window).
+```
+version|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token
+```
+
+If the gateway provided a nonce via `connect.challenge`, the payload becomes (v2):
+
+```
+v2|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token|nonce
+```
+
+If no nonce is available yet, the payload is (v1):
+
+```
+v1|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token
+```
+
+Where:
+
+- `version` is the literal string `v1` or `v2`.
+- `scopesCsv` is `scopes` joined with `,` (comma), with no additional escaping.
+- `signedAtMs` is the current `std.time.milliTimestamp()`.
+- `token` is `node.nodeToken` when available, else `gateway.authToken`.
+- `nonce` is the gateway-provided `connect.challenge.payload.nonce`.
+
+The signature is computed over the raw payload bytes (see `src/client/device_identity.zig` `key_pair.sign(payload, null)`).
+
+TODO (confirm in gateway):
+
+- How the gateway validates `signedAtMs` (replay window / clock skew tolerance).
+- Whether the gateway requires v2 (nonce) in some deployments.
 
 ---
 
@@ -149,7 +187,7 @@ To finish this doc precisely, confirm in gateway code/docs:
 
 1. What triggers pairing required? (remote-only? policy-based? unknown device id?)
 2. Exact field name: `hello-ok.auth.deviceToken` (confirm wire key names).
-3. Exact device-auth payload schema + where it is attached (connect vs subsequent auth frame).
+3. Confirm gateway-side validation details for the device-auth signature payload (v1 vs v2, replay window).
 4. Whether connect `auth.token` is *always* required once WS `Authorization` is present.
 
 ---
