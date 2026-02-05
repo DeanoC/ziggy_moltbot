@@ -1,16 +1,15 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const glfw = @import("zglfw");
 const ui = @import("ui/main_window.zig");
-const imgui_gl = @import("ui/imgui_wrapper.zig");
+const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
+const theme = @import("ui/theme.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
@@ -27,44 +26,54 @@ const chat_proto = @import("protocol/chat.zig");
 const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
+const sdl = @import("platform/sdl3.zig").c;
+const input_backend = @import("ui/input/input_backend.zig");
+const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
+const text_input_backend = @import("ui/input/text_input_backend.zig");
 
-const use_webgpu = build_options.use_webgpu;
-const webgpu_renderer = if (use_webgpu) @import("client/renderer.zig") else struct {
-    pub const Renderer = struct {};
-    pub const depth_format_undefined: u32 = 0;
-};
-const imgui_wgpu = if (use_webgpu) @import("ui/imgui_wrapper_wgpu.zig") else struct {};
+const webgpu_renderer = @import("client/renderer.zig");
+const font_system = @import("ui/font_system.zig");
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
 });
 
-extern fn zgui_opengl_load() c_int;
-extern fn zgui_glViewport(x: c_int, y: c_int, w: c_int, h: c_int) void;
-extern fn zgui_glClearColor(r: f32, g: f32, b: f32, a: f32) void;
-extern fn zgui_glClear(mask: c_uint) void;
+const startup_log_path = "ziggystarclaw_startup.log";
 
-fn glfwErrorCallback(code: glfw.ErrorCode, desc: ?[*:0]const u8) callconv(.c) void {
-    if (desc) |d| {
-        logger.err("GLFW error {d}: {s}", .{ @as(i32, @intCast(code)), d });
-    } else {
-        logger.err("GLFW error {d}: (no description)", .{ @as(i32, @intCast(code)) });
-    }
-}
-
-fn setWindowIcon(window: *glfw.Window) void {
+fn setWindowIcon(window: *sdl.SDL_Window) void {
     const icon_png = @embedFile("icons/ZiggyStarClaw_Icon.png");
     var width: c_int = 0;
     var height: c_int = 0;
     const pixels = icon.zsc_load_icon_rgba_from_memory(icon_png.ptr, @intCast(icon_png.len), &width, &height);
     if (pixels == null or width <= 0 or height <= 0) return;
     defer icon.zsc_free_icon(pixels);
-    const image = glfw.Image{
-        .width = width,
-        .height = height,
-        .pixels = @ptrCast(pixels),
-    };
-    glfw.setWindowIcon(window, &.{image});
+    const pitch: c_int = width * 4;
+    const surface = sdl.SDL_CreateSurfaceFrom(width, height, sdl.SDL_PIXELFORMAT_RGBA32, pixels, pitch);
+    if (surface == null) return;
+    defer sdl.SDL_DestroySurface(surface);
+    _ = sdl.SDL_SetWindowIcon(window, surface);
+}
+
+fn logSurfaceBackend(window: *sdl.SDL_Window) void {
+    const props = sdl.SDL_GetWindowProperties(window);
+    const win32 = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null);
+    const cocoa = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
+    const wayland_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_DISPLAY_POINTER, null);
+    const wayland_surface = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, null);
+    const x11_display = sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_X11_DISPLAY_POINTER, null);
+    const x11_window = sdl.SDL_GetNumberProperty(props, sdl.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+
+    var backend: []const u8 = "unknown";
+    if (win32 != null) {
+        backend = "win32";
+    } else if (cocoa != null) {
+        backend = "cocoa";
+    } else if (wayland_display != null or wayland_surface != null) {
+        backend = "wayland";
+    } else if (x11_display != null or x11_window != 0) {
+        backend = "x11";
+    }
+    logger.info("WebGPU surface backend: {s}", .{backend});
 }
 
 fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
@@ -235,10 +244,86 @@ const ReadLoop = struct {
     last_payload_len: usize = 0,
 };
 
+const ConnectJob = struct {
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    mutex: std.Thread.Mutex = .{},
+    thread: ?std.Thread = null,
+    status: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
+    cancel_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    error_msg: ?[]u8 = null,
+
+    const Status = enum(u8) { idle = 0, running = 1, success = 2, failed = 3 };
+
+    fn start(self: *ConnectJob) !bool {
+        if (self.status.load(.monotonic) == @intFromEnum(Status.running)) return false;
+        if (self.thread != null) return false;
+        self.cancel_requested.store(false, .monotonic);
+        self.clearError();
+        self.status.store(@intFromEnum(Status.running), .monotonic);
+        self.thread = try std.Thread.spawn(.{}, connectThreadMain, .{self});
+        return true;
+    }
+
+    fn requestCancel(self: *ConnectJob) void {
+        self.cancel_requested.store(true, .monotonic);
+    }
+
+    fn isRunning(self: *ConnectJob) bool {
+        return self.status.load(.monotonic) == @intFromEnum(Status.running);
+    }
+
+    fn takeResult(self: *ConnectJob) ?struct { ok: bool, err: ?[]u8, canceled: bool } {
+        const status = self.status.load(.monotonic);
+        if (status == @intFromEnum(Status.idle) or status == @intFromEnum(Status.running)) return null;
+        if (self.thread) |handle| {
+            handle.join();
+            self.thread = null;
+        }
+        const ok = status == @intFromEnum(Status.success);
+        self.status.store(@intFromEnum(Status.idle), .monotonic);
+        const canceled = self.cancel_requested.load(.monotonic);
+        self.cancel_requested.store(false, .monotonic);
+        self.mutex.lock();
+        const err_msg = self.error_msg;
+        self.error_msg = null;
+        self.mutex.unlock();
+        return .{ .ok = ok, .err = err_msg, .canceled = canceled };
+    }
+
+    fn setError(self: *ConnectJob, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+        }
+        self.error_msg = self.allocator.dupe(u8, message) catch null;
+    }
+
+    fn clearError(self: *ConnectJob) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.error_msg) |msg| {
+            self.allocator.free(msg);
+            self.error_msg = null;
+        }
+    }
+};
+
+fn connectThreadMain(job: *ConnectJob) void {
+    const result = job.ws_client.connect();
+    if (result) |_| {
+        job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
+    } else |err| {
+        job.setError(@errorName(err));
+        job.status.store(@intFromEnum(ConnectJob.Status.failed), .monotonic);
+    }
+}
+
 fn readLoopMain(loop: *ReadLoop) void {
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
-    loop.ws_client.setReadTimeout(0);
+    loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
         const payload = loop.ws_client.receive() catch |err| {
             if (err == error.NotConnected or err == error.Closed) {
@@ -282,7 +367,6 @@ fn startReadThread(loop: *ReadLoop, thread: *?std.Thread) !void {
 fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     if (thread.*) |handle| {
         loop.stop.store(true, .monotonic);
-        loop.ws_client.signalClose();
         handle.join();
         thread.* = null;
         loop.ws_client.disconnect();
@@ -743,6 +827,23 @@ fn ensureChatPanelsReady(
                 }
             }
         }
+        if (session_key == null) {
+            if (ctx.current_session) |current| {
+                var matches_agent = true;
+                if (agent_id) |id| {
+                    if (session_keys.parse(current)) |parts| {
+                        matches_agent = std.mem.eql(u8, parts.agent_id, id);
+                    } else {
+                        matches_agent = std.mem.eql(u8, id, "main");
+                    }
+                }
+                if (matches_agent) {
+                    panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    manager.workspace.markDirty();
+                }
+            }
+        }
         if (session_key) |key| {
             if (ctx.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
@@ -799,6 +900,9 @@ pub fn main() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
+    if (cfg.ui_theme) |label| {
+        theme.setMode(theme.modeFromLabel(label));
+    }
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -812,24 +916,23 @@ pub fn main() !void {
         cfg.insecure_tls,
         cfg.connect_host_override,
     );
+    var connect_job = ConnectJob{
+        .allocator = allocator,
+        .ws_client = &ws_client,
+    };
     ws_client.setReadTimeout(15_000);
     defer ws_client.deinit();
 
-    _ = glfw.setErrorCallback(glfwErrorCallback);
-    try glfw.init();
-    defer glfw.terminate();
-
-    if (use_webgpu) {
-        glfw.windowHint(.client_api, .no_api);
-    } else {
-        glfw.windowHint(.client_api, .opengl_api);
-        glfw.windowHint(.context_version_major, 3);
-        glfw.windowHint(.context_version_minor, 3);
-        glfw.windowHint(.opengl_profile, .opengl_core_profile);
-        if (builtin.os.tag == .macos) {
-            glfw.windowHint(.opengl_forward_compat, true);
-        }
+    if (!sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_GAMEPAD)) {
+        logger.err("SDL init failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlInitFailed;
     }
+    defer sdl.SDL_Quit();
+    _ = sdl.SDL_SetHint("SDL_IME_SHOW_UI", "1");
+    sdl_input_backend.init(allocator);
+    input_router.setBackend(input_backend.sdl3);
+    defer input_router.deinit(allocator);
+    defer sdl_input_backend.deinit();
 
     var window_width: c_int = 1280;
     var window_height: c_int = 720;
@@ -840,72 +943,42 @@ pub fn main() !void {
         if (h > 200) window_height = @intCast(h);
     }
 
-    const window = try glfw.Window.create(window_width, window_height, "ZiggyStarClaw", null, null);
-    defer window.destroy();
+    const window_flags: sdl.SDL_WindowFlags = @intCast(
+        sdl.SDL_WINDOW_RESIZABLE | sdl.SDL_WINDOW_HIGH_PIXEL_DENSITY,
+    );
+    const window = sdl.SDL_CreateWindow("ZiggyStarClaw", window_width, window_height, window_flags) orelse {
+        logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlWindowCreateFailed;
+    };
+    defer sdl.SDL_DestroyWindow(window);
+    text_input_backend.init(window);
+    defer text_input_backend.deinit();
     setWindowIcon(window);
     if (app_state_state.window_maximized) {
-        window.maximize();
+        _ = sdl.SDL_MaximizeWindow(window);
     } else if (app_state_state.window_pos_x != null and app_state_state.window_pos_y != null) {
-        window.setPos(
+        _ = sdl.SDL_SetWindowPosition(
+            window,
             @intCast(app_state_state.window_pos_x.?),
             @intCast(app_state_state.window_pos_y.?),
         );
     }
 
-    var renderer: ?webgpu_renderer.Renderer = null;
-    if (use_webgpu) {
-        renderer = try webgpu_renderer.Renderer.init(allocator, window);
+    var renderer = try webgpu_renderer.Renderer.init(allocator, window);
+    logSurfaceBackend(window);
 
-        imgui_wgpu.init(
-            allocator,
-            window,
-            @ptrCast(renderer.?.gctx.device),
-            @intFromEnum(renderer.?.gctx.swapchain_descriptor.format),
-            webgpu_renderer.depth_format_undefined,
-        );
-        const scale = window.getContentScale();
-        const dpi_scale: f32 = @max(scale[0], scale[1]);
-        if (dpi_scale > 0.0) {
-            imgui_wgpu.applyDpiScale(dpi_scale);
-        }
-    } else {
-        glfw.makeContextCurrent(window);
-        glfw.swapInterval(1);
-        if (glfw.getCurrentContext() == null) {
-            logger.err(
-                "OpenGL context creation failed. If running under WSL, ensure WSLg or an X server with OpenGL is available.",
-                .{},
-            );
-            return error.OpenGLContextUnavailable;
-        }
-        const missing = zgui_opengl_load();
-        if (missing != 0) {
-            logger.err("Failed to load {d} OpenGL function pointers via GLFW.", .{missing});
-            return error.OpenGLLoaderFailed;
-        }
-
-        imgui_gl.init(allocator, window);
-        const scale = window.getContentScale();
-        const dpi_scale: f32 = @max(scale[0], scale[1]);
-        if (dpi_scale > 0.0) {
-            imgui_gl.applyDpiScale(dpi_scale);
-        }
+    const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(window);
+    const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+    if (!font_system.isInitialized()) {
+        font_system.init(std.heap.page_allocator);
     }
+    theme.applyTypography(dpi_scale);
     image_cache.init(allocator);
-    if (use_webgpu) {
-        image_cache.setEnabled(false);
-    }
+    attachment_cache.init(allocator);
+    image_cache.setEnabled(true);
     defer image_cache.deinit();
-    defer {
-        if (use_webgpu) {
-            imgui_wgpu.deinit();
-        } else {
-            imgui_gl.deinit();
-        }
-    }
-    if (use_webgpu) {
-        defer if (renderer) |*active| active.deinit();
-    }
+    defer attachment_cache.deinit();
+    defer renderer.deinit();
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
@@ -918,10 +991,9 @@ pub fn main() !void {
     };
     var manager = panel_manager.PanelManager.init(allocator, workspace_state);
     defer manager.deinit();
+    defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
-    var dock_state = dock_layout.DockState{};
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -938,16 +1010,21 @@ pub fn main() !void {
     var next_ping_at_ms: i64 = 0;
     defer {
         app_state_state.last_connected = auto_connect_enabled;
-        const iconified = window.getAttribute(.iconified);
+        const flags = sdl.SDL_GetWindowFlags(window);
+        const iconified = (flags & sdl.SDL_WINDOW_MINIMIZED) != 0;
         if (!iconified) {
-            const size = window.getSize();
-            const pos = window.getPos();
-            app_state_state.window_width = size[0];
-            app_state_state.window_height = size[1];
-            app_state_state.window_pos_x = pos[0];
-            app_state_state.window_pos_y = pos[1];
+            var size_w: c_int = 0;
+            var size_h: c_int = 0;
+            _ = sdl.SDL_GetWindowSize(window, &size_w, &size_h);
+            var pos_x: c_int = 0;
+            var pos_y: c_int = 0;
+            _ = sdl.SDL_GetWindowPosition(window, &pos_x, &pos_y);
+            app_state_state.window_width = size_w;
+            app_state_state.window_height = size_h;
+            app_state_state.window_pos_x = pos_x;
+            app_state_state.window_pos_y = pos_y;
         }
-        app_state_state.window_maximized = window.getAttribute(.maximized);
+        app_state_state.window_maximized = (flags & sdl.SDL_WINDOW_MAXIMIZED) != 0;
         app_state.save(allocator, "ziggystarclaw_state.json", app_state_state) catch |err| {
             logger.warn("Failed to save app state: {}", .{err});
         };
@@ -966,22 +1043,32 @@ pub fn main() !void {
         should_reconnect = true;
         reconnect_backoff_ms = 500;
         next_reconnect_at_ms = 0;
-        ws_client.connect() catch |err| {
-            logger.err("WebSocket auto-connect failed: {}", .{err});
-            ctx.state = .error_state;
-        };
-        if (ws_client.is_connected) {
-            ctx.state = .authenticating;
-            next_ping_at_ms = 0;
-            startReadThread(&read_loop, &read_thread) catch |err| {
-                logger.err("Failed to start read thread: {}", .{err});
+        if (!connect_job.isRunning()) {
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
+                ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
             };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
+            }
         }
         auto_connect_pending = false;
     }
 
-    while (!window.shouldClose()) {
-        glfw.pollEvents();
+    var should_close = false;
+    while (!should_close) {
+        var event: sdl.SDL_Event = undefined;
+        while (sdl.SDL_PollEvent(&event)) {
+            sdl_input_backend.pushEvent(&event);
+            switch (event.type) {
+                sdl.SDL_EVENT_QUIT,
+                sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                => should_close = true,
+                else => {},
+            }
+        }
 
         if (read_thread != null and !read_loop.running.load(.monotonic)) {
             stopReadThread(&read_loop, &read_thread);
@@ -995,20 +1082,11 @@ pub fn main() !void {
             }
         }
 
-        const fb = window.getFramebufferSize();
-        const fb_width: u32 = if (fb[0] > 0) @intCast(fb[0]) else 1;
-        const fb_height: u32 = if (fb[1] > 0) @intCast(fb[1]) else 1;
-
-        var win_width: u32 = 0;
-        var win_height: u32 = 0;
-        if (!use_webgpu) {
-            const win = window.getSize();
-            win_width = if (win[0] > 0) @intCast(win[0]) else 1;
-            win_height = if (win[1] > 0) @intCast(win[1]) else 1;
-            zgui_glViewport(0, 0, @intCast(fb_width), @intCast(fb_height));
-            zgui_glClearColor(0.08, 0.08, 0.1, 1.0);
-            zgui_glClear(0x00004000);
-        }
+        var fb_w: c_int = 0;
+        var fb_h: c_int = 0;
+        _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
+        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
 
         var drained = message_queue.drain();
         defer {
@@ -1063,11 +1141,7 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        if (use_webgpu) {
-            renderer.?.beginFrame(fb_width, fb_height);
-        } else {
-            imgui_gl.beginFrame(win_width, win_height, fb_width, fb_height);
-        }
+        renderer.beginFrame(fb_width, fb_height);
         const ui_action = ui.draw(
             allocator,
             &ctx,
@@ -1075,9 +1149,11 @@ pub fn main() !void {
             &agents,
             ws_client.is_connected,
             build_options.app_version,
+            fb_width,
+            fb_height,
+            true,
             &manager,
             &command_inbox,
-            &dock_state,
         );
 
         if (ui_action.config_updated) {
@@ -1085,6 +1161,9 @@ pub fn main() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
+            if (cfg.ui_theme) |label| {
+                theme.setMode(theme.modeFromLabel(label));
+            }
         }
 
         if (ui_action.save_config) {
@@ -1094,9 +1173,6 @@ pub fn main() !void {
         }
 
         if (ui_action.save_workspace) {
-            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-                logger.warn("Failed to capture workspace layout: {}", .{err});
-            };
             workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
                 logger.err("Failed to save workspace: {}", .{err});
             };
@@ -1126,6 +1202,10 @@ pub fn main() !void {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+        if (ui_action.open_url) |url| {
+            defer allocator.free(url);
+            openUrl(allocator, url);
+        }
         if (ui_action.open_download) {
             const snapshot = ctx.update_state.snapshot();
             if (snapshot.download_path) |path| {
@@ -1136,7 +1216,7 @@ pub fn main() !void {
             const snapshot = ctx.update_state.snapshot();
             if (snapshot.download_path) |path| {
                 if (installUpdate(allocator, path)) {
-                    glfw.setWindowShouldClose(window, true);
+                    should_close = true;
                 }
             }
         }
@@ -1146,6 +1226,9 @@ pub fn main() !void {
                 logger.err("Failed to reset config: {}", .{err});
                 return;
             };
+            if (cfg.ui_theme) |label| {
+                theme.setMode(theme.modeFromLabel(label));
+            }
             _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
             app_state_state.last_connected = false;
             auto_connect_enabled = false;
@@ -1169,22 +1252,23 @@ pub fn main() !void {
             should_reconnect = true;
             reconnect_backoff_ms = 500;
             next_reconnect_at_ms = 0;
-            ws_client.connect() catch |err| {
-                logger.err("WebSocket connect failed: {}", .{err});
+            const started = connect_job.start() catch |err| blk: {
+                logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.setError(@errorName(err)) catch {};
+                break :blk false;
             };
-            if (ws_client.is_connected) {
-                ctx.state = .authenticating;
-                next_ping_at_ms = 0;
-                startReadThread(&read_loop, &read_thread) catch |err| {
-                    logger.err("Failed to start read thread: {}", .{err});
-                };
+            if (!started) {
+                logger.warn("Connect attempt already in progress", .{});
             }
         }
 
         if (ui_action.disconnect) {
+            connect_job.requestCancel();
             stopReadThread(&read_loop, &read_thread);
-            ws_client.disconnect();
+            if (!connect_job.isRunning()) {
+                ws_client.disconnect();
+            }
             should_reconnect = false;
             auto_connect_enabled = false;
             next_reconnect_at_ms = 0;
@@ -1203,6 +1287,24 @@ pub fn main() !void {
 
         if (ui_action.refresh_sessions) {
             sendSessionsListRequest(allocator, &ctx, &ws_client);
+        }
+
+        if (ui_action.new_session) {
+            if (ws_client.is_connected) {
+                const key = makeNewSessionKey(allocator, "main") catch null;
+                if (key) |session_key| {
+                    defer allocator.free(session_key);
+                    sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                    if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                    }
+                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                    ctx.clearSessionState(session_key);
+                    ctx.setCurrentSession(session_key) catch {};
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendSessionsListRequest(allocator, &ctx, &ws_client);
+                }
+            }
         }
 
         if (ui_action.new_chat_agent_id) |agent_id| {
@@ -1238,6 +1340,21 @@ pub fn main() !void {
             _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+            }
+        }
+
+        if (ui_action.select_session) |session_key| {
+            defer allocator.free(session_key);
+            ctx.setCurrentSession(session_key) catch |err| {
+                logger.warn("Failed to set session: {}", .{err});
+            };
+            if (session_keys.parse(session_key)) |parts| {
+                _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+            } else {
+                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+            }
+            if (ws_client.is_connected) {
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
             }
         }
 
@@ -1365,6 +1482,37 @@ pub fn main() !void {
             ctx.clearOperatorNotice();
         }
 
+        if (connect_job.takeResult()) |result| {
+            if (result.canceled) {
+                if (result.err) |err_msg| {
+                    allocator.free(err_msg);
+                }
+                ws_client.disconnect();
+                ctx.state = .disconnected;
+                ctx.clearError();
+                next_ping_at_ms = 0;
+            } else if (result.ok) {
+                ctx.clearError();
+                ctx.state = .authenticating;
+                next_ping_at_ms = 0;
+                startReadThread(&read_loop, &read_thread) catch |err| {
+                    logger.err("Failed to start read thread: {}", .{err});
+                };
+            } else {
+                ctx.state = .error_state;
+                if (result.err) |err_msg| {
+                    ctx.setError(err_msg) catch {};
+                    allocator.free(err_msg);
+                }
+                if (should_reconnect) {
+                    const now_ms = std.time.milliTimestamp();
+                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                }
+            }
+        }
+
         if (should_reconnect and !ws_client.is_connected and read_thread == null) {
             const now_ms = std.time.milliTimestamp();
             if (next_reconnect_at_ms == 0 or now_ms >= next_reconnect_at_ms) {
@@ -1372,34 +1520,22 @@ pub fn main() !void {
                 ws_client.url = cfg.server_url;
                 ws_client.token = cfg.token;
                 ws_client.insecure_tls = cfg.insecure_tls;
-                ws_client.connect() catch |err| {
-                    logger.err("WebSocket reconnect failed: {}", .{err});
-                    ctx.state = .error_state;
-                };
-                if (ws_client.is_connected) {
-                    ctx.clearError();
-                    ctx.state = .authenticating;
-                    reconnect_backoff_ms = 500;
-                    next_reconnect_at_ms = 0;
-                    next_ping_at_ms = 0;
-                    startReadThread(&read_loop, &read_thread) catch |err| {
-                        logger.err("Failed to start read thread: {}", .{err});
+                ws_client.connect_host_override = cfg.connect_host_override;
+                if (!connect_job.isRunning()) {
+                    const started = connect_job.start() catch blk: {
+                        break :blk false;
                     };
-                } else {
-                    next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
-                    const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
-                    reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
-                    logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    if (!started) {
+                        next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
+                        const grown = reconnect_backoff_ms + reconnect_backoff_ms / 2;
+                        reconnect_backoff_ms = if (grown > 15_000) 15_000 else grown;
+                        logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
+                    }
                 }
             }
         }
 
-        if (use_webgpu) {
-            renderer.?.render();
-        } else {
-            imgui_gl.endFrame();
-            window.swapBuffers();
-        }
+        renderer.render();
     }
 }
 
@@ -1432,7 +1568,14 @@ fn initLogging(allocator: std.mem.Allocator) !void {
         logger.initFile(path) catch |err| {
             logger.warn("Failed to open log file: {}", .{err});
         };
+    } else {
+        logger.initFile(startup_log_path) catch |err| {
+            logger.warn("Failed to open startup log: {}", .{err});
+        };
     }
+    logger.initAsync(allocator) catch |err| {
+        logger.warn("Failed to start async logger: {}", .{err});
+    };
 }
 
 fn parseLogLevel(value: []const u8) ?logger.Level {

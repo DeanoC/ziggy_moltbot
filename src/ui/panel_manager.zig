@@ -109,6 +109,18 @@ pub const PanelManager = struct {
         return false;
     }
 
+    pub fn ensurePanel(self: *PanelManager, kind: workspace.PanelKind) void {
+        if (self.findPanelByKind(kind)) |panel| {
+            self.focusPanel(panel.id);
+            return;
+        }
+        _ = self.openDefaultPanel(kind) catch {};
+    }
+
+    pub fn hasPanel(self: *PanelManager, kind: workspace.PanelKind) bool {
+        return self.findPanelByKind(kind) != null;
+    }
+
     pub fn findReusablePanel(
         self: *PanelManager,
         kind: workspace.PanelKind,
@@ -188,6 +200,63 @@ pub const PanelManager = struct {
         const panel_id = try self.openPanel(.Chat, title, data);
         self.focusPanel(panel_id);
         return panel_id;
+    }
+
+    fn findPanelByKind(self: *PanelManager, kind: workspace.PanelKind) ?*workspace.Panel {
+        for (self.workspace.panels.items) |*panel| {
+            if (panel.kind == kind) return panel;
+        }
+        return null;
+    }
+
+    fn openDefaultPanel(self: *PanelManager, kind: workspace.PanelKind) !workspace.PanelId {
+        switch (kind) {
+            .Chat => {
+                const data = workspace.PanelData{ .Chat = .{
+                    .agent_id = try self.allocator.dupe(u8, "main"),
+                    .session_key = null,
+                } };
+                return try self.openPanel(.Chat, "Chat", data);
+            },
+            .Control => {
+                const data = workspace.PanelData{ .Control = .{} };
+                return try self.openPanel(.Control, "Workspace", data);
+            },
+            .CodeEditor => {
+                const file_id = "untitled.zig";
+                const language = "zig";
+                const file_copy = try self.allocator.dupe(u8, file_id);
+                errdefer self.allocator.free(file_copy);
+                const lang_copy = try self.allocator.dupe(u8, language);
+                errdefer self.allocator.free(lang_copy);
+                var buffer = try text_buffer.TextBuffer.init(self.allocator, "");
+                errdefer buffer.deinit(self.allocator);
+                const panel_data = workspace.PanelData{ .CodeEditor = .{
+                    .file_id = file_copy,
+                    .language = lang_copy,
+                    .content = buffer,
+                    .last_modified_by = .ai,
+                    .version = 1,
+                } };
+                return try self.openPanel(.CodeEditor, file_id, panel_data);
+            },
+            .ToolOutput => {
+                const tool_name = "Tool Output";
+                const tool_copy = try self.allocator.dupe(u8, tool_name);
+                errdefer self.allocator.free(tool_copy);
+                var stdout_buf = try text_buffer.TextBuffer.init(self.allocator, "");
+                errdefer stdout_buf.deinit(self.allocator);
+                var stderr_buf = try text_buffer.TextBuffer.init(self.allocator, "");
+                errdefer stderr_buf.deinit(self.allocator);
+                const panel_data = workspace.PanelData{ .ToolOutput = .{
+                    .tool_name = tool_copy,
+                    .stdout = stdout_buf,
+                    .stderr = stderr_buf,
+                    .exit_code = 0,
+                } };
+                return try self.openPanel(.ToolOutput, "Tool Output", panel_data);
+            },
+        }
     }
 
     fn applyOpen(self: *PanelManager, open: ui_command.OpenPanelCmd) !void {
@@ -276,7 +345,7 @@ pub const PanelManager = struct {
                     return;
                 }
                 const panel_data = workspace.PanelData{ .Control = .{} };
-                _ = try self.openPanel(.Control, open.title orelse "Control", panel_data);
+                _ = try self.openPanel(.Control, open.title orelse "Workspace", panel_data);
             },
         }
     }
@@ -294,11 +363,6 @@ pub const PanelManager = struct {
                     if (data.session) |session| {
                         if (panel.data.Chat.session_key) |prev| self.allocator.free(prev);
                         panel.data.Chat.session_key = try self.allocator.dupe(u8, session);
-                        if (panel.data.Chat.agent_id == null) {
-                            if (session_keys.parse(session)) |parts| {
-                                panel.data.Chat.agent_id = try self.allocator.dupe(u8, parts.agent_id);
-                            }
-                        }
                     }
                 },
                 .CodeEditor => |data| {
@@ -349,8 +413,16 @@ pub const PanelManager = struct {
 };
 
 fn parseControlTab(label: []const u8) workspace.ControlTab {
+    if (std.mem.eql(u8, label, "Agents")) return .Agents;
+    if (std.mem.eql(u8, label, "Projects")) return .Projects;
+    if (std.mem.eql(u8, label, "Sources")) return .Sources;
+    if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;
+    if (std.mem.eql(u8, label, "Run Inspector")) return .RunInspector;
+    if (std.mem.eql(u8, label, "Approvals Inbox")) return .ApprovalsInbox;
+    if (std.mem.eql(u8, label, "Active Agents")) return .ActiveAgents;
+    if (std.mem.eql(u8, label, "Media Gallery")) return .MediaGallery;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
-    if (std.mem.eql(u8, label, "Notifications")) return .Notifications;
+    if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return .Agents;
 }

@@ -17,5 +17,20 @@
             .hash = "122031789a7c6364c2f99164c1183661bb5fe914ad7336cc224039c7fba649f35c47",
             .lazy = true,
         },
+        .libpng = .{
+            .url = "https://github.com/allyourcodebase/libpng/archive/refs/heads/main.zip",
+            .hash = "libpng-1.6.53-oiaFGtwqAAB2XTxMgi4dG96BUO-0_BtUFtxKraIwq6-w",
+            .lazy = true,
+        },
+        .libpng_src = .{
+            .url = "https://github.com/glennrp/libpng/archive/refs/tags/v1.6.53.tar.gz",
+            .hash = "N-V-__8AAJHgXwBPt17hQdF6ZmDlBAakhffuHGSNcE49WWzL",
+            .lazy = true,
+        },
+        .zlib_src = .{
+            .url = "https://github.com/madler/zlib/archive/refs/tags/v1.3.1.tar.gz",
+            .hash = "N-V-__8AAB0eQwD-0MdOEBmz7intriBReIsIDNlukNVoNu6o",
+            .lazy = true,
+        },
     },
 }

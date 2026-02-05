@@ -13,6 +13,7 @@ pub fn draw(
     is_connected: bool,
     update_state: *update_checker.UpdateState,
     app_version: []const u8,
+    rect_override: ?@import("../draw_context.zig").Rect,
 ) SettingsPanelAction {
     return settings_view.draw(
         allocator,
@@ -21,5 +22,6 @@ pub fn draw(
         is_connected,
         update_state,
         app_version,
+        rect_override,
     );
 }

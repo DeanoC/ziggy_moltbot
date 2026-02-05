@@ -2115,6 +2115,9 @@ fn initLogging(allocator: std.mem.Allocator) !void {
             logger.warn("Failed to open log file: {}", .{err});
         };
     }
+    logger.initAsync(allocator) catch |err| {
+        logger.warn("Failed to start async logger: {}", .{err});
+    };
 }
 
 fn parseLogLevel(value: []const u8) ?logger.Level {

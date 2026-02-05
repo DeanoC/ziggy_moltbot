@@ -92,6 +92,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
 
+        if (std.mem.eql(u8, frame.value.event, "tick") or
+            std.mem.eql(u8, frame.value.event, "cron") or
+            std.mem.eql(u8, frame.value.event, "health"))
+        {
+            return null;
+        }
         logger.debug("Gateway event: {s}", .{frame.value.event});
         return null;
     }
@@ -617,7 +623,6 @@ fn extractChatText(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) !
         defer list.deinit(allocator);
         var first = true;
         for (content) |item| {
-            if (!std.mem.eql(u8, item.type, "text")) continue;
             if (item.text) |text| {
                 if (!first) {
                     try list.appendSlice(allocator, "\n");

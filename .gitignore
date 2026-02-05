@@ -13,4 +13,5 @@ __pycache__/
 # local debug / identity artifacts
 ziggystarclaw_device.json
 ziggystarclaw_operator_device.json
+ziggystarclaw_state.json
 scripts/debug_gateway.py

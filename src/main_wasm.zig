@@ -5,12 +5,11 @@ const zgui = @import("zgui");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const operator_view = @import("ui/operator_view.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
 const image_cache = @import("ui/image_cache.zig");
+const input_router = @import("ui/input/input_router.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
@@ -66,7 +65,6 @@ var cfg: config.Config = undefined;
 var agents: agent_registry.AgentRegistry = undefined;
 var manager: panel_manager.PanelManager = undefined;
 var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
-var dock_state: dock_layout.DockState = .{};
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -186,14 +184,16 @@ fn initApp() !void {
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
+    if (cfg.ui_theme) |label| {
+        theme.setMode(theme.modeFromLabel(label));
+        theme.apply();
+    }
     agents = try loadAgentRegistryFromStorage();
     app_state_state = loadAppStateFromStorage();
     auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();
     manager = panel_manager.PanelManager.init(allocator, ws);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
-    dock_state = .{};
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
     window = win;
     message_queue = MessageQueue{};
     initialized = true;
@@ -206,8 +206,10 @@ fn deinitApp() void {
     ImGui_ImplGlfw_Shutdown();
     image_cache.deinit();
     zgui.deinit();
+    ui.deinit(allocator);
     manager.deinit();
     command_inbox.deinit(allocator);
+    input_router.deinit(allocator);
     ctx.deinit();
     saveAgentRegistryToStorage();
     agents.deinit(allocator);
@@ -962,6 +964,23 @@ fn ensureChatPanelsReady(
                 }
             }
         }
+        if (session_key == null) {
+            if (ctx_ptr.current_session) |current| {
+                var matches_agent = true;
+                if (agent_id) |id| {
+                    if (session_keys.parse(current)) |parts| {
+                        matches_agent = std.mem.eql(u8, parts.agent_id, id);
+                    } else {
+                        matches_agent = std.mem.eql(u8, id, "main");
+                    }
+                }
+                if (matches_agent) {
+                    panel.data.Chat.session_key = alloc.dupe(u8, current) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    mgr.workspace.markDirty();
+                }
+            }
+        }
         if (session_key) |key| {
             if (ctx_ptr.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
@@ -1226,9 +1245,11 @@ fn frame() callconv(.c) void {
         &agents,
         ws_connected,
         build_options.app_version,
+        fb_width,
+        fb_height,
+        false,
         &manager,
         &command_inbox,
-        &dock_state,
     );
 
     if (ui_action.config_updated) {
@@ -1240,9 +1261,6 @@ fn frame() callconv(.c) void {
         saveConfigToStorage();
     }
     if (ui_action.save_workspace) {
-        dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-            logger.warn("Failed to capture workspace layout: {}", .{err});
-        };
         saveWorkspaceToStorage(&manager.workspace);
         manager.workspace.markClean();
     }
@@ -1269,6 +1287,10 @@ fn frame() callconv(.c) void {
             "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
         openUrl(release_url);
     }
+    if (ui_action.open_url) |url| {
+        defer allocator.free(url);
+        openUrl(url);
+    }
     if (ui_action.clear_saved) {
         wasm_storage.remove(config_storage_key);
         app_state_state.last_connected = false;
@@ -1279,6 +1301,10 @@ fn frame() callconv(.c) void {
             logger.warn("Failed to reset config: {}", .{err});
             return;
         };
+        if (cfg.ui_theme) |label| {
+            theme.setMode(theme.modeFromLabel(label));
+            theme.apply();
+        }
         ui.syncSettings(cfg);
     }
 
@@ -1308,6 +1334,24 @@ fn frame() callconv(.c) void {
 
     if (ui_action.refresh_sessions) {
         sendSessionsListRequest();
+    }
+
+    if (ui_action.new_session) {
+        if (ws_connected) {
+            const key = makeNewSessionKey(allocator, "main") catch null;
+            if (key) |session_key| {
+                defer allocator.free(session_key);
+                sendSessionsResetRequest(session_key);
+                if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+                    saveAgentRegistryToStorage();
+                }
+                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                ctx.clearSessionState(session_key);
+                ctx.setCurrentSession(session_key) catch {};
+                sendChatHistoryRequest(session_key);
+                sendSessionsListRequest();
+            }
+        }
     }
 
     if (ui_action.new_chat_agent_id) |agent_id| {
@@ -1342,6 +1386,21 @@ fn frame() callconv(.c) void {
         _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
         if (ws_connected) {
             sendChatHistoryRequest(open.session_key);
+        }
+    }
+
+    if (ui_action.select_session) |session_key| {
+        defer allocator.free(session_key);
+        ctx.setCurrentSession(session_key) catch |err| {
+            logger.warn("Failed to set session: {}", .{err});
+        };
+        if (session_keys.parse(session_key)) |parts| {
+            _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+        } else {
+            _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+        }
+        if (ws_connected) {
+            sendChatHistoryRequest(session_key);
         }
     }
 

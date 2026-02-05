@@ -17,6 +17,8 @@ const icon = @cImport({
 
 extern fn zsc_wasm_fetch(url: [*:0]const u8, ctx: usize) void;
 
+const use_gl_backend = builtin.abi == .android or builtin.cpu.arch == .wasm32;
+
 pub const ImageState = enum {
     loading,
     ready,
@@ -28,6 +30,7 @@ pub const ImageEntryView = struct {
     texture_id: u32,
     width: u32,
     height: u32,
+    pixels: ?[]const u8,
     error_message: ?[]const u8,
 };
 
@@ -38,6 +41,7 @@ const ImageEntry = struct {
     height: u32,
     bytes: usize,
     last_used_ms: i64,
+    pixels: ?[]u8,
     error_message: ?[]u8,
 };
 
@@ -61,6 +65,7 @@ pub const ImageCache = struct {
     mutex: std.Thread.Mutex = .{},
     max_bytes: usize = 64 * 1024 * 1024,
     used_bytes: usize = 0,
+    next_id: u32 = 1,
 
     pub fn init(allocator: std.mem.Allocator) ImageCache {
         return .{
@@ -90,8 +95,11 @@ pub fn deinit() void {
     cache.mutex.lock();
     var it = cache.entries.iterator();
     while (it.next()) |entry| {
-        if (entry.value_ptr.texture_id != 0) {
+        if (use_gl_backend and entry.value_ptr.texture_id != 0) {
             texture_gl.destroyTexture(entry.value_ptr.texture_id);
+        }
+        if (entry.value_ptr.pixels) |pixels| {
+            cache.allocator.free(pixels);
         }
         if (entry.value_ptr.error_message) |err| {
             cache.allocator.free(err);
@@ -112,6 +120,7 @@ pub fn deinit() void {
 
 pub fn beginFrame() void {
     if (cache_state == null or !enabled) return;
+    if (!use_gl_backend) return;
     var cache = &cache_state.?;
 
     cache.mutex.lock();
@@ -164,13 +173,19 @@ pub fn request(url: []const u8) void {
         cache.mutex.unlock();
         return;
     };
+    const texture_id: u32 = if (use_gl_backend) 0 else blk: {
+        const id = cache.next_id;
+        cache.next_id += 1;
+        break :blk id;
+    };
     cache.entries.put(key, ImageEntry{
         .state = .loading,
-        .texture_id = 0,
+        .texture_id = texture_id,
         .width = 0,
         .height = 0,
         .bytes = 0,
         .last_used_ms = std.time.milliTimestamp(),
+        .pixels = null,
         .error_message = null,
     }) catch {
         cache.allocator.free(key);
@@ -203,10 +218,52 @@ pub fn get(url: []const u8) ?ImageEntryView {
             .texture_id = entry.texture_id,
             .width = entry.width,
             .height = entry.height,
+            .pixels = if (!use_gl_backend) entry.pixels else null,
             .error_message = entry.error_message,
         };
     }
     return null;
+}
+
+pub fn getById(id: u32) ?ImageEntryView {
+    if (cache_state == null or !enabled) return null;
+    var cache = &cache_state.?;
+    cache.mutex.lock();
+    defer cache.mutex.unlock();
+    var it = cache.entries.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.texture_id != id) continue;
+        entry.value_ptr.last_used_ms = std.time.milliTimestamp();
+        return .{
+            .state = entry.value_ptr.state,
+            .texture_id = entry.value_ptr.texture_id,
+            .width = entry.value_ptr.width,
+            .height = entry.value_ptr.height,
+            .pixels = if (!use_gl_backend) entry.value_ptr.pixels else null,
+            .error_message = entry.value_ptr.error_message,
+        };
+    }
+    return null;
+}
+
+pub fn releasePixels(id: u32) void {
+    if (cache_state == null) return;
+    var cache = &cache_state.?;
+    cache.mutex.lock();
+    defer cache.mutex.unlock();
+    var it = cache.entries.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.texture_id != id) continue;
+        if (entry.value_ptr.pixels) |pixels| {
+            cache.allocator.free(pixels);
+            entry.value_ptr.pixels = null;
+            if (entry.value_ptr.bytes > 0 and cache.used_bytes >= entry.value_ptr.bytes) {
+                cache.used_bytes -= entry.value_ptr.bytes;
+                entry.value_ptr.bytes = 0;
+            }
+        }
+        break;
+    }
 }
 
 fn decodeDataUri(cache: *ImageCache, key: []u8) void {
@@ -281,21 +338,45 @@ fn decodeImage(cache: *ImageCache, key: []u8, bytes: []const u8) !void {
     const pixels = try cache.allocator.alloc(u8, pixel_len);
     @memcpy(pixels, @as([*]u8, @ptrCast(pixels_ptr))[0..pixel_len]);
 
+    if (use_gl_backend) {
+        cache.mutex.lock();
+        cache.pending.append(cache.allocator, .{
+            .url = key,
+            .pixels = pixels,
+            .width = w,
+            .height = h,
+            .bytes = pixel_len,
+        }) catch {
+            cache.allocator.free(pixels);
+            if (cache.entries.getPtr(key)) |entry| {
+                entry.state = .failed;
+                entry.error_message = dupeError(cache.allocator, "pending queue full");
+            }
+        };
+        cache.mutex.unlock();
+        return;
+    }
+
     cache.mutex.lock();
-    cache.pending.append(cache.allocator, .{
-        .url = key,
-        .pixels = pixels,
-        .width = w,
-        .height = h,
-        .bytes = pixel_len,
-    }) catch {
-        cache.allocator.free(pixels);
-        if (cache.entries.getPtr(key)) |entry| {
-            entry.state = .failed;
-            entry.error_message = dupeError(cache.allocator, "pending queue full");
+    defer cache.mutex.unlock();
+    if (cache.entries.getPtr(key)) |entry| {
+        if (entry.pixels) |old| {
+            cache.allocator.free(old);
         }
-    };
-    cache.mutex.unlock();
+        if (entry.bytes > 0 and cache.used_bytes >= entry.bytes) {
+            cache.used_bytes -= entry.bytes;
+        }
+        entry.state = .ready;
+        entry.width = w;
+        entry.height = h;
+        entry.bytes = pixel_len;
+        entry.pixels = pixels;
+        entry.last_used_ms = std.time.milliTimestamp();
+        cache.used_bytes += pixel_len;
+        evictIfNeeded(cache);
+    } else {
+        cache.allocator.free(pixels);
+    }
 }
 
 fn setFailed(cache: *ImageCache, key: []const u8, msg: []const u8) void {
@@ -331,8 +412,11 @@ fn evictIfNeeded(self: *ImageCache) void {
 
 fn removeEntry(self: *ImageCache, key: []const u8) void {
     if (self.entries.fetchRemove(key)) |kv| {
-        if (kv.value.texture_id != 0) {
+        if (use_gl_backend and kv.value.texture_id != 0) {
             texture_gl.destroyTexture(kv.value.texture_id);
+        }
+        if (kv.value.pixels) |pixels| {
+            self.allocator.free(pixels);
         }
         if (kv.value.error_message) |err| {
             self.allocator.free(err);
