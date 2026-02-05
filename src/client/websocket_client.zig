@@ -20,7 +20,7 @@ pub const WebSocketClient = struct {
     // Defaults to `token`.
     connect_auth_token: ?[]const u8 = null,
     // Token used inside the device-auth signed payload.
-    // OpenClaw includes the auth token in the signed payload; for node-mode this is the gateway token.
+    // OpenClaw includes the auth token in the signed payload; for node-mode this should be the paired node token when available.
     device_auth_token: ?[]const u8 = null,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,

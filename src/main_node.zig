@@ -186,6 +186,36 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
 
 const PairingDecision = enum { approved, rejected };
 
+const PairingPrompt = struct {
+    mutex: std.Thread.Mutex = .{},
+    awaiting_input: bool = false,
+    decision: ?bool = null,
+
+    fn begin(self: *PairingPrompt) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.decision = null;
+        self.awaiting_input = true;
+    }
+
+    fn clear(self: *PairingPrompt) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.decision = null;
+        self.awaiting_input = false;
+    }
+
+    fn popDecision(self: *PairingPrompt) ?bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.decision) |decision| {
+            self.decision = null;
+            return decision;
+        }
+        return null;
+    }
+};
+
 const PairingState = struct {
     auto_approve: bool,
     timeout_ms: i64,
@@ -194,6 +224,9 @@ const PairingState = struct {
     request_id: ?[]const u8 = null,
     requested_at_ms: i64 = 0,
     last_decision: ?PairingDecision = null,
+    approve_method: []const u8 = "",
+    reject_method: []const u8 = "",
+    prompt: PairingPrompt = .{},
 
     fn deinit(self: *PairingState, allocator: std.mem.Allocator) void {
         if (self.request_id) |rid| {
@@ -201,13 +234,21 @@ const PairingState = struct {
         }
     }
 
-    fn setPending(self: *PairingState, allocator: std.mem.Allocator, request_id: []const u8) !void {
+    fn setPending(
+        self: *PairingState,
+        allocator: std.mem.Allocator,
+        request_id: []const u8,
+        approve_method: []const u8,
+        reject_method: []const u8,
+    ) !void {
         if (self.request_id) |rid| {
             allocator.free(rid);
         }
         self.request_id = try allocator.dupe(u8, request_id);
         self.requested_at_ms = node_platform.nowMs();
         self.last_decision = null;
+        self.approve_method = approve_method;
+        self.reject_method = reject_method;
     }
 
     fn clear(self: *PairingState, allocator: std.mem.Allocator) void {
@@ -216,6 +257,9 @@ const PairingState = struct {
         }
         self.request_id = null;
         self.requested_at_ms = 0;
+        self.approve_method = "";
+        self.reject_method = "";
+        self.prompt.clear();
     }
 
     fn isPending(self: *const PairingState) bool {
@@ -231,6 +275,24 @@ fn isInteractive() bool {
     const stdin = std.fs.File.stdin();
     const stdout = std.fs.File.stdout();
     return stdin.isTty() and stdout.isTty();
+}
+
+fn pairingPromptThread(prompt: *PairingPrompt) void {
+    var in = std.fs.File.stdin().deprecatedReader();
+    var buf: [64]u8 = undefined;
+    while (true) {
+        const line_opt = in.readUntilDelimiterOrEof(&buf, '\n') catch return;
+        const line = line_opt orelse return;
+        const trimmed = std.mem.trim(u8, line, " \t\r\n");
+        const approve = trimmed.len > 0 and (trimmed[0] == 'y' or trimmed[0] == 'Y');
+
+        prompt.mutex.lock();
+        if (prompt.awaiting_input) {
+            prompt.decision = approve;
+            prompt.awaiting_input = false;
+        }
+        prompt.mutex.unlock();
+    }
 }
 
 pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
@@ -304,6 +366,13 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     };
     defer pairing.deinit(allocator);
 
+    if (pairing.interactive and !pairing.auto_approve) {
+        _ = std.Thread.spawn(.{}, pairingPromptThread, .{&pairing.prompt}) catch |err| {
+            logger.warn("Failed to start pairing prompt thread: {s}", .{@errorName(err)});
+            pairing.interactive = false;
+        };
+    }
+
     // Initialize node context
     var node_ctx = try NodeContext.init(allocator, node_id, display_name);
     defer node_ctx.deinit();
@@ -341,14 +410,27 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     defer node_context.freeStringArray(allocator, commands);
 
     const handshake_token = cfg.gateway.authToken;
-    const connect_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
+    // Invariant: connect.auth.token must match the WebSocket Authorization token.
+    // Node-mode uses the gateway auth token for both.
+    const connect_auth_token = cfg.gateway.authToken;
+    // Device-auth signed payload should use the paired node token when available.
+    const device_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
     if (cfg.node.nodeToken.len == 0) {
-        logger.warn("node.nodeToken is empty; connect auth will fall back to gateway.authToken", .{});
+        logger.warn("node.nodeToken is empty; device-auth will fall back to gateway.authToken", .{});
     }
 
     // Single-thread connection manager (no background threads).
-    // IMPORTANT: handshake token (gateway auth) is distinct from connect auth token (node pairing token).
-    var conn = try SingleThreadConnectionManager.init(allocator, ws_url, handshake_token, connect_auth_token, false);
+    // Token design:
+    // - WS Authorization + connect.auth.token use the gateway auth token (must match).
+    // - device-auth payload token uses the paired node token when available.
+    var conn = try SingleThreadConnectionManager.init(
+        allocator,
+        ws_url,
+        handshake_token,
+        connect_auth_token,
+        device_auth_token,
+        false,
+    );
     defer conn.deinit();
 
     const Ctx = struct {
@@ -372,14 +454,11 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
             });
             client.setConnectNodeMetadata(.{ .caps = ctx.caps, .commands = ctx.commands });
             client.setDeviceIdentityPath(ctx.cfg.node.deviceIdentityPath);
-            // Token separation:
-            // - WS handshake uses the gateway auth token (WebSocketClient.token), set in the connection manager init.
-            // - Connect auth (params.auth.token) for role=node should be the paired node token.
-            //   The gateway will validate it via verifyDeviceToken() after device signature checks.
-            // - Device-auth signed payload must use the SAME token as connect auth (gateway signs/validates
-            //   buildDeviceAuthPayload(..., token=connectParams.auth.token)).
+            // Token design:
+            // - WS handshake Authorization + connect.auth.token must match (gateway auth token).
+            // - Device-auth signed payload should use the paired node token when available.
             client.setConnectAuthToken(cm.connect_auth_token);
-            client.setDeviceAuthToken(cm.connect_auth_token);
+            client.setDeviceAuthToken(cm.device_auth_token);
         }
     }.cb;
 
@@ -445,6 +524,29 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
                 .{ pairing.request_id.?, opts.pairing_timeout_seconds },
             );
             pairing.clear(allocator);
+        }
+
+        if (pairing.isPending() and pairing.interactive) {
+            if (pairing.prompt.popDecision()) |approve| {
+                const request_id = pairing.request_id.?;
+                if (approve) {
+                    sendPairingDecision(allocator, &conn.ws_client, pairing.approve_method, request_id) catch |err| {
+                        logger.err("Failed to send pairing approval: {s}", .{@errorName(err)});
+                    };
+                    pairing.last_decision = .approved;
+                    logger.info("Approved pairing request {s}.", .{request_id});
+                } else {
+                    sendPairingDecision(allocator, &conn.ws_client, pairing.reject_method, request_id) catch |err| {
+                        logger.err("Failed to send pairing rejection: {s}", .{@errorName(err)});
+                    };
+                    pairing.last_decision = .rejected;
+                    logger.err("Rejected pairing request {s}.", .{request_id});
+                }
+            }
+        } else if (!pairing.isPending()) {
+            if (pairing.prompt.popDecision() != null) {
+                logger.warn("Pairing input ignored (no pending request).", .{});
+            }
         }
 
         if (!got_payload) {
@@ -589,8 +691,8 @@ fn handleNodeMessage(
                                             cfg.node.nodeToken = try allocator.dupe(u8, token.string);
 
                                             if (conn) |cm| {
-                                                cm.setConnectAuthToken(cfg.node.nodeToken) catch |err| {
-                                                    logger.warn("Failed to update connect auth token: {s}", .{@errorName(err)});
+                                                cm.setDeviceAuthToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update device auth token: {s}", .{@errorName(err)});
                                                 };
                                             }
 
@@ -673,7 +775,7 @@ fn handlePairingRequested(
     };
     if (rid_val != .string) return;
 
-    try pairing.setPending(allocator, rid_val.string);
+    try pairing.setPending(allocator, rid_val.string, approve_method, reject_method);
     logger.warn("Pairing request received (requestId={s}).", .{rid_val.string});
 
     if (pairing.auto_approve) {
@@ -690,15 +792,7 @@ fn handlePairingRequested(
         return;
     }
 
-    const approve = try promptPairingApproval(allocator, rid_val.string);
-    if (approve) {
-        try sendPairingDecision(allocator, ws_client, approve_method, rid_val.string);
-        logger.info("Approved pairing request {s}.", .{rid_val.string});
-    } else {
-        try sendPairingDecision(allocator, ws_client, reject_method, rid_val.string);
-        pairing.last_decision = .rejected;
-        logger.err("Rejected pairing request {s}.", .{rid_val.string});
-    }
+    try startPairingPrompt(pairing, rid_val.string);
 }
 
 fn handlePairingResolved(
@@ -767,16 +861,10 @@ fn sendPairingDecision(
     try ws_client.send(req.payload);
 }
 
-fn promptPairingApproval(allocator: std.mem.Allocator, request_id: []const u8) !bool {
-    _ = allocator;
+fn startPairingPrompt(pairing: *PairingState, request_id: []const u8) !void {
+    pairing.prompt.begin();
     var out = std.fs.File.stderr().deprecatedWriter();
     try out.print("Approve pairing request {s}? [y/N]: ", .{request_id});
-    var in = std.fs.File.stdin().deprecatedReader();
-    var buf: [64]u8 = undefined;
-    const line = (try in.readUntilDelimiterOrEof(&buf, '\n')) orelse "";
-    const trimmed = std.mem.trim(u8, line, " \t\r\n");
-    if (trimmed.len == 0) return false;
-    return trimmed[0] == 'y' or trimmed[0] == 'Y';
 }
 
 fn saveUpdatedNodeToken(

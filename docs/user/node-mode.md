@@ -69,7 +69,7 @@ ziggystarclaw-cli --operator-mode --pair-list
 ziggystarclaw-cli --operator-mode --pair-approve <requestId>
 ```
 
-The pairing prompt respects `--pairing-timeout <sec>` (default: 120).
+The pairing prompt respects `--pairing-timeout <sec>` (default: 120). If no response arrives before the timeout, the pending request is cleared and late input is ignored.
 
 ## Exec approvals (allowlist)
 
@@ -140,7 +140,8 @@ Get-Content (Join-Path $env:APPDATA 'ZiggyStarClaw\node-service.log') -Tail 200
 - `--log-level <level>`: debug|info|warn|error
 
 ## Auth notes
-- Node mode prefers `node.nodeToken` for auth (the gateway may rotate/issue a `deviceToken` in `hello-ok`). ZiggyStarClaw will persist it back to config and use the updated token on reconnect.
+- WebSocket Authorization and `connect.auth.token` use `gateway.authToken` (they must match).
+- `node.nodeToken` (device token) is used in the device-auth signed payload, and is persisted back to config when the gateway issues/rotates it in `hello-ok`.
 - `gateway.authToken` is still used for operator-mode and can be used as a fallback for legacy node configs.
 
 ## Security notes

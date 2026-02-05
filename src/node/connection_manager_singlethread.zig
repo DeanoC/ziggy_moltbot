@@ -18,8 +18,12 @@ pub const SingleThreadConnectionManager = struct {
     handshake_token: []const u8,
 
     // Token used for connect auth (params.auth.token).
-    // For node-mode this should be the paired node token (device token).
+    // For node-mode this must match the WebSocket handshake Authorization token.
     connect_auth_token: []const u8,
+
+    // Token used inside the device-auth signed payload.
+    // For node-mode this should be the paired device token (node.nodeToken) when available.
+    device_auth_token: []const u8,
 
     insecure_tls: bool,
 
@@ -51,6 +55,7 @@ pub const SingleThreadConnectionManager = struct {
         ws_url: []const u8,
         handshake_token: []const u8,
         connect_auth_token: []const u8,
+        device_auth_token: []const u8,
         insecure_tls: bool,
     ) !SingleThreadConnectionManager {
         const url_copy = try allocator.dupe(u8, ws_url);
@@ -62,6 +67,9 @@ pub const SingleThreadConnectionManager = struct {
         const ca_copy = try allocator.dupe(u8, connect_auth_token);
         errdefer allocator.free(ca_copy);
 
+        const da_copy = try allocator.dupe(u8, device_auth_token);
+        errdefer allocator.free(da_copy);
+
         var client = websocket_client.WebSocketClient.init(allocator, url_copy, hs_copy, insecure_tls, null);
         client.setReadTimeout(15_000);
 
@@ -70,6 +78,7 @@ pub const SingleThreadConnectionManager = struct {
             .ws_url = url_copy,
             .handshake_token = hs_copy,
             .connect_auth_token = ca_copy,
+            .device_auth_token = da_copy,
             .insecure_tls = insecure_tls,
             .ws_client = client,
             .next_attempt_at_ms = node_platform.nowMs(),
@@ -81,10 +90,11 @@ pub const SingleThreadConnectionManager = struct {
         self.allocator.free(self.ws_url);
         self.allocator.free(self.handshake_token);
         self.allocator.free(self.connect_auth_token);
+        self.allocator.free(self.device_auth_token);
     }
 
-    /// Update the token used for the WS handshake and connect auth.
-    /// This matters when the gateway issues a new device token (rotation) and we later reconnect.
+    /// Update the token used for connect auth (params.auth.token).
+    /// This should match the WS Authorization token.
     /// Update the connect auth token (params.auth.token).
     /// This is typically the paired device token for nodes.
     pub fn setConnectAuthToken(self: *SingleThreadConnectionManager, token: []const u8) !void {
@@ -93,6 +103,15 @@ pub const SingleThreadConnectionManager = struct {
         const tok_copy = try self.allocator.dupe(u8, token);
         self.allocator.free(self.connect_auth_token);
         self.connect_auth_token = tok_copy;
+    }
+
+    /// Update the token used inside the device-auth signed payload.
+    pub fn setDeviceAuthToken(self: *SingleThreadConnectionManager, token: []const u8) !void {
+        if (std.mem.eql(u8, self.device_auth_token, token)) return;
+
+        const tok_copy = try self.allocator.dupe(u8, token);
+        self.allocator.free(self.device_auth_token);
+        self.device_auth_token = tok_copy;
     }
 
     fn computeDelayMs(self: *SingleThreadConnectionManager) u64 {
