@@ -409,26 +409,24 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     const commands = try node_ctx.getCommandsArray();
     defer node_context.freeStringArray(allocator, commands);
 
-    const handshake_token = cfg.gateway.authToken;
-    // Invariant: connect.auth.token must match the WebSocket Authorization token.
-    // Node-mode uses the gateway auth token for both.
-    const connect_auth_token = cfg.gateway.authToken;
-    // Device-auth signed payload should use the paired node token when available.
-    const device_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
+    // Token design:
+    // - OpenClaw's gateway verifies the device signature against a payload that includes
+    //   `connect.params.auth.token`.
+    // - We also require WS Authorization and connect.auth.token to match.
+    //
+    // Therefore, if a dedicated paired node token is configured, we must use it for
+    // BOTH the WS Authorization token and connect.auth.token (and thus the signed payload).
+    const auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;
     if (cfg.node.nodeToken.len == 0) {
-        logger.warn("node.nodeToken is empty; device-auth will fall back to gateway.authToken", .{});
+        logger.warn("node.nodeToken is empty; node-mode will use gateway.authToken", .{});
     }
 
-    // Single-thread connection manager (no background threads).
-    // Token design:
-    // - WS Authorization + connect.auth.token use the gateway auth token (must match).
-    // - device-auth payload token uses the paired node token when available.
     var conn = try SingleThreadConnectionManager.init(
         allocator,
         ws_url,
-        handshake_token,
-        connect_auth_token,
-        device_auth_token,
+        auth_token, // WS Authorization token
+        auth_token, // connect.auth.token
+        auth_token, // device-auth signed payload token
         false,
     );
     defer conn.deinit();

@@ -347,13 +347,14 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         if (!self.use_device_identity) break :blk null;
         const ident = self.device_identity orelse return error.MissingDeviceIdentity;
         const signed_at = std.time.milliTimestamp();
-        const device_token = devtok: {
-            if (self.device_auth_token) |t| {
-                if (t.len > 0) break :devtok t;
-            }
-            // Default to gateway token.
-            break :devtok gateway_token;
-        };
+        // IMPORTANT: OpenClaw verifies the device signature against a payload that
+        // includes `connect.params.auth.token` (see gateway buildDeviceAuthPayload()).
+        // Therefore the token inside the signed payload MUST match the connect.auth.token
+        // we send (and usually the WS Authorization token as well).
+        //
+        // If you want to authenticate as a node using a paired node token, pass that token
+        // as the connect auth token / WS Authorization token, not only here.
+        const device_token = gateway_token;
 
         const payload = try buildDeviceAuthPayload(self.allocator, .{
             .device_id = ident.device_id,
