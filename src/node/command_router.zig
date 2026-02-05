@@ -357,18 +357,46 @@ fn systemWhichHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std
     const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
     var iter = std.mem.splitScalar(u8, path_var, sep);
 
+    const is_windows = @import("builtin").os.tag == .windows;
+    const pathext = if (is_windows)
+        (std.process.getEnvVarOwned(allocator, "PATHEXT") catch null)
+    else
+        null;
+    defer if (pathext) |v| allocator.free(v);
+
     while (iter.next()) |dir| {
         if (dir.len == 0) continue;
 
         const full_path = std.fs.path.join(allocator, &.{ dir, name.string }) catch continue;
         defer allocator.free(full_path);
 
-        // Check if file exists and is executable
-        std.fs.cwd().access(full_path, .{ .mode = .read_only }) catch continue;
+        // Check if file exists
+        if (std.fs.cwd().access(full_path, .{ .mode = .read_only })) |_| {
+            var result = std.json.ObjectMap.init(allocator);
+            try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path) });
+            return std.json.Value{ .object = result };
+        } else |_| {}
 
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path) });
-        return std.json.Value{ .object = result };
+        // Windows: respect PATHEXT so `system.which {name:"git"}` can find git.exe, etc.
+        if (is_windows and std.mem.indexOfScalar(u8, name.string, '.') == null) {
+            const exts_raw = if (pathext) |v| v else ".COM;.EXE;.BAT;.CMD";
+            var ext_iter = std.mem.splitScalar(u8, exts_raw, ';');
+            while (ext_iter.next()) |ext| {
+                if (ext.len == 0) continue;
+
+                const name_ext = std.mem.concat(allocator, u8, &.{ name.string, ext }) catch continue;
+                defer allocator.free(name_ext);
+
+                const full_path_ext = std.fs.path.join(allocator, &.{ dir, name_ext }) catch continue;
+                defer allocator.free(full_path_ext);
+
+                if (std.fs.cwd().access(full_path_ext, .{ .mode = .read_only })) |_| {
+                    var result = std.json.ObjectMap.init(allocator);
+                    try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path_ext) });
+                    return std.json.Value{ .object = result };
+                } else |_| {}
+            }
+        }
     }
 
     return std.json.Value{ .null = {} };

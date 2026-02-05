@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Node configuration - stored in ~/.openclaw/node.json
 pub const NodeConfig = struct {
@@ -254,10 +255,27 @@ pub const ExecApprovals = struct {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 var default = init(allocator);
-                // Add some safe defaults
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/ls"));
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/pwd"));
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/usr/bin/uname"));
+
+                // Add some safe defaults.
+                // These are intentionally read-only / non-destructive.
+                if (builtin.os.tag == .windows) {
+                    const entries = &[_][]const u8{
+                        "cmd /c dir",
+                        "cmd.exe /c dir",
+                        "where",
+                        "where.exe",
+                        "whoami",
+                        "whoami.exe",
+                    };
+                    for (entries) |e| {
+                        try default.allowlist.append(allocator, try allocator.dupe(u8, e));
+                    }
+                } else {
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/ls"));
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/pwd"));
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/usr/bin/uname"));
+                }
+
                 return default;
             },
             else => return err,
