@@ -6,6 +6,8 @@ pub fn build(b: *std.Build) void {
 
     const use_system_zlib = b.option(bool, "use_system_zlib", "Use system zlib") orelse false;
     const enable_brotli = b.option(bool, "enable_brotli", "Build Brotli") orelse true;
+    const enable_png = b.option(bool, "enable_png", "Build PNG support") orelse true;
+    const emsdk_sysroot_include = b.option([]const u8, "emsdk_sysroot_include", "Emscripten sysroot include path");
 
     const lib_module = b.createModule(.{
         .target = target,
@@ -24,15 +26,6 @@ pub fn build(b: *std.Build) void {
         lib.root_module.addCMacro("FT_CONFIG_OPTION_SYSTEM_ZLIB", "1");
     }
 
-    if (enable_brotli) {
-        lib.root_module.addCMacro("FT_CONFIG_OPTION_USE_BROTLI", "1");
-        if (b.lazyDependency("brotli", .{
-            .target = target,
-            .optimize = optimize,
-        })) |dep| lib.linkLibrary(dep.artifact("brotli"));
-    }
-
-    lib.root_module.addCMacro("HAVE_UNISTD_H", "1");
     const cflags: []const []const u8 = if (target.result.os.tag == .emscripten)
         &[_][]const u8{
             "-fno-sanitize=undefined",
@@ -41,6 +34,73 @@ pub fn build(b: *std.Build) void {
         }
     else
         &[_][]const u8{};
+
+    if (enable_brotli) {
+        lib.root_module.addCMacro("FT_CONFIG_OPTION_USE_BROTLI", "1");
+        if (b.lazyDependency("brotli", .{
+            .target = target,
+            .optimize = optimize,
+        })) |dep| lib.linkLibrary(dep.artifact("brotli"));
+    }
+
+    if (enable_png) {
+        lib.root_module.addCMacro("FT_CONFIG_OPTION_USE_PNG", "1");
+
+        const libpng_src = b.lazyDependency("libpng_src", .{});
+        const libpng_conf = b.lazyDependency("libpng", .{});
+        const zlib_src = b.lazyDependency("zlib_src", .{});
+
+        if (libpng_src) |png_src| {
+            if (target.result.os.tag == .emscripten) if (emsdk_sysroot_include) |path| {
+                lib.root_module.addSystemIncludePath(.{ .cwd_relative = path });
+            };
+
+            lib.root_module.addIncludePath(png_src.path(""));
+            if (libpng_conf) |png_conf| {
+                // pnglibconf.h lives in the wrapper root.
+                lib.root_module.addIncludePath(png_conf.path(""));
+            }
+
+            var png_flags: std.ArrayList([]const u8) = .empty;
+            defer png_flags.deinit(b.allocator);
+            png_flags.appendSlice(b.allocator, &.{
+                "-DPNG_ARM_NEON_OPT=0",
+                "-DPNG_POWERPC_VSX_OPT=0",
+                "-DPNG_INTEL_SSE_OPT=0",
+                "-DPNG_MIPS_MSA_OPT=0",
+            }) catch unreachable;
+            if (cflags.len > 0) {
+                png_flags.appendSlice(b.allocator, cflags) catch unreachable;
+            }
+            lib.root_module.addCSourceFiles(.{
+                .root = png_src.path(""),
+                .files = &png_sources,
+                .flags = png_flags.items,
+            });
+
+            if (zlib_src) |z_src| {
+                lib.root_module.addIncludePath(z_src.path(""));
+                var zlib_flags: std.ArrayList([]const u8) = .empty;
+                defer zlib_flags.deinit(b.allocator);
+                zlib_flags.appendSlice(b.allocator, &.{
+                    "-DHAVE_SYS_TYPES_H",
+                    "-DHAVE_STDINT_H",
+                    "-DHAVE_STDDEF_H",
+                    "-DZ_HAVE_UNISTD_H",
+                }) catch unreachable;
+                if (cflags.len > 0) {
+                    zlib_flags.appendSlice(b.allocator, cflags) catch unreachable;
+                }
+                lib.root_module.addCSourceFiles(.{
+                    .root = z_src.path(""),
+                    .files = &zlib_sources,
+                    .flags = zlib_flags.items,
+                });
+            }
+        }
+    }
+
+    lib.root_module.addCMacro("HAVE_UNISTD_H", "1");
     lib.root_module.addCSourceFiles(.{ .files = &sources, .flags = cflags });
     if (target.result.os.tag == .macos) lib.root_module.addCSourceFile(.{
         .file = b.path("src/base/ftmac.c"),
@@ -94,4 +154,40 @@ const sources = [_][]const u8{
     "src/type1/type1.c",
     "src/type42/type42.c",
     "src/winfonts/winfnt.c",
+};
+
+const png_sources = [_][]const u8{
+    "png.c",
+    "pngerror.c",
+    "pngget.c",
+    "pngmem.c",
+    "pngpread.c",
+    "pngread.c",
+    "pngrio.c",
+    "pngrtran.c",
+    "pngrutil.c",
+    "pngset.c",
+    "pngtrans.c",
+    "pngwio.c",
+    "pngwrite.c",
+    "pngwtran.c",
+    "pngwutil.c",
+};
+
+const zlib_sources = [_][]const u8{
+    "adler32.c",
+    "crc32.c",
+    "deflate.c",
+    "infback.c",
+    "inffast.c",
+    "inflate.c",
+    "inftrees.c",
+    "trees.c",
+    "zutil.c",
+    "compress.c",
+    "uncompr.c",
+    "gzclose.c",
+    "gzlib.c",
+    "gzread.c",
+    "gzwrite.c",
 };

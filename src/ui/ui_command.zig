@@ -260,6 +260,7 @@ fn parsePanelKind(label: []const u8) ?workspace.PanelKind {
     if (std.mem.eql(u8, label, "CodeEditor")) return .CodeEditor;
     if (std.mem.eql(u8, label, "ToolOutput")) return .ToolOutput;
     if (std.mem.eql(u8, label, "Control")) return .Control;
+    if (std.mem.eql(u8, label, "Workspace")) return .Control;
     return null;
 }
 

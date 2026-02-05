@@ -11,7 +11,7 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.
     const data = try file.readToEndAlloc(allocator, 8 * 1024 * 1024);
     defer allocator.free(data);
 
-    var parsed = std.json.parseFromSlice(workspace.WorkspaceSnapshot, allocator, data, .{}) catch {
+    var parsed = std.json.parseFromSlice(workspace.WorkspaceSnapshot, allocator, data, .{ .ignore_unknown_fields = true }) catch {
         return workspace.Workspace.initDefault(allocator);
     };
     defer parsed.deinit();

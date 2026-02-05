@@ -11,9 +11,6 @@ const c = if (builtin.abi == .android or builtin.cpu.arch == .wasm32)
 else
     struct {};
 
-extern fn zsc_gl_create_texture_rgba(pixels: [*]const u8, width: c_int, height: c_int) c_uint;
-extern fn zsc_gl_destroy_texture(tex: c_uint) void;
-
 pub const TextureError = error{TextureCreateFailed};
 
 pub fn createTextureRGBA(pixels: []const u8, width: u32, height: u32) TextureError!u32 {
@@ -41,9 +38,7 @@ pub fn createTextureRGBA(pixels: []const u8, width: u32, height: u32) TextureErr
         return @intCast(tex);
     }
 
-    const tex = zsc_gl_create_texture_rgba(pixels.ptr, @intCast(width), @intCast(height));
-    if (tex == 0) return error.TextureCreateFailed;
-    return @intCast(tex);
+    return error.TextureCreateFailed;
 }
 
 pub fn destroyTexture(handle: u32) void {
@@ -53,5 +48,5 @@ pub fn destroyTexture(handle: u32) void {
         c.glDeleteTextures(1, &tex);
         return;
     }
-    zsc_gl_destroy_texture(@intCast(handle));
+    return;
 }

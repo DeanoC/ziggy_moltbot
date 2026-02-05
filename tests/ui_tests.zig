@@ -1,5 +1,6 @@
 const std = @import("std");
 const moltbot = @import("ziggystarclaw");
+const TextEditor = moltbot.ui.widgets.text_editor.TextEditor;
 
 // UI tests are compile-only for now; rendering requires an active backend.
 
@@ -68,4 +69,19 @@ test "panel manager reuses code editor" {
         }
     }
     try std.testing.expectEqual(@as(usize, 1), found);
+}
+
+test "text editor insert clears selection anchor" {
+    const allocator = std.testing.allocator;
+    var editor = try TextEditor.init(allocator);
+    defer editor.deinit(allocator);
+
+    try editor.buffer.appendSlice(allocator, "hello");
+    editor.cursor = 5;
+    editor.selection_anchor = 0;
+
+    editor.insertText(allocator, "a");
+    try std.testing.expectEqualStrings("a", editor.slice());
+    try std.testing.expect(editor.selection_anchor == null);
+    try std.testing.expectEqual(@as(usize, 1), editor.cursor);
 }

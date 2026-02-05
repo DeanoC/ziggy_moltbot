@@ -26,8 +26,8 @@ pub const websocket = transport.websocket;
 pub const WebSocketClient = transport.WebSocketClient;
 
 pub const ui = struct {
-    pub const imgui_wrapper = @import("ui/imgui_wrapper.zig");
-    pub const imgui_bridge = @import("ui/imgui_bridge.zig");
+    const ui_build = @import("ui/ui_build.zig");
+    pub const imgui_bridge = if (ui_build.use_imgui) @import("ui/imgui_bridge.zig") else struct {};
     pub const main_window = @import("ui/main_window.zig");
     pub const chat_view = @import("ui/chat_view.zig");
     pub const input_panel = @import("ui/input_panel.zig");
@@ -41,8 +41,9 @@ pub const ui = struct {
     pub const panel_manager = @import("ui/panel_manager.zig");
     pub const ui_command = @import("ui/ui_command.zig");
     pub const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-    pub const dock_layout = @import("ui/dock_layout.zig");
     pub const workspace_store = @import("ui/workspace_store.zig");
+    pub const components = @import("ui/components/components.zig");
+    pub const widgets = @import("ui/widgets/widgets.zig");
 };
 
 pub const platform = struct {

@@ -4,12 +4,11 @@ const builtin = @import("builtin");
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
 const operator_view = @import("ui/operator_view.zig");
-const imgui_bridge = @import("ui/imgui_bridge.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const dock_layout = @import("ui/dock_layout.zig");
+const input_router = @import("ui/input/input_router.zig");
 const image_cache = @import("ui/image_cache.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
@@ -174,7 +173,7 @@ fn connectThreadMain(job: *ConnectJob) void {
 fn readLoopMain(loop: *ReadLoop) void {
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
-    loop.ws_client.setReadTimeout(0);
+    loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
         const payload = loop.ws_client.receive() catch |err| {
             if (err == error.NotConnected or err == error.Closed) {
@@ -218,7 +217,6 @@ fn startReadThread(loop: *ReadLoop, thread: *?std.Thread) !void {
 fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
     if (thread.*) |handle| {
         loop.stop.store(true, .monotonic);
-        loop.ws_client.signalClose();
         handle.join();
         thread.* = null;
         loop.ws_client.disconnect();
@@ -680,6 +678,23 @@ fn ensureChatPanelsReady(
                 }
             }
         }
+        if (session_key == null) {
+            if (ctx.current_session) |current| {
+                var matches_agent = true;
+                if (agent_id) |id| {
+                    if (session_keys.parse(current)) |parts| {
+                        matches_agent = std.mem.eql(u8, parts.agent_id, id);
+                    } else {
+                        matches_agent = std.mem.eql(u8, id, "main");
+                    }
+                }
+                if (matches_agent) {
+                    panel.data.Chat.session_key = allocator.dupe(u8, current) catch panel.data.Chat.session_key;
+                    session_key = panel.data.Chat.session_key;
+                    manager.workspace.markDirty();
+                }
+            }
+        }
         if (session_key) |key| {
             if (ctx.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
@@ -893,14 +908,18 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     };
     var manager = panel_manager.PanelManager.init(allocator, workspace_state);
     defer manager.deinit();
+    defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
-    var dock_state = dock_layout.DockState{};
+    defer input_router.deinit(allocator);
     var cfg = config.loadOrDefault(allocator, "ziggystarclaw_config.json") catch |err| blk: {
         logger.warn("Failed to load config: {}", .{err});
         break :blk config.initDefault(allocator) catch return 1;
     };
     defer cfg.deinit(allocator);
+    if (cfg.ui_theme) |label| {
+        theme.setMode(theme.modeFromLabel(label));
+    }
     var agents = agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json") catch |err| blk: {
         logger.warn("Failed to load agents: {}", .{err});
         break :blk agent_registry.AgentRegistry.initDefault(allocator) catch return 1;
@@ -935,7 +954,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
     ImGui_ImplOpenGL3_Init("#version 100");
     ui_scale = guessDpiScale(window);
     applyDpiScale(ui_scale);
-    imgui_bridge.loadIniFromMemory(manager.workspace.layout.imgui_ini);
 
     var message_queue = MessageQueue{};
     defer message_queue.deinit(allocator);
@@ -1058,6 +1076,12 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             next_ping_at_ms = 0;
         }
 
+        var fb_w: c_int = 0;
+        var fb_h: c_int = 0;
+        c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
+        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
+        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
+
         beginFrame(window);
         const ui_action = ui.draw(
             allocator,
@@ -1066,9 +1090,11 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             &agents,
             ws_client.is_connected,
             build_options.app_version,
+            fb_width,
+            fb_height,
+            false,
             &manager,
             &command_inbox,
-            &dock_state,
         );
         const want_text = zgui.io.getWantTextInput();
         if (want_text and !text_input_active) {
@@ -1093,9 +1119,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
         }
 
         if (ui_action.save_workspace) {
-            dock_layout.captureIni(allocator, &manager.workspace) catch |err| {
-                logger.warn("Failed to capture workspace layout: {}", .{err});
-            };
             workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
                 logger.err("Failed to save workspace: {}", .{err});
             };
@@ -1124,12 +1147,19 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+        if (ui_action.open_url) |url| {
+            defer allocator.free(url);
+            openUrl(allocator, url);
+        }
         if (ui_action.clear_saved) {
             cfg.deinit(allocator);
             cfg = config.initDefault(allocator) catch |err| {
                 logger.err("Failed to reset config: {}", .{err});
                 return 1;
             };
+            if (cfg.ui_theme) |label| {
+                theme.setMode(theme.modeFromLabel(label));
+            }
             _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
             app_state_state.last_connected = false;
             auto_connect_enabled = false;
@@ -1190,6 +1220,24 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             sendSessionsListRequest(allocator, &ctx, &ws_client);
         }
 
+        if (ui_action.new_session) {
+            if (ws_client.is_connected) {
+                const key = makeNewSessionKey(allocator, "main") catch null;
+                if (key) |session_key| {
+                    defer allocator.free(session_key);
+                    sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                    if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                    }
+                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                    ctx.clearSessionState(session_key);
+                    ctx.setCurrentSession(session_key) catch {};
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendSessionsListRequest(allocator, &ctx, &ws_client);
+                }
+            }
+        }
+
         if (ui_action.new_chat_agent_id) |agent_id| {
             defer allocator.free(agent_id);
             if (ws_client.is_connected) {
@@ -1222,6 +1270,21 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
             _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+            }
+        }
+
+        if (ui_action.select_session) |session_key| {
+            defer allocator.free(session_key);
+            ctx.setCurrentSession(session_key) catch |err| {
+                logger.warn("Failed to set session: {}", .{err});
+            };
+            if (session_keys.parse(session_key)) |parts| {
+                _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+            } else {
+                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+            }
+            if (ws_client.is_connected) {
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
             }
         }
 
@@ -1404,9 +1467,6 @@ pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
 
         zgui.render();
 
-        var fb_w: c_int = 0;
-        var fb_h: c_int = 0;
-        c.SDL_GL_GetDrawableSize(window, &fb_w, &fb_h);
         c.glViewport(0, 0, fb_w, fb_h);
         c.glClearColor(0.08, 0.08, 0.1, 1.0);
         c.glClear(c.GL_COLOR_BUFFER_BIT);
