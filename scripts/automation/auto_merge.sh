@@ -21,6 +21,42 @@ cd "$repo_root"
 
 log() { echo "[auto-merge] $*"; }
 
+has_blocking_review_threads() {
+  local pr_number="$1"
+  local owner repo
+  owner=${REPO%%/*}
+  repo=${REPO##*/}
+
+  # GraphQL: reviewThreads contain isResolved state (the "Resolve conversation" feature).
+  # We block if there exists any UNRESOLVED thread where at least one comment author is:
+  # - a human (login does NOT end with [bot])
+  # - OR the codex connector bot (actionable feedback)
+  # Other bots are ignored.
+  gh api graphql \
+    -F owner="$owner" \
+    -F repo="$repo" \
+    -F prNumber="$pr_number" \
+    -f query='query($owner: String!, $repo: String!, $prNumber: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+          reviewThreads(first: 100) {
+            nodes {
+              isResolved
+              comments(first: 50) {
+                nodes { author { login } }
+              }
+            }
+          }
+        }
+      }
+    }' \
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]? 
+            | select(.isResolved == false)
+            | (.comments.nodes[]?.author.login // "")
+          ]
+          | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))'
+}
+
 # Local sanity build (acts as our 'local tests')
 log "Running local build: zig build"
 zig build
@@ -69,14 +105,11 @@ for pr in $prs; do
     continue
   fi
 
-  # Inline review comments gate (Option B policy):
-  # - block on ANY human inline comments
-  # - ALSO block on Codex bot inline comments (they're actionable feedback)
-  # - ignore other bots
-  inline_block=$(gh api "repos/DeanoC/ZiggyStarClaw/pulls/$pr/comments" \
-    --jq 'map(.user.login) | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))')
-  if [[ "$inline_block" == "true" ]]; then
-    log "PR #$pr has blocking inline review comments (human and/or codex bot); skipping"
+  # Review thread gate (uses the "Resolve conversation" mechanism):
+  # Block if any UNRESOLVED review thread contains a human comment OR Codex bot comment.
+  # This is more robust than scanning raw inline review comments.
+  if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
+    log "PR #$pr has unresolved blocking review threads (human and/or codex bot); skipping"
     continue
   fi
 
