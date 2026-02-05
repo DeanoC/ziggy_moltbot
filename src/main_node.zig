@@ -251,6 +251,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     // Register capabilities (currently always-on for node-mode)
     try node_ctx.registerSystemCapabilities();
     try node_ctx.registerProcessCapabilities();
+    try node_ctx.registerCanvasCapabilities();
 
     // Initialize command router
     var router = try command_router.initStandardRouter(allocator);
@@ -585,7 +586,13 @@ fn handleNodeInvoke(
     node_ctx.state = .executing;
     defer node_ctx.state = .idle;
 
-    const result = router.route(node_ctx, command.string, command_params) catch |err| {
+    // Use a per-invocation arena for handler allocations (screenshots, stdout/stderr, etc.)
+    // to avoid unbounded leaks.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const result = router.route(aa, node_ctx, command.string, command_params) catch |err| {
         logger.err("Command execution failed: {s}", .{@errorName(err)});
         const error_response = try buildErrorResponse(allocator, request_id.string, err);
         defer allocator.free(error_response.payload);
@@ -621,12 +628,18 @@ fn handleNodeInvokeRequestEvent(
     const command = payload.object.get("command") orelse return;
     if (command != .string) return;
 
-    var command_params: std.json.Value = std.json.Value{ .object = std.json.ObjectMap.init(allocator) };
+    // Use a per-invocation arena for handler allocations (screenshots, stdout/stderr, etc.)
+    // to avoid unbounded leaks.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    var command_params: std.json.Value = std.json.Value{ .object = std.json.ObjectMap.init(aa) };
     var parsed_params: ?std.json.Parsed(std.json.Value) = null;
     defer if (parsed_params) |*parsed| parsed.deinit();
     if (payload.object.get("paramsJSON")) |params_json| {
         if (params_json == .string and params_json.string.len > 0) {
-            parsed_params = try std.json.parseFromSlice(std.json.Value, allocator, params_json.string, .{});
+            parsed_params = try std.json.parseFromSlice(std.json.Value, aa, params_json.string, .{});
             command_params = parsed_params.?.value;
         }
     }
@@ -636,7 +649,7 @@ fn handleNodeInvokeRequestEvent(
     node_ctx.state = .executing;
     defer node_ctx.state = .idle;
 
-    const result = router.route(node_ctx, command.string, command_params) catch |err| {
+    const result = router.route(aa, node_ctx, command.string, command_params) catch |err| {
         logger.err("Command execution failed: {s}", .{@errorName(err)});
         try sendNodeInvokeResultError(allocator, ws_client, invoke_id.string, node_id.string, err);
         return;

@@ -321,34 +321,54 @@ pub const Canvas = struct {
 /// Canvas manager for A2UI support
 pub const CanvasManager = struct {
     allocator: std.mem.Allocator,
+
+    // Optional "real" canvas implementation (future). For now, we treat canvas
+    // commands as a logical/virtual canvas that can be snapshotted.
     canvas: ?Canvas = null,
 
+    // Logical state used by the node command handlers.
+    visible: bool = false,
+    last_url: ?[]const u8 = null,
+    last_a2ui_jsonl: ?[]const u8 = null,
+
     pub fn init(allocator: std.mem.Allocator) CanvasManager {
-        return .{
-            .allocator = allocator,
-        };
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *CanvasManager) void {
-        if (self.canvas) |*c| {
-            c.deinit();
-        }
+        if (self.canvas) |*c| c.deinit();
+        if (self.last_url) |u| self.allocator.free(u);
+        if (self.last_a2ui_jsonl) |j| self.allocator.free(j);
     }
 
-    /// Initialize canvas with config
-    pub fn initialize(self: *CanvasManager, config: CanvasConfig) !void {
-        if (self.canvas) |*c| {
-            c.deinit();
-        }
+    pub fn setVisible(self: *CanvasManager, v: bool) void {
+        self.visible = v;
+    }
 
+    pub fn setUrl(self: *CanvasManager, url: []const u8) !void {
+        const copy = try self.allocator.dupe(u8, url);
+        if (self.last_url) |old| self.allocator.free(old);
+        self.last_url = copy;
+    }
+
+    pub fn getUrl(self: *CanvasManager) ?[]const u8 {
+        return self.last_url;
+    }
+
+    pub fn setA2uiJsonl(self: *CanvasManager, jsonl: []const u8) !void {
+        const copy = try self.allocator.dupe(u8, jsonl);
+        if (self.last_a2ui_jsonl) |old| self.allocator.free(old);
+        self.last_a2ui_jsonl = copy;
+    }
+
+    /// Initialize a real canvas with config (optional, future).
+    pub fn initialize(self: *CanvasManager, config: CanvasConfig) !void {
+        if (self.canvas) |*c| c.deinit();
         self.canvas = try Canvas.init(self.allocator, config);
     }
 
-    /// Get canvas instance
     pub fn getCanvas(self: *CanvasManager) ?*Canvas {
-        if (self.canvas) |*c| {
-            return c;
-        }
+        if (self.canvas) |*c| return c;
         return null;
     }
 };

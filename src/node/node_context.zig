@@ -39,7 +39,7 @@ pub const Command = enum {
     canvas_navigate,
     canvas_eval,
     canvas_snapshot,
-    canvas_a2ui_push,
+    canvas_a2ui_push_jsonl,
     canvas_a2ui_reset,
 
     // Screen commands
@@ -71,7 +71,7 @@ pub const Command = enum {
             .canvas_navigate => "canvas.navigate",
             .canvas_eval => "canvas.eval",
             .canvas_snapshot => "canvas.snapshot",
-            .canvas_a2ui_push => "canvas.a2ui.push",
+            .canvas_a2ui_push_jsonl => "canvas.a2ui.pushJSONL",
             .canvas_a2ui_reset => "canvas.a2ui.reset",
             .screen_record => "screen.record",
             .camera_list => "camera.list",
@@ -274,6 +274,8 @@ pub const NodeContext = struct {
         try self.addCommand(.canvas_navigate);
         try self.addCommand(.canvas_eval);
         try self.addCommand(.canvas_snapshot);
+        try self.addCommand(.canvas_a2ui_push_jsonl);
+        try self.addCommand(.canvas_a2ui_reset);
     }
 
     /// Register process management capabilities
