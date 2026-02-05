@@ -27,6 +27,7 @@ var queue_mutex: std.Thread.Mutex = .{};
 var queue_cond: std.Thread.Condition = .{};
 var queue_allocator: std.mem.Allocator = std.heap.page_allocator;
 const max_queue_len: usize = 2048;
+var dropped_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
 pub fn setLevel(level: Level) void {
     min_level.store(@intFromEnum(level), .monotonic);
@@ -108,14 +109,14 @@ pub fn debug(comptime fmt: []const u8, args: anytype) void {
 fn enqueue(level: Level, comptime fmt: []const u8, args: anytype) void {
     const current = min_level.load(.monotonic);
     if (@intFromEnum(level) < current) return;
-    const message = std.fmt.allocPrint(queue_allocator, fmt, args) catch return;
     queue_mutex.lock();
     defer queue_mutex.unlock();
     const queued = queue.items.len - queue_head;
     if (queued >= max_queue_len) {
-        queue_allocator.free(message);
+        _ = dropped_count.fetchAdd(1, .monotonic);
         return;
     }
+    const message = std.fmt.allocPrint(queue_allocator, fmt, args) catch return;
     _ = queue.append(queue_allocator, .{ .level = level, .message = message }) catch {
         queue_allocator.free(message);
         return;
@@ -153,8 +154,10 @@ fn logThreadMain() void {
         stderr.print("{s}: {s}\n", .{ tag, entry.message }) catch {};
         writeFileString(entry.level, entry.message);
         queue_allocator.free(entry.message);
+        reportDropped(&stderr);
     }
 
+    reportDropped(&stderr);
     queue_mutex.lock();
     const remaining = queue.items[queue_head..];
     queue.items.len = 0;
@@ -164,6 +167,19 @@ fn logThreadMain() void {
         queue_allocator.free(entry.message);
     }
     queue.deinit(queue_allocator);
+}
+
+fn reportDropped(stderr: anytype) void {
+    const dropped = dropped_count.swap(0, .monotonic);
+    if (dropped == 0) return;
+    const current = min_level.load(.monotonic);
+    if (@intFromEnum(Level.warn) < current) return;
+    var buf: [128]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    fbs.writer().print("logger dropped {d} messages", .{dropped}) catch return;
+    const msg = fbs.getWritten();
+    stderr.print("warn: {s}\n", .{msg}) catch {};
+    writeFileString(.warn, msg);
 }
 
 fn writeFile(level: Level, comptime fmt: []const u8, args: anytype) void {
