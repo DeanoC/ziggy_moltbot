@@ -259,9 +259,11 @@ pub const NodeContext = struct {
         try self.addCapability(.system);
         try self.addCommand(.system_run);
         try self.addCommand(.system_which);
+        try self.addCommand(.system_notify);
         try self.addCommand(.system_exec_approvals_get);
         try self.addCommand(.system_exec_approvals_set);
         try self.setPermission("system.run", true);
+        try self.setPermission("system.notify", true);
     }
 
     /// Register canvas capabilities

@@ -86,6 +86,7 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     // System commands
     try router.register(.system_run, systemRunHandler);
     try router.register(.system_which, systemWhichHandler);
+    try router.register(.system_notify, systemNotifyHandler);
     try router.register(.system_exec_approvals_get, systemExecApprovalsGetHandler);
     try router.register(.system_exec_approvals_set, systemExecApprovalsSetHandler);
 
@@ -307,6 +308,32 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
         ctx.commands_failed += 1;
     }
 
+    return std.json.Value{ .object = result };
+}
+
+fn systemNotifyHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const title = params.object.get("title") orelse {
+        logger.warn("system.notify: missing 'title' param", .{});
+        return CommandError.InvalidParams;
+    };
+
+    if (title != .string or title.string.len == 0) {
+        logger.warn("system.notify: 'title' must be a non-empty string", .{});
+        return CommandError.InvalidParams;
+    }
+
+    const body: ?[]const u8 = if (params.object.get("body")) |b| switch (b) {
+        .string => if (b.string.len > 0) b.string else null,
+        else => null,
+    } else null;
+
+    node_platform.notify(allocator, .{ .title = title.string, .body = body }) catch |err| {
+        logger.err("system.notify failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "sent") });
     return std.json.Value{ .object = result };
 }
 

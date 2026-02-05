@@ -88,9 +88,94 @@ pub fn defaultExecApprovalsPathTemplate() []const u8 {
 // Notifications (placeholder)
 // -----------------------------------------------------------------------------
 
-pub fn notify(_: std.mem.Allocator, _: Notification) NotifyError!void {
-    // TODO: implement per-platform notifications.
-    return error.NotImplemented;
+pub fn notify(allocator: std.mem.Allocator, note: Notification) NotifyError!void {
+    // Minimal best-effort notifications.
+    // Philosophy: prefer a "works on my box" solution using common OS tools.
+
+    switch (builtin.target.os.tag) {
+        .linux => {
+            // If there is no GUI session, just bail.
+            const has_display = (std.process.getEnvVarOwned(allocator, "DISPLAY") catch null) != null or
+                (std.process.getEnvVarOwned(allocator, "WAYLAND_DISPLAY") catch null) != null;
+            if (!has_display) return error.NotSupported;
+
+            var argv = std.ArrayList([]const u8).empty;
+            defer argv.deinit(allocator);
+
+            // notify-send TITLE BODY
+            argv.append(allocator, "notify-send") catch return error.NotSupported;
+            argv.append(allocator, note.title) catch return error.NotSupported;
+            if (note.body) |b| {
+                argv.append(allocator, b) catch return error.NotSupported;
+            }
+
+            var child = std.process.Child.init(argv.items, allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            child.spawn() catch |err| switch (err) {
+                error.FileNotFound => return error.NotSupported,
+                else => return error.NotImplemented,
+            };
+
+            _ = child.wait() catch return error.NotImplemented;
+            return;
+        },
+        .macos => {
+            // osascript -e 'display notification "body" with title "title"'
+            const body = note.body orelse "";
+
+            // Very small escape (good enough for our own usage).
+            const esc = struct {
+                fn q(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+                    var out = std.ArrayList(u8).empty;
+                    errdefer out.deinit(alloc);
+                    for (s) |c| {
+                        if (c == '"' or c == '\\') {
+                            try out.append(alloc, '\\');
+                        }
+                        try out.append(alloc, c);
+                    }
+                    return out.toOwnedSlice(alloc);
+                }
+            };
+
+            const title_esc = esc.q(allocator, note.title) catch return error.NotImplemented;
+            defer allocator.free(title_esc);
+            const body_esc = esc.q(allocator, body) catch return error.NotImplemented;
+            defer allocator.free(body_esc);
+
+            const script = std.fmt.allocPrint(
+                allocator,
+                "display notification \"{s}\" with title \"{s}\"",
+                .{ body_esc, title_esc },
+            ) catch return error.NotImplemented;
+            defer allocator.free(script);
+
+            const argv = &[_][]const u8{ "osascript", "-e", script };
+
+            var child = std.process.Child.init(argv, allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            child.spawn() catch |err| switch (err) {
+                error.FileNotFound => return error.NotSupported,
+                else => return error.NotImplemented,
+            };
+            _ = child.wait() catch return error.NotImplemented;
+            return;
+        },
+        .windows => {
+            // TODO: implement native Windows notifications.
+            // For now, keep it explicit so callers know it didn't happen.
+            return error.NotImplemented;
+        },
+        else => {
+            return error.NotSupported;
+        },
+    }
 }
 
 // -----------------------------------------------------------------------------
