@@ -47,6 +47,17 @@ for pr in $prs; do
   fi
 
   mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+
+  # GitHub's mergeable field is eventually-consistent and can temporarily report UNKNOWN
+  # right after label/check changes. If checks are green, do a short retry once.
+  if [[ "$mergeable" == "UNKNOWN" ]]; then
+    if gh pr checks "$pr" --repo "$REPO" >/tmp/zsc-pr-${pr}-checks.txt 2>&1; then
+      log "PR #$pr mergeable=UNKNOWN but checks are green; retrying mergeable in 20s"
+      sleep 20
+      mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+    fi
+  fi
+
   if [[ "$mergeable" != "MERGEABLE" ]]; then
     log "PR #$pr not mergeable ($mergeable); skipping"
     continue
