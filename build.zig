@@ -285,6 +285,9 @@ pub fn build(b: *std.Build) void {
             test_mod.addIncludePath(b.path("src"));
             const tests = b.addTest(.{ .root_module = test_mod });
             tests.addCSourceFile(.{ .file = b.path("src/icon_loader.c"), .flags = &.{} });
+            if (enable_ztracy) {
+                tests.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+            }
             const run_tests = b.addRunArtifact(tests);
             test_step.dependOn(&run_tests.step);
         }
