@@ -69,12 +69,14 @@ for pr in $prs; do
     continue
   fi
 
-  # Inline review comments: if there are any non-bot inline comments, skip.
-  # (Bot inline comments are handled elsewhere; we don't auto-merge over humans.)
-  human_inline=$(gh api "repos/DeanoC/ZiggyStarClaw/pulls/$pr/comments" \
-    --jq 'map(.user.login) | any(. != "chatgpt-codex-connector[bot]")')
-  if [[ "$human_inline" == "true" ]]; then
-    log "PR #$pr has human inline comments; skipping"
+  # Inline review comments gate (Option B policy):
+  # - block on ANY human inline comments
+  # - ALSO block on Codex bot inline comments (they're actionable feedback)
+  # - ignore other bots
+  inline_block=$(gh api "repos/DeanoC/ZiggyStarClaw/pulls/$pr/comments" \
+    --jq 'map(.user.login) | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))')
+  if [[ "$inline_block" == "true" ]]; then
+    log "PR #$pr has blocking inline review comments (human and/or codex bot); skipping"
     continue
   fi
 
