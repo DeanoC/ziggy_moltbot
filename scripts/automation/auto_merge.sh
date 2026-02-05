@@ -97,11 +97,31 @@ for pr in $prs; do
     continue
   fi
 
-  # Review decision gate: if GitHub has a decision and it isn't APPROVED, skip.
+  # Review decision gate:
+  # - If GitHub has a decision and it isn't APPROVED, skip.
+  # - If GitHub has NO decision (common when there are no formal reviews), we allow
+  #   a lightweight "LGTM" signal from our Codex connector bot: a PR *issue comment*
+  #   whose body contains a thumbs-up emoji.
   reviewDecision=$(gh pr view "$pr" --repo "$REPO" --json reviewDecision --jq '.reviewDecision // ""')
   if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" ]]; then
     log "PR #$pr reviewDecision=$reviewDecision; skipping"
     continue
+  fi
+
+  if [[ -z "$reviewDecision" ]]; then
+    # Accept either:
+    # - an issue comment whose body contains 👍, OR
+    # - an issue reaction (+1) by the bot (often used as the "LGTM" signal).
+    bot_lgtm_comment=$(gh api "repos/DeanoC/ZiggyStarClaw/issues/$pr/comments" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
+
+    bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/DeanoC/ZiggyStarClaw/issues/$pr/reactions" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
+
+    if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
+      log "PR #$pr has no GitHub APPROVED review and no bot LGTM (👍 comment or +1 reaction) from chatgpt-codex-connector[bot]; skipping"
+      continue
+    fi
   fi
 
   url=$(gh pr view "$pr" --repo "$REPO" --json url --jq '.url')
