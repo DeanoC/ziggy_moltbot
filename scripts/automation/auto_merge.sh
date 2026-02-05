@@ -11,7 +11,13 @@ set -euo pipefail
 
 REPO="DeanoC/ZiggyStarClaw"
 
-cd "$(git rev-parse --show-toplevel)"
+# Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
+repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
+if [[ -z "${repo_root}" ]]; then
+  echo "[auto-merge] ERROR: not inside a git repo" >&2
+  exit 2
+fi
+cd "$repo_root"
 
 log() { echo "[auto-merge] $*"; }
 
