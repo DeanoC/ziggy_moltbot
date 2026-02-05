@@ -449,6 +449,7 @@ fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Approvals Inbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Active Agents")) return .ActiveAgents;
     if (std.mem.eql(u8, label, "Media Gallery")) return .MediaGallery;
+    if (std.mem.eql(u8, label, "Sessions")) return .Sessions;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
