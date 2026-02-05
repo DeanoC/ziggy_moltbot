@@ -39,7 +39,7 @@ pub const Command = enum {
     canvas_navigate,
     canvas_eval,
     canvas_snapshot,
-    canvas_a2ui_push,
+    canvas_a2ui_push_jsonl,
     canvas_a2ui_reset,
 
     // Screen commands
@@ -71,7 +71,7 @@ pub const Command = enum {
             .canvas_navigate => "canvas.navigate",
             .canvas_eval => "canvas.eval",
             .canvas_snapshot => "canvas.snapshot",
-            .canvas_a2ui_push => "canvas.a2ui.push",
+            .canvas_a2ui_push_jsonl => "canvas.a2ui.pushJSONL",
             .canvas_a2ui_reset => "canvas.a2ui.reset",
             .screen_record => "screen.record",
             .camera_list => "camera.list",
@@ -259,9 +259,11 @@ pub const NodeContext = struct {
         try self.addCapability(.system);
         try self.addCommand(.system_run);
         try self.addCommand(.system_which);
+        try self.addCommand(.system_notify);
         try self.addCommand(.system_exec_approvals_get);
         try self.addCommand(.system_exec_approvals_set);
         try self.setPermission("system.run", true);
+        try self.setPermission("system.notify", true);
     }
 
     /// Register canvas capabilities
@@ -272,6 +274,8 @@ pub const NodeContext = struct {
         try self.addCommand(.canvas_navigate);
         try self.addCommand(.canvas_eval);
         try self.addCommand(.canvas_snapshot);
+        try self.addCommand(.canvas_a2ui_push_jsonl);
+        try self.addCommand(.canvas_a2ui_reset);
     }
 
     /// Register process management capabilities
@@ -284,13 +288,14 @@ pub const NodeContext = struct {
     }
 };
 
-pub fn generateNodeId(buf: *[32]u8) ![]const u8 {
+pub fn generateNodeId(buf: *[64]u8) ![]const u8 {
     const prefix = "zsc-node-";
     @memcpy(buf[0..prefix.len], prefix);
-    
+
+    // 12 random bytes -> 24 hex chars. Total length = prefix + 24.
     var random_bytes: [12]u8 = undefined;
     std.crypto.random.bytes(&random_bytes);
-    
+
     const hex_chars = "0123456789abcdef";
     var i: usize = prefix.len;
     for (random_bytes) |byte| {
@@ -298,7 +303,7 @@ pub fn generateNodeId(buf: *[32]u8) ![]const u8 {
         buf[i + 1] = hex_chars[byte & 0x0f];
         i += 2;
     }
-    
+
     return buf[0..i];
 }
 

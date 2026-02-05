@@ -29,7 +29,6 @@ test "client context message removal" {
     try ctx.upsertSessionMessage(session_key, msg);
     const state_ptr = ctx.findSessionState(session_key) orelse return error.TestExpectedSessionState;
     try std.testing.expectEqual(@as(usize, 1), state_ptr.messages.items.len);
-
     const removed = ctx.removeSessionMessageById(session_key, "m1");
     try std.testing.expect(removed);
     try std.testing.expectEqual(@as(usize, 0), state_ptr.messages.items.len);

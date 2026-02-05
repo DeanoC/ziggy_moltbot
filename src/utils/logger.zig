@@ -41,6 +41,10 @@ pub fn initAsync(allocator: std.mem.Allocator) !void {
     async_enabled.store(1, .monotonic);
 }
 
+pub fn getLevel() Level {
+    return @enumFromInt(min_level.load(.monotonic));
+}
+
 pub fn initFile(path: []const u8) !void {
     if (has_fs) {
         deinit();

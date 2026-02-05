@@ -1,0 +1,32 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        xz-utils \
+        git \
+        build-essential \
+        pkg-config \
+        libgl1-mesa-dev \
+        libx11-dev \
+        libxrandr-dev \
+        libxinerama-dev \
+        libxcursor-dev \
+        libxi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ZIG_VERSION=0.15.2
+ARG ZIG_ARCH=linux-x86_64
+
+RUN curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz \
+    && mkdir -p /opt/zig \
+    && tar -xf /tmp/zig.tar.xz -C /opt/zig --strip-components=1 \
+    && ln -s /opt/zig/zig /usr/local/bin/zig \
+    && rm /tmp/zig.tar.xz
+
+ENV PATH="/opt/zig:${PATH}"
+
+WORKDIR /repo

@@ -12,7 +12,7 @@ The aim is to provide a small alternative to the offical companion apps (hence L
 
 
 ## Status
-Active development (latest release: v0.2.20).
+Active development (latest release: v0.2.28).
 
 Highlights:
 - Cross-platform client (Linux, Windows, Android, WASM).
@@ -22,6 +22,9 @@ Highlights:
 
 ## User Guide
 Start here: `docs/user/README.md`
+
+## Work tracker
+- `docs/WORK_ITEMS.md` (shared backlog / next-up list)
 
 ## Quick Start
 
@@ -35,6 +38,46 @@ zig build
 # Run
 zig build run
 ```
+
+## Node install (virgin machine overview)
+
+This is the high-level flow to bring up a new node on a fresh machine.
+
+### 1) Get the CLI onto the machine
+- Copy `ziggystarclaw-cli` (Linux/macOS) or `ziggystarclaw-cli.exe` (Windows) to the target.
+
+### 2) Create config + pair (one-time)
+
+**Windows**
+
+```powershell
+$cfg = Join-Path $env:APPDATA 'ZiggyStarClaw\config.json'
+.\ziggystarclaw-cli.exe --node-register --wait-for-approval --config $cfg --display-name "$env:COMPUTERNAME-windows"
+```
+
+**Linux/macOS**
+
+```bash
+cfg="$HOME/.config/ziggystarclaw/config.json"
+./ziggystarclaw-cli --node-register --wait-for-approval --config "$cfg" --display-name "$(hostname)-linux"
+```
+
+This will:
+- create a device identity file (stable device id)
+- trigger a pairing request in the gateway
+- after approval, persist `nodeId` + `nodeToken` into config.json
+
+### 3) Start node mode
+
+```bash
+./ziggystarclaw-cli --node-mode --config "$cfg" --as-node --no-operator
+```
+
+### 4) (Optional) Always-on service
+- Windows: `--node-service-install`
+- Linux: use systemd (see docs/user/node-mode.md)
+
+Docs: `docs/user/node-mode.md`
 
 ## WASM (Emscripten via zemscripten)
 

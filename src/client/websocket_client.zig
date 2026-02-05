@@ -10,7 +10,18 @@ const builtin = @import("builtin");
 pub const WebSocketClient = struct {
     allocator: std.mem.Allocator,
     url: []const u8,
+    // Token used for the initial WebSocket handshake (Authorization header)
     token: []const u8,
+
+    // Last close info (useful for diagnosing pairing/auth issues in node-register flows)
+    last_close_code: ?u16 = null,
+    last_close_reason: ?[]u8 = null,
+    // Token used for the connect request auth payload (params.auth.token).
+    // Defaults to `token`.
+    connect_auth_token: ?[]const u8 = null,
+    // Token used inside the device-auth signed payload.
+    // OpenClaw includes the auth token in the signed payload; for node-mode this should be the paired node token when available.
+    device_auth_token: ?[]const u8 = null,
     insecure_tls: bool = false,
     connect_host_override: ?[]const u8 = null,
     connect_timeout_ms: u32 = 10_000,
@@ -21,6 +32,9 @@ pub const WebSocketClient = struct {
     device_identity_path: []const u8 = identity.default_path,
     connect_nonce: ?[]u8 = null,
     connect_sent: bool = false,
+    // When using device identity, we want to allow a short window for the gateway
+    // to send connect.challenge before we send connect (matches OpenClaw behavior).
+    connect_send_after_ms: ?i64 = null,
     use_device_identity: bool = true,
 
     // Connect profile (defaults match CLI/operator)
@@ -28,6 +42,9 @@ pub const WebSocketClient = struct {
     connect_scopes: []const []const u8 = &.{ "operator.admin", "operator.approvals", "operator.pairing" },
     connect_client_id: []const u8 = "cli",
     connect_client_mode: []const u8 = "cli",
+
+    // Optional client display name shown in Control UI.
+    connect_client_display_name: ?[]const u8 = null,
 
     // Node metadata (used when connect_role == "node")
     connect_caps: []const []const u8 = &.{},
@@ -63,11 +80,13 @@ pub const WebSocketClient = struct {
         scopes: []const []const u8,
         client_id: []const u8,
         client_mode: []const u8,
+        display_name: ?[]const u8 = null,
     }) void {
         self.connect_role = params.role;
         self.connect_scopes = params.scopes;
         self.connect_client_id = params.client_id;
         self.connect_client_mode = params.client_mode;
+        self.connect_client_display_name = params.display_name;
     }
 
     pub fn setConnectNodeMetadata(self: *WebSocketClient, params: struct {
@@ -76,6 +95,14 @@ pub const WebSocketClient = struct {
     }) void {
         self.connect_caps = params.caps;
         self.connect_commands = params.commands;
+    }
+
+    pub fn setConnectAuthToken(self: *WebSocketClient, token: []const u8) void {
+        self.connect_auth_token = token;
+    }
+
+    pub fn setDeviceAuthToken(self: *WebSocketClient, token: []const u8) void {
+        self.device_auth_token = token;
     }
 
     pub fn storeDeviceToken(
@@ -141,13 +168,18 @@ pub const WebSocketClient = struct {
         self.client = client;
         self.is_connected = true;
         self.connect_sent = false;
+        self.connect_send_after_ms = null;
         clearConnectNonce(self);
+        self.clearLastClose();
 
         if (self.use_device_identity) {
             if (self.device_identity == null) {
                 self.device_identity = try identity.loadOrCreate(self.allocator, self.device_identity_path);
             }
+            // Match OpenClaw GatewayClient: wait ~750ms for connect.challenge, then send connect.
+            self.connect_send_after_ms = std.time.milliTimestamp() + 750;
         } else {
+            // No device identity: send connect immediately.
             try sendConnectRequest(self, null);
         }
     }
@@ -173,8 +205,34 @@ pub const WebSocketClient = struct {
         return error.NotConnected;
     }
 
+    pub fn poll(self: *WebSocketClient) !void {
+        if (!self.is_connected) return;
+        if (self.connect_sent) return;
+
+        // If we already have a nonce, send connect immediately.
+        if (self.use_device_identity and self.connect_nonce != null) {
+            try sendConnectRequest(self, self.connect_nonce);
+            return;
+        }
+
+        // If we're waiting for a nonce, send connect after the grace window.
+        if (self.use_device_identity) {
+            if (self.connect_send_after_ms) |deadline| {
+                if (std.time.milliTimestamp() >= deadline) {
+                    // No nonce received yet. Send connect without nonce (v1 signature).
+                    // Note: some gateways require nonce; in that case this will fail and
+                    // the reconnect loop will try again.
+                    try sendConnectRequest(self, null);
+                    return;
+                }
+            }
+        }
+    }
+
     pub fn receive(self: *WebSocketClient) !?[]u8 {
         if (!self.is_connected) return error.NotConnected;
+        // Ensure connect is sent promptly even if no traffic is flowing.
+        self.poll() catch {};
         if (self.client) |*client| {
             const message = try client.read() orelse return null;
             defer client.done(message);
@@ -187,9 +245,12 @@ pub const WebSocketClient = struct {
                 },
                 .pong => null,
                 .close => blk: {
+                    self.clearLastClose();
                     if (message.data.len >= 2) {
                         const code = (@as(u16, message.data[0]) << 8) | message.data[1];
                         const reason = message.data[2..];
+                        self.last_close_code = code;
+                        self.last_close_reason = self.allocator.dupe(u8, reason) catch null;
                         logger.warn("WebSocket closed by server code={} reason={s}", .{ code, reason });
                     } else {
                         logger.warn("WebSocket closed by server (no close payload)", .{});
@@ -214,6 +275,14 @@ pub const WebSocketClient = struct {
         return error.NotConnected;
     }
 
+    pub fn clearLastClose(self: *WebSocketClient) void {
+        self.last_close_code = null;
+        if (self.last_close_reason) |r| {
+            self.allocator.free(r);
+            self.last_close_reason = null;
+        }
+    }
+
     pub fn disconnect(self: *WebSocketClient) void {
         if (self.client) |*client| {
             client.close(.{}) catch {};
@@ -223,6 +292,7 @@ pub const WebSocketClient = struct {
         self.is_connected = false;
         self.connect_sent = false;
         clearConnectNonce(self);
+        self.clearLastClose();
     }
 
     pub fn signalClose(self: *WebSocketClient) void {
@@ -242,6 +312,7 @@ pub const WebSocketClient = struct {
             self.device_identity = null;
         }
         clearConnectNonce(self);
+        self.clearLastClose();
     }
 };
 
@@ -259,19 +330,31 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const client_mode = self.connect_client_mode;
     // Prefer the configured gateway token (self.token). Only fall back to a stored device token
     // if we weren't given a gateway token.
-    const auth_token = if (self.token.len > 0) self.token else if (self.device_identity) |ident|
-        (ident.device_token orelse "")
-    else
-        "";
-    const auth = if (auth_token.len > 0) gateway.ConnectAuth{ .token = auth_token } else null;
+    const gateway_token = blk: {
+        if (self.connect_auth_token) |t| {
+            if (t.len > 0) break :blk t;
+        }
+        if (self.token.len > 0) break :blk self.token;
+        // Last resort fallback if the caller didn't pass a handshake token.
+        if (self.device_identity) |ident| break :blk (ident.device_token orelse "");
+        break :blk "";
+    };
+    const auth = if (gateway_token.len > 0) gateway.ConnectAuth{ .token = gateway_token } else null;
     var signature_buf: ?[]u8 = null;
     defer if (signature_buf) |sig| self.allocator.free(sig);
 
     const device = blk: {
         if (!self.use_device_identity) break :blk null;
         const ident = self.device_identity orelse return error.MissingDeviceIdentity;
-        if (nonce == null) return error.MissingConnectNonce;
         const signed_at = std.time.milliTimestamp();
+        const device_token = devtok: {
+            if (self.device_auth_token) |t| {
+                if (t.len > 0) break :devtok t;
+            }
+            // Default to gateway token.
+            break :devtok gateway_token;
+        };
+
         const payload = try buildDeviceAuthPayload(self.allocator, .{
             .device_id = ident.device_id,
             .client_id = client_id,
@@ -279,8 +362,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .role = self.connect_role,
             .scopes = scopes,
             .signed_at_ms = signed_at,
-            .token = if (auth_token.len > 0) auth_token else "",
-            .nonce = nonce.?,
+            .token = device_token,
+            .nonce = nonce,
         });
         defer self.allocator.free(payload);
         signature_buf = try identity.signPayload(self.allocator, ident, payload);
@@ -304,10 +387,10 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .nonce = nonce,
         };
     };
-    const token_source = if (auth_token.len == 0)
+    const token_source = if (gateway_token.len == 0)
         "none"
     else if (self.device_identity) |ident|
-        if (ident.device_token != null and std.mem.eql(u8, auth_token, ident.device_token.?)) "device" else "shared"
+        if (ident.device_token != null and std.mem.eql(u8, gateway_token, ident.device_token.?)) "device" else "shared"
     else
         "shared";
     logger.info(
@@ -347,7 +430,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
             .id = client_id,
-            .displayName = "ZiggyStarClaw",
+            .displayName = self.connect_client_display_name,
             .version = "0.1.0",
             .platform = @tagName(builtin.os.tag),
             .mode = client_mode,
@@ -368,8 +451,8 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
     const payload = try messages.serializeMessage(self.allocator, request);
     defer self.allocator.free(payload);
 
-    if (auth_token.len > 0) {
-        const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, auth_token, "<redacted>");
+    if (gateway_token.len > 0) {
+        const redacted = try std.mem.replaceOwned(u8, self.allocator, payload, gateway_token, "<redacted>");
         defer self.allocator.free(redacted);
         logger.debug("Connect request payload: {s}", .{redacted});
     } else {
@@ -390,15 +473,36 @@ fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
     scopes: []const []const u8,
     signed_at_ms: i64,
     token: []const u8,
-    nonce: []const u8,
+    nonce: ?[]const u8 = null,
 }) ![]u8 {
+    // Match OpenClaw's buildDeviceAuthPayload() exactly:
+    // base = [version, deviceId, clientId, clientMode, role, scopesCsv, signedAtMs, token]
+    // + nonce if v2
     const scopes_joined = try std.mem.join(allocator, ",", params.scopes);
     defer allocator.free(scopes_joined);
 
-    const version = "v2";
+    const version: []const u8 = if (params.nonce != null) "v2" else "v1";
+    if (params.nonce) |nonce| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
+            .{
+                version,
+                params.device_id,
+                params.client_id,
+                params.client_mode,
+                params.role,
+                scopes_joined,
+                params.signed_at_ms,
+                params.token,
+                nonce,
+            },
+        );
+    }
+
     return std.fmt.allocPrint(
         allocator,
-        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
+        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}",
         .{
             version,
             params.device_id,
@@ -408,7 +512,6 @@ fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
             scopes_joined,
             params.signed_at_ms,
             params.token,
-            params.nonce,
         },
     );
 }
@@ -443,6 +546,7 @@ fn handleConnectChallenge(self: *WebSocketClient, raw: []const u8) !void {
     clearConnectNonce(self);
     self.connect_nonce = nonce;
     logger.info("Connect challenge nonce received: {s}", .{nonce});
+    // Send connect as soon as we receive the nonce.
     try sendConnectRequest(self, nonce);
 }
 

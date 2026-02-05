@@ -78,9 +78,11 @@ LINUX_DIR="${DIST_DIR}/linux"
 WINDOWS_DIR="${DIST_DIR}/windows"
 ANDROID_DIR="${DIST_DIR}/android"
 WASM_DIR="${DIST_DIR}/wasm"
+CLI_LINUX_DIR="${DIST_DIR}/cli-linux"
+CLI_WINDOWS_DIR="${DIST_DIR}/cli-windows"
 SYMBOLS_DIR="${DIST_DIR}/symbols"
 
-mkdir -p "${LINUX_DIR}" "${WINDOWS_DIR}" "${ANDROID_DIR}" "${WASM_DIR}" "${SYMBOLS_DIR}"
+mkdir -p "${LINUX_DIR}" "${WINDOWS_DIR}" "${ANDROID_DIR}" "${WASM_DIR}" "${CLI_LINUX_DIR}" "${CLI_WINDOWS_DIR}" "${SYMBOLS_DIR}"
 
 copy_or_fail() {
   local src="$1"
@@ -99,6 +101,12 @@ if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${LINUX_DIR}/"
 fi
 
+copy_or_fail "${ROOT_DIR}/README.md" "${CLI_LINUX_DIR}/README.md"
+copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_LINUX_DIR}/LICENSE"
+if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
+  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${CLI_LINUX_DIR}/"
+fi
+
 copy_or_fail "${ROOT_DIR}/README.md" "${WINDOWS_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${WINDOWS_DIR}/LICENSE"
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.exe" "${WINDOWS_DIR}/"
@@ -110,6 +118,12 @@ if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.pdb" ]]; then
 fi
 if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" "${SYMBOLS_DIR}/"
+fi
+
+copy_or_fail "${ROOT_DIR}/README.md" "${CLI_WINDOWS_DIR}/README.md"
+copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_WINDOWS_DIR}/LICENSE"
+if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" ]]; then
+  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${CLI_WINDOWS_DIR}/"
 fi
 
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw_android.apk" "${ANDROID_DIR}/"
@@ -143,9 +157,12 @@ zip_dir(pathlib.Path("${LINUX_DIR}"), "ziggystarclaw_linux_${VERSION}.zip")
 zip_dir(pathlib.Path("${WINDOWS_DIR}"), "ziggystarclaw_windows_${VERSION}.zip")
 zip_dir(pathlib.Path("${ANDROID_DIR}"), "ziggystarclaw_android_${VERSION}.zip")
 zip_dir(pathlib.Path("${WASM_DIR}"), "ziggystarclaw_wasm_${VERSION}.zip")
+zip_dir(pathlib.Path("${CLI_LINUX_DIR}"), "ziggystarclaw_cli_linux_${VERSION}.zip")
+zip_dir(pathlib.Path("${CLI_WINDOWS_DIR}"), "ziggystarclaw_cli_windows_${VERSION}.zip")
 PY
 
 tar -czf "${DIST_DIR}/ziggystarclaw_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "linux"
+tar -czf "${DIST_DIR}/ziggystarclaw_cli_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "cli-linux"
 
 (cd "${DIST_DIR}" && sha256sum ziggystarclaw_* > checksums.txt)
 

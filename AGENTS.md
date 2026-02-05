@@ -8,6 +8,8 @@ Always run all platform builds before final responses:
 - WASM: `source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true`
 - Android: `./.tools/zig-0.15.2/zig build -Dandroid=true`
 
+When handling PRs, always check review subcomments (inline threads), not just top-level reviews.
+
 ## Native (Linux)
 
 Build:

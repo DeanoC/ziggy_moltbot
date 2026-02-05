@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
 const Command = node_context.Command;
@@ -6,6 +7,7 @@ const websocket_client = @import("../client/websocket_client.zig");
 const requests = @import("../protocol/requests.zig");
 const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
+const node_platform = @import("node_platform.zig");
 
 /// Command handler function signature
 pub const CommandHandler = *const fn (
@@ -59,6 +61,7 @@ pub const CommandRouter = struct {
     /// Route a command to its handler
     pub fn route(
         self: *CommandRouter,
+        allocator: std.mem.Allocator,
         ctx: *NodeContext,
         command: []const u8,
         params: std.json.Value,
@@ -68,7 +71,10 @@ pub const CommandRouter = struct {
             return CommandError.CommandNotSupported;
         };
 
-        return handler(self.allocator, ctx, params);
+        // IMPORTANT: handlers may allocate large payloads (e.g. screenshots).
+        // We accept an allocator per invocation so callers can use a per-message
+        // arena and avoid unbounded leaks.
+        return handler(allocator, ctx, params);
     }
 
     /// Check if command is registered
@@ -84,6 +90,7 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     // System commands
     try router.register(.system_run, systemRunHandler);
     try router.register(.system_which, systemWhichHandler);
+    try router.register(.system_notify, systemNotifyHandler);
     try router.register(.system_exec_approvals_get, systemExecApprovalsGetHandler);
     try router.register(.system_exec_approvals_set, systemExecApprovalsSetHandler);
 
@@ -93,12 +100,14 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     try router.register(.process_stop, processStopHandler);
     try router.register(.process_list, processListHandler);
 
-    // Canvas commands (stubs for now)
+    // Canvas commands
     try router.register(.canvas_present, canvasPresentHandler);
     try router.register(.canvas_hide, canvasHideHandler);
     try router.register(.canvas_navigate, canvasNavigateHandler);
     try router.register(.canvas_eval, canvasEvalHandler);
     try router.register(.canvas_snapshot, canvasSnapshotHandler);
+    try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler);
+    try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler);
 
     return router;
 }
@@ -233,33 +242,44 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     }.readAll, .{ stderr_reader, &stderr_buf, allocator });
 
     // Wait with timeout
-    const start_time = std.time.milliTimestamp();
+    const start_time = node_platform.nowMs();
     var timed_out = false;
     var reaped_status: ?u32 = null;
 
-    while (true) {
-        const elapsed = std.time.milliTimestamp() - start_time;
-        if (elapsed > timeout_ms) {
-            timed_out = true;
-            _ = child.kill() catch {};
-            break;
-        }
+    if (comptime builtin.os.tag == .windows) {
+        // TODO: implement a non-blocking wait / poll for Windows.
+        // For now, fall back to a blocking wait (no timeout).
+        reaped_status = null;
+    } else {
+        while (true) {
+            const elapsed = node_platform.nowMs() - start_time;
+            if (elapsed > timeout_ms) {
+                timed_out = true;
+                _ = child.kill() catch {};
+                break;
+            }
 
-        // Check if child exited (poll). NOTE: waitpid reaps the child; don't call child.wait() after.
-        const result = std.posix.waitpid(child.id, std.posix.W.NOHANG);
-        if (result.pid != 0) {
-            reaped_status = result.status;
-            break;
-        }
+            // Check if child exited (poll). NOTE: waitpid reaps the child; don't call child.wait() after.
+            const result = std.posix.waitpid(child.id, std.posix.W.NOHANG);
+            if (result.pid != 0) {
+                reaped_status = result.status;
+                break;
+            }
 
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+            node_platform.sleepMs(50);
+        }
     }
 
     stdout_thread.join();
     stderr_thread.join();
 
     // Get exit status
-    const term: std.process.Child.Term = if (timed_out) blk: {
+    const term: std.process.Child.Term = if (comptime builtin.os.tag == .windows) blk: {
+        break :blk child.wait() catch |err| {
+            logger.err("Failed to wait for process: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+    } else if (timed_out) blk: {
         break :blk std.process.Child.Term{ .Signal = 9 };
     } else if (reaped_status) |status| blk: {
         if (std.posix.W.IFEXITED(status)) {
@@ -297,6 +317,32 @@ fn systemRunHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std
     return std.json.Value{ .object = result };
 }
 
+fn systemNotifyHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const title = params.object.get("title") orelse {
+        logger.warn("system.notify: missing 'title' param", .{});
+        return CommandError.InvalidParams;
+    };
+
+    if (title != .string or title.string.len == 0) {
+        logger.warn("system.notify: 'title' must be a non-empty string", .{});
+        return CommandError.InvalidParams;
+    }
+
+    const body: ?[]const u8 = if (params.object.get("body")) |b| switch (b) {
+        .string => if (b.string.len > 0) b.string else null,
+        else => null,
+    } else null;
+
+    node_platform.notify(allocator, .{ .title = title.string, .body = body }) catch |err| {
+        logger.err("system.notify failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "sent") });
+    return std.json.Value{ .object = result };
+}
+
 fn systemWhichHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
     const name = params.object.get("name") orelse {
         logger.warn("system.which: missing 'name' param", .{});
@@ -317,18 +363,46 @@ fn systemWhichHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std
     const sep = if (@import("builtin").os.tag == .windows) ';' else ':';
     var iter = std.mem.splitScalar(u8, path_var, sep);
 
+    const is_windows = @import("builtin").os.tag == .windows;
+    const pathext = if (is_windows)
+        (std.process.getEnvVarOwned(allocator, "PATHEXT") catch null)
+    else
+        null;
+    defer if (pathext) |v| allocator.free(v);
+
     while (iter.next()) |dir| {
         if (dir.len == 0) continue;
 
         const full_path = std.fs.path.join(allocator, &.{ dir, name.string }) catch continue;
         defer allocator.free(full_path);
 
-        // Check if file exists and is executable
-        std.fs.cwd().access(full_path, .{ .mode = .read_only }) catch continue;
+        // Check if file exists
+        if (std.fs.cwd().access(full_path, .{ .mode = .read_only })) |_| {
+            var result = std.json.ObjectMap.init(allocator);
+            try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path) });
+            return std.json.Value{ .object = result };
+        } else |_| {}
 
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path) });
-        return std.json.Value{ .object = result };
+        // Windows: respect PATHEXT so `system.which {name:"git"}` can find git.exe, etc.
+        if (is_windows and std.mem.indexOfScalar(u8, name.string, '.') == null) {
+            const exts_raw = if (pathext) |v| v else ".COM;.EXE;.BAT;.CMD";
+            var ext_iter = std.mem.splitScalar(u8, exts_raw, ';');
+            while (ext_iter.next()) |ext| {
+                if (ext.len == 0) continue;
+
+                const name_ext = std.mem.concat(allocator, u8, &.{ name.string, ext }) catch continue;
+                defer allocator.free(name_ext);
+
+                const full_path_ext = std.fs.path.join(allocator, &.{ dir, name_ext }) catch continue;
+                defer allocator.free(full_path_ext);
+
+                if (std.fs.cwd().access(full_path_ext, .{ .mode = .read_only })) |_| {
+                    var result = std.json.ObjectMap.init(allocator);
+                    try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, full_path_ext) });
+                    return std.json.Value{ .object = result };
+                } else |_| {}
+            }
+        }
     }
 
     return std.json.Value{ .null = {} };
@@ -389,108 +463,272 @@ fn systemExecApprovalsSetHandler(allocator: std.mem.Allocator, ctx: *NodeContext
 }
 
 // ============================================================================
-// Canvas Command Handlers (Stubs)
+// Canvas Command Handlers
 // ============================================================================
 
-fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    if (ctx.canvas_manager.getCanvas()) |canvas| {
-        canvas.present() catch |err| {
-            logger.err("canvas.present failed: {s}", .{@errorName(err)});
-            return CommandError.ExecutionFailed;
-        };
-        
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
-        try result.put("backend", std.json.Value{ .string = try allocator.dupe(u8, @tagName(canvas.config.backend)) });
-        return std.json.Value{ .object = result };
+fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    ctx.canvas_manager.setVisible(true);
+
+    // `openclaw nodes canvas present --target <...>` passes { url }.
+    if (params.object.get("url")) |url| {
+        if (url == .string and url.string.len > 0) {
+            ctx.canvas_manager.setUrl(url.string) catch return CommandError.ExecutionFailed;
+        }
     }
-    
-    return CommandError.NotAllowed;
+
+    // placement is currently ignored.
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
+    if (ctx.canvas_manager.getUrl()) |u| {
+        try result.put("url", std.json.Value{ .string = try allocator.dupe(u8, u) });
+    }
+    return std.json.Value{ .object = result };
 }
 
 fn canvasHideHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    if (ctx.canvas_manager.getCanvas()) |canvas| {
-        canvas.hide() catch |err| {
-            logger.err("canvas.hide failed: {s}", .{@errorName(err)});
-            return CommandError.ExecutionFailed;
-        };
-        
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
-        return std.json.Value{ .object = result };
-    }
-    
-    return CommandError.NotAllowed;
+    ctx.canvas_manager.setVisible(false);
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
+    return std.json.Value{ .object = result };
 }
 
 fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
-    const url_param = params.object.get("url") orelse {
-        return CommandError.InvalidParams;
-    };
-    if (url_param != .string) {
-        return CommandError.InvalidParams;
-    }
-    
-    if (ctx.canvas_manager.getCanvas()) |canvas| {
-        canvas.navigate(url_param.string) catch |err| {
-            logger.err("canvas.navigate failed: {s}", .{@errorName(err)});
-            return CommandError.ExecutionFailed;
-        };
-        
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
-        try result.put("url", std.json.Value{ .string = try allocator.dupe(u8, url_param.string) });
-        return std.json.Value{ .object = result };
-    }
-    
-    return CommandError.NotAllowed;
+    const url_param = params.object.get("url") orelse return CommandError.InvalidParams;
+    if (url_param != .string or url_param.string.len == 0) return CommandError.InvalidParams;
+
+    ctx.canvas_manager.setUrl(url_param.string) catch return CommandError.ExecutionFailed;
+    ctx.canvas_manager.setVisible(true);
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
+    try result.put("url", std.json.Value{ .string = try allocator.dupe(u8, url_param.string) });
+    return std.json.Value{ .object = result };
 }
 
-fn canvasEvalHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
-    const js_param = params.object.get("js") orelse {
-        return CommandError.InvalidParams;
-    };
-    if (js_param != .string) {
-        return CommandError.InvalidParams;
-    }
-    
-    if (ctx.canvas_manager.getCanvas()) |canvas| {
-        const result_str = canvas.eval(js_param.string) catch |err| {
-            logger.err("canvas.eval failed: {s}", .{@errorName(err)});
-            return CommandError.ExecutionFailed;
-        };
-        defer allocator.free(result_str);
-        
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "success") });
-        try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, result_str) });
-        return std.json.Value{ .object = result };
-    }
-    
-    return CommandError.NotAllowed;
+fn canvasEvalHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    // TODO: implement CDP/WebKit-based evaluation.
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, "(canvas.eval not implemented yet)") });
+    return std.json.Value{ .object = result };
 }
 
 fn canvasSnapshotHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
-    const path_param = params.object.get("path") orelse {
-        return CommandError.InvalidParams;
+    // Expected params (from OpenClaw canvas tool): { format: "png"|"jpeg", maxWidth?: number, quality?: number }
+    _ = params;
+
+    const url = ctx.canvas_manager.getUrl() orelse "about:blank";
+
+    const png_bytes = chromeScreenshotPngAlloc(allocator, url) catch |err| {
+        logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
     };
-    if (path_param != .string) {
-        return CommandError.InvalidParams;
+    defer allocator.free(png_bytes);
+
+    const b64_len = std.base64.standard.Encoder.calcSize(png_bytes.len);
+    const b64_buf = try allocator.alloc(u8, b64_len);
+    _ = std.base64.standard.Encoder.encode(b64_buf, png_bytes);
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, "png") });
+    // b64_buf is owned by the per-invocation arena allocator (see main_node.zig).
+    try out.put("base64", std.json.Value{ .string = b64_buf });
+    return std.json.Value{ .object = out };
+}
+
+fn canvasA2uiPushJsonlHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    const jsonl = params.object.get("jsonl") orelse return CommandError.InvalidParams;
+    if (jsonl != .string) return CommandError.InvalidParams;
+
+    ctx.canvas_manager.setA2uiJsonl(jsonl.string) catch return CommandError.ExecutionFailed;
+    ctx.canvas_manager.setVisible(true);
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("ok", std.json.Value{ .bool = true });
+    return std.json.Value{ .object = result };
+}
+
+fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    ctx.canvas_manager.setA2uiJsonl("") catch {};
+
+    var result = std.json.ObjectMap.init(allocator);
+    try result.put("ok", std.json.Value{ .bool = true });
+    return std.json.Value{ .object = result };
+}
+
+fn discoverPlaywrightBinaryAlloc(allocator: std.mem.Allocator, prefix: []const u8, subpath: []const []const u8) !?[]u8 {
+    // Best-effort scan ~/.cache/ms-playwright for the highest numeric version that matches `prefix`.
+    // Example prefixes:
+    // - "chromium-"
+    // - "chromium_headless_shell-"
+
+    if (builtin.os.tag == .windows) return null;
+
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return err,
+    };
+    defer allocator.free(home);
+
+    const base = try std.fs.path.join(allocator, &.{ home, ".cache", "ms-playwright" });
+    defer allocator.free(base);
+
+    var dir = std.fs.openDirAbsolute(base, .{ .iterate = true }) catch {
+        return null;
+    };
+    defer dir.close();
+
+    var best_ver: i64 = -1;
+    var best_name: ?[]u8 = null;
+    defer if (best_name) |n| allocator.free(n);
+
+    var it = dir.iterate();
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!std.mem.startsWith(u8, entry.name, prefix)) continue;
+
+        const rest = entry.name[prefix.len..];
+        const ver = std.fmt.parseInt(i64, rest, 10) catch continue;
+        if (ver > best_ver) {
+            best_ver = ver;
+            if (best_name) |old| allocator.free(old);
+            best_name = try allocator.dupe(u8, entry.name);
+        }
     }
-    
-    if (ctx.canvas_manager.getCanvas()) |canvas| {
-        canvas.snapshot(path_param.string) catch |err| {
-            logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
-            return CommandError.ExecutionFailed;
-        };
-        
-        var result = std.json.ObjectMap.init(allocator);
-        try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "saved") });
-        try result.put("path", std.json.Value{ .string = try allocator.dupe(u8, path_param.string) });
-        return std.json.Value{ .object = result };
+
+    if (best_name == null) return null;
+
+    // Build candidate path and check it exists.
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+
+    try parts.append(allocator, base);
+    try parts.append(allocator, best_name.?);
+    for (subpath) |p| try parts.append(allocator, p);
+
+    const full = try std.fs.path.join(allocator, parts.items);
+
+    // Confirm executable exists.
+    const f = std.fs.openFileAbsolute(full, .{}) catch {
+        allocator.free(full);
+        return null;
+    };
+    f.close();
+
+    return full;
+}
+
+fn chromeScreenshotPngAlloc(allocator: std.mem.Allocator, url: []const u8) ![]u8 {
+    // Minimal screenshot implementation using Chromium/Chrome --headless --screenshot.
+    // First preference on Linux: Playwright-managed Chromium in ~/.cache/ms-playwright.
+
+    const tmp_dir = blk: {
+        const envs = if (builtin.os.tag == .windows)
+            &[_][]const u8{ "TEMP", "TMP" }
+        else
+            &[_][]const u8{ "TMPDIR", "TMP" };
+
+        for (envs) |k| {
+            const v = std.process.getEnvVarOwned(allocator, k) catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            if (v) |val| {
+                break :blk val;
+            }
+        }
+
+        break :blk try allocator.dupe(u8, if (builtin.os.tag == .windows) "." else "/tmp");
+    };
+    defer allocator.free(tmp_dir);
+
+    const ts = @as(u64, @intCast(node_platform.nowMs()));
+    const file_name = try std.fmt.allocPrint(allocator, "zsc-canvas-{d}.png", .{ts});
+    defer allocator.free(file_name);
+
+    const out_path = try std.fs.path.join(allocator, &.{ tmp_dir, file_name });
+    defer allocator.free(out_path);
+
+    const window_size = "--window-size=1280,720";
+    const screenshot_arg = try std.fmt.allocPrint(allocator, "--screenshot={s}", .{out_path});
+    defer allocator.free(screenshot_arg);
+
+    const attempt = struct {
+        fn run(alloc: std.mem.Allocator, exe: []const u8, out_path_abs: []const u8, screenshot_arg_: []const u8, url_: []const u8, window_size_: []const u8) !?[]u8 {
+            var child = std.process.Child.init(
+                &[_][]const u8{
+                    exe,
+                    "--headless",
+                    "--disable-gpu",
+                    "--hide-scrollbars",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    window_size_,
+                    screenshot_arg_,
+                    url_,
+                },
+                alloc,
+            );
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+
+            child.spawn() catch |err| {
+                if (err == error.FileNotFound) return null;
+                return err;
+            };
+
+            const term = try child.wait();
+            switch (term) {
+                .Exited => |code| if (code != 0) return error.Unexpected,
+                else => return error.Unexpected,
+            }
+
+            const f = try std.fs.openFileAbsolute(out_path_abs, .{});
+            defer f.close();
+            const bytes = try f.readToEndAlloc(alloc, 20 * 1024 * 1024);
+            std.fs.deleteFileAbsolute(out_path_abs) catch {};
+            return bytes;
+        }
+    }.run;
+
+    // Dynamic candidates (Playwright cache)
+    const pw_headless = try discoverPlaywrightBinaryAlloc(
+        allocator,
+        "chromium_headless_shell-",
+        &.{ "chrome-headless-shell-linux64", "chrome-headless-shell" },
+    );
+    defer if (pw_headless) |p| allocator.free(p);
+
+    if (pw_headless) |exe| {
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
     }
-    
-    return CommandError.NotAllowed;
+
+    const pw_chrome = try discoverPlaywrightBinaryAlloc(
+        allocator,
+        "chromium-",
+        &.{ "chrome-linux64", "chrome" },
+    );
+    defer if (pw_chrome) |p| allocator.free(p);
+
+    if (pw_chrome) |exe| {
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
+    }
+
+    // Static candidates
+    const candidates = if (builtin.os.tag == .windows)
+        &[_][]const u8{ "chrome.exe", "chrome", "msedge.exe", "msedge" }
+    else if (builtin.os.tag == .macos)
+        &[_][]const u8{ "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium", "google-chrome", "chromium" }
+    else
+        &[_][]const u8{ "google-chrome", "google-chrome-stable", "chromium", "chromium-browser" };
+
+    for (candidates) |exe| {
+        if (try attempt(allocator, exe, out_path, screenshot_arg, url, window_size)) |bytes| return bytes;
+    }
+
+    return error.FileNotFound;
 }
 
 // ============================================================================

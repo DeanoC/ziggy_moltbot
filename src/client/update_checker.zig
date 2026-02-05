@@ -433,7 +433,7 @@ fn downloadThread(
         logger.warn("Download failed for URL '{s}': {}", .{ url, err });
         const message = switch (err) {
             error.UpdateHashMismatch => "SHA256 mismatch",
-            error.UnexpectedCharacter, error.InvalidFormat => "Invalid download URL",
+            error.InvalidFormat => "Invalid download URL",
             else => @errorName(err),
         };
         state.setDownloadError(allocator, message);
@@ -468,68 +468,30 @@ fn downloadFile(
     var current_url = try allocator.dupe(u8, sanitized_url);
     defer allocator.free(current_url);
 
-    var redirects_left: u8 = 3;
-    var response_opt: ?std.http.Client.Response = null;
-    var req: std.http.Client.Request = undefined;
-    var has_req = false;
-    var redirect_buf: [8 * 1024]u8 = undefined;
-    while (true) {
-        const before = current_url;
-        const normalized = normalizeUrlForParse(allocator, &current_url) catch |err| {
-            logger.warn("Download URL normalization failed: '{s}' ({})", .{ before, err });
-            return err;
-        };
-        if (normalized) {
-            logger.warn("Download URL normalized: '{s}' -> '{s}'", .{ before, current_url });
-        }
-        const uri = std.Uri.parse(current_url) catch |err| {
-            logger.warn("Download URL parse failed: '{s}' ({})", .{ current_url, err });
-            return err;
-        };
-        var next_req = try client.request(.GET, uri, .{});
-        var next_req_active = true;
-        defer if (next_req_active) next_req.deinit();
-
-        try next_req.sendBodiless();
-        var response = try next_req.receiveHead(&redirect_buf);
-        if (response.head.status.class() == .redirect) {
-            if (redirects_left == 0) return error.UpdateDownloadFailed;
-            const location = response.head.location orelse return error.UpdateDownloadFailed;
-            const location_clean = sanitizeUrl(allocator, location) catch |err| {
-                logger.warn("Redirect URL sanitize failed: '{s}' ({})", .{ location, err });
-                return error.UpdateDownloadFailed;
-            };
-            defer allocator.free(location_clean);
-            allocator.free(current_url);
-            current_url = try resolveRedirectUrl(allocator, uri, location_clean);
-            logger.info("Redirected download URL -> '{s}'", .{current_url});
-            redirects_left -= 1;
-            continue;
-        }
-        next_req_active = false;
-        req = next_req;
-        has_req = true;
-        response_opt = response;
-        break;
+    const before = current_url;
+    const normalized = normalizeUrlForParse(allocator, &current_url) catch |err| {
+        logger.warn("Download URL normalization failed: '{s}' ({})", .{ before, err });
+        return err;
+    };
+    if (normalized) {
+        logger.warn("Download URL normalized: '{s}' -> '{s}'", .{ before, current_url });
     }
-    if (!has_req) return error.UpdateDownloadFailed;
-    defer req.deinit();
-    var response = response_opt orelse return error.UpdateDownloadFailed;
-    if (response.head.status != .ok) return error.UpdateDownloadFailed;
 
-    const total = response.head.content_length;
     state.mutex.lock();
-    state.download_total = total;
+    state.download_total = null;
     state.download_bytes = 0;
     state.mutex.unlock();
 
-    var transfer_buf: [16 * 1024]u8 = undefined;
-    const reader = response.reader(&transfer_buf);
     var download_writer = DownloadWriter.init(file, state);
-    _ = reader.streamRemaining(&download_writer.writer) catch |err| switch (err) {
-        error.ReadFailed => return error.UpdateDownloadFailed,
-        error.WriteFailed => return error.UpdateDownloadFailed,
+    const result = client.fetch(.{
+        .location = .{ .url = current_url },
+        .method = .GET,
+        .response_writer = &download_writer.writer,
+    }) catch |err| {
+        logger.warn("Download fetch failed: '{s}' ({})", .{ current_url, err });
+        return error.UpdateDownloadFailed;
     };
+    if (result.status != .ok) return error.UpdateDownloadFailed;
 
     var expected_sha: ?[]const u8 = null;
     state.mutex.lock();
@@ -895,12 +857,13 @@ const DownloadWriter = struct {
     fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
         const self: *DownloadWriter = @fieldParentPtr("writer", w);
         var total: usize = 0;
-        for (data) |chunk| {
+        const slice = if (data.len > 0) data[0 .. data.len - 1] else data;
+        for (slice) |chunk| {
             if (chunk.len == 0) continue;
             self.file.writeAll(chunk) catch return error.WriteFailed;
             total += chunk.len;
         }
-        if (splat > 0 and data.len > 0) {
+        if (data.len > 0 and splat > 0) {
             const last = data[data.len - 1];
             var i: usize = 0;
             while (i < splat) : (i += 1) {

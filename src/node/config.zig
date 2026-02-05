@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Node configuration - stored in ~/.openclaw/node.json
 pub const NodeConfig = struct {
@@ -88,11 +89,38 @@ pub const NodeConfig = struct {
 
     /// Get the default config path
     pub fn defaultPath(allocator: std.mem.Allocator) ![]const u8 {
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch {
-            return allocator.dupe(u8, ".openclaw/node.json");
+        const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
         };
-        defer allocator.free(home);
-        return std.fs.path.join(allocator, &.{ home, ".openclaw", "node.json" });
+        if (home) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, ".openclaw", "node.json" });
+        }
+
+        // Windows fallback
+        // Prefer per-user roaming AppData so the config location is stable regardless
+        // of current working directory and matches user expectations on Windows.
+        const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (appdata) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, "ZiggyStarClaw", "node.json" });
+        }
+
+        const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => null,
+            else => return err,
+        };
+        if (userprofile) |value| {
+            defer allocator.free(value);
+            return std.fs.path.join(allocator, &.{ value, ".openclaw", "node.json" });
+        }
+
+        // Last resort: relative path
+        return allocator.dupe(u8, ".openclaw/node.json");
     }
 
     /// Load config from file, or return null if not found
@@ -227,10 +255,27 @@ pub const ExecApprovals = struct {
         const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 var default = init(allocator);
-                // Add some safe defaults
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/ls"));
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/pwd"));
-                try default.allowlist.append(allocator, try allocator.dupe(u8, "/usr/bin/uname"));
+
+                // Add some safe defaults.
+                // These are intentionally read-only / non-destructive.
+                if (builtin.os.tag == .windows) {
+                    const entries = &[_][]const u8{
+                        "cmd /c dir",
+                        "cmd.exe /c dir",
+                        "where",
+                        "where.exe",
+                        "whoami",
+                        "whoami.exe",
+                    };
+                    for (entries) |e| {
+                        try default.allowlist.append(allocator, try allocator.dupe(u8, e));
+                    }
+                } else {
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/ls"));
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/bin/pwd"));
+                    try default.allowlist.append(allocator, try allocator.dupe(u8, "/usr/bin/uname"));
+                }
+
                 return default;
             },
             else => return err,

@@ -631,7 +631,17 @@ fn sendSessionsResetRequest(session_key: []const u8) void {
 }
 
 fn sendSessionsDeleteRequest(session_key: []const u8) void {
-    sendSessionsResetRequest(session_key);
+    if (!ws_connected or ctx.state != .connected) return;
+
+    const params = sessions_proto.SessionsDeleteParams{ .key = session_key };
+    const request = requests.buildRequestPayload(allocator, "sessions.delete", params) catch |err| {
+        logger.warn("Failed to build sessions.delete request: {}", .{err});
+        return;
+    };
+    defer allocator.free(request.payload);
+    defer allocator.free(request.id);
+
+    _ = sendWsText(request.payload);
 }
 
 fn sendSessionsListRequest() void {

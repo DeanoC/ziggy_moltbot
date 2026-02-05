@@ -406,7 +406,21 @@ fn sendSessionsDeleteRequest(
     ws_client: *websocket_client.WebSocketClient,
     session_key: []const u8,
 ) void {
-    sendSessionsResetRequest(allocator, ctx, ws_client, session_key);
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+
+    const params = sessions_proto.SessionsDeleteParams{ .key = session_key };
+    const request = requests.buildRequestPayload(allocator, "sessions.delete", params) catch |err| {
+        logger.warn("Failed to build sessions.delete request: {}", .{err});
+        return;
+    };
+    defer allocator.free(request.payload);
+    defer allocator.free(request.id);
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send sessions.delete: {}", .{err});
+        return;
+    };
 }
 
 fn sendSessionsListRequest(

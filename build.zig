@@ -52,7 +52,6 @@ pub fn build(b: *std.Build) void {
     }).module("websocket");
     app_module.addImport("websocket", ws_native);
 
-
     const zgui_pkg = b.dependency("zgui", .{
         .target = target,
         .optimize = optimize,
@@ -302,7 +301,7 @@ pub fn build(b: *std.Build) void {
         });
         wasm.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
-            .flags = &.{ "-fno-sanitize=undefined" },
+            .flags = &.{"-fno-sanitize=undefined"},
         });
         wasm.root_module.addCSourceFile(.{
             .file = b.path("src/wasm_clipboard.cpp"),
@@ -376,7 +375,7 @@ pub fn build(b: *std.Build) void {
         const emcc_step = zemscripten_build.emccStep(
             b,
             &.{},
-            &.{ wasm },
+            &.{wasm},
             .{
                 .optimize = optimize,
                 .flags = emcc_flags,
@@ -496,7 +495,7 @@ pub fn build(b: *std.Build) void {
             });
             android_lib.root_module.addCSourceFile(.{
                 .file = b.path("src/icon_loader.c"),
-                .flags = &.{ "-fno-sanitize=undefined" },
+                .flags = &.{"-fno-sanitize=undefined"},
             });
             android_lib.root_module.addCSourceFile(.{
                 .file = b.path("src/imgui_ini_bridge.cpp"),
@@ -567,6 +566,110 @@ pub fn build(b: *std.Build) void {
         apk_step.dependOn(&apk_install.step);
         b.getInstallStep().dependOn(&apk_install.step);
     }
+
+    // ---------------------------------------------------------------------
+    // Node port scaffolding (Android + WASM)
+    //
+    // These are compile-only stubs that establish a place for platform-specific
+    // node runtime glue without impacting the default desktop builds or CI.
+    //
+    // Usage:
+    //   zig build node-ports
+    //
+    const node_ports_step = b.step("node-ports", "Build Android/WASM node scaffolding stubs");
+
+    // WASM: use wasm32-freestanding to avoid requiring emsdk for this scaffold.
+    const wasm_scaffold_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const wasm_scaffold_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/ports/wasm_scaffold.zig"),
+        .target = wasm_scaffold_target,
+        .optimize = optimize,
+    });
+    const wasm_scaffold_lib = b.addLibrary(.{
+        .name = "zsc_node_wasm_scaffold",
+        .root_module = wasm_scaffold_mod,
+        .linkage = .static,
+    });
+    const wasm_scaffold_install = b.addInstallArtifact(wasm_scaffold_lib, .{});
+    node_ports_step.dependOn(&wasm_scaffold_install.step);
+
+    // Android: pick a single ABI for now (aarch64). This is just a compile-time
+    // scaffold library; it does not require NDK headers.
+    const android_scaffold_target = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .linux,
+        .abi = .android,
+    });
+    const android_scaffold_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/ports/android_scaffold.zig"),
+        .target = android_scaffold_target,
+        .optimize = optimize,
+    });
+    const android_scaffold_lib = b.addLibrary(.{
+        .name = "zsc_node_android_scaffold",
+        .root_module = android_scaffold_mod,
+        .linkage = .static,
+    });
+    const android_scaffold_install = b.addInstallArtifact(android_scaffold_lib, .{});
+    node_ports_step.dependOn(&android_scaffold_install.step);
+
+    // ---------------------------------------------------------------------
+    // WASM node runtime (connect-only skeleton)
+    //
+    // This produces a standalone `.wasm` module for a future node runtime.
+    // It is intentionally freestanding-friendly and does not require emsdk.
+    //
+    // Usage:
+    //   zig build node-wasm
+    //
+    const node_wasm_step = b.step("node-wasm", "Build WASM node runtime (connect-only skeleton)");
+    const wasm_node_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const wasm_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/wasm/main.zig"),
+        .target = wasm_node_target,
+        .optimize = optimize,
+    });
+    const wasm_node_exe = b.addExecutable(.{
+        .name = "ziggystarclaw-node",
+        .root_module = wasm_node_mod,
+    });
+    wasm_node_exe.root_module.addOptions("build_options", build_options);
+
+    // No `_start`/`main` entrypoint yet; this module is driven by exports.
+    wasm_node_exe.entry = .disabled;
+    // Keep exports visible when linking; exports are also marked `export`.
+    wasm_node_exe.rdynamic = true;
+
+    const wasm_node_install = b.addInstallArtifact(wasm_node_exe, .{});
+    node_wasm_step.dependOn(&wasm_node_install.step);
+
+    // ---------------------------------------------------------------------
+    // Android node runtime (connect-only skeleton)
+    //
+    // This produces a static library for a future Android node runtime.
+    // It is intentionally libc/NDK independent so it can cross-compile on CI.
+    //
+    // Usage:
+    //   zig build node-android
+    //
+    const node_android_step = b.step("node-android", "Build Android node runtime (connect-only skeleton)");
+    const android_node_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .android });
+    const android_node_mod = b.createModule(.{
+        .root_source_file = b.path("src/node/android/main.zig"),
+        .target = android_node_target,
+        .optimize = optimize,
+    });
+    const android_node_lib = b.addLibrary(.{
+        .name = "zsc_node_android",
+        .root_module = android_node_mod,
+        .linkage = .static,
+    });
+    android_node_lib.root_module.addOptions("build_options", build_options);
+    android_node_lib.root_module.link_libc = false;
+    android_node_lib.root_module.link_libcpp = false;
+
+    const android_node_install = b.addInstallArtifact(android_node_lib, .{});
+    node_android_step.dependOn(&android_node_install.step);
 }
 
 fn readAppVersion(b: *std.Build) []const u8 {
