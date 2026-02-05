@@ -58,6 +58,19 @@ pub fn build(b: *std.Build) void {
     }).module("websocket");
     app_module.addImport("websocket", ws_native);
 
+    // Tracy profiling support:
+    // profiler.zig uses @import("ztracy") when enable_ztracy is on, so any module
+    // compiled with that option must have the import wired up (including app_module
+    // used by tests).
+    const ztracy_pkg = if (enable_ztracy) b.dependency("ztracy", .{
+        .enable_ztracy = enable_ztracy,
+        .enable_fibers = enable_tracy_fibers,
+        .on_demand = tracy_on_demand,
+    }) else null;
+    if (enable_ztracy) {
+        app_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+    }
+
     // Allow building only the CLI (useful for node-mode / headless sandbox runs)
     // without pulling in UI deps.
     if (!build_client) {
@@ -156,13 +169,8 @@ pub fn build(b: *std.Build) void {
         }
         native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
         if (enable_ztracy) {
-            const ztracy_pkg = b.dependency("ztracy", .{
-                .enable_ztracy = enable_ztracy,
-                .enable_fibers = enable_tracy_fibers,
-                .on_demand = tracy_on_demand,
-            });
-            native_module.addImport("ztracy", ztracy_pkg.module("root"));
-            native_exe.linkLibrary(ztracy_pkg.artifact("tracy"));
+            native_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+            native_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
         }
         native_exe.root_module.addCSourceFile(.{
             .file = zgpu_pkg.path("src/dawn.cpp"),
