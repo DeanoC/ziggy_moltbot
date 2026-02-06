@@ -373,15 +373,17 @@ pub const ClientContext = struct {
         self.node_describes.clearRetainingCapacity();
     }
 
-
     pub fn upsertNodeHealthOwned(self: *ClientContext, node_id: []const u8, payload_json: []u8) !void {
         const now = std.time.milliTimestamp();
         for (self.node_health.items, 0..) |*existing, index| {
             if (std.mem.eql(u8, existing.node_id, node_id)) {
+                // Allocate first so we don't leave the entry in a freed state on OOM.
+                const duped_id = try self.allocator.dupe(u8, node_id);
+
                 self.allocator.free(existing.node_id);
                 self.allocator.free(existing.payload_json);
                 self.node_health.items[index] = .{
-                    .node_id = try self.allocator.dupe(u8, node_id),
+                    .node_id = duped_id,
                     .payload_json = payload_json,
                     .updated_at_ms = now,
                 };
