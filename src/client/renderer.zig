@@ -45,7 +45,7 @@ pub const Renderer = struct {
     }
 
     pub fn beginFrame(self: *Renderer, framebuffer_width: u32, framebuffer_height: u32) void {
-        const zone = profiler.zone("renderer.beginFrame");
+        const zone = profiler.zone(@src(), "renderer.beginFrame");
         defer zone.end();
         self.framebuffer_width = framebuffer_width;
         self.framebuffer_height = framebuffer_height;
@@ -66,7 +66,7 @@ pub const Renderer = struct {
     }
 
     pub fn render(self: *Renderer) void {
-        const zone = profiler.zone("renderer.render");
+        const zone = profiler.zone(@src(), "renderer.render");
         defer zone.end();
         const gctx = self.gctx;
         if (!gctx.canRender()) {
@@ -92,7 +92,7 @@ pub const Renderer = struct {
         });
 
         if (command_queue.get()) |list| {
-            const record_zone = profiler.zone("renderer.record");
+            const record_zone = profiler.zone(@src(), "renderer.record");
             defer record_zone.end();
             self.ui_renderer.record(list);
             self.ui_renderer.render(pass);

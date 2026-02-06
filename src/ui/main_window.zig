@@ -273,7 +273,7 @@ pub fn draw(
 ) UiAction {
     var action = UiAction{};
     _ = use_wgpu_renderer;
-    const zone = profiler.zone("ui.draw");
+    const zone = profiler.zone(@src(), "ui.draw");
     defer zone.end();
     var pending_attachment: ?sessions_panel.AttachmentOpen = null;
     image_cache.beginFrame();
@@ -339,7 +339,7 @@ fn drawWorkspaceHost(
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
 ) void {
-    const zone = profiler.zone("ui.workspace");
+    const zone = profiler.zone(@src(), "ui.workspace");
     defer zone.end();
     _ = command_queue.beginFrame(allocator);
     defer command_queue.endFrame();
@@ -526,7 +526,7 @@ fn drawPanelContents(
     pending_attachment: *?sessions_panel.AttachmentOpen,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
-    const zone = profiler.zone("ui.panel");
+    const zone = profiler.zone(@src(), "ui.panel");
     defer zone.end();
     switch (panel.kind) {
         .Chat => {

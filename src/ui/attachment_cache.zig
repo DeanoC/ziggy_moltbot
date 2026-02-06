@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const attachment_fetch = @import("attachment_fetch.zig");
+const profiler = @import("../utils/profiler.zig");
 
 pub const AttachmentState = enum {
     loading,
@@ -138,15 +139,25 @@ fn fetchThread(ctx: *FetchContext) void {
     const cache = ctx.cache;
     defer cache.allocator.destroy(ctx);
 
-    const bytes = attachment_fetch.fetchHttpBytesLimited(cache.allocator, ctx.url, ctx.max_bytes) catch |err| {
-        const msg = switch (err) {
-            error.TooLarge => "attachment too large",
-            error.HttpStatus => "http error",
-            else => @errorName(err),
+    profiler.setThreadName("attachment.fetch");
+
+    const zone = profiler.zone(@src(), "attachment.fetch");
+    defer zone.end();
+
+    var bytes: []u8 = undefined;
+    {
+        const z = profiler.zone(@src(), "attachment.fetch.http");
+        defer z.end();
+        bytes = attachment_fetch.fetchHttpBytesLimited(cache.allocator, ctx.url, ctx.max_bytes) catch |err| {
+            const msg = switch (err) {
+                error.TooLarge => "attachment too large",
+                error.HttpStatus => "http error",
+                else => @errorName(err),
+            };
+            setFailed(cache, ctx.url, msg);
+            return;
         };
-        setFailed(cache, ctx.url, msg);
-        return;
-    };
+    }
     if (!std.unicode.utf8ValidateSlice(bytes)) {
         cache.allocator.free(bytes);
         setFailed(cache, ctx.url, "binary attachment");

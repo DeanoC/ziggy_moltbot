@@ -312,6 +312,9 @@ const ConnectJob = struct {
 };
 
 fn connectThreadMain(job: *ConnectJob) void {
+    profiler.setThreadName("ws.connect");
+    const zone = profiler.zone(@src(), "ws.connect");
+    defer zone.end();
     const result = job.ws_client.connect();
     if (result) |_| {
         job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
@@ -322,28 +325,33 @@ fn connectThreadMain(job: *ConnectJob) void {
 }
 
 fn readLoopMain(loop: *ReadLoop) void {
+    profiler.setThreadName("ws.read");
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
     loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
-        const payload = loop.ws_client.receive() catch |err| {
-            if (err == error.NotConnected or err == error.Closed) {
-                return;
-            }
-            if (err == error.ReadFailed) {
-                const now_ms = std.time.milliTimestamp();
-                const last_ms = loop.last_receive_ms;
-                const delta = if (last_ms > 0) now_ms - last_ms else -1;
-                logger.warn(
-                    "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
-                    .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
-                );
+        const payload = blk: {
+            const zone = profiler.zone(@src(), "ws.receive");
+            defer zone.end();
+            break :blk loop.ws_client.receive() catch |err| {
+                if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.ReadFailed) {
+                    const now_ms = std.time.milliTimestamp();
+                    const last_ms = loop.last_receive_ms;
+                    const delta = if (last_ms > 0) now_ms - last_ms else -1;
+                    logger.warn(
+                        "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
+                        .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
+                    );
+                    loop.ws_client.disconnect();
+                    return;
+                }
+                logger.err("WebSocket receive failed (thread): {}", .{err});
                 loop.ws_client.disconnect();
                 return;
-            }
-            logger.err("WebSocket receive failed (thread): {}", .{err});
-            loop.ws_client.disconnect();
-            return;
+            };
         } orelse continue;
 
         loop.last_receive_ms = std.time.milliTimestamp();
@@ -352,10 +360,14 @@ fn readLoopMain(loop: *ReadLoop) void {
             loop.allocator.free(payload);
             return;
         }
-        loop.queue.push(loop.allocator, payload) catch {
-            loop.allocator.free(payload);
-            return;
-        };
+        {
+            const zone = profiler.zone(@src(), "ws.enqueue");
+            defer zone.end();
+            loop.queue.push(loop.allocator, payload) catch {
+                loop.allocator.free(payload);
+                return;
+            };
+        }
     }
 }
 
@@ -896,6 +908,8 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
+    profiler.setThreadName("main");
+
     try initLogging(allocator);
     defer logger.deinit();
 
@@ -1061,10 +1075,10 @@ pub fn main() !void {
     var should_close = false;
     while (!should_close) {
         profiler.frameMark();
-        const frame_zone = profiler.zone("frame");
+        const frame_zone = profiler.zone(@src(), "frame");
         defer frame_zone.end();
         {
-            const zone = profiler.zone("frame.events");
+            const zone = profiler.zone(@src(), "frame.events");
             defer zone.end();
             var event: sdl.SDL_Event = undefined;
             while (sdl.SDL_PollEvent(&event)) {
@@ -1104,7 +1118,7 @@ pub fn main() !void {
             drained.deinit(allocator);
         }
         {
-            const zone = profiler.zone("frame.net");
+            const zone = profiler.zone(@src(), "frame.net");
             defer zone.end();
             for (drained.items) |payload| {
                 const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
@@ -1155,7 +1169,7 @@ pub fn main() !void {
 
         var ui_action: ui.UiAction = undefined;
         {
-            const zone = profiler.zone("frame.ui");
+            const zone = profiler.zone(@src(), "frame.ui");
             defer zone.end();
             renderer.beginFrame(fb_width, fb_height);
             ui_action = ui.draw(
@@ -1553,7 +1567,7 @@ pub fn main() !void {
         }
 
         {
-            const zone = profiler.zone("frame.render");
+            const zone = profiler.zone(@src(), "frame.render");
             defer zone.end();
             renderer.render();
         }

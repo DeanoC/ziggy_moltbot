@@ -36,6 +36,7 @@ const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const webgpu_renderer = @import("client/renderer.zig");
 const font_system = @import("ui/font_system.zig");
+const profiler = @import("utils/profiler.zig");
 
 extern fn molt_ws_open(url: [*:0]const u8) void;
 extern fn molt_ws_send(text: [*:0]const u8) void;
@@ -1111,15 +1112,23 @@ fn frame() callconv(.c) void {
     if (!initialized) return;
     const win = window.?;
 
+    profiler.frameMark();
+    const frame_zone = profiler.zone(@src(), "frame");
+    defer frame_zone.end();
+
     var should_close = false;
-    var event: sdl.SDL_Event = undefined;
-    while (sdl.SDL_PollEvent(&event)) {
-        sdl_input_backend.pushEvent(&event);
-        switch (event.type) {
-            sdl.SDL_EVENT_QUIT,
-            sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-            => should_close = true,
-            else => {},
+    {
+        const zone = profiler.zone(@src(), "frame.events");
+        defer zone.end();
+        var event: sdl.SDL_Event = undefined;
+        while (sdl.SDL_PollEvent(&event)) {
+            sdl_input_backend.pushEvent(&event);
+            switch (event.type) {
+                sdl.SDL_EVENT_QUIT,
+                sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                => should_close = true,
+                else => {},
+            }
         }
     }
     if (should_close) {
@@ -1141,25 +1150,29 @@ fn frame() callconv(.c) void {
         }
         drained.deinit(allocator);
     }
-    for (drained.items) |payload| {
-        handleConnectChallenge(payload);
-        const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
-            logger.err("Failed to handle server message: {}", .{err});
-            break :blk null;
-        };
-        if (update) |auth_update| {
-            defer auth_update.deinit(allocator);
-            if (device_identity) |*ident| {
-                identity.storeDeviceToken(
-                    allocator,
-                    ident,
-                    auth_update.device_token,
-                    auth_update.role,
-                    auth_update.scopes,
-                    auth_update.issued_at_ms,
-                ) catch |err| {
-                    logger.warn("Failed to store device token: {}", .{err});
-                };
+    {
+        const zone = profiler.zone(@src(), "frame.net");
+        defer zone.end();
+        for (drained.items) |payload| {
+            handleConnectChallenge(payload);
+            const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
+                logger.err("Failed to handle server message: {}", .{err});
+                break :blk null;
+            };
+            if (update) |auth_update| {
+                defer auth_update.deinit(allocator);
+                if (device_identity) |*ident| {
+                    identity.storeDeviceToken(
+                        allocator,
+                        ident,
+                        auth_update.device_token,
+                        auth_update.role,
+                        auth_update.scopes,
+                        auth_update.issued_at_ms,
+                    ) catch |err| {
+                        logger.warn("Failed to store device token: {}", .{err});
+                    };
+                }
             }
         }
     }
@@ -1208,20 +1221,25 @@ fn frame() callconv(.c) void {
         }
     }
 
-    renderer.?.beginFrame(fb_width, fb_height);
-    const ui_action = ui.draw(
-        allocator,
-        &ctx,
-        &cfg,
-        &agents,
-        ws_connected,
-        build_options.app_version,
-        fb_width,
-        fb_height,
-        true,
-        &manager,
-        &command_inbox,
-    );
+    var ui_action: ui.UiAction = undefined;
+    {
+        const zone = profiler.zone(@src(), "frame.ui");
+        defer zone.end();
+        renderer.?.beginFrame(fb_width, fb_height);
+        ui_action = ui.draw(
+            allocator,
+            &ctx,
+            &cfg,
+            &agents,
+            ws_connected,
+            build_options.app_version,
+            fb_width,
+            fb_height,
+            true,
+            &manager,
+            &command_inbox,
+        );
+    }
 
     if (ui_action.config_updated) {
         // config updated in-place
@@ -1490,7 +1508,11 @@ fn frame() callconv(.c) void {
         ctx.clearOperatorNotice();
     }
 
-    renderer.?.render();
+    {
+        const zone = profiler.zone(@src(), "frame.render");
+        defer zone.end();
+        renderer.?.render();
+    }
 }
 
 fn approvalDecisionLabel(decision: operator_view.ExecApprovalDecision) []const u8 {
