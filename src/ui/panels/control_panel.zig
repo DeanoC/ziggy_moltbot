@@ -53,6 +53,7 @@ const Tab = struct {
 
 const tabs = [_]Tab{
     .{ .label = "Agents", .kind = .Agents },
+    .{ .label = "Operator", .kind = .Operator },
     .{ .label = "Settings", .kind = .Settings },
 };
 
@@ -78,7 +79,7 @@ pub fn draw(
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
 
     const queue = input_router.getQueue();
-    if (panel.active_tab != .Agents and panel.active_tab != .Settings) {
+    if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .Settings) {
         panel.active_tab = .Agents;
     }
     const tab_height = drawTabs(&dc, panel_rect, queue, &panel.active_tab);
@@ -101,6 +102,17 @@ pub fn draw(
             action.delete_session = agents_action.delete_session;
             action.add_agent = agents_action.add_agent;
             action.remove_agent_id = agents_action.remove_agent_id;
+        },
+        .Operator => {
+            const op_action = operator_view.draw(allocator, ctx, is_connected, content_rect);
+            action.refresh_nodes = op_action.refresh_nodes;
+            action.select_node = op_action.select_node;
+            action.invoke_node = op_action.invoke_node;
+            action.describe_node = op_action.describe_node;
+            action.resolve_approval = op_action.resolve_approval;
+            action.clear_node_describe = op_action.clear_node_describe;
+            action.clear_node_result = op_action.clear_node_result;
+            action.clear_operator_notice = op_action.clear_operator_notice;
         },
         .Settings => {
             const settings_action = settings_panel.draw(

@@ -631,9 +631,6 @@ fn drawHealthTelemetryCard(
     width: f32,
     queue: *input_state.InputQueue,
 ) f32 {
-    _ = allocator;
-    _ = queue;
-
     const t = theme.activeTheme();
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
@@ -651,13 +648,29 @@ fn drawHealthTelemetryCard(
     if (ctx.current_node == null) {
         dc.drawText("Select a node to view health metrics.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         cursor_y += line_height + t.spacing.xs;
-        dc.drawText("(Coming soon) Gateway → periodic health frames.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        dc.drawText("Gateway emits node.health.frame events; this panel shows the latest per node.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         return height;
     }
 
-    dc.drawText("Health frames are not wired up yet.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
-    cursor_y += line_height + t.spacing.xs;
-    dc.drawText("For now: use the Describe button to inspect node-reported data.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    const node_id = ctx.current_node.?;
+    if (ctx.findNodeHealth(node_id)) |entry| {
+        dc.drawText("Latest frame (JSON)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+        cursor_y += line_height + t.spacing.xs;
+        const box_rect = draw_context.Rect.fromMinSize(
+            .{ rect.min[0] + padding, cursor_y },
+            .{ width - padding * 2.0, 72.0 },
+        );
+        drawTextBox(allocator, dc, box_rect, queue, scrollKey(node_id, 0xC0FFEE), entry.payload_json);
+        cursor_y = box_rect.max[1] + t.spacing.xs;
+
+        var buf: [128]u8 = undefined;
+        const updated_line = std.fmt.bufPrint(&buf, "Updated at (ms): {d}", .{entry.updated_at_ms}) catch "Updated";
+        dc.drawText(updated_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    } else {
+        dc.drawText("No health frames received for this node yet.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+        dc.drawText("Tip: ensure the node emits node.health.frame events (gateway → server-node-events).", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    }
 
     return height;
 }

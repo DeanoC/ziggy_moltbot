@@ -16,6 +16,12 @@ pub const NodeDescribe = struct {
     updated_at_ms: i64,
 };
 
+pub const NodeHealthEntry = struct {
+    node_id: []const u8,
+    payload_json: []const u8,
+    updated_at_ms: i64,
+};
+
 pub const ChatSessionState = struct {
     messages: std.ArrayList(types.ChatMessage),
     stream_text: ?[]const u8 = null,
@@ -38,6 +44,7 @@ pub const ClientContext = struct {
     current_node: ?[]const u8,
     nodes: std.ArrayList(types.Node),
     node_describes: std.ArrayList(NodeDescribe),
+    node_health: std.ArrayList(NodeHealthEntry),
     approvals: std.ArrayList(types.ExecApproval),
     users: std.ArrayList(types.User),
     sessions_loading: bool = false,
@@ -65,6 +72,7 @@ pub const ClientContext = struct {
             .current_node = null,
             .nodes = std.ArrayList(types.Node).empty,
             .node_describes = std.ArrayList(NodeDescribe).empty,
+            .node_health = std.ArrayList(NodeHealthEntry).empty,
             .approvals = std.ArrayList(types.ExecApproval).empty,
             .users = std.ArrayList(types.User).empty,
             .sessions_loading = false,
@@ -97,6 +105,7 @@ pub const ClientContext = struct {
         self.clearCurrentNode();
         self.clearApprovals();
         self.clearNodeDescribes();
+        self.clearNodeHealth();
         for (self.sessions.items) |*session| {
             freeSession(self.allocator, session);
         }
@@ -111,6 +120,7 @@ pub const ClientContext = struct {
         self.sessions.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
         self.node_describes.deinit(self.allocator);
+        self.node_health.deinit(self.allocator);
         self.approvals.deinit(self.allocator);
         self.users.deinit(self.allocator);
     }
@@ -361,6 +371,43 @@ pub const ClientContext = struct {
             freeNodeDescribe(self.allocator, describe);
         }
         self.node_describes.clearRetainingCapacity();
+    }
+
+
+    pub fn upsertNodeHealthOwned(self: *ClientContext, node_id: []const u8, payload_json: []u8) !void {
+        const now = std.time.milliTimestamp();
+        for (self.node_health.items, 0..) |*existing, index| {
+            if (std.mem.eql(u8, existing.node_id, node_id)) {
+                self.allocator.free(existing.node_id);
+                self.allocator.free(existing.payload_json);
+                self.node_health.items[index] = .{
+                    .node_id = try self.allocator.dupe(u8, node_id),
+                    .payload_json = payload_json,
+                    .updated_at_ms = now,
+                };
+                return;
+            }
+        }
+        try self.node_health.append(self.allocator, .{
+            .node_id = try self.allocator.dupe(u8, node_id),
+            .payload_json = payload_json,
+            .updated_at_ms = now,
+        });
+    }
+
+    pub fn findNodeHealth(self: *ClientContext, node_id: []const u8) ?NodeHealthEntry {
+        for (self.node_health.items) |entry| {
+            if (std.mem.eql(u8, entry.node_id, node_id)) return entry;
+        }
+        return null;
+    }
+
+    pub fn clearNodeHealth(self: *ClientContext) void {
+        for (self.node_health.items) |entry| {
+            self.allocator.free(entry.node_id);
+            self.allocator.free(entry.payload_json);
+        }
+        self.node_health.clearRetainingCapacity();
     }
 
     pub fn clearApprovals(self: *ClientContext) void {

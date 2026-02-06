@@ -92,6 +92,13 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
 
+        if (std.mem.eql(u8, frame.value.event, "node.health.frame")) {
+            handleNodeHealthFrame(ctx, frame.value.payload) catch |err| {
+                logger.warn("Failed to handle node health frame ({s})", .{@errorName(err)});
+            };
+            return null;
+        }
+
         if (std.mem.eql(u8, frame.value.event, "tick") or
             std.mem.eql(u8, frame.value.event, "cron") or
             std.mem.eql(u8, frame.value.event, "health"))
@@ -754,6 +761,20 @@ fn nodeListHasId(list: []const types.Node, id: []const u8) bool {
         if (std.mem.eql(u8, node.id, id)) return true;
     }
     return false;
+}
+
+
+fn handleNodeHealthFrame(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
+    if (payload == null) return;
+    const value = payload.?;
+    if (value != .object) return;
+    const obj = value.object;
+    const node_id_val = obj.get("nodeId") orelse return;
+    if (node_id_val != .string) return;
+
+    const node_id = node_id_val.string;
+    const rendered = try stringifyJsonValue(ctx.allocator, value);
+    try ctx.upsertNodeHealthOwned(node_id, rendered);
 }
 
 fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
