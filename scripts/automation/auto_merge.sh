@@ -194,15 +194,17 @@ has_blocking_review_threads() {
           | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))'
 }
 
-# Local sanity build (acts as our 'local tests')
-log "Running local build: zig build"
-zig build
-
 prs=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number')
 if [[ -z "${prs}" ]]; then
   log "No open PRs."
   exit 0
 fi
+
+# We only run the local build if we actually have at least one PR that passes all
+# remote gates (checks/reviews/threads) and is ready to merge. This avoids doing
+# expensive work when CI is pending/stuck.
+need_local_build=false
+merge_queue=()
 
 for pr in $prs; do
   author=$(gh pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
@@ -290,6 +292,21 @@ for pr in $prs; do
     fi
   fi
 
+  # Passed all remote gates; queue it for merge after local build.
+  merge_queue+=("$pr")
+  need_local_build=true
+done
+
+if [[ "${#merge_queue[@]}" -eq 0 ]]; then
+  log "No PRs are ready to merge (most likely CI/reviews still pending)."
+  exit 0
+fi
+
+# Local sanity build (acts as our 'local tests')
+log "Running local build: zig build (required before auto-merge)"
+zig build
+
+for pr in "${merge_queue[@]}"; do
   url=$(gh pr view "$pr" --repo "$REPO" --json url --jq '.url')
   title=$(gh pr view "$pr" --repo "$REPO" --json title --jq '.title')
   log "Merging PR #$pr: $title ($url)"
