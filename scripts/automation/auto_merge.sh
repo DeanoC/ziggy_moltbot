@@ -266,29 +266,47 @@ for pr in $prs; do
   fi
 
   # Review decision gate:
-  # - If GitHub has a decision and it isn't APPROVED, skip.
-  # - If GitHub has NO decision (common when there are no formal reviews), we allow
-  #   a lightweight "LGTM" signal from our Codex connector bot: a PR *issue comment*
-  #   whose body contains a thumbs-up emoji.
+  # GitHub does not allow authors to approve their own PRs. For a solo-maintainer
+  # repo, requiring APPROVED blocks self-authored PRs forever.
+  #
+  # Policy:
+  # - Always block CHANGES_REQUESTED.
+  # - If APPROVED, great.
+  # - If there is no decision / review required and the author is DeanoC, allow merge
+  #   once checks are green and there are no unresolved blocking review threads.
+  # - Otherwise (non-self-authored), require either GitHub APPROVED OR a lightweight
+  #   "LGTM" signal from our Codex connector bot (👍 comment or +1 reaction).
   reviewDecision=$(gh pr view "$pr" --repo "$REPO" --json reviewDecision --jq '.reviewDecision // ""')
-  if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" ]]; then
-    log "PR #$pr reviewDecision=$reviewDecision; skipping"
+
+  if [[ "$reviewDecision" == "CHANGES_REQUESTED" ]]; then
+    log "PR #$pr reviewDecision=CHANGES_REQUESTED; skipping"
     continue
   fi
 
-  if [[ -z "$reviewDecision" ]]; then
-    # Accept either:
-    # - an issue comment whose body contains 👍, OR
-    # - an issue reaction (+1) by the bot (often used as the "LGTM" signal).
-    bot_lgtm_comment=$(gh api "repos/$REPO/issues/$pr/comments" \
-      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
-
-    bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/$REPO/issues/$pr/reactions" \
-      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
-
-    if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
-      log "PR #$pr has no GitHub APPROVED review and no bot LGTM (👍 comment or +1 reaction) from chatgpt-codex-connector[bot]; skipping"
+  if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" ]]; then
+    if [[ "$author" == "DeanoC" ]]; then
+      log "PR #$pr reviewDecision=$reviewDecision but author=DeanoC (self-authored); allowing on green checks"
+    else
+      log "PR #$pr reviewDecision=$reviewDecision; skipping"
       continue
+    fi
+  fi
+
+  if [[ -z "$reviewDecision" ]]; then
+    if [[ "$author" != "DeanoC" ]]; then
+      # Accept either:
+      # - an issue comment whose body contains 👍, OR
+      # - an issue reaction (+1) by the bot (often used as the "LGTM" signal).
+      bot_lgtm_comment=$(gh api "repos/$REPO/issues/$pr/comments" \
+        --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
+
+      bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/$REPO/issues/$pr/reactions" \
+        --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
+
+      if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
+        log "PR #$pr has no GitHub APPROVED review and no bot LGTM (👍 comment or +1 reaction) from chatgpt-codex-connector[bot]; skipping"
+        continue
+      fi
     fi
   fi
 
