@@ -461,6 +461,9 @@ fn drawMainContent(
     cursor_y += drawSelectedNodeCard(allocator, ctx, dc, .{ rect.min[0] + padding, cursor_y }, content_width, queue, action);
     cursor_y += t.spacing.md;
 
+    cursor_y += drawHealthTelemetryCard(allocator, ctx, dc, .{ rect.min[0] + padding, cursor_y }, content_width, queue);
+    cursor_y += t.spacing.md;
+
     cursor_y += drawInvokeCard(allocator, ctx, dc, .{ rect.min[0] + padding, cursor_y }, content_width, queue, action, is_connected);
 
     if (ctx.operator_notice) |notice| {
@@ -616,6 +619,45 @@ fn drawSelectedNodeCard(
     } else {
         dc.drawText("No describe response yet.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     }
+
+    return height;
+}
+
+fn drawHealthTelemetryCard(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    dc: *draw_context.DrawContext,
+    pos: [2]f32,
+    width: f32,
+    queue: *input_state.InputQueue,
+) f32 {
+    _ = allocator;
+    _ = queue;
+
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const line_height = dc.lineHeight();
+
+    const height: f32 = 132.0;
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    var cursor_y = rect.min[1] + padding;
+    theme.push(.heading);
+    dc.drawText("Node Health Telemetry", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pop();
+    cursor_y += line_height + t.spacing.sm;
+
+    if (ctx.current_node == null) {
+        dc.drawText("Select a node to view health metrics.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+        dc.drawText("(Coming soon) Gateway → periodic health frames.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        return height;
+    }
+
+    dc.drawText("Health frames are not wired up yet.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+    dc.drawText("For now: use the Describe button to inspect node-reported data.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
 
     return height;
 }
