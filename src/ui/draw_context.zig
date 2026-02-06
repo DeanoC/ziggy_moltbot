@@ -1,11 +1,8 @@
 const std = @import("std");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
+
 const input_router = @import("input/input_router.zig");
 const command_list = @import("render/command_list.zig");
 const theme = @import("theme.zig");
-const colors = @import("theme/colors.zig");
 const text_metrics = @import("text_metrics.zig");
 const font_system = @import("font_system.zig");
 
@@ -50,11 +47,9 @@ pub const Rect = struct {
     }
 };
 
-pub const ImGuiBackend = struct {};
 pub const DirectBackend = struct {};
 
 pub const Backend = union(enum) {
-    imgui: ImGuiBackend,
     direct: DirectBackend,
 };
 
@@ -85,22 +80,9 @@ pub const DrawContext = struct {
         theme_ref: *const theme.Theme,
         viewport: Rect,
     ) DrawContext {
-        const resolved_backend: Backend = if (use_imgui) backend else switch (backend) {
-            .imgui => .{ .direct = .{} },
-            .direct => backend,
-        };
-        var render_backend = switch (resolved_backend) {
-            .imgui => imgui_render_backend,
-            .direct => null_render_backend,
-        };
-        const metrics = switch (resolved_backend) {
-            .imgui => text_metrics.imgui,
-            .direct => text_metrics.default,
-        };
-        const input_backend = switch (resolved_backend) {
-            .imgui => imgui_input_backend,
-            .direct => null_input_backend,
-        };
+        _ = backend;
+
+        var render_backend: RenderBackend = null_render_backend;
         var list_ptr: ?*command_list.CommandList = null;
         if (global_command_list) |list| {
             render_backend = record_render_backend;
@@ -108,14 +90,14 @@ pub const DrawContext = struct {
         }
 
         return .{
-            .backend = resolved_backend,
+            .backend = .{ .direct = .{} },
             .theme = theme_ref,
             .viewport = viewport,
             .clip_stack = .empty,
             .allocator = allocator,
-            .text_metrics = metrics,
+            .text_metrics = text_metrics.default,
             .render = render_backend,
-            .input = input_backend,
+            .input = basic_input_backend,
             .command_list = list_ptr,
         };
     }
@@ -214,8 +196,8 @@ pub fn drawOverlayLabel(dc: *DrawContext, label: []const u8, pos: Vec2) void {
         .{ text_size[0] + padding * 2.0, text_size[1] + padding * 2.0 },
     );
     dc.drawRoundedRect(rect, t.radius.sm, .{
-        .fill = colors.withAlpha(t.colors.surface, 0.95),
-        .stroke = colors.withAlpha(t.colors.border, 0.8),
+        .fill = .{ t.colors.surface[0], t.colors.surface[1], t.colors.surface[2], 0.95 },
+        .stroke = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], 0.8 },
         .thickness = 1.0,
     });
     dc.drawText(label, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
@@ -231,136 +213,23 @@ pub fn clearGlobalCommandList() void {
     global_command_list = null;
 }
 
-fn imguiDrawRect(ctx: *DrawContext, rect: Rect, style: RectStyle) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    if (style.fill) |fill| {
-        draw_list.addRectFilled(.{
-            .pmin = rect.min,
-            .pmax = rect.max,
-            .col = zgui.colorConvertFloat4ToU32(fill),
-        });
-    }
-    if (style.stroke) |stroke| {
-        draw_list.addRect(.{
-            .pmin = rect.min,
-            .pmax = rect.max,
-            .col = zgui.colorConvertFloat4ToU32(stroke),
-            .thickness = style.thickness,
-        });
-    }
-}
+fn nullDrawRect(_: *DrawContext, _: Rect, _: RectStyle) void {}
+fn nullDrawRoundedRect(_: *DrawContext, _: Rect, _: f32, _: RectStyle) void {}
+fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
+fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
+fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
+fn nullPushClip(_: *DrawContext, _: Rect) void {}
+fn nullPopClip(_: *DrawContext) void {}
 
-fn imguiDrawRoundedRect(ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    if (style.fill) |fill| {
-        draw_list.addRectFilled(.{
-            .pmin = rect.min,
-            .pmax = rect.max,
-            .col = zgui.colorConvertFloat4ToU32(fill),
-            .rounding = radius,
-        });
-    }
-    if (style.stroke) |stroke| {
-        draw_list.addRect(.{
-            .pmin = rect.min,
-            .pmax = rect.max,
-            .col = zgui.colorConvertFloat4ToU32(stroke),
-            .rounding = radius,
-            .thickness = style.thickness,
-        });
-    }
-}
-
-fn imguiDrawText(ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    draw_list.addText(pos, zgui.colorConvertFloat4ToU32(style.color), "{s}", .{text});
-}
-
-fn imguiDrawLine(ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    draw_list.addLine(.{
-        .p1 = from,
-        .p2 = to,
-        .col = zgui.colorConvertFloat4ToU32(color),
-        .thickness = width,
-    });
-}
-
-fn imguiDrawImage(ctx: *DrawContext, texture: Texture, rect: Rect) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    const tex_ref: zgui.TextureRef = .{
-        .tex_data = null,
-        .tex_id = @enumFromInt(texture),
-    };
-    draw_list.addImage(tex_ref, .{
-        .pmin = rect.min,
-        .pmax = rect.max,
-    });
-}
-
-fn imguiPushClip(ctx: *DrawContext, rect: Rect) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    draw_list.pushClipRect(.{
-        .pmin = rect.min,
-        .pmax = rect.max,
-        .intersect_with_current = true,
-    });
-}
-
-fn imguiPopClip(ctx: *DrawContext) void {
-    _ = ctx;
-    const draw_list = zgui.getWindowDrawList();
-    draw_list.popClipRect();
-}
-
-fn nullDrawRect(ctx: *DrawContext, rect: Rect, style: RectStyle) void {
-    _ = ctx;
-    _ = rect;
-    _ = style;
-}
-
-fn nullDrawRoundedRect(ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void {
-    _ = ctx;
-    _ = rect;
-    _ = radius;
-    _ = style;
-}
-
-fn nullDrawText(ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
-    _ = ctx;
-    _ = text;
-    _ = pos;
-    _ = style;
-}
-
-fn nullDrawLine(ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void {
-    _ = ctx;
-    _ = from;
-    _ = to;
-    _ = width;
-    _ = color;
-}
-
-fn nullDrawImage(ctx: *DrawContext, texture: Texture, rect: Rect) void {
-    _ = ctx;
-    _ = texture;
-    _ = rect;
-}
-
-fn nullPushClip(ctx: *DrawContext, rect: Rect) void {
-    _ = ctx;
-    _ = rect;
-}
-
-fn nullPopClip(ctx: *DrawContext) void {
-    _ = ctx;
-}
+const null_render_backend = RenderBackend{
+    .drawRect = nullDrawRect,
+    .drawRoundedRect = nullDrawRoundedRect,
+    .drawText = nullDrawText,
+    .drawLine = nullDrawLine,
+    .drawImage = nullDrawImage,
+    .pushClip = nullPushClip,
+    .popClip = nullPopClip,
+};
 
 fn recordRectStyle(style: RectStyle) command_list.RectStyle {
     return .{
@@ -413,19 +282,6 @@ fn recordPopClip(ctx: *DrawContext) void {
     list.popClip();
 }
 
-const imgui_render_backend = if (use_imgui)
-    RenderBackend{
-        .drawRect = imguiDrawRect,
-        .drawRoundedRect = imguiDrawRoundedRect,
-        .drawText = imguiDrawText,
-        .drawLine = imguiDrawLine,
-        .drawImage = imguiDrawImage,
-        .pushClip = imguiPushClip,
-        .popClip = imguiPopClip,
-    }
-else
-    null_render_backend;
-
 const record_render_backend = RenderBackend{
     .drawRect = recordDrawRect,
     .drawRoundedRect = recordDrawRoundedRect,
@@ -436,24 +292,12 @@ const record_render_backend = RenderBackend{
     .popClip = recordPopClip,
 };
 
-const null_render_backend = RenderBackend{
-    .drawRect = nullDrawRect,
-    .drawRoundedRect = nullDrawRoundedRect,
-    .drawText = nullDrawText,
-    .drawLine = nullDrawLine,
-    .drawImage = nullDrawImage,
-    .pushClip = nullPushClip,
-    .popClip = nullPopClip,
-};
-
-fn imguiIsHovered(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
+fn basicIsHovered(_: *DrawContext, rect: Rect) bool {
     const queue = input_router.getQueue();
     return rect.contains(queue.state.mouse_pos);
 }
 
-fn imguiIsClicked(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
+fn basicIsClicked(_: *DrawContext, rect: Rect) bool {
     const queue = input_router.getQueue();
     if (!rect.contains(queue.state.mouse_pos)) return false;
     for (queue.events.items) |evt| {
@@ -465,8 +309,7 @@ fn imguiIsClicked(ctx: *DrawContext, rect: Rect) bool {
     return false;
 }
 
-fn imguiIsDragging(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
+fn basicIsDragging(_: *DrawContext, rect: Rect) bool {
     const queue = input_router.getQueue();
     if (!queue.state.mouse_down_left or !rect.contains(queue.state.mouse_pos)) return false;
     for (queue.events.items) |evt| {
@@ -475,35 +318,9 @@ fn imguiIsDragging(ctx: *DrawContext, rect: Rect) bool {
     return false;
 }
 
-fn nullIsHovered(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
-    _ = rect;
-    return false;
-}
-
-fn nullIsClicked(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
-    _ = rect;
-    return false;
-}
-
-fn nullIsDragging(ctx: *DrawContext, rect: Rect) bool {
-    _ = ctx;
-    _ = rect;
-    return false;
-}
-
-const imgui_input_backend = if (use_imgui)
-    InputBackend{
-        .isHovered = imguiIsHovered,
-        .isClicked = imguiIsClicked,
-        .isDragging = imguiIsDragging,
-    }
-else
-    null_input_backend;
-
-const null_input_backend = InputBackend{
-    .isHovered = nullIsHovered,
-    .isClicked = nullIsClicked,
-    .isDragging = nullIsDragging,
+const basic_input_backend = InputBackend{
+    .isHovered = basicIsHovered,
+    .isClicked = basicIsClicked,
+    .isDragging = basicIsDragging,
 };
+

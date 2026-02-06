@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const data_uri = @import("data_uri.zig");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
 const image_fetch = if (builtin.cpu.arch == .wasm32)
     struct {
         pub fn fetchHttpBytes(_: std.mem.Allocator, _: []const u8) ![]u8 {
@@ -101,11 +99,6 @@ pub fn deinit() void {
 
 pub fn beginFrame() void {
     // No-op: GPU upload is handled by the WebGPU renderer on demand.
-    //
-    // Note: legacy WASM ImGui/WebGL builds historically treated `texture_id` as a GL texture handle.
-    // We're removing that path (WASM is moving to the WebGPU renderer), so we intentionally do not
-    // maintain GL texture upload here.
-    _ = use_imgui;
 }
 
 pub fn request(url: []const u8) void {
@@ -126,13 +119,8 @@ pub fn request(url: []const u8) void {
         cache.mutex.unlock();
         return;
     };
-    // Legacy WASM ImGui/WebGL would expect `texture_id` to be a GL texture handle.
-    // That backend is being removed, so keep this as a stub (0 means "no texture").
-    const texture_id: u32 = if (use_imgui and builtin.cpu.arch == .wasm32) 0 else blk: {
-        const id = cache.next_id;
-        cache.next_id += 1;
-        break :blk id;
-    };
+    const texture_id: u32 = cache.next_id;
+    cache.next_id += 1;
     cache.entries.put(key, ImageEntry{
         .state = .loading,
         .texture_id = texture_id,

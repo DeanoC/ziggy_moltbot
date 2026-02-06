@@ -1,8 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ui_build = @import("ui_build.zig");
-const use_imgui = ui_build.use_imgui;
-const zgui = if (use_imgui) @import("zgui") else struct {};
 const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
@@ -13,17 +10,6 @@ const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
 const draw_context = @import("draw_context.zig");
 const command_queue = @import("render/command_queue.zig");
-const render_imgui = if (use_imgui)
-    @import("render/imgui_renderer.zig")
-else
-    struct {
-        pub const RenderFilter = struct {
-            pub fn all() RenderFilter {
-                return .{};
-            }
-        };
-        pub fn draw(_: anytype, _: RenderFilter) void {}
-    };
 const data_uri = @import("data_uri.zig");
 const attachment_cache = @import("attachment_cache.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
@@ -286,6 +272,7 @@ pub fn draw(
     inbox: *ui_command_inbox.UiCommandInbox,
 ) UiAction {
     var action = UiAction{};
+    _ = use_wgpu_renderer;
     const zone = profiler.zone("ui.draw");
     defer zone.end();
     var pending_attachment: ?sessions_panel.AttachmentOpen = null;
@@ -304,90 +291,32 @@ pub fn draw(
 
     const t = theme.activeTheme();
 
-    if (use_imgui) {
-        const display = zgui.io.getDisplaySize();
-        if (display[0] > 0.0 and display[1] > 0.0) {
-            const left = safe_insets[0];
-            const top = safe_insets[1];
-            const right = safe_insets[2];
-            const bottom = safe_insets[3];
-            const width = @max(1.0, display[0] - left - right);
-            const extra_bottom: f32 = if (builtin.abi == .android) 24.0 else 0.0;
-            const height = @max(1.0, display[1] - top - bottom - extra_bottom);
-            zgui.setNextWindowPos(.{ .x = left, .y = top, .cond = .always });
-            zgui.setNextWindowSize(.{ .w = width, .h = height, .cond = .always });
-        }
-
-        var host_flags = zgui.WindowFlags{
-            .no_title_bar = true,
-            .no_resize = true,
-            .no_move = true,
-            .no_collapse = true,
-            .no_bring_to_front_on_focus = true,
-            .no_saved_settings = true,
-            .no_nav_focus = true,
-        };
-        if (use_wgpu_renderer) {
-            host_flags.no_background = true;
-        }
-
-        zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ 0.0, 0.0 } });
-        zgui.pushStyleVar1f(.{ .idx = .window_border_size, .v = 0.0 });
-        zgui.pushStyleVar1f(.{ .idx = .window_rounding, .v = 0.0 });
-        if (zgui.begin("WorkspaceHost", .{ .flags = host_flags })) {
-            const avail = zgui.getContentRegionAvail();
-            const host_pos = zgui.getCursorScreenPos();
-            const host_rect = draw_context.Rect.fromMinSize(host_pos, .{ avail[0], avail[1] });
-            drawWorkspaceHost(
-                allocator,
-                ctx,
-                cfg,
-                registry,
-                is_connected,
-                app_version,
-                manager,
-                inbox,
-                queue,
-                t,
-                host_rect,
-                &action,
-                &pending_attachment,
-            );
-            if (!use_wgpu_renderer) {
-                if (command_queue.get()) |cmd_list| {
-                    render_imgui.draw(cmd_list, render_imgui.RenderFilter.all());
-                }
-            }
-        }
-        zgui.end();
-        zgui.popStyleVar(.{ .count = 3 });
-    } else {
-        const display_w = @as(f32, @floatFromInt(framebuffer_width));
-        const display_h = @as(f32, @floatFromInt(framebuffer_height));
-        if (display_w > 0.0 and display_h > 0.0) {
-            const left = safe_insets[0];
-            const top = safe_insets[1];
-            const right = safe_insets[2];
-            const bottom = safe_insets[3];
-            const width = @max(1.0, display_w - left - right);
-            const height = @max(1.0, display_h - top - bottom);
-            const host_rect = draw_context.Rect.fromMinSize(.{ left, top }, .{ width, height });
-            drawWorkspaceHost(
-                allocator,
-                ctx,
-                cfg,
-                registry,
-                is_connected,
-                app_version,
-                manager,
-                inbox,
-                queue,
-                t,
-                host_rect,
-                &action,
-                &pending_attachment,
-            );
-        }
+    const display_w = @as(f32, @floatFromInt(framebuffer_width));
+    const display_h = @as(f32, @floatFromInt(framebuffer_height));
+    if (display_w > 0.0 and display_h > 0.0) {
+        const left = safe_insets[0];
+        const top = safe_insets[1];
+        const right = safe_insets[2];
+        const bottom = safe_insets[3];
+        const width = @max(1.0, display_w - left - right);
+        const extra_bottom: f32 = if (builtin.abi.isAndroid()) 24.0 else 0.0;
+        const height = @max(1.0, display_h - top - bottom - extra_bottom);
+        const host_rect = draw_context.Rect.fromMinSize(.{ left, top }, .{ width, height });
+        drawWorkspaceHost(
+            allocator,
+            ctx,
+            cfg,
+            registry,
+            is_connected,
+            app_version,
+            manager,
+            inbox,
+            queue,
+            t,
+            host_rect,
+            &action,
+            &pending_attachment,
+        );
     }
 
     if (manager.workspace.dirty) action.save_workspace = true;

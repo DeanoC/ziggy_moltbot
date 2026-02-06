@@ -1,10 +1,10 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const input_events = @import("input_events.zig");
-const zgui = @import("zgui");
 
-const use_sdl = !builtin.abi.isAndroid() and switch (builtin.os.tag) {
-    .linux, .windows, .macos => true,
+const use_sdl = switch (builtin.os.tag) {
+    // Zig models Android as `.os = .linux` with an Android ABI, so `.linux` covers Android too.
+    .linux, .windows, .macos, .emscripten => true,
     else => false,
 };
 const sdl = if (use_sdl) @import("../../platform/sdl3.zig").c else struct {};
@@ -34,23 +34,19 @@ pub fn beginFrame() void {
 }
 
 pub fn isKeyDown(key: input_events.Key) bool {
-    if (use_sdl) {
-        if (!has_state) beginFrame();
-        const scancode = toSDL(key);
-        return curr_state[@intCast(scancode)];
-    }
-    return zgui.isKeyDown(toZgui(key));
+    if (!use_sdl) return false;
+    if (!has_state) beginFrame();
+    const scancode = toSDL(key);
+    return curr_state[@intCast(scancode)];
 }
 
 pub fn isKeyPressed(key: input_events.Key, repeat: bool) bool {
-    if (use_sdl) {
-        if (!has_state) beginFrame();
-        const scancode = toSDL(key);
-        const idx: usize = @intCast(scancode);
-        if (repeat) return curr_state[idx];
-        return curr_state[idx] and !prev_state[idx];
-    }
-    return zgui.isKeyPressed(toZgui(key), repeat);
+    if (!use_sdl) return false;
+    if (!has_state) beginFrame();
+    const scancode = toSDL(key);
+    const idx: usize = @intCast(scancode);
+    if (repeat) return curr_state[idx];
+    return curr_state[idx] and !prev_state[idx];
 }
 
 fn toSDL(key: input_events.Key) sdl.SDL_Scancode {
@@ -85,34 +81,4 @@ fn toSDL(key: input_events.Key) sdl.SDL_Scancode {
     };
 }
 
-fn toZgui(key: input_events.Key) zgui.Key {
-    return switch (key) {
-        .enter => .enter,
-        .keypad_enter => .keypad_enter,
-        .back_space => .back_space,
-        .delete => .delete,
-        .tab => .tab,
-        .left_arrow => .left_arrow,
-        .right_arrow => .right_arrow,
-        .up_arrow => .up_arrow,
-        .down_arrow => .down_arrow,
-        .home => .home,
-        .end => .end,
-        .page_up => .page_up,
-        .page_down => .page_down,
-        .a => .a,
-        .c => .c,
-        .v => .v,
-        .x => .x,
-        .z => .z,
-        .y => .y,
-        .left_ctrl => .left_ctrl,
-        .right_ctrl => .right_ctrl,
-        .left_shift => .left_shift,
-        .right_shift => .right_shift,
-        .left_alt => .left_alt,
-        .right_alt => .right_alt,
-        .left_super => .left_super,
-        .right_super => .right_super,
-    };
-}
+// ImGui backend removed; SDL3 is the only keyboard source now.

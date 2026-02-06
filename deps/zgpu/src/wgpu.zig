@@ -383,11 +383,6 @@ pub const SurfaceDescriptorFromXlibWindow = extern struct {
     window: u32,
 };
 
-pub const SurfaceDescriptorFromAndroidNativeWindow = extern struct {
-    chain: ChainedStruct,
-    window: *anyopaque,
-};
-
 pub const SurfaceDescriptorFromWindowsCoreWindow = extern struct {
     chain: ChainedStruct,
     core_window: *anyopaque,

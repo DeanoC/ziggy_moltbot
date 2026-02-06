@@ -69,7 +69,12 @@ pub const Renderer = struct {
         const zone = profiler.zone("renderer.render");
         defer zone.end();
         const gctx = self.gctx;
-        const back_view = gctx.swapchain.getCurrentTextureView();
+        if (!gctx.canRender()) {
+            // Keep pumping WebGPU callbacks so mapAsync() can complete.
+            gctx.device.tick();
+            return;
+        }
+        const back_view = currentTextureViewMaybe(gctx) orelse return;
         defer back_view.release();
 
         const encoder = gctx.device.createCommandEncoder(null);
@@ -101,6 +106,14 @@ pub const Renderer = struct {
         _ = gctx.present();
     }
 };
+
+fn currentTextureViewMaybe(gctx: *zgpu.GraphicsContext) ?zgpu.wgpu.TextureView {
+    const view = gctx.swapchain.getCurrentTextureView();
+    return switch (comptime @typeInfo(@TypeOf(view))) {
+        .optional => view,
+        else => view,
+    };
+}
 
 var g_x11_display: ?*anyopaque = null;
 var g_wayland_display: ?*anyopaque = null;

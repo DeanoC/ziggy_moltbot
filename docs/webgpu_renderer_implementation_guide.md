@@ -25,7 +25,9 @@ To integrate `zgpu` into the ZiggyStarClaw project, the following changes need t
 
 ### 3.1. Add `zgpu` Dependency
 
-First, add `zgpu` as a dependency in the `build.zig.zon` file. This will allow the Zig build system to fetch and build the library automatically.
+First, add `zgpu` as a dependency in the `build.zig.zon` file.
+
+In this repo we vendor our `zgpu` fork (for the newer Emscripten WebGPU API surface) under `deps/zgpu` and reference it via a `.path` dependency.
 
 ```zon
 .{
@@ -34,8 +36,7 @@ First, add `zgpu` as a dependency in the `build.zig.zon` file. This will allow t
     .dependencies = .{
         // ... other dependencies
         .zgpu = .{
-            .url = "https://github.com/zig-gamedev/zgpu/archive/refs/heads/main.zip",
-            .hash = "<hash_of_the_zip_file>", // Replace with the actual hash
+            .path = "deps/zgpu",
         },
     },
 }
@@ -262,7 +263,7 @@ This guide provides a clear path for implementing a modern, cross-platform WebGP
 ## 8. References
 
 - [1] [WebGPU API - MDN Web Docs](https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API)
-- [2] [zig-gamedev/zgpu - GitHub](https://github.com/zig-gamedev/zgpu)
+- [2] [DeanoC/zgpu - GitHub](https://github.com/DeanoC/zgpu)
 - [3] [google/dawn - GitHub](https://github.com/google/dawn)
 - [4] [Learn WebGPU for C++](https://eliemichel.github.io/LearnWebGPU/)
 - [5] [Build an app with WebGPU - Chrome for Developers](https://developer.chrome.com/docs/web-platform/webgpu/build-app)

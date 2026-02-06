@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const input_events = @import("../input/input_events.zig");
@@ -398,12 +399,16 @@ fn handleInput(
                     },
                     .v => if (ctrl) {
                         if (!read_only) {
-                            if (single_line) {
-                                pasteClipboardSingleLine(editor, allocator);
-                            } else {
-                                pasteClipboard(editor, allocator);
+                            if (builtin.os.tag != .emscripten) {
+                                if (single_line) {
+                                    pasteClipboardSingleLine(editor, allocator);
+                                } else {
+                                    pasteClipboard(editor, allocator);
+                                }
+                                changed = true;
                             }
-                            changed = true;
+                            // On the web we rely on the DOM "paste" event to deliver
+                            // text (see zsc_wasm_on_paste). Synchronous reads are not reliable.
                         }
                     },
                     else => {},

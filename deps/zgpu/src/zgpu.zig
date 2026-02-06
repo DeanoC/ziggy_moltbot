@@ -10,12 +10,12 @@ const math = std.math;
 const assert = std.debug.assert;
 const wgsl = @import("common_wgsl.zig");
 const zgpu_options = @import("zgpu_options");
-pub const wgpu = @import("wgpu.zig");
+pub const wgpu = if (@import("builtin").target.os.tag == .emscripten)
+    @import("wgpu_emscripten.zig")
+else
+    @import("wgpu.zig");
 pub const slog = std.log.scoped(.zgpu); // scoped log that can be comptime processed in main logger
-const builtin = @import("builtin");
-const emscripten = builtin.target.os.tag == .emscripten;
-const android = builtin.target.abi.isAndroid();
-const use_dawn_native = !emscripten and !android;
+const emscripten = @import("builtin").target.os.tag == .emscripten;
 
 test {
     _ = wgpu;
@@ -127,12 +127,12 @@ pub const GraphicsContext = struct {
         window_provider: WindowProvider,
         options: GraphicsContextOptions,
     ) !*GraphicsContext {
-        if (use_dawn_native) dawnProcSetProcs(dnGetProcs());
+        if (!emscripten) dawnProcSetProcs(dnGetProcs());
 
-        const native_instance = if (use_dawn_native) dniCreate() else null;
-        errdefer if (use_dawn_native) dniDestroy(native_instance);
+        const native_instance = if (!emscripten) dniCreate();
+        errdefer if (!emscripten) dniDestroy(native_instance);
 
-        const instance = if (!use_dawn_native) wgpu.createInstance(.{}) else dniGetWgpuInstance(native_instance).?;
+        const instance = if (emscripten) wgpu.createInstance(.{}) else dniGetWgpuInstance(native_instance).?;
 
         const adapter = adapter: {
             const Response = struct {
@@ -333,7 +333,7 @@ pub const GraphicsContext = struct {
         gctx.swapchain.release();
         gctx.queue.release();
         gctx.device.release();
-        if (use_dawn_native) dniDestroy(gctx.native_instance);
+        if (!emscripten) dniDestroy(gctx.native_instance);
         allocator.destroy(gctx);
     }
 
@@ -418,6 +418,12 @@ pub const GraphicsContext = struct {
 
         if (gctx.uniforms.stage.num >= uniforms_staging_pipeline_len) {
             // Wait until one of the buffers is mapped and ready to use.
+            //
+            // On Emscripten, blocking here can stall the browser event loop (and prevent
+            // mapAsync callbacks from ever completing), which makes the app feel
+            // unresponsive. Instead, return and let the app skip rendering until a
+            // staging buffer becomes available (see `GraphicsContext.canRender()`).
+            if (emscripten) return;
             while (true) {
                 gctx.device.tick();
 
@@ -506,7 +512,7 @@ pub const GraphicsContext = struct {
         normal_execution,
         swap_chain_resized,
     } {
-        if (!emscripten) gctx.swapchain.present();
+        gctx.swapchain.present();
 
         const fb_size = gctx.window_provider.getFramebufferSize();
         if (gctx.swapchain_descriptor.width != fb_size[0] or
@@ -1605,7 +1611,6 @@ const SurfaceDescriptorTag = enum {
     xlib,
     wayland,
     canvas_html,
-    android_native_window,
 };
 
 const SurfaceDescriptor = union(SurfaceDescriptorTag) {
@@ -1632,10 +1637,6 @@ const SurfaceDescriptor = union(SurfaceDescriptorTag) {
         label: ?[*:0]const u8 = null,
         selector: [*:0]const u8,
     },
-    android_native_window: struct {
-        label: ?[*:0]const u8 = null,
-        window: *anyopaque,
-    },
 };
 
 fn isLinuxDesktopLike(tag: std.Target.Os.Tag) bool {
@@ -1650,16 +1651,9 @@ fn isLinuxDesktopLike(tag: std.Target.Os.Tag) bool {
 }
 
 fn createSurfaceForWindow(instance: wgpu.Instance, window_provider: WindowProvider) wgpu.Surface {
-    const os_tag = builtin.target.os.tag;
+    const os_tag = @import("builtin").target.os.tag;
 
-    const descriptor = if (android)
-        SurfaceDescriptor{
-            .android_native_window = .{
-                .label = "basic surface",
-                .window = window_provider.getAndroidNativeWindow().?,
-            },
-        }
-    else switch (os_tag) {
+    const descriptor = switch (os_tag) {
         .windows => SurfaceDescriptor{
             .windows_hwnd = .{
                 .label = "basic surface",
@@ -1764,16 +1758,6 @@ fn createSurfaceForWindow(instance: wgpu.Instance, window_provider: WindowProvid
                 .chain = .{ .struct_type = .surface_descriptor_from_canvas_html_selector, .next = null },
                 .selector = src.selector,
             };
-            break :blk instance.createSurface(.{
-                .next_in_chain = @as(*const wgpu.ChainedStruct, @ptrCast(&desc)),
-                .label = if (src.label) |l| l else null,
-            });
-        },
-        .android_native_window => |src| blk: {
-            var desc: wgpu.SurfaceDescriptorFromAndroidNativeWindow = undefined;
-            desc.chain.next = null;
-            desc.chain.struct_type = .surface_descriptor_from_android_native_window;
-            desc.window = src.window;
             break :blk instance.createSurface(.{
                 .next_in_chain = @as(*const wgpu.ChainedStruct, @ptrCast(&desc)),
                 .label = if (src.label) |l| l else null,

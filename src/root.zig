@@ -26,8 +26,6 @@ pub const websocket = transport.websocket;
 pub const WebSocketClient = transport.WebSocketClient;
 
 pub const ui = struct {
-    const ui_build = @import("ui/ui_build.zig");
-    pub const imgui_bridge = if (ui_build.use_imgui) @import("ui/imgui_bridge.zig") else struct {};
     pub const main_window = @import("ui/main_window.zig");
     pub const chat_view = @import("ui/chat_view.zig");
     pub const input_panel = @import("ui/input_panel.zig");

@@ -10,10 +10,6 @@
         .freetype = .{
             .path = "deps/freetype",
         },
-        .zgui = .{
-            .url = "https://github.com/DeanoC/zgui/archive/refs/heads/main.zip",
-            .hash = "zgui-0.6.0-dev--L6sZFr8bQAetX8MeTZqoCrYzz0W7_LYTkPEuC6jbbD-",
-        },
         .zemscripten = .{
             .url = "https://github.com/zig-gamedev/zemscripten/archive/refs/heads/main.zip",
             .hash = "zemscripten-0.2.0-dev-sRlDqEtQAAB_1tPdqJsxQIqXxvvklcFu6VN5p6ANy8hw",
@@ -21,11 +17,8 @@
         .emsdk = .{
             .path = ".tools/emsdk",
         },
-        .zglfw = .{
-            .url = "https://github.com/zig-gamedev/zglfw/archive/refs/heads/main.zip",
-            .hash = "zglfw-0.10.0-dev-zgVDNES4IQAAXAcsFiHfmadlpDCHhF2cUqWxBGIViyU6",
-        },
         .zgpu = .{
+            // Fork w/ the new Emscripten WebGPU API surface (vendored to keep builds deterministic).
             .path = "deps/zgpu",
         },
         .dawn_x86_64_linux_gnu = .{

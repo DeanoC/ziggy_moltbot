@@ -23,7 +23,7 @@
     </style>
   </head>
   <body>
-    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
     <script>
       var Module = {
         canvas: (function() { return document.getElementById('canvas'); })(),
@@ -60,6 +60,67 @@
       } else {
         window.addEventListener("load", resizeCanvas);
       }
+
+      // Ensure the canvas can receive keyboard events (required for SDL text input on web).
+      (function() {
+        var canvas = Module.canvas;
+        if (!canvas) return;
+        function focusCanvas() {
+          try { canvas.focus({ preventScroll: true }); } catch (e) { try { canvas.focus(); } catch (e2) {} }
+        }
+        canvas.addEventListener("pointerdown", focusCanvas);
+        canvas.addEventListener("mousedown", focusCanvas);
+        window.addEventListener("keydown", function(e) {
+          // If the user starts typing before clicking, redirect focus to the canvas.
+          if (document.activeElement !== canvas) focusCanvas();
+        }, { capture: true });
+
+        function forwardPasteText(text) {
+          if (!Module._zsc_wasm_on_paste) return false;
+          if (typeof text !== "string" || !text.length) return false;
+          var len = lengthBytesUTF8(text);
+          var ptr = Module._malloc(len + 1);
+          if (!ptr) return false;
+          stringToUTF8(text, ptr, len + 1);
+          Module._zsc_wasm_on_paste(ptr, len);
+          Module._free(ptr);
+          return true;
+        }
+
+        // Prefer the synchronous "paste" event (doesn't require Clipboard API permissions).
+        // Only preventDefault if we actually forwarded text into the app, so we don't block
+        // browser-native paste when the Clipboard API is unavailable/denied.
+        window.addEventListener("paste", function(e) {
+          if (!Module._zsc_wasm_on_paste) return;
+          if (document.activeElement !== canvas) return;
+
+          var text = "";
+          if (e.clipboardData && e.clipboardData.getData) {
+            text = e.clipboardData.getData("text/plain") || "";
+          }
+          if (forwardPasteText(text)) {
+            e.preventDefault();
+          }
+        }, { capture: true });
+
+        // Ctrl+V fallback: try async Clipboard API and forward text into the app.
+        // This helps on browsers where "paste" events on a canvas don't fire.
+        //
+        // Important: don't call preventDefault here, otherwise a denied Clipboard API blocks
+        // native paste elsewhere. If the canvas is focused, the default browser paste is a no-op.
+        window.addEventListener("keydown", function(e) {
+          var isPaste = (e.key === "v" || e.key === "V") && (e.ctrlKey || e.metaKey);
+          if (!isPaste) return;
+          if (document.activeElement !== canvas) return;
+          if (!navigator.clipboard || !navigator.clipboard.readText) return;
+          if (!Module._zsc_wasm_on_paste) return;
+          navigator.clipboard.readText().then(function(text) {
+            forwardPasteText(text);
+          }).catch(function() {
+            // Ignore: permission denied / not allowed.
+          });
+        }, { capture: true });
+      })();
     </script>
     {{{ SCRIPT }}}
   </body>

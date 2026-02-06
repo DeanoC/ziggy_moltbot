@@ -45,9 +45,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const build_wasm = b.option(bool, "wasm", "Build wasm target") orelse false;
-    const wasm_wgpu = b.option(bool, "wasm_wgpu", "Experimental: build WASM with SDL3+WebGPU backend (requires updating zgpu for emdawnwebgpu)") orelse false;
-    // Temporary: WASM defaults to the old ImGui/WebGL path until zgpu is updated for emdawnwebgpu.
-    const use_imgui = build_wasm and !wasm_wgpu;
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
     const enable_ztracy = b.option(bool, "enable_ztracy", "Enable Tracy profile markers") orelse false;
@@ -57,8 +54,6 @@ pub fn build(b: *std.Build) void {
     const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
-    build_options.addOption(bool, "use_imgui", use_imgui);
-    build_options.addOption(bool, "wasm_wgpu", wasm_wgpu);
     build_options.addOption(bool, "enable_ztracy", enable_ztracy);
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
@@ -275,8 +270,11 @@ pub fn build(b: *std.Build) void {
         });
         const emsdk_sysroot_include = b.pathJoin(&.{ emsdk_sysroot, "include" });
 
+        // Some deps (notably SDL3) require a sysroot when building for Emscripten.
+        b.sysroot = emsdk_sysroot;
+
         const wasm_module = b.createModule(.{
-            .root_source_file = b.path(if (use_imgui) "src/main_wasm_legacy.zig" else "src/main_wasm_wgpu.zig"),
+            .root_source_file = b.path("src/main_wasm.zig"),
             .target = wasm_target,
             .optimize = optimize,
         });
@@ -288,122 +286,54 @@ pub fn build(b: *std.Build) void {
         });
         wasm.root_module.addOptions("build_options", build_options);
 
-        if (b.sysroot == null) {
-            // Required by SDL (Emscripten target) build scripts.
-            b.sysroot = emsdk_sysroot;
-        }
-
         wasm.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         wasm.root_module.addIncludePath(b.path("src"));
-        // freetype include path added after freetype_wasm is created
+
+        const zgpu_pkg = b.dependency("zgpu", .{
+            .target = wasm_target,
+            .optimize = optimize,
+        });
+        wasm_module.addImport("zgpu", zgpu_pkg.module("root"));
+        @import("zgpu").addLibraryPathsTo(wasm);
+
+        const sdl3_pkg = b.dependency("sdl3", .{
+            .target = wasm_target,
+            .optimize = optimize,
+            .sanitize_c = .off,
+        });
+        wasm.root_module.addIncludePath(sdl3_pkg.path("include"));
+        wasm.linkLibrary(sdl3_pkg.artifact("SDL3"));
+
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/icon_loader.c"),
+            .flags = &.{"-fno-sanitize=undefined"},
+        });
+
+        const wasm_cpp_flags = &.{ "-std=c++17", "-fno-sanitize=undefined" };
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_ws.cpp"),
+            .flags = wasm_cpp_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_storage.cpp"),
+            .flags = wasm_cpp_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_open_url.cpp"),
+            .flags = wasm_cpp_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_fetch.cpp"),
+            .flags = wasm_cpp_flags,
+        });
+        wasm.root_module.addCSourceFile(.{
+            .file = b.path("src/wasm_clipboard_plain.cpp"),
+            .flags = wasm_cpp_flags,
+        });
         const freetype_wasm = addFreetype(b, wasm_target, optimize, emsdk_sysroot_include);
+        freetype_wasm.lib.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         wasm.linkLibrary(freetype_wasm.lib);
         wasm.root_module.addIncludePath(freetype_wasm.include_path);
-
-        if (use_imgui) {
-            const sdl3_pkg = b.dependency("sdl3", .{
-                .target = wasm_target,
-                .optimize = optimize,
-                .sanitize_c = .off,
-            });
-            const zgui_wasm_pkg = b.dependency("zgui", .{
-                .target = wasm_target,
-                .optimize = optimize,
-                .backend = .no_backend,
-                .use_wchar32 = true,
-            });
-            const zglfw_wasm_pkg = b.dependency("zglfw", .{
-                .target = wasm_target,
-                .optimize = optimize,
-            });
-            wasm.root_module.addImport("zgui", zgui_wasm_pkg.module("root"));
-            wasm.root_module.addImport("zglfw", zglfw_wasm_pkg.module("root"));
-            wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs"));
-            wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui"));
-            wasm.root_module.addIncludePath(zgui_wasm_pkg.path("libs/imgui/backends"));
-            wasm.root_module.addIncludePath(sdl3_pkg.path("include"));
-            wasm.linkLibrary(sdl3_pkg.artifact("SDL3"));
-
-            const imgui_backend_flags = &.{
-                "-DIMGUI_IMPL_OPENGL_ES3",
-                "-DIMGUI_IMPL_API=extern \"C\"",
-                "-fno-sanitize=undefined",
-                "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
-                "-DIMGUI_ENABLE_FREETYPE",
-                "-DIMGUI_USE_WCHAR32",
-                "-std=c++17",
-            };
-            wasm.root_module.addCSourceFile(.{
-                .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_glfw.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = zgui_wasm_pkg.path("libs/imgui/backends/imgui_impl_opengl3.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/icon_loader.c"),
-                .flags = &.{"-fno-sanitize=undefined"},
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/wasm_clipboard.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/wasm_ws.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/wasm_storage.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/wasm_open_url.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_ini_bridge.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_freetype_bridge.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            wasm.root_module.addCSourceFile(.{
-                .file = b.path("src/wasm_fetch.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            const zgui_wasm_imgui = zgui_wasm_pkg.artifact("imgui");
-            freetype_wasm.lib.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
-            zgui_wasm_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
-            zgui_wasm_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
-            zgui_wasm_imgui.root_module.addIncludePath(freetype_wasm.include_path);
-            zgui_wasm_imgui.root_module.addCSourceFile(.{
-                .file = zgui_wasm_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
-                .flags = imgui_backend_flags,
-            });
-            zgui_wasm_imgui.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
-            wasm.linkLibrary(zgui_wasm_imgui);
-        } else {
-            const sdl3_pkg = b.dependency("sdl3", .{
-                .target = wasm_target,
-                .optimize = optimize,
-                .sanitize_c = .off,
-            });
-            const zgpu_pkg = b.dependency("zgpu", .{
-                .target = wasm_target,
-                .optimize = optimize,
-            });
-            wasm.root_module.addImport("zgpu", zgpu_pkg.module("root"));
-            wasm.root_module.addIncludePath(sdl3_pkg.path("include"));
-            wasm.linkLibrary(sdl3_pkg.artifact("SDL3"));
-
-            wasm.root_module.addCSourceFile(.{ .file = b.path("src/icon_loader.c"), .flags = &.{"-fno-sanitize=undefined"} });
-            wasm.root_module.addCSourceFile(.{ .file = b.path("src/wasm_ws.cpp"), .flags = &.{"-fno-sanitize=undefined"} });
-            wasm.root_module.addCSourceFile(.{ .file = b.path("src/wasm_storage.cpp"), .flags = &.{"-fno-sanitize=undefined"} });
-            wasm.root_module.addCSourceFile(.{ .file = b.path("src/wasm_open_url.cpp"), .flags = &.{"-fno-sanitize=undefined"} });
-            wasm.root_module.addCSourceFile(.{ .file = b.path("src/wasm_fetch.cpp"), .flags = &.{"-fno-sanitize=undefined"} });
-        }
 
         const zemscripten = b.dependency("zemscripten", .{});
         wasm.root_module.addImport("zemscripten", zemscripten.module("root"));
@@ -412,32 +342,21 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .fsanitize = false,
         });
-        if (use_imgui) {
-            emcc_flags.put("-sUSE_GLFW=3", {}) catch unreachable;
-            emcc_flags.put("-sUSE_WEBGL2=1", {}) catch unreachable;
-            emcc_flags.put("-sFULL_ES3=1", {}) catch unreachable;
-            emcc_flags.put("-sGL_ENABLE_GET_PROC_ADDRESS=1", {}) catch unreachable;
-        } else {
-            // `-sUSE_WEBGPU` was removed from newer emscripten; use the WebGPU port instead.
-            emcc_flags.put("--use-port=emdawnwebgpu", {}) catch unreachable;
-        }
+        emcc_flags.put("--use-port=emdawnwebgpu", {}) catch unreachable;
         var emcc_settings = zemscripten_build.emccDefaultSettings(b.allocator, .{
             .optimize = optimize,
             .emsdk_allocator = .emmalloc,
         });
         emcc_settings.put("ALLOW_MEMORY_GROWTH", "1") catch unreachable;
         emcc_settings.put("SUPPORT_LONGJMP", "1") catch unreachable;
-        if (!use_imgui) {
-            // zgpu's Emscripten backend waits for async callbacks during adapter/device request.
-            emcc_settings.put("ASYNCIFY", "1") catch unreachable;
-        }
+        emcc_settings.put("ASYNCIFY", "1") catch unreachable;
         emcc_settings.put(
             "EXPORTED_FUNCTIONS",
-            "['_main','_malloc','_free','_molt_ws_on_open','_molt_ws_on_close','_molt_ws_on_error','_molt_ws_on_message','_zsc_wasm_fetch_on_success','_zsc_wasm_fetch_on_error']",
+            "['_main','_malloc','_free','_molt_ws_on_open','_molt_ws_on_close','_molt_ws_on_error','_molt_ws_on_message','_zsc_wasm_fetch_on_success','_zsc_wasm_fetch_on_error','_zsc_wasm_on_paste']",
         ) catch unreachable;
         emcc_settings.put(
             "EXPORTED_RUNTIME_METHODS",
-            "['UTF8ToString','stringToUTF8','lengthBytesUTF8']",
+            "['UTF8ToString','stringToUTF8','lengthBytesUTF8','setCanvasSize']",
         ) catch unreachable;
 
         const emcc_step = zemscripten_build.emccStep(
