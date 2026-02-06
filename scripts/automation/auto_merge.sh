@@ -22,6 +22,13 @@ REPO=""
 # (Today this is just DeanoC; later we can add a dedicated Ziggy bot account.)
 ALLOWED_AUTHORS=("DeanoC")
 
+# To reduce "eventual consistency" races (late-arriving bot review comments, checks that
+# register a moment after the first green poll, etc.), require a minimum age before
+# merging self-authored PRs.
+#
+# Default: 180 seconds. Override with ZIGGY_SELF_MERGE_MIN_AGE_SECONDS.
+SELF_MERGE_MIN_AGE_SECONDS="${ZIGGY_SELF_MERGE_MIN_AGE_SECONDS:-180}"
+
 # Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
 repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -z "${repo_root}" ]]; then
@@ -158,6 +165,37 @@ load_allowed_repos
 ensure_repo_allowed "$REPO"
 log "Using repo: $REPO"
 
+epoch_seconds() {
+  # GNU date on Linux supports -d; return 0 on parse failure.
+  date -d "$1" +%s 2>/dev/null || echo 0
+}
+
+has_min_age_for_self_merge() {
+  local pr_number="$1"
+  local pr_author="$2"
+
+  if [[ "$pr_author" != "DeanoC" ]]; then
+    return 0
+  fi
+
+  local updated_at now_s updated_s age_s
+  updated_at=$(gh pr view "$pr_number" --repo "$REPO" --json updatedAt --jq '.updatedAt')
+  now_s=$(date +%s)
+  updated_s=$(epoch_seconds "$updated_at")
+
+  if [[ "$updated_s" -le 0 ]]; then
+    # If we can't parse time, be conservative.
+    return 1
+  fi
+
+  age_s=$((now_s - updated_s))
+  if [[ "$age_s" -lt "$SELF_MERGE_MIN_AGE_SECONDS" ]]; then
+    log "PR #$pr_number is self-authored and only ${age_s}s old (< ${SELF_MERGE_MIN_AGE_SECONDS}s); waiting to reduce race risk"
+    return 1
+  fi
+  return 0
+}
+
 has_blocking_review_threads() {
   local pr_number="$1"
   local owner repo
@@ -262,6 +300,11 @@ for pr in $prs; do
   # This is more robust than scanning raw inline review comments.
   if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
     log "PR #$pr has unresolved blocking review threads (human and/or codex bot); skipping"
+    continue
+  fi
+
+  # Minimum age gate for self-authored PRs.
+  if ! has_min_age_for_self_merge "$pr" "$author"; then
     continue
   fi
 
