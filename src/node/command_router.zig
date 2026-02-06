@@ -112,6 +112,51 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     return router;
 }
 
+/// Initialize a router by registering only a specific set of commands.
+///
+/// This is useful for platform ports (Android/WASM) where we want a working
+/// node transport but only a small/safe command surface initially.
+pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Command) !CommandRouter {
+    var router = CommandRouter.init(allocator);
+    errdefer router.deinit();
+
+    for (cmds) |cmd| {
+        switch (cmd) {
+            // System commands
+            .system_run => try router.register(.system_run, systemRunHandler),
+            .system_which => try router.register(.system_which, systemWhichHandler),
+            .system_notify => try router.register(.system_notify, systemNotifyHandler),
+            .system_exec_approvals_get => try router.register(.system_exec_approvals_get, systemExecApprovalsGetHandler),
+            .system_exec_approvals_set => try router.register(.system_exec_approvals_set, systemExecApprovalsSetHandler),
+
+            // Process commands
+            .process_spawn => try router.register(.process_spawn, processSpawnHandler),
+            .process_poll => try router.register(.process_poll, processPollHandler),
+            .process_stop => try router.register(.process_stop, processStopHandler),
+            .process_list => try router.register(.process_list, processListHandler),
+
+            // Canvas commands
+            .canvas_present => try router.register(.canvas_present, canvasPresentHandler),
+            .canvas_hide => try router.register(.canvas_hide, canvasHideHandler),
+            .canvas_navigate => try router.register(.canvas_navigate, canvasNavigateHandler),
+            .canvas_eval => try router.register(.canvas_eval, canvasEvalHandler),
+            .canvas_snapshot => try router.register(.canvas_snapshot, canvasSnapshotHandler),
+            .canvas_a2ui_push_jsonl => try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler),
+            .canvas_a2ui_reset => try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler),
+
+            // Not implemented yet in this codebase (but present in enum)
+            .screen_record,
+            .camera_list,
+            .camera_snap,
+            .camera_clip,
+            .location_get,
+            => return error.CommandNotSupported,
+        }
+    }
+
+    return router;
+}
+
 // ============================================================================
 // System Command Handlers
 // ============================================================================

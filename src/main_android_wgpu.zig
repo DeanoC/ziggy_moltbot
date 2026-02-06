@@ -30,6 +30,7 @@ const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
+const android_node_service = @import("node/android_node_service.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
 const font_system = @import("ui/font_system.zig");
@@ -603,7 +604,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
     allocator.free(msg.role);
@@ -820,6 +820,32 @@ fn run() !void {
         cfg.insecure_tls,
         cfg.connect_host_override,
     );
+
+    // Optional: run as a node host alongside the UI client.
+    // This is primarily for Android, where the companion app is expected to be a node.
+    var node_host = android_node_service.AndroidNodeHost.init(allocator);
+    defer node_host.stop();
+    if (cfg.enable_node_host and cfg.server_url.len > 0) {
+        const token = cfg.node_host_token orelse cfg.token;
+        if (token.len == 0) {
+            logger.warn("node-host enabled but no token configured (node_host_token/token).", .{});
+        } else {
+            const started = try node_host.start(.{
+                .ws_url = cfg.server_url,
+                .auth_token = token,
+                .insecure_tls = cfg.insecure_tls,
+                .connect_host_override = cfg.connect_host_override,
+                .display_name = cfg.node_host_display_name,
+                .device_identity_path = cfg.node_host_device_identity_path orelse "ziggystarclaw_node_device.json",
+                .exec_approvals_path = cfg.node_host_exec_approvals_path orelse "exec-approvals.json",
+                .heartbeat_interval_ms = cfg.node_host_heartbeat_interval_ms orelse 10_000,
+            });
+            if (started) {
+                logger.info("node-host started (Android)", .{});
+            }
+        }
+    }
+
     var connect_job = ConnectJob{
         .allocator = allocator,
         .ws_client = &ws_client,

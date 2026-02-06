@@ -72,6 +72,25 @@ echo "  path:   ${worktree_path}"
 
 git -C "${repo_root}" worktree add -b "${branch}" "${worktree_path}" "${base}"
 
+# Link shared toolchain folder into the worktree so pinned Zig/Android tooling works
+# regardless of which worktree you're in.
+#
+# The canonical location for tools is the main repo dir derived from the shared
+# git common dir (see notes in usage()).
+tools_src="${repo_dir}/.tools"
+tools_dst="${worktree_path}/.tools"
+if [[ -e "${tools_dst}" ]]; then
+  echo "Note: .tools already exists in worktree, leaving it as-is: ${tools_dst}" >&2
+else
+  if [[ -d "${tools_src}" ]]; then
+    ln -s "${tools_src}" "${tools_dst}"
+    echo "Linked tools:"
+    echo "  ${tools_dst} -> ${tools_src}"
+  else
+    echo "Warning: tools dir not found, skipping .tools link: ${tools_src}" >&2
+  fi
+fi
+
 echo
 echo "Worktree created:"
 echo "  cd \"${worktree_path}\""
