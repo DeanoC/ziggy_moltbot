@@ -26,6 +26,7 @@ pub const Renderer = struct {
             .fn_getWaylandDisplay = if (g_wayland_display != null) &sdlGetWaylandDisplay else null,
             .fn_getWaylandSurface = if (g_wayland_display != null) &sdlGetWaylandSurface else null,
             .fn_getCocoaWindow = &sdlGetCocoaWindow,
+            .fn_getAndroidNativeWindow = &sdlGetAndroidNativeWindow,
         };
 
         const gctx = try zgpu.GraphicsContext.create(allocator, window_provider, .{});
@@ -164,4 +165,9 @@ fn sdlGetWaylandSurface(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
 fn sdlGetCocoaWindow(window_ptr: *const anyopaque) callconv(.c) ?*anyopaque {
     const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
     return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
+}
+
+fn sdlGetAndroidNativeWindow(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
+    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, null) orelse unreachable;
 }

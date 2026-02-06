@@ -20,7 +20,6 @@ const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
-const profiler = @import("utils/profiler.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
@@ -78,132 +77,26 @@ fn logSurfaceBackend(window: *sdl.SDL_Window) void {
 }
 
 fn openUrl(allocator: std.mem.Allocator, url: []const u8) void {
-    const argv: []const []const u8 = switch (builtin.os.tag) {
-        .windows => &.{ "cmd", "/c", "start", "", url },
-        .macos => &.{ "open", url },
-        else => &.{ "xdg-open", url },
-    };
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    if (builtin.os.tag == .windows) {
-        child.create_no_window = true;
+    // On Android, prefer SDL's platform integration.
+    const buf = allocator.alloc(u8, url.len + 1) catch return;
+    defer allocator.free(buf);
+    @memcpy(buf[0..url.len], url);
+    buf[url.len] = 0;
+    if (!sdl.SDL_OpenURL(@ptrCast(buf.ptr))) {
+        logger.warn("Failed to open URL: {s}", .{url});
     }
-    child.spawn() catch |err| {
-        logger.warn("Failed to open URL: {}", .{err});
-    };
 }
 
 fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
-    const argv: []const []const u8 = switch (builtin.os.tag) {
-        .windows => &.{ "cmd", "/c", "start", "", path },
-        .macos => &.{ "open", path },
-        else => &.{ "xdg-open", path },
-    };
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    if (builtin.os.tag == .windows) {
-        child.create_no_window = true;
-    }
-    child.spawn() catch |err| {
-        logger.warn("Failed to open path: {}", .{err});
-    };
+    _ = allocator;
+    _ = path;
+    logger.warn("openPath not supported on Android", .{});
 }
 
 fn installUpdate(allocator: std.mem.Allocator, archive_path: []const u8) bool {
-    if (!(builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos)) {
-        return false;
-    }
-
-    const exe_path = std.fs.selfExePathAlloc(allocator) catch |err| {
-        logger.warn("Failed to resolve self path: {}", .{err});
-        return false;
-    };
-    defer allocator.free(exe_path);
-
-    const pid: u32 = switch (builtin.os.tag) {
-        .windows => std.os.windows.GetCurrentProcessId(),
-        else => @intCast(std.c.getpid()),
-    };
-    const pid_buf = std.fmt.allocPrint(allocator, "{d}", .{pid}) catch return false;
-    defer allocator.free(pid_buf);
-
-    std.fs.cwd().makePath("updates") catch {};
-
-    const script_path = if (builtin.os.tag == .windows)
-        "updates/install_update.ps1"
-    else
-        "updates/install_update.sh";
-
-    const script_contents = if (builtin.os.tag == .windows)
-        \\param([string]$Archive,[string]$Exe,[int]$Pid)
-        \\$dir = Split-Path -Parent $Archive
-        \\$stage = Join-Path $dir "staged"
-        \\if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-        \\New-Item -ItemType Directory -Path $stage | Out-Null
-        \\Expand-Archive -Force -Path $Archive -DestinationPath $stage
-        \\$newExe = Join-Path $stage "windows\\ziggystarclaw-client.exe"
-        \\if (-not (Test-Path $newExe)) { Write-Host "Missing updated binary"; exit 1 }
-        \\if ($Pid -gt 0) { try { Wait-Process -Id $Pid -Timeout 30 } catch {} }
-        \\Copy-Item -Force $newExe $Exe
-        \\Start-Process -FilePath $Exe
-    else
-        \\#!/bin/sh
-        \\set -e
-        \\ARCHIVE=\"$1\"
-        \\EXE=\"$2\"
-        \\PID=\"$3\"
-        \\DIR=$(dirname \"$ARCHIVE\")
-        \\STAGE=\"$DIR/staged\"
-        \\rm -rf \"$STAGE\"
-        \\mkdir -p \"$STAGE\"
-        \\case \"$ARCHIVE\" in
-        \\  *.tar.gz|*.tgz) tar -xzf \"$ARCHIVE\" -C \"$STAGE\" ;;
-        \\  *.zip) unzip -o \"$ARCHIVE\" -d \"$STAGE\" ;;
-        \\  *) echo \"Unknown archive\"; exit 1 ;;
-        \\esac
-        \\NEW_BIN=\"$STAGE/linux/ziggystarclaw-client\"
-        \\if [ -f \"$STAGE/macos/ziggystarclaw-client\" ]; then NEW_BIN=\"$STAGE/macos/ziggystarclaw-client\"; fi
-        \\if [ ! -f \"$NEW_BIN\" ]; then echo \"Missing updated binary\"; exit 1; fi
-        \\if [ -n \"$PID\" ]; then
-        \\  while kill -0 \"$PID\" 2>/dev/null; do sleep 0.2; done
-        \\fi
-        \\cp -f \"$NEW_BIN\" \"$EXE\"
-        \\chmod +x \"$EXE\"
-        \\\"$EXE\" >/dev/null 2>&1 &
-    ;
-
-    {
-        var file = std.fs.cwd().createFile(script_path, .{ .truncate = true }) catch |err| {
-            logger.warn("Failed to write update script: {}", .{err});
-            return false;
-        };
-        defer file.close();
-        file.writeAll(script_contents) catch |err| {
-            logger.warn("Failed to write update script: {}", .{err});
-            return false;
-        };
-    }
-
-    const argv: []const []const u8 = switch (builtin.os.tag) {
-        .windows => &.{ "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path, "-Archive", archive_path, "-Exe", exe_path, "-Pid", pid_buf },
-        else => &.{ "sh", script_path, archive_path, exe_path, pid_buf },
-    };
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    if (builtin.os.tag == .windows) {
-        child.create_no_window = true;
-    }
-    child.spawn() catch |err| {
-        logger.warn("Failed to launch update installer: {}", .{err});
-        return false;
-    };
-    return true;
+    _ = allocator;
+    _ = archive_path;
+    return false;
 }
 
 const MessageQueue = struct {
@@ -890,7 +783,15 @@ fn clearChatPanelsForSession(
     }
 }
 
-pub fn main() !void {
+fn setCwdToPrefPath() void {
+    const pref_path_c = sdl.SDL_GetPrefPath("deanoc", "ziggystarclaw");
+    if (pref_path_c == null) return;
+    defer sdl.SDL_free(pref_path_c);
+    const pref_path = std.mem.span(@as([*:0]const u8, @ptrCast(pref_path_c.?)));
+    std.posix.chdir(pref_path) catch {};
+}
+
+fn run() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
 
@@ -898,6 +799,8 @@ pub fn main() !void {
 
     try initLogging(allocator);
     defer logger.deinit();
+
+    setCwdToPrefPath();
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
@@ -1060,21 +963,14 @@ pub fn main() !void {
 
     var should_close = false;
     while (!should_close) {
-        profiler.frameMark();
-        const frame_zone = profiler.zone("frame");
-        defer frame_zone.end();
-        {
-            const zone = profiler.zone("frame.events");
-            defer zone.end();
-            var event: sdl.SDL_Event = undefined;
-            while (sdl.SDL_PollEvent(&event)) {
-                sdl_input_backend.pushEvent(&event);
-                switch (event.type) {
-                    sdl.SDL_EVENT_QUIT,
-                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-                    => should_close = true,
-                    else => {},
-                }
+        var event: sdl.SDL_Event = undefined;
+        while (sdl.SDL_PollEvent(&event)) {
+            sdl_input_backend.pushEvent(&event);
+            switch (event.type) {
+                sdl.SDL_EVENT_QUIT,
+                sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+                => should_close = true,
+                else => {},
             }
         }
 
@@ -1103,25 +999,21 @@ pub fn main() !void {
             }
             drained.deinit(allocator);
         }
-        {
-            const zone = profiler.zone("frame.net");
-            defer zone.end();
-            for (drained.items) |payload| {
-                const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
-                    logger.err("Failed to handle server message: {}", .{err});
-                    break :blk null;
+        for (drained.items) |payload| {
+            const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
+                logger.err("Failed to handle server message: {}", .{err});
+                break :blk null;
+            };
+            if (update) |auth_update| {
+                defer auth_update.deinit(allocator);
+                ws_client.storeDeviceToken(
+                    auth_update.device_token,
+                    auth_update.role,
+                    auth_update.scopes,
+                    auth_update.issued_at_ms,
+                ) catch |err| {
+                    logger.warn("Failed to store device token: {}", .{err});
                 };
-                if (update) |auth_update| {
-                    defer auth_update.deinit(allocator);
-                    ws_client.storeDeviceToken(
-                        auth_update.device_token,
-                        auth_update.role,
-                        auth_update.scopes,
-                        auth_update.issued_at_ms,
-                    ) catch |err| {
-                        logger.warn("Failed to store device token: {}", .{err});
-                    };
-                }
             }
         }
 
@@ -1153,25 +1045,37 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        var ui_action: ui.UiAction = undefined;
-        {
-            const zone = profiler.zone("frame.ui");
-            defer zone.end();
-            renderer.beginFrame(fb_width, fb_height);
-            ui_action = ui.draw(
-                allocator,
-                &ctx,
-                &cfg,
-                &agents,
-                ws_client.is_connected,
-                build_options.app_version,
-                fb_width,
-                fb_height,
-                true,
-                &manager,
-                &command_inbox,
-            );
+        // Keep safe area insets in sync with device cutouts/gesture areas.
+        var safe_rect: sdl.SDL_Rect = undefined;
+        if (sdl.SDL_GetWindowSafeArea(window, &safe_rect)) {
+            var win_w: c_int = 0;
+            var win_h: c_int = 0;
+            _ = sdl.SDL_GetWindowSizeInPixels(window, &win_w, &win_h);
+            const ww: f32 = @floatFromInt(@max(win_w, 1));
+            const wh: f32 = @floatFromInt(@max(win_h, 1));
+            const left: f32 = @floatFromInt(@max(safe_rect.x, 0));
+            const top: f32 = @floatFromInt(@max(safe_rect.y, 0));
+            const right: f32 = @max(0.0, ww - left - @as(f32, @floatFromInt(@max(safe_rect.w, 0))));
+            const bottom: f32 = @max(0.0, wh - top - @as(f32, @floatFromInt(@max(safe_rect.h, 0))));
+            ui.setSafeInsets(left, top, right, bottom);
+        } else {
+            ui.setSafeInsets(0.0, 0.0, 0.0, 0.0);
         }
+
+        renderer.beginFrame(fb_width, fb_height);
+        const ui_action = ui.draw(
+            allocator,
+            &ctx,
+            &cfg,
+            &agents,
+            ws_client.is_connected,
+            build_options.app_version,
+            fb_width,
+            fb_height,
+            true,
+            &manager,
+            &command_inbox,
+        );
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
@@ -1552,12 +1456,18 @@ pub fn main() !void {
             }
         }
 
-        {
-            const zone = profiler.zone("frame.render");
-            defer zone.end();
-            renderer.render();
-        }
+        renderer.render();
     }
+}
+
+pub export fn SDL_main(argc: c_int, argv: [*c][*c]u8) c_int {
+    _ = argc;
+    _ = argv;
+    run() catch |err| {
+        logger.err("ziggystarclaw SDL_main failed: {}", .{err});
+        return 1;
+    };
+    return 0;
 }
 
 fn approvalDecisionLabel(decision: operator_view.ExecApprovalDecision) []const u8 {

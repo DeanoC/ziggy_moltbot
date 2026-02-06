@@ -25,6 +25,22 @@ fn addFreetype(
     };
 }
 
+fn unzipToOutputDir(b: *std.Build, zip_file: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    const unzip = b.addSystemCommand(&.{ "unzip", "-q" });
+    unzip.addFileArg(zip_file);
+    unzip.addArg("-d");
+    return unzip.addOutputDirectoryArg(basename);
+}
+
+fn downloadToOutputFile(b: *std.Build, url: []const u8, basename: []const u8) std.Build.LazyPath {
+    // Zig 0.15's `zig fetch` can't consume some Maven endpoints due to headers.
+    // For those, we download using curl and treat the result as a zip/aar to unzip.
+    const curl = b.addSystemCommand(&.{ "curl", "-L", "--fail", "--silent", "--show-error", "-o" });
+    const out = curl.addOutputFileArg(basename);
+    curl.addArg(url);
+    return out;
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -39,12 +55,6 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
     build_options.addOption(bool, "enable_ztracy", enable_ztracy);
-    const imgui_cpp_flags = &.{
-        "-std=c++17",
-        "-DIMGUI_ENABLE_FREETYPE",
-        "-DIMGUI_USE_WCHAR32",
-    };
-
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -101,15 +111,6 @@ pub fn build(b: *std.Build) void {
 
         return;
     }
-
-    const zgui_pkg = b.dependency("zgui", .{
-        .target = target,
-        .optimize = optimize,
-        .backend = .no_backend,
-        .use_wchar32 = true,
-    });
-    const zgui_native = zgui_pkg.module("root");
-
     if (!build_wasm) {
         const native_module = b.createModule(.{
             .root_source_file = b.path("src/main_native.zig"),
@@ -117,7 +118,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
-                .{ .name = "zgui", .module = zgui_native },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -134,39 +134,17 @@ pub fn build(b: *std.Build) void {
         });
 
         native_exe.root_module.addIncludePath(b.path("src"));
-        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui"));
-        native_exe.root_module.addIncludePath(zgui_pkg.path("libs/imgui/backends"));
         native_exe.root_module.addIncludePath(sdl3_pkg.path("include"));
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
             .flags = &.{},
         });
-        native_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/imgui_ini_bridge.cpp"),
-            .flags = imgui_cpp_flags,
-        });
-        native_exe.root_module.addCSourceFile(.{
-            .file = b.path("src/imgui_freetype_bridge.cpp"),
-            .flags = imgui_cpp_flags,
-        });
         native_exe.root_module.addIncludePath(freetype_native.include_path);
-
-        const zgui_imgui = zgui_pkg.artifact("imgui");
-        zgui_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
-        zgui_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
-        zgui_imgui.root_module.addIncludePath(freetype_native.include_path);
-        zgui_imgui.root_module.addCSourceFile(.{
-            .file = zgui_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
-            .flags = imgui_cpp_flags,
-        });
         const zgpu_pkg = b.dependency("zgpu", .{
             .target = target,
             .optimize = optimize,
         });
         native_module.addImport("zgpu", zgpu_pkg.module("root"));
-        if (target.result.os.tag != .emscripten) {
-            zgui_imgui.root_module.addCMacro("IMGUI_IMPL_WEBGPU_BACKEND_DAWN", "");
-        }
         native_exe.root_module.addIncludePath(zgpu_pkg.path("libs/dawn/include"));
         if (enable_ztracy) {
             native_module.addImport("ztracy", ztracy_pkg.?.module("root"));
@@ -204,22 +182,6 @@ pub fn build(b: *std.Build) void {
             },
             else => {},
         }
-
-        const imgui_backend_flags = &(imgui_cpp_flags.* ++ .{
-            "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
-            "-DIMGUI_IMPL_API=extern \"C\"",
-            "-DIMGUI_IMPL_WEBGPU_BACKEND_DAWN",
-        });
-        native_exe.root_module.addCSourceFile(.{
-            .file = zgui_pkg.path("libs/imgui/backends/imgui_impl_sdl3.cpp"),
-            .flags = imgui_backend_flags,
-        });
-        native_exe.root_module.addCSourceFile(.{
-            .file = zgui_pkg.path("libs/imgui/backends/imgui_impl_wgpu.cpp"),
-            .flags = imgui_backend_flags,
-        });
-
-        native_exe.linkLibrary(zgui_imgui);
         native_exe.linkLibrary(freetype_native.lib);
         native_exe.linkLibrary(sdl3_pkg.artifact("SDL3"));
         if (target.result.os.tag == .windows) {
@@ -334,13 +296,13 @@ pub fn build(b: *std.Build) void {
         wasm_module.addImport("zgpu", zgpu_pkg.module("root"));
         @import("zgpu").addLibraryPathsTo(wasm);
 
-        const sdl3_wasm_pkg = b.dependency("sdl3", .{
+        const sdl3_pkg = b.dependency("sdl3", .{
             .target = wasm_target,
             .optimize = optimize,
             .sanitize_c = .off,
         });
-        wasm.root_module.addIncludePath(sdl3_wasm_pkg.path("include"));
-        wasm.linkLibrary(sdl3_wasm_pkg.artifact("SDL3"));
+        wasm.root_module.addIncludePath(sdl3_pkg.path("include"));
+        wasm.linkLibrary(sdl3_pkg.artifact("SDL3"));
 
         wasm.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
@@ -461,127 +423,79 @@ pub fn build(b: *std.Build) void {
         apk.addResourceDirectory(android_res.getDirectory());
         apk.setKeyStore(android_sdk.createKeyStore(.example));
 
-        const sdl_java_root = b.dependency("SDL", .{
-            .target = target,
-            .optimize = optimize,
-            .use_hidapi = false,
-        }).path("android-project/app/src/main/java/org/libsdl/app");
-        const sdl_java_files = &[_][]const u8{
-            "SDL.java",
-            "SDLSurface.java",
-            "SDLActivity.java",
-            "SDLAudioManager.java",
-            "SDLControllerManager.java",
-            "HIDDevice.java",
-            "HIDDeviceUSB.java",
-            "HIDDeviceManager.java",
-            "HIDDeviceBLESteamController.java",
-        };
-        apk.addJavaSourceFiles(.{
-            .root = sdl_java_root,
-            .files = sdl_java_files,
-        });
+        // Consume SDL3's classes.jar from the official Android AAR.
+        const sdl3_android_zip = b.dependency("sdl3_android_zip", .{});
+        const sdl3_aar = sdl3_android_zip.path("SDL3-3.2.28.aar");
+        const sdl3_aar_extracted = unzipToOutputDir(b, sdl3_aar, "sdl3_android_aar");
+        apk.addJavaLibraryJar(sdl3_aar_extracted.path(b, "classes.jar"));
 
         for (android_targets) |android_target| {
+            // Keep Android scope small for now.
+            if (android_target.result.cpu.arch != .aarch64) continue;
+
             const android_module = b.createModule(.{
-                .root_source_file = b.path("src/main_android.zig"),
+                .root_source_file = b.path("src/main_android_wgpu.zig"),
                 .target = android_target,
                 .optimize = optimize,
-            });
-            const ws_android = b.dependency("websocket", .{
-                .target = android_target,
-                .optimize = optimize,
-            }).module("websocket");
-            const zgui_android_pkg = b.dependency("zgui", .{
-                .target = android_target,
-                .optimize = optimize,
-                .backend = .no_backend,
-                .use_wchar32 = true,
             });
             const freetype_android = addFreetype(b, android_target, optimize, null);
-            android_module.addImport("websocket", ws_android);
-            android_module.addImport("zgui", zgui_android_pkg.module("root"));
 
             const android_lib = b.addLibrary(.{
-                .name = "ziggystarclaw_android",
+                // SDL's Android Java glue expects the app library to be `libmain.so`.
+                .name = "main",
                 .root_module = android_module,
                 .linkage = .dynamic,
             });
             android_lib.root_module.addOptions("build_options", build_options);
             android_lib.root_module.addIncludePath(b.path("src"));
             android_lib.root_module.link_libc = true;
-            android_lib.root_module.link_libcpp = true;
-            android_lib.root_module.linkSystemLibrary("GLESv2", .{});
-            android_lib.root_module.linkSystemLibrary("EGL", .{});
             android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
-            android_lib.root_module.addCSourceFile(.{
-                .file = b.path("src/android_hid_stub.c"),
-                .flags = &.{},
-            });
             android_lib.root_module.addCSourceFile(.{
                 .file = b.path("src/icon_loader.c"),
                 .flags = &.{"-fno-sanitize=undefined"},
             });
-            android_lib.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_ini_bridge.cpp"),
-                .flags = imgui_cpp_flags,
-            });
-            android_lib.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_freetype_bridge.cpp"),
-                .flags = imgui_cpp_flags,
-            });
             android_lib.root_module.addIncludePath(freetype_android.include_path);
 
-            const sdl_dep = b.dependency("SDL", .{
-                .target = android_target,
-                .optimize = optimize,
-                .use_hidapi = false,
-            });
-            const sdl_lib = sdl_dep.artifact("SDL2");
-            sdl_lib.root_module.addCMacro("SDL_HIDAPI_DISABLED", "1");
-            sdl_lib.root_module.addCMacro("SDL_JOYSTICK_HIDAPI", "0");
-            android_lib.root_module.addIncludePath(sdl_dep.path("include"));
-            android_lib.root_module.addIncludePath(sdl_dep.path("include-pregen"));
-            android_lib.linkLibrary(sdl_lib);
-
-            const zgui_imgui = zgui_android_pkg.artifact("imgui");
-            zgui_imgui.root_module.link_libcpp = false;
-            zgui_imgui.root_module.link_libc = true;
-            zgui_imgui.root_module.addIncludePath(sdl_dep.path("include"));
-            zgui_imgui.root_module.addIncludePath(sdl_dep.path("include-pregen"));
-            zgui_imgui.root_module.addCMacro("IMGUI_ENABLE_FREETYPE", "");
-            zgui_imgui.root_module.addCMacro("IMGUI_USE_WCHAR32", "");
-            zgui_imgui.root_module.addIncludePath(freetype_android.include_path);
-            zgui_imgui.root_module.addCSourceFile(.{
-                .file = zgui_android_pkg.path("libs/imgui/misc/freetype/imgui_freetype.cpp"),
-                .flags = imgui_cpp_flags,
-            });
-            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs"));
-            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui"));
-            android_lib.root_module.addIncludePath(zgui_android_pkg.path("libs/imgui/backends"));
-            android_lib.root_module.addCSourceFile(.{
-                .file = b.path("src/imgui_impl_sdl2_android.cpp"),
-                .flags = &.{
-                    "-DIMGUI_IMPL_API=extern \"C\"",
-                    "-fno-sanitize=undefined",
-                    "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
-                    "-DIMGUI_ENABLE_FREETYPE",
-                    "-DIMGUI_USE_WCHAR32",
-                },
-            });
-            android_lib.root_module.addCSourceFile(.{
-                .file = zgui_android_pkg.path("libs/imgui/backends/imgui_impl_opengl3.cpp"),
-                .flags = &.{
-                    "-DIMGUI_IMPL_OPENGL_ES2",
-                    "-DIMGUI_IMPL_API=extern \"C\"",
-                    "-fno-sanitize=undefined",
-                    "-DIMGUI_DISABLE_OBSOLETE_FUNCTIONS",
-                    "-DIMGUI_ENABLE_FREETYPE",
-                    "-DIMGUI_USE_WCHAR32",
-                },
-            });
-            android_lib.linkLibrary(zgui_imgui);
             android_lib.linkLibrary(freetype_android.lib);
+
+            // SDL3 headers (for @cImport) are consumed from the Zig SDL3 dependency, but the Android
+            // native library + Java classes come from the official SDL3 Android AAR.
+            const sdl3_headers = b.dependency("sdl3", .{ .target = android_target, .optimize = optimize });
+            android_lib.root_module.addIncludePath(sdl3_headers.path("include"));
+
+            const zgpu_pkg = b.dependency("zgpu", .{ .target = android_target, .optimize = optimize });
+            android_module.addImport("zgpu", zgpu_pkg.module("root"));
+            const ws_android = b.dependency("websocket", .{ .target = android_target, .optimize = optimize }).module("websocket");
+            android_module.addImport("websocket", ws_android);
+
+            const sdl3_lib_dir = sdl3_aar_extracted.path(b, "prefab/modules/SDL3-shared/libs/android.arm64-v8a");
+            android_lib.root_module.addLibraryPath(sdl3_lib_dir);
+            android_lib.root_module.linkSystemLibrary("SDL3", .{});
+            apk.addNativeLibraryFile(.{
+                .file = sdl3_lib_dir.path(b, "libSDL3.so"),
+                .abi = "arm64-v8a",
+                .dest_name = "libSDL3.so",
+            });
+
+            const webgpu_aar = downloadToOutputFile(
+                b,
+                "https://dl.google.com/dl/android/maven2/androidx/webgpu/webgpu/1.0.0-alpha03/webgpu-1.0.0-alpha03.aar",
+                "webgpu-1.0.0-alpha03.aar",
+            );
+            const webgpu_aar_extracted = unzipToOutputDir(b, webgpu_aar, "androidx_webgpu_aar");
+            const webgpu_lib_dir = webgpu_aar_extracted.path(b, "jni/arm64-v8a");
+            android_lib.root_module.addLibraryPath(webgpu_lib_dir);
+            android_lib.root_module.linkSystemLibrary("webgpu_c_bundled", .{});
+            apk.addNativeLibraryFile(.{
+                .file = webgpu_lib_dir.path(b, "libwebgpu_c_bundled.so"),
+                .abi = "arm64-v8a",
+                .dest_name = "libwebgpu_c_bundled.so",
+            });
+
+            // Android system libs commonly required by SDL + native WebGPU builds.
+            android_lib.root_module.linkSystemLibrary("log", .{});
+            android_lib.root_module.linkSystemLibrary("android", .{});
+            android_lib.root_module.linkSystemLibrary("dl", .{});
 
             apk.addArtifact(android_lib);
         }

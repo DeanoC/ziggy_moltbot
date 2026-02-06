@@ -9,15 +9,12 @@ const image_fetch = if (builtin.cpu.arch == .wasm32)
     }
 else
     @import("image_fetch.zig");
-const texture_gl = @import("texture_gl.zig");
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
 });
 
 extern fn zsc_wasm_fetch(url: [*:0]const u8, ctx: usize) void;
-
-const use_gl_backend = builtin.abi == .android or builtin.cpu.arch == .wasm32;
 
 pub const ImageState = enum {
     loading,
@@ -45,14 +42,6 @@ const ImageEntry = struct {
     error_message: ?[]u8,
 };
 
-const PendingUpload = struct {
-    url: []u8,
-    pixels: []u8,
-    width: u32,
-    height: u32,
-    bytes: usize,
-};
-
 const FetchContext = struct {
     cache: *ImageCache,
     url: []u8,
@@ -61,7 +50,6 @@ const FetchContext = struct {
 pub const ImageCache = struct {
     allocator: std.mem.Allocator,
     entries: std.StringHashMap(ImageEntry),
-    pending: std.ArrayList(PendingUpload),
     mutex: std.Thread.Mutex = .{},
     max_bytes: usize = 64 * 1024 * 1024,
     used_bytes: usize = 0,
@@ -71,7 +59,6 @@ pub const ImageCache = struct {
         return .{
             .allocator = allocator,
             .entries = std.StringHashMap(ImageEntry).init(allocator),
-            .pending = .{},
         };
     }
 };
@@ -95,9 +82,6 @@ pub fn deinit() void {
     cache.mutex.lock();
     var it = cache.entries.iterator();
     while (it.next()) |entry| {
-        if (use_gl_backend and entry.value_ptr.texture_id != 0) {
-            texture_gl.destroyTexture(entry.value_ptr.texture_id);
-        }
         if (entry.value_ptr.pixels) |pixels| {
             cache.allocator.free(pixels);
         }
@@ -107,52 +91,14 @@ pub fn deinit() void {
         cache.allocator.free(entry.key_ptr.*);
     }
     cache.entries.clearRetainingCapacity();
-    for (cache.pending.items) |pending| {
-        cache.allocator.free(pending.pixels);
-    }
-    cache.pending.clearRetainingCapacity();
     cache.mutex.unlock();
 
     cache.entries.deinit();
-    cache.pending.deinit(cache.allocator);
     cache_state = null;
 }
 
 pub fn beginFrame() void {
-    if (cache_state == null or !enabled) return;
-    if (!use_gl_backend) return;
-    var cache = &cache_state.?;
-
-    cache.mutex.lock();
-    const pending = cache.pending.toOwnedSlice(cache.allocator) catch {
-        cache.mutex.unlock();
-        return;
-    };
-    cache.pending.clearRetainingCapacity();
-    cache.mutex.unlock();
-
-    for (pending) |item| {
-        const tex = texture_gl.createTextureRGBA(item.pixels, item.width, item.height) catch 0;
-        cache.mutex.lock();
-        defer cache.mutex.unlock();
-        if (cache.entries.getPtr(item.url)) |entry| {
-            if (tex != 0) {
-                entry.state = .ready;
-                entry.texture_id = tex;
-                entry.width = item.width;
-                entry.height = item.height;
-                entry.bytes = item.bytes;
-                entry.last_used_ms = std.time.milliTimestamp();
-                cache.used_bytes += item.bytes;
-                evictIfNeeded(cache);
-            } else {
-                entry.state = .failed;
-                entry.error_message = dupeError(cache.allocator, "texture upload failed");
-            }
-        }
-        cache.allocator.free(item.pixels);
-    }
-    cache.allocator.free(pending);
+    // No-op: GPU upload is handled by the WebGPU renderer on demand.
 }
 
 pub fn request(url: []const u8) void {
@@ -173,11 +119,8 @@ pub fn request(url: []const u8) void {
         cache.mutex.unlock();
         return;
     };
-    const texture_id: u32 = if (use_gl_backend) 0 else blk: {
-        const id = cache.next_id;
-        cache.next_id += 1;
-        break :blk id;
-    };
+    const texture_id: u32 = cache.next_id;
+    cache.next_id += 1;
     cache.entries.put(key, ImageEntry{
         .state = .loading,
         .texture_id = texture_id,
@@ -218,7 +161,7 @@ pub fn get(url: []const u8) ?ImageEntryView {
             .texture_id = entry.texture_id,
             .width = entry.width,
             .height = entry.height,
-            .pixels = if (!use_gl_backend) entry.pixels else null,
+            .pixels = entry.pixels,
             .error_message = entry.error_message,
         };
     }
@@ -239,7 +182,7 @@ pub fn getById(id: u32) ?ImageEntryView {
             .texture_id = entry.value_ptr.texture_id,
             .width = entry.value_ptr.width,
             .height = entry.value_ptr.height,
-            .pixels = if (!use_gl_backend) entry.value_ptr.pixels else null,
+            .pixels = entry.value_ptr.pixels,
             .error_message = entry.value_ptr.error_message,
         };
     }
@@ -338,25 +281,6 @@ fn decodeImage(cache: *ImageCache, key: []u8, bytes: []const u8) !void {
     const pixels = try cache.allocator.alloc(u8, pixel_len);
     @memcpy(pixels, @as([*]u8, @ptrCast(pixels_ptr))[0..pixel_len]);
 
-    if (use_gl_backend) {
-        cache.mutex.lock();
-        cache.pending.append(cache.allocator, .{
-            .url = key,
-            .pixels = pixels,
-            .width = w,
-            .height = h,
-            .bytes = pixel_len,
-        }) catch {
-            cache.allocator.free(pixels);
-            if (cache.entries.getPtr(key)) |entry| {
-                entry.state = .failed;
-                entry.error_message = dupeError(cache.allocator, "pending queue full");
-            }
-        };
-        cache.mutex.unlock();
-        return;
-    }
-
     cache.mutex.lock();
     defer cache.mutex.unlock();
     if (cache.entries.getPtr(key)) |entry| {
@@ -412,9 +336,6 @@ fn evictIfNeeded(self: *ImageCache) void {
 
 fn removeEntry(self: *ImageCache, key: []const u8) void {
     if (self.entries.fetchRemove(key)) |kv| {
-        if (use_gl_backend and kv.value.texture_id != 0) {
-            texture_gl.destroyTexture(kv.value.texture_id);
-        }
         if (kv.value.pixels) |pixels| {
             self.allocator.free(pixels);
         }
