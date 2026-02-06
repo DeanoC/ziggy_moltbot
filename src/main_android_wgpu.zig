@@ -20,6 +20,7 @@ const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
+const profiler = @import("utils/profiler.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
@@ -205,6 +206,9 @@ const ConnectJob = struct {
 };
 
 fn connectThreadMain(job: *ConnectJob) void {
+    profiler.setThreadName("ws.connect");
+    const zone = profiler.zone(@src(), "ws.connect");
+    defer zone.end();
     const result = job.ws_client.connect();
     if (result) |_| {
         job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
@@ -215,28 +219,33 @@ fn connectThreadMain(job: *ConnectJob) void {
 }
 
 fn readLoopMain(loop: *ReadLoop) void {
+    profiler.setThreadName("ws.read");
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
     loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
-        const payload = loop.ws_client.receive() catch |err| {
-            if (err == error.NotConnected or err == error.Closed) {
-                return;
-            }
-            if (err == error.ReadFailed) {
-                const now_ms = std.time.milliTimestamp();
-                const last_ms = loop.last_receive_ms;
-                const delta = if (last_ms > 0) now_ms - last_ms else -1;
-                logger.warn(
-                    "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
-                    .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
-                );
+        const payload = blk: {
+            const zone = profiler.zone(@src(), "ws.receive");
+            defer zone.end();
+            break :blk loop.ws_client.receive() catch |err| {
+                if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.ReadFailed) {
+                    const now_ms = std.time.milliTimestamp();
+                    const last_ms = loop.last_receive_ms;
+                    const delta = if (last_ms > 0) now_ms - last_ms else -1;
+                    logger.warn(
+                        "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
+                        .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
+                    );
+                    loop.ws_client.disconnect();
+                    return;
+                }
+                logger.err("WebSocket receive failed (thread): {}", .{err});
                 loop.ws_client.disconnect();
                 return;
-            }
-            logger.err("WebSocket receive failed (thread): {}", .{err});
-            loop.ws_client.disconnect();
-            return;
+            };
         } orelse continue;
 
         loop.last_receive_ms = std.time.milliTimestamp();
@@ -245,10 +254,14 @@ fn readLoopMain(loop: *ReadLoop) void {
             loop.allocator.free(payload);
             return;
         }
-        loop.queue.push(loop.allocator, payload) catch {
-            loop.allocator.free(payload);
-            return;
-        };
+        {
+            const zone = profiler.zone(@src(), "ws.enqueue");
+            defer zone.end();
+            loop.queue.push(loop.allocator, payload) catch {
+                loop.allocator.free(payload);
+                return;
+            };
+        }
     }
 }
 
@@ -796,6 +809,8 @@ fn run() !void {
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
+
+    profiler.setThreadName("main");
 
     try initLogging(allocator);
     defer logger.deinit();

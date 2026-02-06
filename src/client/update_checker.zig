@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const logger = @import("../utils/logger.zig");
+const profiler = @import("../utils/profiler.zig");
 
 pub const UpdateStatus = enum {
     idle,
@@ -300,6 +301,10 @@ fn checkThread(
     manifest_url: []const u8,
     current_version: []const u8,
 ) void {
+    profiler.setThreadName("update.check");
+    const zone = profiler.zone(@src(), "update.check");
+    defer zone.end();
+
     defer allocator.free(current_version);
 
     var sanitized_manifest_url = sanitizeUrl(allocator, manifest_url) catch |err| {
@@ -426,6 +431,10 @@ fn downloadThread(
     url: []const u8,
     file_name: []const u8,
 ) void {
+    profiler.setThreadName("update.download");
+    const zone = profiler.zone(@src(), "update.download");
+    defer zone.end();
+
     defer allocator.free(url);
     defer allocator.free(file_name);
 

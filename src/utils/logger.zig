@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const profiler = @import("profiler.zig");
 
 pub const Level = enum(u8) {
     debug = 0,
@@ -129,6 +130,7 @@ fn enqueue(level: Level, comptime fmt: []const u8, args: anytype) void {
 }
 
 fn logThreadMain() void {
+    profiler.setThreadName("logger");
     var stderr = std.fs.File.stderr().deprecatedWriter();
     while (true) {
         queue_mutex.lock();
@@ -148,6 +150,9 @@ fn logThreadMain() void {
             queue_head = 0;
         }
         queue_mutex.unlock();
+
+        const zone = profiler.zone(@src(), "logger.process");
+        defer zone.end();
 
         const tag = switch (entry.level) {
             .debug => "debug",

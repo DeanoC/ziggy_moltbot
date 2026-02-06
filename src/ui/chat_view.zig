@@ -227,7 +227,7 @@ pub fn drawCustom(
     inbox: ?*const ui_command_inbox.UiCommandInbox,
     opts: ChatViewOptions,
 ) void {
-    const zone = profiler.zone("chat.draw");
+    const zone = profiler.zone(@src(), "chat.draw");
     defer zone.end();
     const t = theme.activeTheme();
     ctx.drawRect(rect, .{

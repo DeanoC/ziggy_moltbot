@@ -216,7 +216,7 @@ fn glyphAdvance(face: c.FT_Face, codepoint: u21, size_px: u32) f32 {
 }
 
 fn measure(text: []const u8, wrap_width: f32) types.Vec2 {
-    const zone = profiler.zone("text.measure");
+    const zone = profiler.zone(@src(), "text.measure");
     defer zone.end();
     const size_px = currentSizePx();
     const role = font_system.currentRole();
