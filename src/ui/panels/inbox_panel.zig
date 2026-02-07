@@ -29,6 +29,10 @@ var list_scroll_y: f32 = 0.0;
 var list_scroll_max: f32 = 0.0;
 var selected_index: usize = 0;
 
+// Since items are placeholder/mock and returned as const, keep a tiny local override
+// for interactive toggling (read/unread) until the real data/store lands.
+var mock_status_overrides: [3]?Status = .{ null, null, null };
+
 pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
@@ -102,7 +106,7 @@ pub fn draw(
     var visible = std.ArrayList(usize).empty;
     defer visible.deinit(allocator);
     for (items, 0..) |it, idx| {
-        if (!matchesFilter(it)) continue;
+        if (!matchesFilter(idx, it)) continue;
         _ = visible.append(allocator, idx) catch {};
     }
 
@@ -119,6 +123,18 @@ pub fn draw(
     }
 
     handleListKeys(queue, visible.items);
+
+    // Keyboard shortcuts: enter / r toggles read/unread for the selected mock item.
+    for (queue.events.items) |evt| {
+        if (evt == .key_down and !evt.key_down.repeat) {
+            switch (evt.key_down.key) {
+                .enter, .r => {
+                    if (selected_index < items.len) toggleMockRead(selected_index, items[selected_index].status);
+                },
+                else => {},
+            }
+        }
+    }
 
     const list_body = draw_context.Rect.fromMinSize(
         .{ list_rect.min[0], list_rect.min[1] + filters_h + t.spacing.sm },
@@ -156,8 +172,8 @@ const Counts = struct {
 
 fn computeCounts(items: []const Item) Counts {
     var c: Counts = .{ .total = items.len, .unread = 0, .read = 0 };
-    for (items) |it| {
-        switch (it.status) {
+    for (items, 0..) |it, idx| {
+        switch (effectiveStatus(idx, it.status)) {
             .unread => c.unread += 1,
             .read => c.read += 1,
         }
@@ -271,7 +287,7 @@ fn drawList(
         const card_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], card_h });
         if (card_rect.max[1] >= rect.min[1] and card_rect.min[1] <= rect.max[1]) {
             const is_selected = selected_index == item_idx;
-            if (drawItemCard(dc, card_rect, queue, it, is_selected)) {
+            if (drawItemCard(dc, card_rect, queue, item_idx, it, is_selected)) {
                 selected_index = item_idx;
             }
         }
@@ -307,9 +323,13 @@ fn drawDetail(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, rect:
     const meta_color = t.colors.text_secondary;
     var buf: [64]u8 = undefined;
     const sev = severityLabel(it.severity);
-    const status = if (it.status == .unread) "unread" else "read";
+    const st = effectiveStatus(selected_index, it.status);
+    const status = if (st == .unread) "unread" else "read";
     const meta = std.fmt.bufPrint(&buf, "{s} · {s}", .{ sev, status }) catch "";
     dc.drawText(meta, .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
+    cursor_y += dc.lineHeight() + t.spacing.sm;
+
+    dc.drawText("Tip: Press Enter (or r) to toggle read/unread (mock only).", .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
     const body_w = rect.size()[0] - pad * 2.0;
@@ -320,6 +340,7 @@ fn drawItemCard(
     dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
+    item_index: usize,
     it: Item,
     selected: bool,
 ) bool {
@@ -348,22 +369,40 @@ fn drawItemCard(
     dc.drawRoundedRect(dot, dot_r, .{ .fill = severityColor(t, it.severity), .stroke = null, .thickness = 0.0 });
     x += dot.size()[0] + t.spacing.sm;
 
-    const title_color = if (it.status == .unread) t.colors.text_primary else t.colors.text_secondary;
+    const status = effectiveStatus(item_index, it.status);
+    const title_color = if (status == .unread) t.colors.text_primary else t.colors.text_secondary;
     dc.drawText(it.title, .{ x, y }, .{ .color = title_color });
     y += dc.lineHeight() + t.spacing.xs;
 
     var meta_buf: [64]u8 = undefined;
-    const meta = std.fmt.bufPrint(&meta_buf, "{s} · {s}", .{ severityLabel(it.severity), if (it.status == .unread) "unread" else "read" }) catch "";
+    const meta = std.fmt.bufPrint(&meta_buf, "{s} · {s}", .{ severityLabel(it.severity), if (status == .unread) "unread" else "read" }) catch "";
     dc.drawText(meta, .{ x, y }, .{ .color = t.colors.text_secondary });
 
     return clicked;
 }
 
-fn matchesFilter(it: Item) bool {
+fn effectiveStatus(index: usize, base: Status) Status {
+    if (index < mock_status_overrides.len) {
+        if (mock_status_overrides[index]) |st| return st;
+    }
+    return base;
+}
+
+fn toggleMockRead(index: usize, base: Status) void {
+    if (index >= mock_status_overrides.len) return;
+    const cur = effectiveStatus(index, base);
+    mock_status_overrides[index] = switch (cur) {
+        .unread => .read,
+        .read => .unread,
+    };
+}
+
+fn matchesFilter(index: usize, it: Item) bool {
+    const st = effectiveStatus(index, it.status);
     return switch (active_filter) {
         .all => true,
-        .unread => it.status == .unread,
-        .read => it.status == .read,
+        .unread => st == .unread,
+        .read => st == .read,
     };
 }
 
