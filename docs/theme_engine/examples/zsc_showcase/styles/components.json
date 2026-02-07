@@ -63,6 +63,37 @@
       "steps": 12
     }
   },
+  "checkbox": {
+    "radius": "radius.sm",
+    "fill": "colors.surface",
+    "border": "colors.border",
+    "fill_checked": {
+      "gradient4": {
+        "tl": "colors.primary",
+        "tr": "colors.primary",
+        "bl": "colors.success",
+        "br": "colors.success"
+      }
+    },
+    "border_checked": "colors.primary",
+    "check": "#FFFFFFFF"
+  },
+  "text_input": {
+    "radius": "radius.md",
+    "fill": {
+      "gradient4": {
+        "tl": "colors.surface",
+        "tr": "colors.background",
+        "bl": "colors.background",
+        "br": "colors.surface"
+      }
+    },
+    "border": "colors.border",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#6B6BFF40",
+    "caret": "colors.text_primary"
+  },
 
   "_notes": {
     "purpose": "This pack is meant to exercise every implemented theme-engine feature (tokens, light/dark overrides, per-mode stylesheet resolution, focus ring, panel chrome, runtime reload)."

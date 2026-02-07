@@ -53,6 +53,25 @@ pub const ButtonStyles = struct {
     ghost: ButtonVariantStyle = .{},
 };
 
+pub const CheckboxStyle = struct {
+    radius: ?f32 = null,
+    fill: ?Paint = null,
+    fill_checked: ?Paint = null,
+    border: ?Color = null,
+    border_checked: ?Color = null,
+    check: ?Color = null,
+};
+
+pub const TextInputStyle = struct {
+    radius: ?f32 = null,
+    fill: ?Paint = null,
+    border: ?Color = null,
+    text: ?Color = null,
+    placeholder: ?Color = null,
+    selection: ?Color = null,
+    caret: ?Color = null,
+};
+
 pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
@@ -87,6 +106,8 @@ pub const EffectStyle = struct {
 /// Resolved style sheet (no allocations).
 pub const StyleSheet = struct {
     button: ButtonStyles = .{},
+    checkbox: CheckboxStyle = .{},
+    text_input: TextInputStyle = .{},
     panel: PanelStyle = .{},
     focus_ring: FocusRingStyle = .{},
 };
@@ -152,6 +173,12 @@ pub fn parseResolved(
     if (root.get("button")) |btn_val| {
         parseButtons(&out.button, btn_val, theme);
     }
+    if (root.get("checkbox")) |cb_val| {
+        parseCheckbox(&out.checkbox, cb_val, theme);
+    }
+    if (root.get("text_input")) |ti_val| {
+        parseTextInput(&out.text_input, ti_val, theme);
+    }
     if (root.get("panel")) |panel_val| {
         parsePanel(&out.panel, panel_val, theme);
     }
@@ -176,6 +203,29 @@ fn parseButtonVariant(out: *ButtonVariantStyle, v: std.json.Value, theme: *const
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+}
+
+fn parseCheckbox(out: *CheckboxStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
+    if (obj.get("fill_checked")) |cv| out.fill_checked = parsePaint(cv, theme) orelse out.fill_checked;
+    if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("border_checked")) |cv| out.border_checked = parseColor(cv, theme) orelse out.border_checked;
+    if (obj.get("check")) |cv| out.check = parseColor(cv, theme) orelse out.check;
+}
+
+fn parseTextInput(out: *TextInputStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
+    if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
+    if (obj.get("placeholder")) |cv| out.placeholder = parseColor(cv, theme) orelse out.placeholder;
+    if (obj.get("selection")) |cv| out.selection = parseColor(cv, theme) orelse out.selection;
+    if (obj.get("caret")) |cv| out.caret = parseColor(cv, theme) orelse out.caret;
 }
 
 fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {

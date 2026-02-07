@@ -1,8 +1,32 @@
 const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
-const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
+const style_sheet = @import("../theme_engine/style_sheet.zig");
+
+fn blendPaint(paint: anytype, over: colors.Color, factor: f32) @TypeOf(paint) {
+    return switch (paint) {
+        .solid => |c| .{ .solid = colors.blend(c, over, factor) },
+        .gradient4 => |g| .{ .gradient4 = .{
+            .tl = colors.blend(g.tl, over, factor),
+            .tr = colors.blend(g.tr, over, factor),
+            .bl = colors.blend(g.bl, over, factor),
+            .br = colors.blend(g.br, over, factor),
+        } },
+    };
+}
+
+fn withAlphaPaint(paint: anytype, a: f32) @TypeOf(paint) {
+    return switch (paint) {
+        .solid => |c| .{ .solid = colors.withAlpha(c, a) },
+        .gradient4 => |g| .{ .gradient4 = .{
+            .tl = colors.withAlpha(g.tl, a),
+            .tr = colors.withAlpha(g.tr, a),
+            .bl = colors.withAlpha(g.bl, a),
+            .br = colors.withAlpha(g.br, a),
+        } },
+    };
+}
 
 pub const Options = struct {
     disabled: bool = false,
@@ -19,6 +43,8 @@ pub fn draw(
     const t = ctx.theme;
     const profile = theme_runtime.getProfile();
     const hovered = profile.allow_hover_states and rect.contains(queue.state.mouse_pos);
+    const ss = theme_runtime.getStyleSheet();
+    const cs = ss.checkbox;
     var clicked = false;
     if (!opts.disabled) {
         for (queue.events.items) |evt| {
@@ -44,31 +70,44 @@ pub fn draw(
         .max = .{ box_min[0] + box_size, box_min[1] + box_size },
     };
 
-    var border = t.colors.border;
-    var fill = t.colors.surface;
+    const white: colors.Color = .{ 1.0, 1.0, 1.0, 1.0 };
+    const unchecked_fill = cs.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+    const checked_fill = cs.fill_checked orelse style_sheet.Paint{ .solid = t.colors.primary };
+    var fill = if (value.*) checked_fill else unchecked_fill;
+
+    var border = cs.border orelse t.colors.border;
     if (value.*) {
-        fill = t.colors.primary;
-        border = colors.blend(t.colors.primary, colors.rgba(255, 255, 255, 255), 0.1);
+        border = cs.border_checked orelse colors.blend(t.colors.primary, white, 0.1);
     }
     if (hovered) {
         border = colors.blend(border, t.colors.primary, 0.25);
-        fill = colors.blend(fill, colors.rgba(255, 255, 255, 255), 0.08);
+        fill = blendPaint(fill, white, 0.08);
     }
     if (opts.disabled) {
         border = colors.withAlpha(border, 0.6);
-        fill = colors.withAlpha(fill, 0.6);
+        fill = withAlphaPaint(fill, 0.6);
     }
 
-    ctx.drawRoundedRect(box_rect, t.radius.sm, .{
-        .fill = fill,
-        .stroke = border,
-        .thickness = 1.0,
-    });
+    const radius = cs.radius orelse t.radius.sm;
+    switch (fill) {
+        .solid => |c| ctx.drawRoundedRect(box_rect, radius, .{
+            .fill = c,
+            .stroke = border,
+            .thickness = 1.0,
+        }),
+        .gradient4 => |g| {
+            ctx.drawRoundedRectGradient(box_rect, radius, .{
+                .tl = g.tl,
+                .tr = g.tr,
+                .bl = g.bl,
+                .br = g.br,
+            });
+            ctx.drawRoundedRect(box_rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+    }
     if (value.*) {
-        var check_color = colors.rgba(255, 255, 255, 255);
-        if (opts.disabled) {
-            check_color = t.colors.text_secondary;
-        }
+        var check_color = cs.check orelse colors.rgba(255, 255, 255, 255);
+        if (opts.disabled) check_color = t.colors.text_secondary;
         const check_size = box_rect.size()[0];
         const inset = check_size * 0.2;
         const x0 = box_rect.min[0] + inset;

@@ -6,7 +6,9 @@ const input_events = @import("../input/input_events.zig");
 const text_input_backend = @import("../input/text_input_backend.zig");
 const clipboard = @import("../clipboard.zig");
 const theme = @import("../theme.zig");
+const colors = @import("../theme/colors.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
+const style_sheet = @import("../theme_engine/style_sheet.zig");
 
 pub const Options = struct {
     submit_on_enter: bool = true,
@@ -156,10 +158,16 @@ pub const TextEditor = struct {
         ctx.pushClip(rect);
         defer ctx.popClip();
 
-        drawSelection(ctx, text_rect, &lines, self.buffer.items, self.selectionRange(), line_height, self.scroll_y, self.scroll_x, t, mask);
-        drawText(ctx, text_rect, &lines, self.buffer.items, line_height, self.scroll_y, self.scroll_x, t, mask);
+        const ss = theme_runtime.getStyleSheet();
+        const ti = ss.text_input;
+        const text_color = ti.text orelse t.colors.text_primary;
+        const caret_color = ti.caret orelse text_color;
+        const selection_color: colors.Color = ti.selection orelse colors.withAlpha(t.colors.primary, 0.25);
+
+        drawSelection(ctx, text_rect, &lines, self.buffer.items, self.selectionRange(), line_height, self.scroll_y, self.scroll_x, selection_color, mask);
+        drawText(ctx, text_rect, &lines, self.buffer.items, line_height, self.scroll_y, self.scroll_x, text_color, mask);
         if (self.focused) {
-            drawCaret(ctx, text_rect, caret_pos, line_height, self.scroll_y, self.scroll_x, t);
+            drawCaret(ctx, text_rect, caret_pos, line_height, self.scroll_y, self.scroll_x, caret_color);
         }
 
         if (self.focused and !opts.read_only) {
@@ -187,11 +195,27 @@ pub const TextEditor = struct {
 };
 
 fn drawBackground(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *const theme.Theme) void {
-    ctx.drawRoundedRect(rect, t.radius.md, .{
-        .fill = t.colors.surface,
-        .stroke = t.colors.border,
-        .thickness = 1.0,
-    });
+    const ss = theme_runtime.getStyleSheet();
+    const ti = ss.text_input;
+    const radius = ti.radius orelse t.radius.md;
+    const border = ti.border orelse t.colors.border;
+    const fill = ti.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+    switch (fill) {
+        .solid => |c| ctx.drawRoundedRect(rect, radius, .{
+            .fill = c,
+            .stroke = border,
+            .thickness = 1.0,
+        }),
+        .gradient4 => |g| {
+            ctx.drawRoundedRectGradient(rect, radius, .{
+                .tl = g.tl,
+                .tr = g.tr,
+                .bl = g.bl,
+                .br = g.br,
+            });
+            ctx.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+    }
 }
 
 fn drawFocusRing(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *const theme.Theme) void {
@@ -242,7 +266,7 @@ fn drawText(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    text_color: colors.Color,
     mask: ?Mask,
 ) void {
     for (lines.items, 0..) |line, idx| {
@@ -250,10 +274,10 @@ fn drawText(
         if (y + line_height < text_rect.min[1] or y > text_rect.max[1]) continue;
         if (mask) |mask_info| {
             const count = countChars(text[line.start..line.end]);
-            drawMaskedLine(ctx, .{ text_rect.min[0] - scroll_x, y }, count, mask_info, t.colors.text_primary);
+            drawMaskedLine(ctx, .{ text_rect.min[0] - scroll_x, y }, count, mask_info, text_color);
         } else {
             const slice = text[line.start..line.end];
-            ctx.drawText(slice, .{ text_rect.min[0] - scroll_x, y }, .{ .color = t.colors.text_primary });
+            ctx.drawText(slice, .{ text_rect.min[0] - scroll_x, y }, .{ .color = text_color });
         }
     }
 }
@@ -267,12 +291,11 @@ fn drawSelection(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    highlight: colors.Color,
     mask: ?Mask,
 ) void {
     if (selection == null) return;
     const sel = selection.?;
-    const highlight = .{ t.colors.primary[0], t.colors.primary[1], t.colors.primary[2], 0.25 };
     for (lines.items, 0..) |line, idx| {
         if (sel[1] <= line.start or sel[0] >= line.end) continue;
         const line_sel_start = if (sel[0] > line.start) sel[0] else line.start;
@@ -295,7 +318,7 @@ fn drawCaret(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    color: colors.Color,
 ) void {
     const x = text_rect.min[0] + caret_pos[0] - scroll_x;
     const y = text_rect.min[1] + caret_pos[1] - scroll_y;
@@ -303,7 +326,7 @@ fn drawCaret(
         .min = .{ x, y },
         .max = .{ x + 1.5, y + line_height },
     };
-    ctx.drawRect(rect, .{ .fill = t.colors.text_primary });
+    ctx.drawRect(rect, .{ .fill = color });
 }
 
 fn handleMouse(

@@ -105,6 +105,20 @@ Example `tokens/base.json` (shape mirrors `src/ui/theme/theme.zig`):
 
 The style sheet should prevent widgets from doing ad-hoc token math everywhere.
 
+### Implemented Component Keys
+
+The following keys are currently implemented in ZiggyStarClaw (as of the `feature/theme_engine` branch):
+
+- `button.primary|secondary|ghost`: `radius`, `fill`, `text`, `border`
+- `checkbox`: `radius`, `fill`, `border`, `fill_checked`, `border_checked`, `check`
+- `text_input`: `radius`, `fill`, `border`, `text`, `placeholder`, `selection`, `caret`
+- `panel`: `radius`, `fill`, `border`, `shadow`, `frame`
+- `focus_ring`: `thickness`, `color`, `glow`
+
+Notes:
+- Any missing field falls back to the theme tokens (or existing widget defaults).
+- Unknown fields are ignored (so packs can be forward-compatible).
+
 Example (sketch):
 
 ```json

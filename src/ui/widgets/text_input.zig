@@ -3,6 +3,7 @@ const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const text_editor = @import("text_editor.zig");
 const theme = @import("../theme.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const Options = struct {
     placeholder: ?[]const u8 = null,
@@ -32,8 +33,11 @@ pub fn draw(
     if (!editor.focused and editor.isEmpty()) {
         if (opts.placeholder) |placeholder| {
             const t = ctx.theme;
+            const ss = theme_runtime.getStyleSheet();
+            const ti = ss.text_input;
             const pos = .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs };
-            ctx.drawText(placeholder, pos, .{ .color = t.colors.text_secondary });
+            const placeholder_color = ti.placeholder orelse t.colors.text_secondary;
+            ctx.drawText(placeholder, pos, .{ .color = placeholder_color });
         }
     }
 
