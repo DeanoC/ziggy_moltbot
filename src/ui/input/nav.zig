@@ -60,9 +60,9 @@ pub const NavState = struct {
     }
 
     pub fn beginFrame(self: *NavState, allocator: std.mem.Allocator, viewport: draw_context.Rect, queue: *input_state.InputQueue) void {
-        // Default: off unless the profile is explicitly controller-driven.
+        // Default: keep the previous state, but always enable in controller-first profiles.
         const p = theme_runtime.getProfile();
-        self.active = (p.modality == .controller);
+        if (p.modality == .controller) self.active = true;
 
         // If the user uses the mouse/touch this frame, don't fight them.
         for (queue.events.items) |evt| {
