@@ -137,7 +137,6 @@ Example (sketch):
       "spread_px": 2.0,
       "falloff_exp": 1.35,
       "offset": [0.0, 8.0],
-      "ignore_clip": true,
       "steps": 12
     },
     "frame": {

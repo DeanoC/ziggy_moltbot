@@ -103,6 +103,7 @@ If “materials” feels too big initially, implement in slices:
   - Extra tuning knobs:
     - `falloff_exp`: exponent applied to the computed alpha (1.0 default, >1 tighter, <1 softer).
     - `ignore_clip`: if true, draws with a full-screen scissor instead of the current clip stack (useful for drop shadows).
+      - Warning: setting this on a broad style like `panel.shadow` can cause shadows to bleed outside scroll/clipped regions.
 
 ## Performance Notes
 
