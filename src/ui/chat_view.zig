@@ -346,7 +346,7 @@ pub fn drawCustom(
 
     var messages_changed = false;
     var stream_changed = false;
-    const prev_message_count = state.last_message_count;
+    // const prev_message_count = state.last_message_count;
     const last_id_hash = if (messages.len > 0)
         std.hash.Wyhash.hash(0, messages[messages.len - 1].id)
     else
@@ -370,7 +370,7 @@ pub fn drawCustom(
     const show_tool_output_changed = opts.show_tool_output != state.last_show_tool_output;
     state.last_show_tool_output = opts.show_tool_output;
 
-    const content_changed = messages_changed or stream_changed or show_tool_output_changed;
+    // const content_changed = messages_changed or stream_changed or show_tool_output_changed;
     if (session_changed or show_tool_output_changed) {
         state.selection_anchor = null;
         state.selection_focus = null;
@@ -419,8 +419,24 @@ pub fn drawCustom(
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
     if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
 
-    // Windowed rendering: only walk items in an extended viewport.
+    // Anchor for scroll stability: if message height estimates are refined for items
+    // above the viewport, keep the first visible item's top at the same screen
+    // position by adjusting scroll_y by the prefix-sum delta.
     const view_top = state.scroll_y;
+    var anchor_index: usize = 0;
+    var anchor_top_before: f32 = 0.0;
+    var have_anchor = false;
+    if (!state.follow_tail and state.virt.items.items.len > 0 and
+        state.virt.prefix_strides.items.len >= state.virt.items.items.len + 1)
+    {
+        anchor_index = findFirstVisibleIndex(&state.virt, padding, view_top);
+        if (anchor_index < state.virt.items.items.len) {
+            anchor_top_before = padding + state.virt.prefix_strides.items[anchor_index];
+            have_anchor = true;
+        }
+    }
+
+    // Windowed rendering: only walk items in an extended viewport.
     const view_bottom = state.scroll_y + rect.size()[1];
     const overscan = rect.size()[1];
     const ext_top = if (view_top > overscan) view_top - overscan else 0.0;
@@ -622,6 +638,18 @@ pub fn drawCustom(
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
     if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
 
+    if (have_anchor and !user_scrolled and !state.follow_tail and
+        state.virt.prefix_strides.items.len >= state.virt.items.items.len + 1)
+    {
+        const anchor_top_after = padding + state.virt.prefix_strides.items[anchor_index];
+        const delta = anchor_top_after - anchor_top_before;
+        if (delta != 0.0) {
+            state.scroll_y += delta;
+            if (state.scroll_y < 0.0) state.scroll_y = 0.0;
+            if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
+        }
+    }
+
     const doc_length = virtualDocLength(&state.virt, separator_len);
     if (mouse_down and rect.contains(mouse_pos)) {
         state.focused = true;
@@ -658,9 +686,9 @@ pub fn drawCustom(
         state.follow_tail = true;
     }
 
-    const force_to_bottom = session_changed or (prev_message_count == 0 and messages.len > 0);
     // If pinned, keep pinned even when heights are updated lazily (e.g. cache fill / image load).
-    if (state.follow_tail and (!user_scrolled or content_changed or force_to_bottom)) {
+    // Avoid fighting the user while they are actively dragging the scrollbar.
+    if (state.follow_tail and !state.scrollbar_dragging) {
         state.scroll_y = max_scroll;
     }
 
@@ -1053,7 +1081,7 @@ fn drawMessage(
     selection: ?[2]usize,
     mouse_pos: [2]f32,
     measures_per_frame: ?*u64,
-) MessageLayout { 
+) MessageLayout {
     _ = id;
     if (measures_per_frame) |counter| counter.* += 1;
     const t = theme.activeTheme();
