@@ -227,6 +227,40 @@ fn editorText(editor: ?text_editor.TextEditor) []const u8 {
     return "";
 }
 
+fn resolveExamplePackPath(allocator: std.mem.Allocator, rel: []const u8) ?[]u8 {
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) return null;
+    const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch return null;
+    defer allocator.free(cwd);
+
+    const root = findAncestorWithFile(allocator, cwd, "build.zig") orelse return null;
+    defer allocator.free(root);
+
+    return std.fs.path.join(allocator, &.{ root, rel }) catch null;
+}
+
+fn findAncestorWithFile(allocator: std.mem.Allocator, start_dir_abs: []const u8, marker_file: []const u8) ?[]u8 {
+    var current = allocator.dupe(u8, start_dir_abs) catch return null;
+    errdefer allocator.free(current);
+
+    while (true) {
+        const marker = std.fs.path.join(allocator, &.{ current, marker_file }) catch break;
+        defer allocator.free(marker);
+        if (std.fs.cwd().access(marker, .{})) |_| {
+            return current; // owned by caller
+        } else |_| {}
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+
+        const next = allocator.dupe(u8, parent) catch break;
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return null;
+}
+
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
     const t = theme.activeTheme();
@@ -325,7 +359,13 @@ fn drawAppearanceCard(
     const example_w = buttonWidth(dc, "Use example pack", t);
     const example_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ example_w, button_height });
     if (widgets.button.draw(dc, example_rect, "Use example pack", queue, .{ .variant = .secondary })) {
-        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "docs/theme_engine/examples/zsc_clean");
+        const rel = "docs/theme_engine/examples/zsc_clean";
+        if (resolveExamplePackPath(allocator, rel)) |abs| {
+            defer allocator.free(abs);
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, abs);
+        } else {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, rel);
+        }
         profile_choice = .desktop;
         appearance_changed = true;
     }

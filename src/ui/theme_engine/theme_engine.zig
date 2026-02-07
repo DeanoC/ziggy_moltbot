@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const theme_mod = @import("../theme.zig");
 const theme_tokens = @import("../theme/theme.zig");
@@ -156,11 +157,122 @@ pub const ThemeEngine = struct {
 
         // Only update `active_pack_path` on success so a transient bad reload doesn't
         // "stick" and prevent the user from reloading after fixing files.
-        try self.loadAndApplyThemePackDir(path);
-        if (self.active_pack_path) |p| self.allocator.free(p);
-        self.active_pack_path = try self.allocator.dupe(u8, path);
+        var candidates = ThemePackCandidates.init(self.allocator, path);
+        defer candidates.deinit();
+        try candidates.populate();
+
+        var last_err: anyerror = error.MissingFile;
+        for (candidates.items()) |cand| {
+            self.loadAndApplyThemePackDir(cand) catch |err| {
+                last_err = err;
+                // Missing file: keep trying fallbacks. Anything else: stop.
+                if (err == error.MissingFile) continue;
+                return err;
+            };
+            // Success.
+            if (self.active_pack_path) |p| self.allocator.free(p);
+            self.active_pack_path = try self.allocator.dupe(u8, path);
+            return;
+        }
+        return last_err;
     }
 };
+
+const ThemePackCandidates = struct {
+    allocator: std.mem.Allocator,
+    raw_path: []const u8,
+    list: std.ArrayList([]const u8),
+    owned: std.ArrayList([]u8),
+
+    fn init(allocator: std.mem.Allocator, raw_path: []const u8) ThemePackCandidates {
+        return .{
+            .allocator = allocator,
+            .raw_path = raw_path,
+            .list = std.ArrayList([]const u8).empty,
+            .owned = std.ArrayList([]u8).empty,
+        };
+    }
+
+    fn deinit(self: *ThemePackCandidates) void {
+        for (self.owned.items) |buf| self.allocator.free(buf);
+        self.owned.deinit(self.allocator);
+        self.list.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn items(self: *const ThemePackCandidates) []const []const u8 {
+        return self.list.items;
+    }
+
+    fn populate(self: *ThemePackCandidates) !void {
+        // Always try raw as-is first.
+        try self.list.append(self.allocator, self.raw_path);
+
+        if (self.raw_path.len == 0) return;
+        if (std.fs.path.isAbsolute(self.raw_path)) return;
+
+        // WASM/WASI builds: theme packs are unsupported anyway, and some std.fs helpers
+        // (realpath / selfExePath) are not available at compile-time on those targets.
+        if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) return;
+
+        if (try resolveRelativeAgainstProjectRoot(self.allocator, self.raw_path, .cwd)) |cand| {
+            try self.owned.append(self.allocator, cand);
+            try self.list.append(self.allocator, cand);
+        }
+        if (try resolveRelativeAgainstProjectRoot(self.allocator, self.raw_path, .exe_dir)) |cand| {
+            try self.owned.append(self.allocator, cand);
+            try self.list.append(self.allocator, cand);
+        }
+    }
+};
+
+const ProjectRootBase = enum { cwd, exe_dir };
+
+fn resolveRelativeAgainstProjectRoot(
+    allocator: std.mem.Allocator,
+    rel: []const u8,
+    base: ProjectRootBase,
+) !?[]u8 {
+    const maybe_start_dir: ?[]u8 = switch (base) {
+        .cwd => std.fs.cwd().realpathAlloc(allocator, ".") catch null,
+        .exe_dir => blk: {
+            const exe_path = std.fs.selfExePathAlloc(allocator) catch break :blk null;
+            defer allocator.free(exe_path);
+            const exe_dir = std.fs.path.dirname(exe_path) orelse break :blk null;
+            break :blk allocator.dupe(u8, exe_dir) catch null;
+        },
+    };
+    const start_dir = maybe_start_dir orelse return null;
+    defer allocator.free(start_dir);
+
+    const root = findAncestorWithFile(allocator, start_dir, "build.zig") orelse return null;
+    defer allocator.free(root);
+
+    return try std.fs.path.join(allocator, &.{ root, rel });
+}
+
+fn findAncestorWithFile(allocator: std.mem.Allocator, start_dir_abs: []const u8, marker_file: []const u8) ?[]u8 {
+    var current = allocator.dupe(u8, start_dir_abs) catch return null;
+    errdefer allocator.free(current);
+
+    while (true) {
+        const marker = std.fs.path.join(allocator, &.{ current, marker_file }) catch break;
+        defer allocator.free(marker);
+        if (std.fs.cwd().access(marker, .{})) |_| {
+            return current; // owned by caller
+        } else |_| {}
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+
+        const next = allocator.dupe(u8, parent) catch break;
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return null;
+}
 
 fn buildRuntimeTheme(allocator: std.mem.Allocator, tokens: schema.TokensFile) !*theme_tokens.Theme {
     const font_family = try allocator.dupe(u8, tokens.typography.font_family);
