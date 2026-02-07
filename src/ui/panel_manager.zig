@@ -414,6 +414,7 @@ pub const PanelManager = struct {
 
 fn parseControlTab(label: []const u8) workspace.ControlTab {
     if (std.mem.eql(u8, label, "Agents")) return .Agents;
+    if (std.mem.eql(u8, label, "Inbox")) return .Inbox;
     if (std.mem.eql(u8, label, "Projects")) return .Projects;
     if (std.mem.eql(u8, label, "Sources")) return .Sources;
     if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;
