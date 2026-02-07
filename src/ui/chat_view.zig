@@ -878,6 +878,9 @@ fn virtualContentHeight(virt: *const VirtualState, padding: f32, gap: f32) f32 {
 }
 
 fn virtualDocLength(virt: *const VirtualState, separator_len: usize) usize {
+    // NOTE: prefix_doc_units includes a trailing separator_len after *every* item
+    // (see virtualAppendItem). We subtract one separator at the end to get the
+    // actual selectable doc length.
     const n = virt.items.items.len;
     if (n == 0) return 0;
     if (virt.prefix_doc_units.items.len < n + 1) return 0;
@@ -906,6 +909,10 @@ fn findFirstVisibleIndex(virt: *const VirtualState, padding: f32, y: f32) usize 
 }
 
 fn findFirstTopAfterIndex(virt: *const VirtualState, padding: f32, y: f32) usize {
+    // Returns the first index whose item top is strictly greater than `y`.
+    // (Intentional strict bound: if `y` lands exactly on an item top, we still
+    // include that item in the render window, which is slightly conservative and
+    // avoids edge-case blank gaps.)
     const n = virt.items.items.len;
     if (n == 0) return 0;
     if (virt.prefix_strides.items.len < n + 1) return 0;
