@@ -77,6 +77,11 @@ pub const EffectStyle = struct {
     spread_px: ?f32 = null,
     offset: ?[2]f32 = null,
     steps: ?u8 = null,
+    // Shapes the alpha falloff for blur/glow/shadow:
+    // 1.0 = default, >1.0 = tighter edge, <1.0 = softer spread.
+    falloff_exp: ?f32 = null,
+    // If true, the effect ignores the current clip stack (useful for drop shadows).
+    ignore_clip: ?bool = null,
 };
 
 /// Resolved style sheet (no allocations).
@@ -258,6 +263,10 @@ fn parseEffect(out: *EffectStyle, v: std.json.Value, theme: *const theme_tokens.
     if (obj.get("offset")) |ov| out.offset = parseVec2(ov) orelse out.offset;
     if (obj.get("steps")) |sv| {
         if (sv == .integer and sv.integer >= 0 and sv.integer <= 255) out.steps = @intCast(sv.integer);
+    }
+    if (obj.get("falloff_exp")) |fv| out.falloff_exp = parseFloat(fv) orelse out.falloff_exp;
+    if (obj.get("ignore_clip")) |bv| {
+        if (bv == .bool) out.ignore_clip = bv.bool;
     }
 }
 

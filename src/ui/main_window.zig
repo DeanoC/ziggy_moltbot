@@ -28,6 +28,7 @@ const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
 const control_panel = @import("panels/control_panel.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
+const showcase_panel = @import("panels/showcase_panel.zig");
 const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
@@ -123,7 +124,7 @@ fn drawCustomMenuBar(
     const menu_width: f32 = 240.0;
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
-    const menu_height = menu_padding * 2.0 + item_height * 2.0;
+    const menu_height = menu_padding * 2.0 + item_height * 3.0;
     const menu_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
         .{ menu_width, menu_height },
@@ -136,6 +137,7 @@ fn drawCustomMenuBar(
 
     const has_control = manager.hasPanel(.Control);
     const has_chat = manager.hasPanel(.Chat);
+    const has_showcase = manager.hasPanel(.Showcase);
     var cursor_y = menu_rect.min[1] + menu_padding;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Workspace", has_control)) {
         manager.ensurePanel(.Control);
@@ -144,6 +146,15 @@ fn drawCustomMenuBar(
     cursor_y += item_height;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Chat", has_chat)) {
         manager.ensurePanel(.Chat);
+        custom_window_menu_open = false;
+    }
+    cursor_y += item_height;
+    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Showcase", has_showcase)) {
+        if (has_showcase) {
+            _ = manager.closePanelByKind(.Showcase);
+        } else {
+            manager.ensurePanel(.Showcase);
+        }
         custom_window_menu_open = false;
     }
 
@@ -378,6 +389,10 @@ fn drawWorkspaceHost(
     var right_len: usize = 0;
     if (manager.hasPanel(.Control)) {
         right_buf[right_len] = .Control;
+        right_len += 1;
+    }
+    if (manager.hasPanel(.Showcase) and right_len < right_buf.len) {
+        right_buf[right_len] = .Showcase;
         right_len += 1;
     }
 
@@ -661,6 +676,9 @@ fn drawPanelContents(
             }
             replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
             replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
+        },
+        .Showcase => {
+            showcase_panel.draw(allocator, panel_rect);
         },
     }
 

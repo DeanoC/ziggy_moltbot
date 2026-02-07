@@ -100,6 +100,9 @@ If “materials” feels too big initially, implement in slices:
   - StyleSheet `panel.shadow` and `focus_ring.glow`.
   - Current implementation uses a dedicated **SDF rounded-rect shader** (single draw per shadow/glow).
   - This keeps the API portable across native/wasm/android while staying “GPU powered”.
+  - Extra tuning knobs:
+    - `falloff_exp`: exponent applied to the computed alpha (1.0 default, >1 tighter, <1 softer).
+    - `ignore_clip`: if true, draws with a full-screen scissor instead of the current clip stack (useful for drop shadows).
 
 ## Performance Notes
 

@@ -211,6 +211,8 @@ fn drawFocusRing(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *co
         const blur = @max(0.0, ss.focus_ring.glow.blur_px orelse 14.0);
         const spread = @max(0.0, ss.focus_ring.glow.spread_px orelse 0.0);
         const offset = ss.focus_ring.glow.offset orelse .{ 0.0, 0.0 };
+        const falloff_exp = @max(0.001, ss.focus_ring.glow.falloff_exp orelse 1.0);
+        const respect_clip = !(ss.focus_ring.glow.ignore_clip orelse false);
         const glow_thickness = thickness + spread * 2.0;
         const expand = glow_thickness * 0.5 + blur;
 
@@ -222,7 +224,7 @@ fn drawFocusRing(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *co
             .min = .{ boundary_rect.min[0] - expand, boundary_rect.min[1] - expand },
             .max = .{ boundary_rect.max[0] + expand, boundary_rect.max[1] + expand },
         };
-        ctx.drawSoftRoundedRect(draw_rect, boundary_rect, t.radius.md + inset, .stroke_soft, glow_thickness, blur, glow_color);
+        ctx.drawSoftRoundedRect(draw_rect, boundary_rect, t.radius.md + inset, .stroke_soft, glow_thickness, blur, falloff_exp, glow_color, respect_clip);
     }
 
     ctx.drawRoundedRect(ring_rect, t.radius.md + inset, .{

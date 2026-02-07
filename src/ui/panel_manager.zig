@@ -109,6 +109,13 @@ pub const PanelManager = struct {
         return false;
     }
 
+    pub fn closePanelByKind(self: *PanelManager, kind: workspace.PanelKind) bool {
+        if (self.findPanelByKind(kind)) |panel| {
+            return self.closePanel(panel.id);
+        }
+        return false;
+    }
+
     pub fn ensurePanel(self: *PanelManager, kind: workspace.PanelKind) void {
         if (self.findPanelByKind(kind)) |panel| {
             self.focusPanel(panel.id);
@@ -157,6 +164,11 @@ pub const PanelManager = struct {
             .Control => {
                 for (self.workspace.panels.items) |*panel| {
                     if (panel.kind == .Control) return panel;
+                }
+            },
+            .Showcase => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Showcase) return panel;
                 }
             },
             .ToolOutput => {},
@@ -256,6 +268,10 @@ pub const PanelManager = struct {
                 } };
                 return try self.openPanel(.ToolOutput, "Tool Output", panel_data);
             },
+            .Showcase => {
+                const panel_data = workspace.PanelData{ .Showcase = {} };
+                return try self.openPanel(.Showcase, "Showcase", panel_data);
+            },
         }
     }
 
@@ -347,6 +363,14 @@ pub const PanelManager = struct {
                 const panel_data = workspace.PanelData{ .Control = .{} };
                 _ = try self.openPanel(.Control, open.title orelse "Workspace", panel_data);
             },
+            .Showcase => {
+                if (self.findReusablePanel(.Showcase, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Showcase = {} };
+                _ = try self.openPanel(.Showcase, open.title orelse "Showcase", panel_data);
+            },
         }
     }
 
@@ -403,6 +427,9 @@ pub const PanelManager = struct {
                     if (data.active_tab) |tab| {
                         panel.data.Control.active_tab = parseControlTab(tab);
                     }
+                },
+                .Showcase => {
+                    if (panel.kind != .Showcase) return false;
                 },
             }
             self.workspace.markDirty();

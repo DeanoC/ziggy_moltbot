@@ -135,7 +135,9 @@ Example (sketch):
       "color": "#00000066",
       "blur_px": 18.0,
       "spread_px": 2.0,
+      "falloff_exp": 1.35,
       "offset": [0.0, 8.0],
+      "ignore_clip": true,
       "steps": 12
     },
     "frame": {

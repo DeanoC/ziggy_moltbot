@@ -44,6 +44,8 @@ const SdfFxParams = extern struct {
     thickness: f32,
     blur_px: f32,
     color: [4]f32,
+    falloff_exp: f32,
+    _pad: [3]f32 = .{ 0.0, 0.0, 0.0 },
 };
 
 const Scissor = struct {
@@ -367,6 +369,8 @@ pub const Renderer = struct {
             \\    thickness: f32,
             \\    blur_px: f32,
             \\    color: vec4<f32>,
+            \\    falloff_exp: f32,
+            \\    _pad0: array<f32, 3>,
             \\}
             \\
             \\@group(0) @binding(0) var<uniform> u: Uniforms;
@@ -415,6 +419,7 @@ pub const Renderer = struct {
             \\        let half_t = max(0.0, p.thickness) * 0.5;
             \\        a = smoothstep(blur, 0.0, abs(d) - half_t);
             \\    }
+            \\    a = pow(clamp(a, 0.0, 1.0), max(0.001, p.falloff_exp));
             \\    return vec4<f32>(p.color.rgb, p.color.a * a);
             \\}
         ;
@@ -742,8 +747,9 @@ pub const Renderer = struct {
                     self.pushRoundedRectGradient(rect_cmd.rect, rect_cmd.radius, rect_cmd.colors, current_scissor);
                 },
                 .soft_rounded_rect => |fx_cmd| {
-                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
-                    self.pushSoftRoundedRect(fx_cmd, current_scissor);
+                    const scissor = if (fx_cmd.respect_clip) current_scissor else full_scissor;
+                    if (scissor.width == 0 or scissor.height == 0) continue;
+                    self.pushSoftRoundedRect(fx_cmd, scissor);
                 },
                 .line => |line_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
@@ -1009,6 +1015,7 @@ pub const Renderer = struct {
             .thickness = cmd.thickness,
             .blur_px = cmd.blur_px,
             .color = cmd.color,
+            .falloff_exp = cmd.falloff_exp,
         }) catch {};
 
         const p0 = cmd.draw_rect.min;

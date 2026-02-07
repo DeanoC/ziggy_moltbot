@@ -28,7 +28,18 @@ pub const RenderBackend = struct {
     drawRectGradient: *const fn (ctx: *DrawContext, rect: Rect, colors: Gradient4) void,
     drawRoundedRect: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void,
     drawRoundedRectGradient: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, colors: Gradient4) void,
-    drawSoftRoundedRect: *const fn (ctx: *DrawContext, draw_rect: Rect, rect: Rect, radius: f32, kind: SoftFxKind, thickness: f32, blur_px: f32, color: Color) void,
+    drawSoftRoundedRect: *const fn (
+        ctx: *DrawContext,
+        draw_rect: Rect,
+        rect: Rect,
+        radius: f32,
+        kind: SoftFxKind,
+        thickness: f32,
+        blur_px: f32,
+        falloff_exp: f32,
+        color: Color,
+        respect_clip: bool,
+    ) void,
     drawText: *const fn (ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void,
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
     drawImage: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect) void,
@@ -170,9 +181,11 @@ pub const DrawContext = struct {
         kind: SoftFxKind,
         thickness: f32,
         blur_px: f32,
+        falloff_exp: f32,
         color: Color,
+        respect_clip: bool,
     ) void {
-        self.render.drawSoftRoundedRect(self, draw_rect, rect, radius, kind, thickness, blur_px, color);
+        self.render.drawSoftRoundedRect(self, draw_rect, rect, radius, kind, thickness, blur_px, falloff_exp, color, respect_clip);
     }
 
     pub fn drawText(self: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
@@ -258,7 +271,7 @@ fn nullDrawRect(_: *DrawContext, _: Rect, _: RectStyle) void {}
 fn nullDrawRectGradient(_: *DrawContext, _: Rect, _: Gradient4) void {}
 fn nullDrawRoundedRect(_: *DrawContext, _: Rect, _: f32, _: RectStyle) void {}
 fn nullDrawRoundedRectGradient(_: *DrawContext, _: Rect, _: f32, _: Gradient4) void {}
-fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxKind, _: f32, _: f32, _: Color) void {}
+fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxKind, _: f32, _: f32, _: f32, _: Color, _: bool) void {}
 fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
@@ -326,7 +339,9 @@ fn recordDrawSoftRoundedRect(
     kind: SoftFxKind,
     thickness: f32,
     blur_px: f32,
+    falloff_exp: f32,
     color: Color,
+    respect_clip: bool,
 ) void {
     const list = ctx.command_list orelse return;
     const cmd_kind: command_list.SoftFxKind = switch (kind) {
@@ -340,7 +355,9 @@ fn recordDrawSoftRoundedRect(
         cmd_kind,
         thickness,
         blur_px,
+        falloff_exp,
         color,
+        respect_clip,
     );
 }
 

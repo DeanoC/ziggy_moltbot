@@ -66,7 +66,9 @@ pub const SoftRoundedRectCmd = struct {
     kind: SoftFxKind,
     thickness: f32 = 0.0,
     blur_px: f32 = 0.0,
+    falloff_exp: f32 = 1.0,
     color: Color,
+    respect_clip: bool = true,
 };
 
 pub const TextCmd = struct {
@@ -191,7 +193,9 @@ pub const CommandList = struct {
         kind: SoftFxKind,
         thickness: f32,
         blur_px: f32,
+        falloff_exp: f32,
         color: Color,
+        respect_clip: bool,
     ) void {
         _ = self.commands.append(self.allocator, .{
             .soft_rounded_rect = .{
@@ -201,7 +205,9 @@ pub const CommandList = struct {
                 .kind = kind,
                 .thickness = thickness,
                 .blur_px = blur_px,
+                .falloff_exp = falloff_exp,
                 .color = color,
+                .respect_clip = respect_clip,
             },
         }) catch {};
     }

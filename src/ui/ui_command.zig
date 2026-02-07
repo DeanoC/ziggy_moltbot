@@ -44,6 +44,7 @@ pub const PanelDataPayload = union(enum) {
     CodeEditor: CodeEditorPanelPayload,
     ToolOutput: ToolOutputPanelPayload,
     Control: ControlPanelPayload,
+    Showcase: void,
 
     pub fn deinit(self: *PanelDataPayload, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -63,6 +64,7 @@ pub const PanelDataPayload = union(enum) {
             .Control => |*ctrl| {
                 if (ctrl.active_tab) |tab| allocator.free(tab);
             },
+            .Showcase => {},
         }
     }
 };
@@ -159,6 +161,7 @@ fn parseOpen(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !?UiCommand 
             const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
             break :blk PanelDataPayload{ .Control = .{ .active_tab = active_tab } };
         },
+        .Showcase => PanelDataPayload{ .Showcase = {} },
     };
 
     return UiCommand{ .OpenPanel = .{ .kind = kind, .title = title, .data = data } };
@@ -252,6 +255,7 @@ fn parseDataPayloadForKind(
             if (!allow_partial and active_tab == null) return error.MissingPanelData;
             return .{ .Control = .{ .active_tab = active_tab } };
         },
+        .Showcase => return .{ .Showcase = {} },
     }
 }
 
@@ -261,6 +265,7 @@ fn parsePanelKind(label: []const u8) ?workspace.PanelKind {
     if (std.mem.eql(u8, label, "ToolOutput")) return .ToolOutput;
     if (std.mem.eql(u8, label, "Control")) return .Control;
     if (std.mem.eql(u8, label, "Workspace")) return .Control;
+    if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return null;
 }
 
