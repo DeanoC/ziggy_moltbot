@@ -79,6 +79,8 @@ pub fn applyTypography(scale: f32) void {
 
 pub fn applyTypographyFor(t: *const Theme, scale: f32) void {
     if (scale <= 0.0) return;
+    // Keep font sizing/theme-aware metrics consistent with the DrawContext theme.
+    font_system.setCurrentTheme(t);
     const body_size = t.typography.body_size * scale;
     const heading_size = t.typography.heading_size * scale;
     const title_size = t.typography.title_size * scale;

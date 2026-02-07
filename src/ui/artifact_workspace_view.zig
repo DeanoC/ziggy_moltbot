@@ -92,13 +92,13 @@ pub fn draw(rect_override: ?draw_context.Rect) void {
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Artifact Workspace", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -117,7 +117,7 @@ fn drawTabs(
     header_height: f32,
     queue: *input_state.InputQueue,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const tab_height = line_height + t.spacing.xs * 2.0;
 
@@ -143,7 +143,7 @@ fn drawTabs(
 }
 
 fn drawPreview(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     handleWheelScroll(queue, rect, &preview_scroll_y, preview_scroll_max, 36.0);
 
     dc.pushClip(rect);
@@ -164,7 +164,7 @@ fn drawPreview(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 }
 
 fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
 
     if (editor_state == null) {
         editor_state = text_editor.TextEditor.init(std.heap.page_allocator) catch null;
@@ -220,7 +220,7 @@ fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *in
 }
 
 fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const icon_size = toolbarIconSize(t);
 
@@ -256,9 +256,9 @@ fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 }
 
 fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const text = "This report summarizes sales performance, highlights key insights, and links supporting artifacts collected during the run.";
@@ -269,7 +269,7 @@ fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Report Summary", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -280,9 +280,9 @@ fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 }
 
 fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const bullet_height = dc.lineHeight();
@@ -298,7 +298,7 @@ fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Key Insights", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -312,9 +312,9 @@ fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 
 }
 
 fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const chart_height: f32 = 160.0;
@@ -325,7 +325,7 @@ fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sales Performance (Chart)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -354,7 +354,7 @@ fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 }
 
 fn drawChart(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const bars = [_]f32{ 0.4, 0.6, 0.3, 0.8, 0.5, 0.7 };
     const bar_width: f32 = 18.0;
     const gap: f32 = 10.0;
@@ -375,7 +375,7 @@ fn drawChart(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
 }
 
 fn drawBullet(dc: *draw_context.DrawContext, pos: [2]f32, text: []const u8) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const radius: f32 = 3.0;
     const bullet_center = .{ pos[0] + radius, pos[1] + radius + 3.0 };
     dc.drawRoundedRect(
@@ -393,7 +393,7 @@ fn drawTab(
     active: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -425,7 +425,7 @@ fn drawToolbarIcon(
     icon: ToolbarIcon,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const rect = draw_context.Rect.fromMinSize(pos, .{ size, size });
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;

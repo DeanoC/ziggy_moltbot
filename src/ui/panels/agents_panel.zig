@@ -117,7 +117,7 @@ fn drawAgentList(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     panel_chrome.draw(dc, rect, .{
         .radius = t.radius.md,
         .draw_shadow = true,
@@ -128,7 +128,7 @@ fn drawAgentList(
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Agents", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -190,7 +190,7 @@ fn drawAgentRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -227,7 +227,7 @@ fn drawAgentDetailsPane(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     panel_chrome.draw(dc, rect, .{
         .radius = t.radius.md,
         .draw_shadow = true,
@@ -276,7 +276,7 @@ fn drawEmptyState(
     pos: [2]f32,
     label: []const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, pos, .{ .color = t.colors.text_secondary });
     return line_height + t.spacing.sm;
@@ -288,7 +288,7 @@ fn drawAgentDetailsCard(
     width: f32,
     agent: *agent_registry.AgentProfile,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const field_gap = t.spacing.sm;
@@ -325,7 +325,7 @@ fn drawAgentActionsCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -395,7 +395,7 @@ fn drawAgentSessionsCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -463,7 +463,7 @@ fn drawAgentSessionRow(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.xs;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -535,7 +535,7 @@ fn drawAddAgentCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const input_height = widgets.text_input.defaultHeight(t, line_height);
@@ -607,7 +607,7 @@ fn drawAddAgentCard(
 }
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
@@ -616,7 +616,7 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
         .draw_shadow = true,
         .draw_frame = false,
     });
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -630,7 +630,7 @@ fn drawLabelValue(
     label: []const u8,
     value: []const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_secondary });
     dc.drawText(value, .{ x, y + line_height }, .{ .color = t.colors.text_primary });
@@ -648,7 +648,7 @@ fn drawLabeledInput(
     editor: *text_editor.TextEditor,
     opts: widgets.text_input.Options,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
     const input_height = widgets.text_input.defaultHeight(t, line_height);
@@ -705,7 +705,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },

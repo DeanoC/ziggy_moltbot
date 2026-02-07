@@ -84,7 +84,7 @@ pub fn draw(
     drawSessionList(allocator, ctx, &dc, left_rect, queue, &action);
     handleSplitResize(&dc, panel_rect, left_rect, queue, gap, min_left, max_left);
     if (right_rect.size()[0] > 0.0) {
-        drawSessionDetailsPane(allocator, ctx, t, right_rect, &action, queue);
+        drawSessionDetailsPane(allocator, ctx, &dc, right_rect, &action, queue);
     }
 
     return action;
@@ -98,7 +98,7 @@ fn drawSessionList(
     queue: *input_state.InputQueue,
     action: *SessionPanelAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     panel_chrome.draw(dc, rect, .{
         .radius = t.radius.md,
         .draw_shadow = true,
@@ -108,7 +108,7 @@ fn drawSessionList(
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sessions", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -186,7 +186,7 @@ fn drawSessionRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -226,16 +226,15 @@ fn drawSessionRow(
 fn drawSessionDetailsPane(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
-    t: *const theme.Theme,
+    dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
     action: *SessionPanelAction,
     queue: *input_state.InputQueue,
 ) void {
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
-    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, rect);
-    defer dc.deinit();
+    const t = dc.theme;
 
-    panel_chrome.draw(&dc, rect, .{
+    panel_chrome.draw(dc, rect, .{
         .radius = t.radius.md,
         .draw_shadow = true,
         .draw_frame = false,
@@ -253,7 +252,7 @@ fn drawSessionDetailsPane(
     dc.pushClip(rect);
     var cursor_y = content_rect.min[1] - details_scroll_y;
     const start_y = cursor_y;
-    cursor_y += drawSessionDetailsCustom(allocator, ctx, t, &dc, queue, .{ content_rect.min[0], cursor_y }, content_rect.size()[0], rect.size()[1], action);
+    cursor_y += drawSessionDetailsCustom(allocator, ctx, dc, queue, .{ content_rect.min[0], cursor_y }, content_rect.size()[0], rect.size()[1], action);
     const content_height = cursor_y - start_y;
     details_scroll_max = @max(0.0, content_height - content_rect.size()[1] + padding);
     if (details_scroll_y > details_scroll_max) details_scroll_y = details_scroll_max;
@@ -269,7 +268,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -364,7 +363,6 @@ fn drawBadge(
 fn drawSessionDetailsCustom(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
-    t: *const theme.Theme,
     dc: *draw_context.DrawContext,
     queue: *input_state.InputQueue,
     origin: [2]f32,
@@ -372,6 +370,7 @@ fn drawSessionDetailsCustom(
     viewport_height: f32,
     action: *SessionPanelAction,
 ) f32 {
+    const t = dc.theme;
     var cursor_y = origin[1];
     const line_height = dc.lineHeight();
 
@@ -598,7 +597,7 @@ fn drawAttachmentPreviewCard(
     previews: []AttachmentOpen,
     action: *SessionPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -614,7 +613,7 @@ fn drawAttachmentPreviewCard(
         height += line_height + padding;
         const card_rect = draw_context.Rect.fromMinSize(rect.min, .{ width, height });
         dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-        theme.push(.heading);
+        theme.pushFor(t, .heading);
         dc.drawText("Attachment Preview", .{ card_rect.min[0] + padding, card_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
         theme.pop();
         dc.drawText(
@@ -716,7 +715,7 @@ fn drawAttachmentPreviewCard(
     dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = card_rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Attachment Preview", .{ card_rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -930,7 +929,7 @@ fn drawPreviewTextBox(
     text: []const u8,
     format: PreviewFormat,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     if (format == .markdown) {
@@ -996,13 +995,13 @@ fn drawMarkdownPreviewBox(
     queue: *input_state.InputQueue,
     text: []const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     var lines = std.ArrayList(RenderedLine).empty;
     defer lines.deinit(allocator);
     buildMarkdownLinesInto(allocator, dc, text, rect.size()[0] - t.spacing.sm * 2.0, &lines);
 
     const body_height = dc.lineHeight();
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
 
@@ -1027,7 +1026,7 @@ fn drawMarkdownPreviewBox(
         switch (line.style) {
             .blank => {},
             .heading => {
-                theme.push(.heading);
+                theme.pushFor(t, .heading);
                 dc.drawText(line.text, .{ rect.min[0] + t.spacing.sm, y }, .{ .color = t.colors.text_primary });
                 theme.pop();
             },
@@ -1088,7 +1087,7 @@ fn buildMarkdownLinesInto(
     lines: *std.ArrayList(RenderedLine),
 ) void {
     lines.clearRetainingCapacity();
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const bullet_indent = t.spacing.sm * 2.5;
     const quote_indent = t.spacing.sm * 2.0;
     const code_indent = t.spacing.sm;
@@ -1155,7 +1154,7 @@ fn drawImagePreview(
     rect: draw_context.Rect,
     preview: AttachmentOpen,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (preview.url.len == 0) {
         dc.drawText("Image preview unavailable.", rect.min, .{ .color = t.colors.text_secondary });
         return;

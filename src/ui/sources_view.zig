@@ -168,13 +168,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Sources", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -211,7 +211,7 @@ fn drawSplitBrowser(
     previews: []const sessions_panel.AttachmentOpen,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_left: f32 = 200.0;
     const min_right: f32 = 240.0;
@@ -259,13 +259,13 @@ fn drawSourcesPanel(
     active_index: ?usize,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sources", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight() + t.spacing.xs;
@@ -298,7 +298,7 @@ fn drawSourcesList(
     active_index: ?usize,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
@@ -332,7 +332,7 @@ fn drawSourcesList(
             if (last_type != null) {
                 y += t.spacing.xs;
             }
-            theme.push(.heading);
+            theme.pushFor(t, .heading);
             dc.drawText(sourceGroupLabel(source.source_type), .{ rect.min[0], y }, .{ .color = t.colors.text_primary });
             theme.pop();
             y += line_height + t.spacing.xs;
@@ -367,7 +367,7 @@ fn drawSourceRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -404,7 +404,7 @@ fn drawFilesPanel(
     action: *SourcesViewAction,
 ) void {
     _ = ctx;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
@@ -444,7 +444,7 @@ fn drawFilesList(
     previews: []const sessions_panel.AttachmentOpen,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
@@ -530,7 +530,7 @@ fn drawSectionHeader(
     label: []const u8,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -548,7 +548,7 @@ fn drawSectionHeader(
         dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
     }
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(label, .{ rect.min[0] + t.spacing.xs, rect.min[1] + t.spacing.xs }, .{ .color = t.colors.text_primary });
     theme.pop();
     return clicked;
@@ -561,7 +561,7 @@ fn drawFileRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -649,13 +649,13 @@ fn drawSelectedFileCard(
     queue: *input_state.InputQueue,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.md;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Selected File", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight() + t.spacing.sm;
@@ -724,7 +724,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },

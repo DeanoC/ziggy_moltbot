@@ -62,7 +62,7 @@ pub fn draw(
 
     const header_width = panel_rect.size()[0];
     const title = "Chat";
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = panel_ctx.lineHeight();
     theme.pop();
     const subtitle_height = panel_ctx.lineHeight();
@@ -176,14 +176,14 @@ fn drawHeader(
     has_selection_custom: bool,
     control_height: f32,
 ) HeaderAction {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.xs;
     const title_gap = t.spacing.xs * 0.5;
     const controls_gap = t.spacing.xs;
     const start_x = rect.min[0] + t.spacing.sm;
     const start_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText(title, .{ start_x, start_y }, .{ .color = t.colors.text_primary });
     theme.pop();

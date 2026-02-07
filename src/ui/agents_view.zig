@@ -76,13 +76,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     total: usize,
 ) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Active Agents", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -110,9 +110,9 @@ fn drawOverviewCard(
     y: f32,
     counts: StatusCounts,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.sm;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const badge_h = badgeSize(dc, "Ready (0)", t)[1];
@@ -128,7 +128,7 @@ fn drawOverviewCard(
     });
 
     var cursor_y = card_rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Status Overview", .{ card_rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -162,7 +162,7 @@ fn drawAgentList(
     queue: *input_state.InputQueue,
     nodes: []const types.Node,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
@@ -202,7 +202,7 @@ fn drawAgentRow(
     node: types.Node,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     if (hovered) {
         dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.surface, 0.35) });
@@ -213,7 +213,7 @@ fn drawAgentRow(
     var cursor_y = rect.min[1] + t.spacing.xs;
     const label = node.display_name orelse node.id;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(label, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -291,7 +291,7 @@ fn collectCounts(nodes: []const types.Node) StatusCounts {
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);

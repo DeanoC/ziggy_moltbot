@@ -100,7 +100,7 @@ fn drawCustomMenuBar(
     queue: *input_state.InputQueue,
     manager: *panel_manager.PanelManager,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const label = "Window";
@@ -181,7 +181,7 @@ fn drawMenuItem(
     label: []const u8,
     selected: bool,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     if (hovered) {
         dc.drawRect(rect, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
@@ -744,7 +744,7 @@ fn drawPanelFrame(
     queue: *input_state.InputQueue,
     focused: bool,
 ) PanelFrameResult {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const size = rect.size();
     if (size[0] <= 0.0 or size[1] <= 0.0) {
         return .{
@@ -775,7 +775,7 @@ fn drawPanelFrame(
 
     const title_x = rect.min[0] + t.spacing.sm;
     const title_y = rect.min[1] + (header_height - title_height) * 0.5;
-    theme.push(.title);
+    theme.pushFor(t, .title);
     dc.drawText(title, .{ title_x, title_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 

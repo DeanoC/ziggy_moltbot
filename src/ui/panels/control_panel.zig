@@ -137,7 +137,7 @@ fn drawTabs(
     queue: *input_state.InputQueue,
     active: *workspace.ControlTab,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const tab_height = line_height + t.spacing.xs * 2.0;
     const bar_height = tab_height + t.spacing.sm * 2.0;
@@ -245,7 +245,7 @@ fn drawTab(
     active: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {

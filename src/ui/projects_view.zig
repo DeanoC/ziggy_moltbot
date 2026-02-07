@@ -122,13 +122,13 @@ fn drawHeader(
     approvals_count: usize,
 ) HeaderResult {
     _ = approvals_count;
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText("Projects Overview", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -181,7 +181,7 @@ fn drawSidebar(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
 
     const padding = t.spacing.sm;
@@ -204,7 +204,7 @@ fn drawSidebar(
     }
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("My Projects", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
@@ -252,7 +252,7 @@ fn handleSidebarResize(
     max_sidebar_width: f32,
 ) void {
     if (sidebar_collapsed) return;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ sidebar_rect.max[0] + gap * 0.5 - divider_w * 0.5, content_rect.min[1] },
@@ -303,7 +303,7 @@ fn drawProjectList(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
@@ -350,7 +350,7 @@ fn drawProjectRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -400,7 +400,7 @@ fn drawMainContent(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     handleWheelScroll(queue, rect, &main_scroll_y, main_scroll_max, 40.0);
@@ -424,7 +424,7 @@ fn drawMainContent(
         var artifacts_buf: [6]Artifact = undefined;
         const artifacts = previewsToArtifacts(previews, &artifacts_buf);
 
-        theme.push(.title);
+        theme.pushFor(t, .title);
         const title_height = dc.lineHeight();
         dc.drawText("Welcome back!", .{ start_x, cursor_y }, .{ .color = t.colors.text_primary });
         theme.pop();
@@ -490,11 +490,11 @@ fn drawProjectSummaryCard(
     artifacts: []const Artifact,
 ) f32 {
     _ = artifacts;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const inner_width = @max(0.0, width - padding * 2.0);
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
 
@@ -513,7 +513,7 @@ fn drawProjectSummaryCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(name, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height;
@@ -537,9 +537,9 @@ fn drawCategoriesCard(
     pos: [2]f32,
     width: f32,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const mini_height: f32 = 86.0;
@@ -549,7 +549,7 @@ fn drawCategoriesCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Categories", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -568,7 +568,7 @@ fn drawCategoriesCard(
     dc.drawRoundedRect(left_rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
     dc.drawRoundedRect(right_rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Marketing Analysis", .{ left_rect.min[0] + padding, left_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
     const badge_rect = draw_context.Rect.fromMinSize(
@@ -577,7 +577,7 @@ fn drawCategoriesCard(
     );
     drawBadge(dc, badge_rect, "active", .primary);
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Design Concepts", .{ right_rect.min[0] + padding, right_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
     const badge2_rect = draw_context.Rect.fromMinSize(
@@ -598,9 +598,9 @@ fn drawArtifactsCard(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const line_height = dc.lineHeight();
@@ -619,7 +619,7 @@ fn drawArtifactsCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Recent Artifacts", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -699,7 +699,7 @@ fn badgeSize(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const colorset = badgeColors(t, variant);
     dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = colorset.fill, .stroke = colorset.border, .thickness = 1.0 });
     dc.drawText(label, .{ rect.min[0] + t.spacing.xs, rect.min[1] + t.spacing.xs * 0.5 }, .{ .color = colorset.text });
@@ -711,7 +711,7 @@ fn drawBadgeRow(
     width: f32,
     categories: []const Category,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     var cursor_x = pos[0];
     const max_x = pos[0] + width;
     for (categories) |category| {

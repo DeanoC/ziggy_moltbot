@@ -229,7 +229,7 @@ pub fn drawCustom(
 ) void {
     const zone = profiler.zone("chat.draw");
     defer zone.end();
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     ctx.drawRect(rect, .{
         .fill = t.colors.surface,
         .stroke = t.colors.border,
@@ -600,7 +600,7 @@ fn drawMessage(
     mouse_pos: [2]f32,
 ) MessageLayout {
     _ = id;
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const bubble = components.composite.message_bubble.bubbleColors(role, t);
     const bubble_x = if (align_right)
         rect.max[0] - padding - bubble_width
@@ -769,7 +769,7 @@ fn drawStyledLine(
     var color = t.colors.text_primary;
     switch (line.style) {
         .heading => {
-            theme.push(.heading);
+            theme.pushFor(t, .heading);
             defer theme.pop();
         },
         .quote => {
@@ -912,7 +912,7 @@ fn measureMessageLayout(
 
     const header_height = line_height;
     const content_height = @as(f32, @floatFromInt(lines.items.len)) * line_height;
-    const header_gap = theme.activeTheme().spacing.xs;
+    const header_gap = ctx.theme.spacing.xs;
     var attachments_height: f32 = 0.0;
     if (attachments) |items| {
         attachments_height = measureAttachmentsHeight(ctx, items, bubble_width, line_height, padding);
@@ -985,7 +985,7 @@ fn drawAttachmentsCustom(
     padding: f32,
     visible: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     var y = start_y;
     var has_any = false;
 
@@ -1056,7 +1056,7 @@ fn drawAttachmentsCustom(
 
 fn drawScrollbar(ctx: *draw_context.DrawContext, rect: draw_context.Rect, scroll_y: f32, max_scroll: f32) void {
     if (max_scroll <= 0.0) return;
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const track = scrollbarTrackRect(rect);
     const thumb = scrollbarThumbRect(rect, scroll_y, max_scroll);
     ctx.drawRect(track, .{ .fill = .{ t.colors.border[0], t.colors.border[1], t.colors.border[2], 0.12 } });

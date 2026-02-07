@@ -2,7 +2,6 @@ const std = @import("std");
 const ui_systems = @import("ui_systems.zig");
 const draw_context = @import("draw_context.zig");
 const text_editor = @import("widgets/text_editor.zig");
-const theme = @import("theme.zig");
 const widgets = @import("widgets/widgets.zig");
 const input_state = @import("input/input_state.zig");
 
@@ -30,7 +29,7 @@ pub fn draw(
     if (editor_state == null) return null;
     const editor = &editor_state.?;
 
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const line_h = ctx.lineHeight();
     const button_height = @max(28.0, line_h + t.spacing.xs * 2.0);
     const gap = t.spacing.xs;
@@ -107,7 +106,7 @@ fn drawEmojiPicker(
     anchor: draw_context.Rect,
     editor: *text_editor.TextEditor,
 ) void {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const emojis = [_][]const u8{
         "😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "🙌", "👍", "🔥", "🎉",
         "✅", "⚠️", "❌", "💡", "🧪", "🛠️", "📌", "📎", "📝", "🚀", "🐛", "🧠",

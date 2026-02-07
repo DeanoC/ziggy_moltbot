@@ -120,12 +120,12 @@ fn drawHeader(
     editor: *workspace.CodeEditorPanel,
     dirty: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.sm;
     const left = rect.min[0] + t.spacing.md;
     const title_y = rect.min[1] + top_pad;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = ctx.lineHeight();
     ctx.drawText(editor.file_id, .{ left, title_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -148,7 +148,7 @@ fn drawFooter(
     rect: draw_context.Rect,
     editor: *workspace.CodeEditorPanel,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const line_height = ctx.lineHeight();
     const height = line_height + t.spacing.sm * 2.0;
     const pos = .{ rect.min[0] + t.spacing.md, rect.max[1] - height + t.spacing.sm };

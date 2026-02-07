@@ -165,13 +165,13 @@ pub fn draw(
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Operator", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -193,7 +193,7 @@ fn drawSidebar(
     action: *OperatorAction,
     is_connected: bool,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
 
     const padding = t.spacing.sm;
@@ -216,7 +216,7 @@ fn drawSidebar(
     }
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Nodes", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
@@ -286,7 +286,7 @@ fn drawSidebarSectionTitle(
     y: f32,
     label: []const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawText(label, .{ rect.min[0], y }, .{ .color = t.colors.text_secondary });
     return dc.lineHeight();
 }
@@ -300,7 +300,7 @@ fn drawNodesList(
     queue: *input_state.InputQueue,
     action: *OperatorAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const row_height = line_height + t.spacing.xs * 2.0;
     const row_gap = t.spacing.xs;
@@ -344,7 +344,7 @@ fn drawApprovalsList(
     action: *OperatorAction,
     is_connected: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     var y = start_y;
 
@@ -395,7 +395,7 @@ fn handleSidebarResize(
     max_sidebar_width: f32,
 ) void {
     if (sidebar_collapsed) return;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ sidebar_rect.max[0] + gap * 0.5 - divider_w * 0.5, content_rect.min[1] },
@@ -446,7 +446,7 @@ fn drawMainContent(
     action: *OperatorAction,
     is_connected: bool,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     handleWheelScroll(queue, rect, &main_scroll_y, main_scroll_max, 40.0);
@@ -492,7 +492,7 @@ fn drawSelectedNodeCard(
     queue: *input_state.InputQueue,
     action: *OperatorAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -502,7 +502,7 @@ fn drawSelectedNodeCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Selected Node", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -519,7 +519,7 @@ fn drawSelectedNodeCard(
     };
 
     const label = node.display_name orelse node.id;
-    theme.push(.title);
+    theme.pushFor(t, .title);
     dc.drawText(label, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
@@ -634,7 +634,7 @@ fn drawHealthTelemetryCard(
     _ = allocator;
     _ = queue;
 
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
@@ -643,7 +643,7 @@ fn drawHealthTelemetryCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Node Health Telemetry", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -672,7 +672,7 @@ fn drawInvokeCard(
     action: *OperatorAction,
     is_connected: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -682,7 +682,7 @@ fn drawInvokeCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Invoke Node Command", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -770,7 +770,7 @@ fn drawNoticeCard(
     notice: []const u8,
     action: *OperatorAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -781,7 +781,7 @@ fn drawNoticeCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Notice", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.warning });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -809,7 +809,7 @@ fn drawResultCard(
     result: []const u8,
     action: *OperatorAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -819,7 +819,7 @@ fn drawResultCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Last Operator Response", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -849,7 +849,7 @@ fn drawSelectableRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -889,7 +889,7 @@ fn approvalCardHeight(
     summary: ?[]const u8,
     can_resolve: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();
     var height: f32 = padding + line_height + t.spacing.xs;
@@ -917,7 +917,7 @@ fn drawApprovalCard(
     queue: *input_state.InputQueue,
     approval: types.ExecApproval,
 ) ApprovalDecision {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -926,7 +926,7 @@ fn drawApprovalCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Approval Needed", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
@@ -992,7 +992,7 @@ fn drawApprovalCard(
 
 fn selectedNodeHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, width: f32) f32 {
     _ = width;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -1069,7 +1069,7 @@ fn drawLabeledInput(
     editor: *text_editor.TextEditor,
     opts: widgets.text_input.Options,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
     const input_height = widgets.text_input.defaultHeight(t, line_height);
@@ -1090,7 +1090,7 @@ fn drawTextBox(
     key: u64,
     text: []const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var lines = std.ArrayList(Line).empty;
@@ -1147,7 +1147,7 @@ fn scrollKey(id: []const u8, salt: u64) u64 {
 }
 
 fn drawBullet(dc: *draw_context.DrawContext, pos: [2]f32, text: []const u8) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const radius: f32 = 3.0;
     const bullet_center = .{ pos[0] + radius, pos[1] + radius + 3.0 };
     dc.drawRoundedRect(
@@ -1159,7 +1159,7 @@ fn drawBullet(dc: *draw_context.DrawContext, pos: [2]f32, text: []const u8) void
 }
 
 fn drawKeyValue(dc: *draw_context.DrawContext, x: f32, y: f32, label: []const u8, value: []const u8) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_secondary });
     const label_w = dc.measureText(label, 0.0)[0];
     dc.drawText(value, .{ x + label_w + t.spacing.xs, y }, .{ .color = t.colors.text_primary });

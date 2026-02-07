@@ -54,13 +54,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     output: *workspace.ToolOutputPanel,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText(output.tool_name, .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();

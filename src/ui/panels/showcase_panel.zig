@@ -284,7 +284,7 @@ fn drawContextDemoCard(
 }
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
@@ -293,7 +293,7 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
         .draw_shadow = true,
         .draw_frame = false,
     });
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 

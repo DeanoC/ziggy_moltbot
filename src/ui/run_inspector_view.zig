@@ -87,13 +87,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Task Progress", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -114,7 +114,7 @@ fn drawLeftPanel(
     queue: *input_state.InputQueue,
 ) void {
     _ = ctx;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.md;
@@ -128,7 +128,7 @@ fn drawLeftPanel(
     dc.pushClip(inner_rect);
     var cursor_y = inner_rect.min[1] - left_scroll_y;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Task Progress", .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight();
@@ -180,7 +180,7 @@ fn drawRightPanel(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.md;
@@ -194,7 +194,7 @@ fn drawRightPanel(
     dc.pushClip(inner_rect);
     var cursor_y = inner_rect.min[1] - right_scroll_y;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Agent Notifications", .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight() + t.spacing.sm;
@@ -237,7 +237,7 @@ fn drawStepRow(
     queue: *input_state.InputQueue,
 ) f32 {
     _ = queue;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const row_height = dc.lineHeight() + t.spacing.sm;
     const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
 
@@ -283,7 +283,7 @@ fn drawStepRow(
 }
 
 fn drawDetailsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const title_height = dc.lineHeight();
     const line_height = dc.lineHeight();
@@ -295,7 +295,7 @@ fn drawDetailsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Current Step Details", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -318,7 +318,7 @@ fn drawDetailsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 }
 
 fn drawLogsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const title_height = dc.lineHeight();
     const line_height = dc.lineHeight();
@@ -329,7 +329,7 @@ fn drawLogsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Live Logs", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -355,7 +355,7 @@ fn drawAgentBlock(
     paired: bool,
     refs: [][]const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const badge_h = badgeSize(dc, "connected", t)[1];
 
@@ -410,7 +410,7 @@ fn drawCheckmark(dc: *draw_context.DrawContext, t: *const theme.Theme, center: [
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);
@@ -445,7 +445,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },

@@ -96,13 +96,13 @@ fn drawHeader(
     pending_count: usize,
 ) struct { height: f32 } {
     _ = queue;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Approvals Needed", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -131,7 +131,7 @@ fn drawFilters(
     queue: *input_state.InputQueue,
     counts: Counts,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const pill_height = line_height + t.spacing.xs * 2.0;
@@ -178,7 +178,7 @@ fn drawApprovalsList(
     action: *ApprovalsInboxAction,
     counts: Counts,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     if (active_filter == .resolved) {
@@ -245,13 +245,13 @@ fn drawApprovalCard(
     queue: *input_state.InputQueue,
     approval: types.ExecApproval,
 ) ApprovalDecision {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Approval Needed", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight();
@@ -320,7 +320,7 @@ fn drawPayloadBox(
     id: []const u8,
     text: []const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var lines = std.ArrayList(Line).empty;
@@ -401,7 +401,7 @@ fn drawTab(
     active: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -430,7 +430,7 @@ fn drawTab(
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);
@@ -469,7 +469,7 @@ fn approvalCardHeight(
     can_resolve: bool,
 ) f32 {
     _ = payload;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     var height: f32 = padding * 2.0;
     height += dc.lineHeight();

@@ -108,6 +108,7 @@ pub const DrawContext = struct {
         viewport: Rect,
     ) DrawContext {
         _ = backend;
+        font_system.setCurrentTheme(theme_ref);
 
         var render_backend: RenderBackend = null_render_backend;
         var list_ptr: ?*command_list.CommandList = null;
@@ -139,6 +140,7 @@ pub const DrawContext = struct {
 
     pub fn setTheme(self: *DrawContext, theme_ref: *const theme.Theme) void {
         self.theme = theme_ref;
+        font_system.setCurrentTheme(theme_ref);
     }
 
     pub fn setTextMetrics(self: *DrawContext, metrics: TextMetrics) void {

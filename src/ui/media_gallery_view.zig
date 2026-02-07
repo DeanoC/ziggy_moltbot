@@ -77,13 +77,13 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Media Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -103,7 +103,7 @@ fn drawSplitLayout(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_left: f32 = 220.0;
     const min_right: f32 = 320.0;
@@ -133,7 +133,7 @@ fn drawStackedLayout(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_top: f32 = 200.0;
     const min_bottom: f32 = 160.0;
@@ -164,14 +164,14 @@ fn drawGallery(
     queue: *input_state.InputQueue,
 ) void {
     _ = allocator;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     drawContainer(dc, rect);
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -232,7 +232,7 @@ fn drawThumb(
     padding: f32,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const selected = selected_index != null and selected_index.? == idx;
 
     var clicked = false;
@@ -317,14 +317,14 @@ fn drawThumb(
 }
 
 fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     drawContainer(dc, rect);
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Viewer", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -349,7 +349,7 @@ fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: dra
 }
 
 fn drawViewerControls(dc: *draw_context.DrawContext, queue: *input_state.InputQueue, pos: [2]f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
     var cursor_x = pos[0];
@@ -411,7 +411,7 @@ fn drawButton(
 }
 
 fn drawViewerArea(dc: *draw_context.DrawContext, item: MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
 
     const sys = ui_systems.get();
     sys.drag_drop.registerDropTarget(.{
@@ -528,7 +528,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -579,7 +579,7 @@ fn handleStackResize(
     min_top: f32,
     max_top: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_h: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0], top_rect.max[1] + gap * 0.5 - divider_h * 0.5 },
@@ -640,7 +640,7 @@ fn handleWheelScroll(
 }
 
 fn drawContainer(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{
         .fill = t.colors.surface,
         .stroke = t.colors.border,
