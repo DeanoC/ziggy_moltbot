@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <defs>
+    <style>
+      .bg { fill: #0b0f14; }
+      .panel { fill: #111826; stroke: #2a3a52; stroke-width: 2; }
+      .panel2 { fill: #0f1724; stroke: #2a3a52; stroke-width: 2; }
+      .title { fill: #e6edf7; font: 700 28px Arial, sans-serif; }
+      .label { fill: #e6edf7; font: 600 18px Arial, sans-serif; }
+      .small { fill: #b7c4d8; font: 14px Arial, sans-serif; }
+      .arrow { stroke: #7aa2ff; stroke-width: 3; fill: none; }
+      .arrow2 { stroke: #6be4b2; stroke-width: 3; fill: none; }
+      .muted { fill: #9bb0cc; }
+      .chip { fill: #0b1220; stroke: #2a3a52; stroke-width: 2; }
+    </style>
+    <marker id="arrowHead" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12" fill="#7aa2ff" />
+    </marker>
+    <marker id="arrowHead2" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12" fill="#6be4b2" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="780" />
+
+  <text class="title" x="40" y="56">ZiggyStarClaw Theme Engine: Data + GPU Effects Pipeline</text>
+  <text class="small" x="40" y="86">Theme packages feed a runtime ThemeEngine. Components render using a style sheet that can reference GPU materials.</text>
+
+  <!-- Left: packages -->
+  <rect class="panel" x="40" y="130" width="360" height="560" rx="18" />
+  <text class="label" x="70" y="170">Theme Packages</text>
+  <text class="small" x="70" y="198">Directory or zip (desktop), assets (mobile), or fetch (wasm)</text>
+
+  <rect class="chip" x="70" y="230" width="300" height="110" rx="14" />
+  <text class="label" x="90" y="260" font-size="16">manifest.json</text>
+  <text class="small" x="90" y="284">id, version, author, license</text>
+  <text class="small" x="90" y="306">capabilities + supported profiles</text>
+
+  <rect class="chip" x="70" y="360" width="300" height="110" rx="14" />
+  <text class="label" x="90" y="390" font-size="16">tokens/*.json</text>
+  <text class="small" x="90" y="414">colors, typography, spacing, radius</text>
+  <text class="small" x="90" y="436">variants: light/dark, etc</text>
+
+  <rect class="chip" x="70" y="490" width="300" height="110" rx="14" />
+  <text class="label" x="90" y="520" font-size="16">styles/*.json</text>
+  <text class="small" x="90" y="544">component styles + state visuals</text>
+  <text class="small" x="90" y="566">references materials + assets</text>
+
+  <rect class="chip" x="70" y="620" width="300" height="50" rx="14" />
+  <text class="small" x="90" y="652">assets/images/*   assets/shaders/*   layouts/*</text>
+
+  <!-- Middle: engine -->
+  <rect class="panel2" x="460" y="130" width="420" height="560" rx="18" />
+  <text class="label" x="490" y="170">ThemeEngine (Runtime)</text>
+  <text class="small" x="490" y="198">Loads, validates, caches, and selects active theme per window/profile.</text>
+
+  <rect class="chip" x="490" y="230" width="360" height="130" rx="14" />
+  <text class="label" x="510" y="260" font-size="16">Profile Resolver</text>
+  <text class="small" x="510" y="286">desktop | phone | tablet | fullscreen</text>
+  <text class="small" x="510" y="308">input modality: pointer/touch/pen/controller</text>
+  <text class="small" x="510" y="330">capability gating (multi-window, fs, shaders)</text>
+
+  <rect class="chip" x="490" y="380" width="360" height="130" rx="14" />
+  <text class="label" x="510" y="410" font-size="16">Theme Context</text>
+  <text class="small" x="510" y="436">tokens + style sheet + metrics</text>
+  <text class="small" x="510" y="458">assets: textures, fonts</text>
+  <text class="small" x="510" y="480">materials: GPU effects + params</text>
+
+  <rect class="chip" x="490" y="530" width="360" height="140" rx="14" />
+  <text class="label" x="510" y="560" font-size="16">Hot Reload (Optional)</text>
+  <text class="small" x="510" y="586">desktop dev mode: watch files, reload JSON/assets</text>
+  <text class="small" x="510" y="608">recompile WGSL, fallback on error</text>
+  <text class="small" x="510" y="630">persist selection in config/workspace</text>
+
+  <!-- Right: UI + renderer -->
+  <rect class="panel" x="940" y="130" width="420" height="560" rx="18" />
+  <text class="label" x="970" y="170">UI Frame</text>
+  <text class="small" x="970" y="198">Existing pipeline in this repo</text>
+
+  <rect class="chip" x="970" y="230" width="360" height="100" rx="14" />
+  <text class="label" x="990" y="260" font-size="16">Widgets / Views</text>
+  <text class="small" x="990" y="284">read component style from Theme Context</text>
+  <text class="small" x="990" y="306">emit DrawContext primitives</text>
+
+  <rect class="chip" x="970" y="350" width="360" height="110" rx="14" />
+  <text class="label" x="990" y="380" font-size="16">DrawContext</text>
+  <text class="small" x="990" y="404">records a CommandList per window</text>
+  <text class="small" x="990" y="426">(extendable: gradients, 9-slice, blur, etc.)</text>
+
+  <rect class="chip" x="970" y="480" width="360" height="90" rx="14" />
+  <text class="label" x="990" y="510" font-size="16">CommandList</text>
+  <text class="small" x="990" y="534">high-level draw commands (CPU)</text>
+
+  <rect class="chip" x="970" y="590" width="360" height="80" rx="14" />
+  <text class="label" x="990" y="620" font-size="16">WGPU Renderer</text>
+  <text class="small" x="990" y="644">batches into GPU pipelines + bind groups</text>
+
+  <!-- Arrows -->
+  <path class="arrow" marker-end="url(#arrowHead)" d="M400 410 C430 410, 440 410, 460 410" />
+  <path class="arrow" marker-end="url(#arrowHead)" d="M880 445 C905 445, 918 445, 940 445" />
+
+  <!-- Profile arrow -->
+  <path class="arrow2" marker-end="url(#arrowHead2)" d="M670 360 C670 340, 670 330, 670 320" />
+  <text class="small" x="700" y="330" fill="#6be4b2">select profile</text>
+</svg>

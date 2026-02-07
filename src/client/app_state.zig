@@ -41,7 +41,7 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !AppState {
 }
 
 pub fn save(allocator: std.mem.Allocator, path: []const u8, state: AppState) !void {
-    const json = try std.json.Stringify.valueAlloc(allocator, state, .{});
+    const json = try std.json.Stringify.valueAlloc(allocator, state, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });

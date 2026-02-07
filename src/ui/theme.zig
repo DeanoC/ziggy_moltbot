@@ -15,6 +15,10 @@ pub const Theme = theme_tokens.Theme;
 
 var active_mode: Mode = .light;
 
+// Optional runtime theme overrides (owned by ThemeEngine).
+var runtime_light: ?*const Theme = null;
+var runtime_dark: ?*const Theme = null;
+
 var last_scale: f32 = 0.0;
 var last_body_size: f32 = 0.0;
 var last_heading_size: f32 = 0.0;
@@ -48,7 +52,19 @@ pub fn labelForMode(mode: Mode) []const u8 {
 }
 
 pub fn activeTheme() *const Theme {
-    return theme_tokens.get(active_mode);
+    const runtime = switch (active_mode) {
+        .light => runtime_light,
+        .dark => runtime_dark,
+    };
+    return runtime orelse theme_tokens.get(active_mode);
+}
+
+/// Set a runtime theme pointer for a mode. Ownership is external (ThemeEngine must keep it alive).
+pub fn setRuntimeTheme(mode: Mode, theme_ptr: ?*const Theme) void {
+    switch (mode) {
+        .light => runtime_light = theme_ptr,
+        .dark => runtime_dark = theme_ptr,
+    }
 }
 
 pub fn apply() void {

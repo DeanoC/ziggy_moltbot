@@ -1,0 +1,27 @@
+{
+  "button": {
+    "primary": {
+      "radius": "radius.md",
+      "padding": [14, 10],
+      "fill": "colors.primary",
+      "text": "#FFFFFFFF",
+      "border": "#00000000"
+    },
+    "secondary": {
+      "radius": "radius.sm",
+      "padding": [12, 9],
+      "fill": "colors.surface",
+      "text": "colors.text_primary",
+      "border": "colors.border"
+    }
+  },
+  "panel": {
+    "radius": "radius.md",
+    "fill": "colors.surface",
+    "border": "colors.border"
+  },
+  "focus_ring": {
+    "thickness": 3.0,
+    "color": "#6BE4B2FF"
+  }
+}

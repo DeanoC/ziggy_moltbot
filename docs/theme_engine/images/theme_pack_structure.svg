@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .box{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .box2{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .text{fill:#e6edf7;font:14px Menlo,Consolas,monospace;}
+      .label{fill:#cfe0ff;font:700 16px Arial,sans-serif;}
+      .muted{fill:#b7c4d8;font:13px Arial,sans-serif;}
+      .line{stroke:#2a3a52;stroke-width:2;}
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="720"/>
+  <text class="title" x="40" y="56">Theme Package Layout (Folder or Zip)</text>
+  <text class="sub" x="40" y="86">During development, use an uncompressed folder for hot reload. For distribution, zip it (extension suggestion: .zsc-theme).</text>
+
+  <g transform="translate(40,120)">
+    <rect class="box2" x="0" y="0" width="520" height="560" rx="18"/>
+    <text class="label" x="24" y="38">my_theme.zsc-theme/</text>
+
+    <text class="text" x="24" y="80">manifest.json</text>
+    <text class="muted" x="240" y="82">id, version, capabilities, defaults</text>
+
+    <line class="line" x1="24" y1="100" x2="496" y2="100"/>
+
+    <text class="text" x="24" y="140">tokens/</text>
+    <text class="text" x="64" y="170">base.json</text>
+    <text class="text" x="64" y="196">light.json</text>
+    <text class="text" x="64" y="222">dark.json</text>
+    <text class="muted" x="240" y="170">design tokens</text>
+
+    <text class="text" x="24" y="270">styles/</text>
+    <text class="text" x="64" y="300">components.json</text>
+    <text class="text" x="64" y="326">states.json</text>
+    <text class="muted" x="240" y="304">Button/Panel/Menu/etc styles</text>
+
+    <text class="text" x="24" y="374">profiles/</text>
+    <text class="text" x="64" y="404">desktop.json</text>
+    <text class="text" x="64" y="430">phone.json</text>
+    <text class="text" x="64" y="456">tablet.json</text>
+    <text class="text" x="64" y="482">fullscreen.json</text>
+    <text class="muted" x="240" y="408">overrides per usage model</text>
+
+    <text class="text" x="24" y="530">assets/</text>
+    <text class="text" x="64" y="560">images/*  shaders/*  fonts/*</text>
+  </g>
+
+  <g transform="translate(600,140)">
+    <rect class="box" x="0" y="0" width="560" height="520" rx="18"/>
+    <text class="label" x="24" y="34">Optional: windows + layouts</text>
+
+    <text class="text" x="24" y="74">windows.json</text>
+    <text class="muted" x="200" y="76">multi-window templates (desktop)</text>
+
+    <text class="text" x="24" y="114">layouts/</text>
+    <text class="text" x="64" y="144">workspace_default.json</text>
+    <text class="text" x="64" y="170">winamp_like.json</text>
+    <text class="muted" x="240" y="146">custom_layout presets</text>
+
+    <text class="text" x="24" y="222">materials.json</text>
+    <text class="muted" x="240" y="224">GPU materials (gradients, blur, glow)</text>
+
+    <text class="text" x="24" y="270">shaders/</text>
+    <text class="text" x="64" y="300">ui_gradient.wgsl</text>
+    <text class="text" x="64" y="326">ui_blur.wgsl</text>
+    <text class="text" x="64" y="352">ui_noise.wgsl</text>
+    <text class="muted" x="240" y="300">custom WGSL (validated + sandboxed)</text>
+
+    <text class="text" x="24" y="404">winamp_import/</text>
+    <text class="text" x="64" y="434">mapping.json</text>
+    <text class="muted" x="240" y="436">map Winamp assets to ZSC roles</text>
+  </g>
+</svg>

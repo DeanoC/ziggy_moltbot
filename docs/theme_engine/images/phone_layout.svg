@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .phone{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .screen{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .card{fill:#121c2c;stroke:#2a3a52;stroke-width:2;}
+      .btn{fill:#1b2a44;stroke:#7aa2ff;stroke-width:2;}
+      .label{fill:#e6edf7;font:700 16px Arial,sans-serif;}
+      .text{fill:#b7c4d8;font:13px Arial,sans-serif;}
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1200" height="720"/>
+  <text class="title" x="40" y="56">Phone Profile: Touch-First, Large Targets</text>
+  <text class="sub" x="40" y="86">Single-column navigation with safe insets, no hover states, and minimum hit targets (48px+).</text>
+
+  <g transform="translate(90,130)">
+    <rect class="phone" x="0" y="0" width="420" height="560" rx="42"/>
+    <rect class="screen" x="24" y="24" width="372" height="512" rx="28"/>
+
+    <!-- top bar -->
+    <rect class="card" x="44" y="44" width="332" height="60" rx="18"/>
+    <text class="label" x="64" y="78">ZSC Mobile</text>
+    <text class="text" x="64" y="98">Connection + Project</text>
+
+    <!-- big actions -->
+    <rect class="btn" x="44" y="124" width="332" height="78" rx="22"/>
+    <text class="label" x="64" y="170">Chat</text>
+
+    <rect class="btn" x="44" y="214" width="332" height="78" rx="22"/>
+    <text class="label" x="64" y="260">Run Tool</text>
+
+    <rect class="btn" x="44" y="304" width="332" height="78" rx="22"/>
+    <text class="label" x="64" y="350">Files</text>
+
+    <rect class="btn" x="44" y="394" width="332" height="78" rx="22"/>
+    <text class="label" x="64" y="440">Approvals</text>
+
+    <!-- bottom nav -->
+    <rect class="card" x="44" y="486" width="332" height="30" rx="14"/>
+    <text class="text" x="64" y="506">Bottom nav / gestures</text>
+  </g>
+
+  <g transform="translate(560,170)">
+    <rect class="card" x="0" y="0" width="600" height="480" rx="18"/>
+    <text class="label" x="24" y="38">Phone Design Notes</text>
+    <text class="text" x="24" y="72">- Theme profile enforces large padding + radii and thicker borders.</text>
+    <text class="text" x="24" y="98">- Replace hover visuals with pressed/selected states.</text>
+    <text class="text" x="24" y="124">- Prefer full-width buttons, bottom sheets, and stacked navigation.</text>
+    <text class="text" x="24" y="150">- Keyboard may occlude; keep input near top or in overlay.</text>
+    <text class="text" x="24" y="176">- Safe insets already exist (see ui/main_window.zig).</text>
+  </g>
+</svg>

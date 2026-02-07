@@ -10,6 +10,8 @@ pub const Config = struct {
     default_session: ?[]const u8 = null,
     default_node: ?[]const u8 = null,
     ui_theme: ?[]const u8 = null,
+    ui_theme_pack: ?[]const u8 = null,
+    ui_profile: ?[]const u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.server_url);
@@ -29,6 +31,12 @@ pub const Config = struct {
         if (self.ui_theme) |value| {
             allocator.free(value);
         }
+        if (self.ui_theme_pack) |value| {
+            allocator.free(value);
+        }
+        if (self.ui_profile) |value| {
+            allocator.free(value);
+        }
     }
 };
 
@@ -46,6 +54,8 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .default_session = null,
         .default_node = null,
         .ui_theme = null,
+        .ui_theme_pack = null,
+        .ui_profile = null,
     };
 }
 
@@ -87,11 +97,22 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
             try allocator.dupe(u8, value)
         else
             null,
+        .ui_theme_pack = if (parsed.value.ui_theme_pack) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .ui_profile = if (parsed.value.ui_profile) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
     };
 }
 
 pub fn save(allocator: std.mem.Allocator, path: []const u8, cfg: Config) !void {
-    const json = try std.json.Stringify.valueAlloc(allocator, cfg, .{ .emit_null_optional_fields = false });
+    const json = try std.json.Stringify.valueAlloc(allocator, cfg, .{
+        .emit_null_optional_fields = false,
+        .whitespace = .indent_2,
+    });
     defer allocator.free(json);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });

@@ -1,0 +1,164 @@
+# Theme Package Format
+
+![Theme Pack Structure](images/theme_pack_structure.svg)
+
+## Goals
+
+- Easy to create/edit by hand.
+- Diff-friendly (JSON).
+- Supports per-profile overrides.
+- Supports GPU materials without exposing arbitrary code execution.
+
+## Packaging
+
+Support two forms:
+
+1. **Development folder**
+   - A normal directory on disk.
+   - Best for iteration and hot reload.
+
+2. **Distribution archive** (optional)
+   - Zip containing the same folder structure.
+   - Suggested extension: `.zsc-theme`.
+
+## Files
+
+Required:
+- `manifest.json`
+- `tokens/base.json`
+- `styles/components.json`
+
+Optional:
+- `tokens/light.json`, `tokens/dark.json` (or other variants)
+- `profiles/*.json` (desktop/phone/tablet/fullscreen overrides)
+- `materials.json` + `assets/shaders/*.wgsl`
+- `layouts/*.json`
+- `windows.json` (desktop multi-window templates)
+- `assets/images/*` (png/jpg/etc)
+
+## `manifest.json`
+
+Example:
+
+```json
+{
+  "schema_version": 1,
+  "id": "zsc.clean",
+  "name": "Clean Modern",
+  "author": "ZiggyStarClaw",
+  "license": "MIT",
+
+  "defaults": {
+    "variant": "dark",
+    "profile": "desktop"
+  },
+
+  "capabilities": {
+    "requires_multi_window": false,
+    "requires_custom_shaders": false
+  }
+}
+```
+
+Notes:
+- `schema_version` must be bumped when breaking changes occur.
+- `capabilities` enables early rejection/fallback.
+
+## Token Files
+
+The existing repo token model is a good base (colors/typography/spacing/radius/shadows).
+
+Example `tokens/base.json` (shape mirrors `src/ui/theme/theme.zig`):
+
+```json
+{
+  "colors": {
+    "background": [0.08, 0.09, 0.10, 1.0],
+    "surface": [0.12, 0.14, 0.17, 1.0],
+    "primary": [0.90, 0.58, 0.23, 1.0],
+    "success": [0.20, 0.66, 0.33, 1.0],
+    "danger": [0.92, 0.26, 0.20, 1.0],
+    "warning": [0.98, 0.73, 0.02, 1.0],
+    "text_primary": [0.90, 0.92, 0.94, 1.0],
+    "text_secondary": [0.60, 0.64, 0.68, 1.0],
+    "border": [0.17, 0.19, 0.23, 1.0],
+    "divider": [0.13, 0.15, 0.18, 1.0]
+  },
+  "typography": {
+    "font_family": "Space Grotesk",
+    "title_size": 22.0,
+    "heading_size": 18.0,
+    "body_size": 16.0,
+    "caption_size": 12.0
+  },
+  "spacing": { "xs": 4.0, "sm": 8.0, "md": 16.0, "lg": 24.0, "xl": 32.0 },
+  "radius": { "sm": 4.0, "md": 8.0, "lg": 12.0, "full": 9999.0 },
+  "shadows": {
+    "sm": { "blur": 2.0, "spread": 0.0, "offset_x": 0.0, "offset_y": 1.0 },
+    "md": { "blur": 4.0, "spread": 0.0, "offset_x": 0.0, "offset_y": 2.0 },
+    "lg": { "blur": 8.0, "spread": 0.0, "offset_x": 0.0, "offset_y": 4.0 }
+  }
+}
+```
+
+## Style Sheet (`styles/components.json`)
+
+The style sheet should prevent widgets from doing ad-hoc token math everywhere.
+
+Example (sketch):
+
+```json
+{
+  "button": {
+    "primary": {
+      "radius": "radius.md",
+      "padding": [16, 10],
+      "fill": "colors.primary",
+      "text": "#FFFFFFFF",
+      "material": "mat.button_glow"
+    },
+    "secondary": {
+      "radius": "radius.sm",
+      "padding": [12, 8],
+      "fill": "colors.surface",
+      "text": "colors.text_primary"
+    }
+  },
+  "focus_ring": {
+    "thickness": 3.0,
+    "color": "#6BE4B2FF",
+    "glow_material": "mat.focus_glow"
+  }
+}
+```
+
+Pragmatic recommendation:
+- allow both direct values and “token references” like `colors.primary`.
+
+## Profile Overrides (`profiles/*.json`)
+
+Example `profiles/phone.json`:
+
+```json
+{
+  "profile": "phone",
+  "overrides": {
+    "typography": { "body_size": 18.0 },
+    "spacing": { "sm": 12.0, "md": 20.0 },
+    "components": {
+      "button": { "hit_target_min_px": 52.0 }
+    }
+  }
+}
+```
+
+## Asset Paths and Platform Resolution
+
+The theme engine should use a single abstraction for reading assets:
+
+- Native desktop: `std.fs` read from theme directories.
+- Android: read from APK assets (or app-private storage) and/or external storage (capability-gated).
+- WASM: fetch over HTTP (and optionally cache in IndexedDB); local filesystem is not portable.
+
+The docs assume “file loading can be added on most platforms”, but the loader must still be capability-gated.
+

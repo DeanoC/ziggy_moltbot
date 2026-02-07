@@ -1,0 +1,89 @@
+# Codex CLI Workflow
+
+This document is a “do the work” checklist for implementing the theme engine in this repo.
+
+## Ground Rules
+
+- Always keep the app runnable.
+- Capability-gate anything platform-specific.
+- Prefer incremental changes that preserve the current UI behavior.
+
+## Build/Validation Commands
+
+This repo uses the pinned Zig toolchain at `./.tools/zig-0.15.2/zig`.
+
+Run all builds during theme engine work:
+
+```bash
+./.tools/zig-0.15.2/zig build
+./.tools/zig-0.15.2/zig build -Dtarget=x86_64-windows-gnu
+source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true
+./.tools/zig-0.15.2/zig build -Dandroid=true
+```
+
+## Suggested Implementation Order
+
+1. Add `ThemeContext` and thread it through UI root(s).
+2. Create `StyleSheet` and migrate 2-3 widgets.
+3. Implement profile resolver (desktop/phone/tablet/fullscreen) and wire it to config.
+4. Implement theme package folder loader for desktop.
+5. Add materials/effects needed for:
+   - focus ring glow
+   - shadows
+6. Add multi-window support (desktop only).
+7. Add winamp importer.
+
+## What Files Usually Change
+
+- `src/ui/draw_context.zig`
+  - new draw calls for effects
+- `src/ui/render/command_list.zig`
+  - new commands for effects/materials
+- `src/ui/render/wgpu_renderer.zig`
+  - pipelines/material registry
+- `src/ui/theme.zig` and `src/ui/theme/*`
+  - keep built-ins as safe fallback
+- `src/ui/widgets/*`
+  - migrate to StyleSheet
+- `src/client/config.zig`
+  - add config fields: active theme pack id/path, active profile
+
+## Minimal Theme Pack for Testing
+
+Use the example theme pack in this repo as a starting point:
+- `docs/theme_engine/examples/zsc_clean/manifest.json`
+- `docs/theme_engine/examples/zsc_clean/tokens/base.json`
+- `docs/theme_engine/examples/zsc_clean/styles/components.json`
+
+Add config fields (proposal):
+
+```json
+{
+  "ui_theme_pack": "docs/theme_engine/examples/zsc_clean",
+  "ui_profile": "desktop"
+}
+```
+
+Then implement:
+- load pack at startup
+- fallback to built-in theme if load fails
+
+## Acceptance Criteria Per Milestone
+
+- Phase 1 (StyleSheet):
+  - only one place to tweak padding/colors for a component
+
+- Phase 2 (Theme Packs):
+  - theme can be swapped without recompiling
+  - missing files do not crash
+
+- Phase 3 (Effects):
+  - gradients/shadows/focus glow available as materials
+  - stable frame time at desktop density
+
+- Phase 4 (Multi-window):
+  - multiple windows render simultaneously
+  - independent command lists and input
+
+- Phase 6 (Fullscreen + controller):
+  - app is usable with controller only

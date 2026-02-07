@@ -32,6 +32,7 @@ pub const ui = struct {
     pub const settings_view = @import("ui/settings_view.zig");
     pub const status_bar = @import("ui/status_bar.zig");
     pub const theme = @import("ui/theme.zig");
+    pub const theme_engine = @import("ui/theme_engine/theme_engine.zig");
     pub const text_buffer = @import("ui/text_buffer.zig");
     pub const data_uri = @import("ui/data_uri.zig");
     pub const image_cache = @import("ui/image_cache.zig");

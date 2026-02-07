@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .frame{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .win{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .pane{fill:#121c2c;stroke:#2a3a52;stroke-width:2;}
+      .pane2{fill:#101827;stroke:#2a3a52;stroke-width:2;}
+      .label{fill:#e6edf7;font:700 16px Arial,sans-serif;}
+      .text{fill:#b7c4d8;font:13px Arial,sans-serif;}
+      .chip{fill:#0b1220;stroke:#2a3a52;stroke-width:2;}
+      .winampA{fill:#2b0a2b;stroke:#ff4fd8;stroke-width:2;}
+      .winampB{fill:#0b2a2b;stroke:#00ffd5;stroke-width:2;}
+      .winampC{fill:#22220b;stroke:#ffee55;stroke-width:2;}
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="780"/>
+  <text class="title" x="40" y="56">Desktop Profile: Clean Workspace and Winamp-Style Multi-Window</text>
+  <text class="sub" x="40" y="86">Desktop supports pointer/keyboard, dense layouts, detachable panels, and (where supported) multiple native windows.</text>
+
+  <!-- Left: clean modern -->
+  <g transform="translate(40,130)">
+    <rect class="frame" x="0" y="0" width="640" height="600" rx="18"/>
+    <text class="label" x="20" y="34">Clean Desktop (single window)</text>
+
+    <!-- top bar -->
+    <rect class="win" x="20" y="54" width="600" height="44" rx="12"/>
+    <text class="text" x="36" y="82">Menu / Tabs / Command Bar</text>
+
+    <!-- content split -->
+    <rect class="pane" x="20" y="110" width="180" height="440" rx="12"/>
+    <text class="text" x="36" y="138">Explorer</text>
+
+    <rect class="pane" x="210" y="110" width="410" height="300" rx="12"/>
+    <text class="text" x="226" y="138">Code Editor</text>
+
+    <rect class="pane2" x="210" y="420" width="260" height="130" rx="12"/>
+    <text class="text" x="226" y="448">Chat</text>
+
+    <rect class="pane2" x="480" y="420" width="140" height="130" rx="12"/>
+    <text class="text" x="496" y="448">Tool Out</text>
+
+    <!-- status -->
+    <rect class="win" x="20" y="564" width="600" height="26" rx="10"/>
+    <text class="text" x="36" y="582">Status / Connection / Errors</text>
+
+    <!-- note -->
+    <rect class="chip" x="20" y="600" width="600" height="0" rx="12"/>
+  </g>
+
+  <!-- Right: winamp style -->
+  <g transform="translate(740,130)">
+    <rect class="frame" x="0" y="0" width="620" height="600" rx="18"/>
+    <text class="label" x="20" y="34">Winamp-Style (multiple windows)</text>
+    <text class="text" x="20" y="56">Theme can define window templates: frame images, pixel snapping, odd shapes, neon glows.</text>
+
+    <rect class="winampA" x="40" y="90" width="260" height="140" rx="14"/>
+    <text class="label" x="60" y="122" font-size="14">Main</text>
+    <text class="text" x="60" y="144">Transport + Status</text>
+
+    <rect class="winampB" x="320" y="110" width="260" height="180" rx="14"/>
+    <text class="label" x="340" y="142" font-size="14">Workspace</text>
+    <text class="text" x="340" y="164">Panels as "modules"</text>
+
+    <rect class="winampC" x="60" y="250" width="300" height="240" rx="14"/>
+    <text class="label" x="80" y="282" font-size="14">Playlist-like</text>
+    <text class="text" x="80" y="304">Task list / Agents / Sessions</text>
+
+    <rect class="winampA" x="380" y="320" width="220" height="170" rx="14"/>
+    <text class="label" x="400" y="352" font-size="14">Equalizer-like</text>
+    <text class="text" x="400" y="374">Theme controls visualizers</text>
+
+    <rect class="win" x="40" y="520" width="540" height="60" rx="12"/>
+    <text class="text" x="60" y="548">Desktop-only capabilities:</text>
+    <text class="text" x="60" y="570">detachable panels, arbitrary windows, per-window theme/scale</text>
+  </g>
+</svg>

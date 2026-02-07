@@ -3,6 +3,7 @@ const zemscripten = @import("zemscripten");
 const sdl = @import("platform/sdl3.zig").c;
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
+const theme_engine = @import("ui/theme_engine/theme_engine.zig");
 const operator_view = @import("ui/operator_view.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
@@ -59,6 +60,7 @@ var cfg: config.Config = undefined;
 var agents: agent_registry.AgentRegistry = undefined;
 var manager: panel_manager.PanelManager = undefined;
 var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
+var theme_eng: ?theme_engine.ThemeEngine = null;
 var message_queue = MessageQueue{};
 var ws_connected = false;
 var ws_connecting = false;
@@ -127,7 +129,6 @@ fn initApp() !void {
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    theme.applyTypography(dpi_scale);
 
     image_cache.init(allocator);
     attachment_cache.init(allocator);
@@ -142,6 +143,19 @@ fn initApp() !void {
         theme.setMode(theme.modeFromLabel(label));
         theme.apply();
     }
+    theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
+    if (cfg.ui_theme_pack) |pack_path| {
+        theme_eng.?.loadAndApplyThemePackDir(pack_path) catch |err| {
+            logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+        };
+    }
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(win, &fb_w, &fb_h);
+    const fb_w_u32: u32 = @intCast(if (fb_w > 0) fb_w else 1);
+    const fb_h_u32: u32 = @intCast(if (fb_h > 0) fb_h else 1);
+    theme_eng.?.resolveProfileFromConfig(fb_w_u32, fb_h_u32, cfg.ui_profile);
+    theme.applyTypography(dpi_scale * theme_eng.?.active_profile.ui_scale);
     agents = try loadAgentRegistryFromStorage();
     app_state_state = loadAppStateFromStorage();
     auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
@@ -174,6 +188,10 @@ fn deinitApp() void {
     saveAgentRegistryToStorage();
     agents.deinit(allocator);
     cfg.deinit(allocator);
+    if (theme_eng) |*eng| {
+        eng.deinit();
+        theme_eng = null;
+    }
     saveAppStateToStorage();
     message_queue.deinit(allocator);
     if (connect_nonce) |nonce| {
@@ -325,7 +343,7 @@ fn loadAppStateFromStorage() app_state.AppState {
 }
 
 fn saveAppStateToStorage() void {
-    const json = std.json.Stringify.valueAlloc(allocator, app_state_state, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, app_state_state, .{ .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize app state: {}", .{err});
         return;
     };
@@ -336,7 +354,7 @@ fn saveAppStateToStorage() void {
 }
 
 fn saveConfigToStorage() void {
-    const json = std.json.Stringify.valueAlloc(allocator, cfg, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, cfg, .{ .emit_null_optional_fields = false, .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize config: {}", .{err});
         return;
     };
@@ -400,7 +418,7 @@ fn saveWorkspaceToStorage(ws: *workspace.Workspace) void {
     };
     defer snapshot.deinit(allocator);
 
-    const json = std.json.Stringify.valueAlloc(allocator, snapshot, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize workspace: {}", .{err});
         return;
     };

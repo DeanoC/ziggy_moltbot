@@ -4,6 +4,7 @@ const ui = @import("ui/main_window.zig");
 const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
+const theme_engine = @import("ui/theme_engine/theme_engine.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
@@ -904,6 +905,13 @@ pub fn main() !void {
     if (cfg.ui_theme) |label| {
         theme.setMode(theme.modeFromLabel(label));
     }
+    var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
+    defer theme_eng.deinit();
+    if (cfg.ui_theme_pack) |pack_path| {
+        theme_eng.loadAndApplyThemePackDir(pack_path) catch |err| {
+            logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+        };
+    }
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -973,7 +981,13 @@ pub fn main() !void {
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    theme.applyTypography(dpi_scale);
+    var fb_w_init: c_int = 0;
+    var fb_h_init: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w_init, &fb_h_init);
+    const fb_w_u32: u32 = @intCast(if (fb_w_init > 0) fb_w_init else 1);
+    const fb_h_u32: u32 = @intCast(if (fb_h_init > 0) fb_h_init else 1);
+    theme_eng.resolveProfileFromConfig(fb_w_u32, fb_h_u32, cfg.ui_profile);
+    theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
     image_cache.init(allocator);
     attachment_cache.init(allocator);
     image_cache.setEnabled(true);

@@ -24,7 +24,7 @@ pub fn save(allocator: std.mem.Allocator, path: []const u8, ws: *const workspace
     var snapshot = try ws.toSnapshot(allocator);
     defer snapshot.deinit(allocator);
 
-    const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{});
+    const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
