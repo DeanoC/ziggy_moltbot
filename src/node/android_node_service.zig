@@ -212,7 +212,7 @@ fn threadMain(self: *AndroidNodeHost, cfg: NodeHostConfig) void {
 
         if (payload) |text| {
             defer allocator.free(text);
-            handleNodeMessage(allocator, &conn.ws_client, &node_ctx, &router, text) catch |err| {
+            handleNodeMessage(allocator, &conn.ws_client, &ws_mutex, &node_ctx, &router, text) catch |err| {
                 logger.err("node-host: message handling failed: {s}", .{@errorName(err)});
             };
             continue;
@@ -230,6 +230,7 @@ fn threadMain(self: *AndroidNodeHost, cfg: NodeHostConfig) void {
 fn handleNodeMessage(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     text: []const u8,
@@ -255,7 +256,7 @@ fn handleNodeMessage(
         const event = value.object.get("event") orelse return;
         if (event != .string) return;
         if (std.mem.eql(u8, event.string, "node.invoke.request")) {
-            try handleNodeInvokeRequestEvent(allocator, ws_client, node_ctx, router, value);
+            try handleNodeInvokeRequestEvent(allocator, ws_client, ws_mutex, node_ctx, router, value);
         }
         return;
     }
@@ -281,7 +282,7 @@ fn handleNodeMessage(
         const method = value.object.get("method") orelse return;
         if (method != .string) return;
         if (std.mem.eql(u8, method.string, "node.invoke")) {
-            try handleNodeInvokeLegacy(allocator, ws_client, node_ctx, router, value);
+            try handleNodeInvokeLegacy(allocator, ws_client, ws_mutex, node_ctx, router, value);
         }
     }
 }
@@ -289,6 +290,7 @@ fn handleNodeMessage(
 fn handleNodeInvokeLegacy(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     request: std.json.Value,
@@ -316,7 +318,7 @@ fn handleNodeInvokeLegacy(
         logger.err("node-host: command failed: {s}", .{@errorName(err)});
         const resp = try buildErrorResponse(allocator, request_id.string, err);
         defer allocator.free(resp.payload);
-        try ws_client.send(resp.payload);
+        try sendLocked(ws_client, ws_mutex, resp.payload);
         return;
     };
 
@@ -325,12 +327,13 @@ fn handleNodeInvokeLegacy(
         allocator.free(resp.payload);
         allocator.free(resp.id);
     }
-    try ws_client.send(resp.payload);
+    try sendLocked(ws_client, ws_mutex, resp.payload);
 }
 
 fn handleNodeInvokeRequestEvent(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
     node_ctx: *NodeContext,
     router: *CommandRouter,
     frame: std.json.Value,
@@ -368,16 +371,17 @@ fn handleNodeInvokeRequestEvent(
 
     const result = router.route(aa, node_ctx, command.string, command_params) catch |err| {
         logger.err("node-host: command failed: {s}", .{@errorName(err)});
-        try sendNodeInvokeResultError(allocator, ws_client, invoke_id.string, node_id.string, err);
+        try sendNodeInvokeResultError(allocator, ws_client, ws_mutex, invoke_id.string, node_id.string, err);
         return;
     };
 
-    try sendNodeInvokeResultOk(allocator, ws_client, invoke_id.string, node_id.string, result);
+    try sendNodeInvokeResultOk(allocator, ws_client, ws_mutex, invoke_id.string, node_id.string, result);
 }
 
 fn sendNodeInvokeResultOk(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
     invoke_id: []const u8,
     node_id: []const u8,
     payload: std.json.Value,
@@ -395,12 +399,13 @@ fn sendNodeInvokeResultOk(
     };
     const json = try messages.serializeMessage(allocator, frame);
     defer allocator.free(json);
-    try ws_client.send(json);
+    try sendLocked(ws_client, ws_mutex, json);
 }
 
 fn sendNodeInvokeResultError(
     allocator: std.mem.Allocator,
     ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
     invoke_id: []const u8,
     node_id: []const u8,
     err: anyerror,
@@ -438,7 +443,17 @@ fn sendNodeInvokeResultError(
     };
     const json = try messages.serializeMessage(allocator, frame);
     defer allocator.free(json);
-    try ws_client.send(json);
+    try sendLocked(ws_client, ws_mutex, json);
+}
+
+fn sendLocked(
+    ws_client: *websocket_client.WebSocketClient,
+    ws_mutex: *std.Thread.Mutex,
+    payload: []const u8,
+) !void {
+    ws_mutex.lock();
+    defer ws_mutex.unlock();
+    try ws_client.send(payload);
 }
 
 fn buildSuccessResponse(
