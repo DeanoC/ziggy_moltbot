@@ -69,13 +69,63 @@ pub fn draw(
     const items = mockItems();
     const counts = computeCounts(items);
 
+    const prev_filter = active_filter;
     const filters_h = drawFilters(&dc, list_rect, queue, counts);
+
+    // Keyboard shortcuts: left/right cycles filter.
+    for (queue.events.items) |evt| {
+        if (evt == .key_down and !evt.key_down.repeat) {
+            switch (evt.key_down.key) {
+                .left_arrow => {
+                    active_filter = switch (active_filter) {
+                        .all => .read,
+                        .unread => .all,
+                        .read => .unread,
+                    };
+                },
+                .right_arrow => {
+                    active_filter = switch (active_filter) {
+                        .all => .unread,
+                        .unread => .read,
+                        .read => .all,
+                    };
+                },
+                else => {},
+            }
+        }
+    }
+
+    if (active_filter != prev_filter) {
+        list_scroll_y = 0.0;
+    }
+
+    var visible = std.ArrayList(usize).empty;
+    defer visible.deinit(allocator);
+    for (items, 0..) |it, idx| {
+        if (!matchesFilter(it)) continue;
+        _ = visible.append(allocator, idx) catch {};
+    }
+
+    // Ensure selection stays on a visible item.
+    if (visible.items.len > 0) {
+        var is_visible = false;
+        for (visible.items) |idx| {
+            if (idx == selected_index) {
+                is_visible = true;
+                break;
+            }
+        }
+        if (!is_visible) selected_index = visible.items[0];
+    }
+
+    handleListKeys(queue, visible.items);
+
     const list_body = draw_context.Rect.fromMinSize(
         .{ list_rect.min[0], list_rect.min[1] + filters_h + t.spacing.sm },
         .{ list_rect.size()[0], list_rect.size()[1] - filters_h - t.spacing.sm },
     );
 
-    drawList(&dc, list_body, queue, items);
+    drawList(&dc, list_body, queue, items, visible.items);
     drawDetail(allocator, &dc, detail_rect, items);
 
     return action;
@@ -152,31 +202,63 @@ fn drawFilters(
     return pill_h;
 }
 
+fn handleListKeys(queue: *input_state.InputQueue, visible_indices: []const usize) void {
+    if (visible_indices.len == 0) return;
+
+    // Find current selection position within visible list.
+    var cur_pos: usize = 0;
+    for (visible_indices, 0..) |idx, pos| {
+        if (idx == selected_index) {
+            cur_pos = pos;
+            break;
+        }
+    }
+
+    for (queue.events.items) |evt| {
+        if (evt == .key_down and !evt.key_down.repeat) {
+            switch (evt.key_down.key) {
+                .up_arrow => {
+                    if (cur_pos > 0) cur_pos -= 1;
+                },
+                .down_arrow => {
+                    if (cur_pos + 1 < visible_indices.len) cur_pos += 1;
+                },
+                .page_up => {
+                    const step: usize = 8;
+                    cur_pos = if (cur_pos > step) cur_pos - step else 0;
+                },
+                .page_down => {
+                    const step: usize = 8;
+                    cur_pos = @min(visible_indices.len - 1, cur_pos + step);
+                },
+                .home => cur_pos = 0,
+                .end => cur_pos = visible_indices.len - 1,
+                else => {},
+            }
+        }
+    }
+
+    selected_index = visible_indices[cur_pos];
+}
+
 fn drawList(
     dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     items: []const Item,
+    visible_indices: []const usize,
 ) void {
     const t = theme.activeTheme();
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
-    var visible = std.ArrayList(usize).empty;
-    defer visible.deinit(dc.allocator);
-
-    for (items, 0..) |it, idx| {
-        if (!matchesFilter(it)) continue;
-        _ = visible.append(dc.allocator, idx) catch {};
-    }
-
-    if (visible.items.len == 0) {
+    if (visible_indices.len == 0) {
         dc.drawText("No items.", rect.min, .{ .color = t.colors.text_secondary });
         return;
     }
 
     const card_gap = t.spacing.sm;
     const card_h = dc.lineHeight() * 2.0 + t.spacing.sm * 2.0;
-    const total_h = (@as(f32, @floatFromInt(visible.items.len)) * (card_h + card_gap)) - card_gap;
+    const total_h = (@as(f32, @floatFromInt(visible_indices.len)) * (card_h + card_gap)) - card_gap;
 
     list_scroll_max = @max(0.0, total_h - rect.size()[1]);
     handleWheelScroll(queue, rect, &list_scroll_y, list_scroll_max, 36.0);
@@ -184,7 +266,7 @@ fn drawList(
     dc.pushClip(rect);
     var y = rect.min[1] - list_scroll_y;
 
-    for (visible.items, 0..) |item_idx, vis_idx| {
+    for (visible_indices) |item_idx| {
         const it = items[item_idx];
         const card_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], card_h });
         if (card_rect.max[1] >= rect.min[1] and card_rect.min[1] <= rect.max[1]) {
@@ -194,7 +276,6 @@ fn drawList(
             }
         }
         y += card_h + card_gap;
-        _ = vis_idx;
     }
 
     dc.popClip();
