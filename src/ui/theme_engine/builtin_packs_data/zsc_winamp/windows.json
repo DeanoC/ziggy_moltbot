@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "windows": [
+    {
+      "id": "main",
+      "title": "Main",
+      "width": 560,
+      "height": 260,
+      "profile": "desktop",
+      "panels": ["workspace"]
+    },
+    {
+      "id": "playlist",
+      "title": "Playlist",
+      "width": 720,
+      "height": 640,
+      "profile": "desktop",
+      "panels": ["chat"],
+      "focused_panel": "chat"
+    },
+    {
+      "id": "equalizer",
+      "title": "Equalizer",
+      "width": 520,
+      "height": 420,
+      "profile": "desktop",
+      "panels": ["showcase"]
+    }
+  ]
+}
+

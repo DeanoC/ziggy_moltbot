@@ -69,7 +69,6 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     download_popup_opened = false;
 }
 
-
 pub fn draw(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -229,7 +228,6 @@ fn editorText(editor: ?text_editor.TextEditor) []const u8 {
     return "";
 }
 
-
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
     const t = dc.theme;
     const top_pad = t.spacing.sm;
@@ -341,6 +339,15 @@ fn drawAppearanceCard(
         appearance_changed = true;
     }
     button_x += showcase_w + t.spacing.xs;
+
+    const winamp_w = buttonWidth(dc, "Use winamp pack", t);
+    const winamp_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_w, button_height });
+    if (widgets.button.draw(dc, winamp_rect, "Use winamp pack", queue, .{ .variant = .secondary })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
+        profile_choice = .desktop;
+        appearance_changed = true;
+    }
+    button_x += winamp_w + t.spacing.xs;
 
     const theme_pack_text = editorText(theme_pack_editor);
     const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);

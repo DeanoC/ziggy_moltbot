@@ -27,6 +27,18 @@ const packs = [_]BuiltinPack{
         },
     },
     .{
+        .dir_name = "zsc_winamp",
+        .files = &[_]PackFile{
+            .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/manifest.json") },
+            .{ .rel_path = "windows.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/windows.json") },
+            .{ .rel_path = "tokens/base.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/tokens/base.json") },
+            .{ .rel_path = "tokens/light.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/tokens/light.json") },
+            .{ .rel_path = "tokens/dark.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/tokens/dark.json") },
+            .{ .rel_path = "styles/components.json", .bytes = @embedFile("builtin_packs_data/zsc_winamp/styles/components.json") },
+            .{ .rel_path = "assets/images/panel_frame.png", .bytes = @embedFile("builtin_packs_data/zsc_winamp/assets/images/panel_frame.png") },
+        },
+    },
+    .{
         .dir_name = "zsc_showcase",
         .files = &[_]PackFile{
             .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/manifest.json") },
