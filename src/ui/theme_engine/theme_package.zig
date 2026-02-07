@@ -39,17 +39,31 @@ fn loadOptionalTokens(
     allocator: std.mem.Allocator,
     dir: std.fs.Dir,
     rel: []const u8,
+    base_tokens: schema.TokensFile,
 ) !?schema.TokensFile {
     const data = readFileAlloc(allocator, dir, rel, 2 * 1024 * 1024) catch |err| switch (err) {
         error.MissingFile => return null,
         else => return err,
     };
     defer allocator.free(data);
-    var parsed = try schema.parseJson(schema.TokensFile, allocator, data);
-    defer parsed.deinit();
-    var out = parsed.value;
-    out.typography.font_family = try allocator.dupe(u8, out.typography.font_family);
-    return out;
+
+    // Variant token files can be either:
+    // - a full TokensFile (complete `colors.*` etc.)
+    // - or a partial override file merged onto `tokens/base.json`.
+    var parsed_full = schema.parseJson(schema.TokensFile, allocator, data) catch |err| switch (err) {
+        error.MissingField => null,
+        else => return err,
+    };
+    if (parsed_full) |*p| {
+        defer p.deinit();
+        var out = p.value;
+        out.typography.font_family = try allocator.dupe(u8, out.typography.font_family);
+        return out;
+    }
+
+    var parsed_override = try schema.parseJson(schema.TokensOverrideFile, allocator, data);
+    defer parsed_override.deinit();
+    return try schema.mergeTokens(allocator, base_tokens, parsed_override.value);
 }
 
 pub fn loadFromDirectory(allocator: std.mem.Allocator, path: []const u8) !ThemePackage {
@@ -81,8 +95,8 @@ pub fn loadFromDirectory(allocator: std.mem.Allocator, path: []const u8) !ThemeP
     var tokens_base = parsed_tokens.value;
     tokens_base.typography.font_family = try allocator.dupe(u8, tokens_base.typography.font_family);
 
-    const tokens_light = try loadOptionalTokens(allocator, dir, "tokens/light.json");
-    const tokens_dark = try loadOptionalTokens(allocator, dir, "tokens/dark.json");
+    const tokens_light = try loadOptionalTokens(allocator, dir, "tokens/light.json", tokens_base);
+    const tokens_dark = try loadOptionalTokens(allocator, dir, "tokens/dark.json", tokens_base);
 
     return .{
         .allocator = allocator,

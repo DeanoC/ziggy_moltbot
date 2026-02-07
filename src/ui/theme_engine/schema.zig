@@ -51,12 +51,33 @@ pub const Colors = struct {
     divider: [4]f32,
 };
 
+pub const ColorsOverride = struct {
+    background: ?[4]f32 = null,
+    surface: ?[4]f32 = null,
+    primary: ?[4]f32 = null,
+    success: ?[4]f32 = null,
+    danger: ?[4]f32 = null,
+    warning: ?[4]f32 = null,
+    text_primary: ?[4]f32 = null,
+    text_secondary: ?[4]f32 = null,
+    border: ?[4]f32 = null,
+    divider: ?[4]f32 = null,
+};
+
 pub const Typography = struct {
     font_family: []const u8 = "Space Grotesk",
     title_size: f32 = 22.0,
     heading_size: f32 = 18.0,
     body_size: f32 = 16.0,
     caption_size: f32 = 12.0,
+};
+
+pub const TypographyOverride = struct {
+    font_family: ?[]const u8 = null,
+    title_size: ?f32 = null,
+    heading_size: ?f32 = null,
+    body_size: ?f32 = null,
+    caption_size: ?f32 = null,
 };
 
 pub const Spacing = struct {
@@ -67,11 +88,26 @@ pub const Spacing = struct {
     xl: f32 = 32.0,
 };
 
+pub const SpacingOverride = struct {
+    xs: ?f32 = null,
+    sm: ?f32 = null,
+    md: ?f32 = null,
+    lg: ?f32 = null,
+    xl: ?f32 = null,
+};
+
 pub const Radius = struct {
     sm: f32 = 4.0,
     md: f32 = 8.0,
     lg: f32 = 12.0,
     full: f32 = 9999.0,
+};
+
+pub const RadiusOverride = struct {
+    sm: ?f32 = null,
+    md: ?f32 = null,
+    lg: ?f32 = null,
+    full: ?f32 = null,
 };
 
 pub const TokensFile = struct {
@@ -85,6 +121,98 @@ pub const TokensFile = struct {
         .lg = .{ .blur = 8.0, .spread = 0.0, .offset_x = 0.0, .offset_y = 4.0 },
     },
 };
+
+pub const ShadowOverride = struct {
+    blur: ?f32 = null,
+    spread: ?f32 = null,
+    offset_x: ?f32 = null,
+    offset_y: ?f32 = null,
+};
+
+pub const ShadowsOverride = struct {
+    sm: ?ShadowOverride = null,
+    md: ?ShadowOverride = null,
+    lg: ?ShadowOverride = null,
+};
+
+/// Variant token files like `tokens/light.json` / `tokens/dark.json` can be partial.
+/// They are merged on top of `tokens/base.json`.
+pub const TokensOverrideFile = struct {
+    colors: ?ColorsOverride = null,
+    typography: ?TypographyOverride = null,
+    spacing: ?SpacingOverride = null,
+    radius: ?RadiusOverride = null,
+    shadows: ?ShadowsOverride = null,
+};
+
+pub fn mergeTokens(
+    allocator: std.mem.Allocator,
+    base: TokensFile,
+    override: TokensOverrideFile,
+) !TokensFile {
+    var out = base;
+
+    if (override.colors) |c| {
+        if (c.background) |v| out.colors.background = v;
+        if (c.surface) |v| out.colors.surface = v;
+        if (c.primary) |v| out.colors.primary = v;
+        if (c.success) |v| out.colors.success = v;
+        if (c.danger) |v| out.colors.danger = v;
+        if (c.warning) |v| out.colors.warning = v;
+        if (c.text_primary) |v| out.colors.text_primary = v;
+        if (c.text_secondary) |v| out.colors.text_secondary = v;
+        if (c.border) |v| out.colors.border = v;
+        if (c.divider) |v| out.colors.divider = v;
+    }
+
+    if (override.typography) |t| {
+        if (t.title_size) |v| out.typography.title_size = v;
+        if (t.heading_size) |v| out.typography.heading_size = v;
+        if (t.body_size) |v| out.typography.body_size = v;
+        if (t.caption_size) |v| out.typography.caption_size = v;
+        // font_family handled below (needs ownership).
+    }
+
+    if (override.spacing) |s| {
+        if (s.xs) |v| out.spacing.xs = v;
+        if (s.sm) |v| out.spacing.sm = v;
+        if (s.md) |v| out.spacing.md = v;
+        if (s.lg) |v| out.spacing.lg = v;
+        if (s.xl) |v| out.spacing.xl = v;
+    }
+
+    if (override.radius) |r| {
+        if (r.sm) |v| out.radius.sm = v;
+        if (r.md) |v| out.radius.md = v;
+        if (r.lg) |v| out.radius.lg = v;
+        if (r.full) |v| out.radius.full = v;
+    }
+
+    if (override.shadows) |s| {
+        if (s.sm) |sh| {
+            if (sh.blur) |v| out.shadows.sm.blur = v;
+            if (sh.spread) |v| out.shadows.sm.spread = v;
+            if (sh.offset_x) |v| out.shadows.sm.offset_x = v;
+            if (sh.offset_y) |v| out.shadows.sm.offset_y = v;
+        }
+        if (s.md) |sh| {
+            if (sh.blur) |v| out.shadows.md.blur = v;
+            if (sh.spread) |v| out.shadows.md.spread = v;
+            if (sh.offset_x) |v| out.shadows.md.offset_x = v;
+            if (sh.offset_y) |v| out.shadows.md.offset_y = v;
+        }
+        if (s.lg) |sh| {
+            if (sh.blur) |v| out.shadows.lg.blur = v;
+            if (sh.spread) |v| out.shadows.lg.spread = v;
+            if (sh.offset_x) |v| out.shadows.lg.offset_x = v;
+            if (sh.offset_y) |v| out.shadows.lg.offset_y = v;
+        }
+    }
+
+    const desired_font = if (override.typography) |t| (t.font_family orelse base.typography.font_family) else base.typography.font_family;
+    out.typography.font_family = try allocator.dupe(u8, desired_font);
+    return out;
+}
 
 pub fn parseJson(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(T) {
     return std.json.parseFromSlice(T, allocator, bytes, .{ .ignore_unknown_fields = true });
