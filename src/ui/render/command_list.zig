@@ -71,6 +71,14 @@ pub const ImageCmd = struct {
     rect: Rect,
 };
 
+pub const NineSliceCmd = struct {
+    texture: Texture,
+    rect: Rect,
+    // Pixel slice sizes: left, top, right, bottom (source texture px, applied to destination).
+    slices_px: [4]f32,
+    tint: Color,
+};
+
 pub const ClipCmd = struct {
     rect: Rect,
 };
@@ -83,6 +91,7 @@ pub const Command = union(enum) {
     text: TextCmd,
     line: LineCmd,
     image: ImageCmd,
+    nine_slice: NineSliceCmd,
     clip_push: ClipCmd,
     clip_pop: void,
 };
@@ -173,6 +182,12 @@ pub const CommandList = struct {
 
     pub fn pushImage(self: *CommandList, texture: Texture, rect: Rect) void {
         _ = self.commands.append(self.allocator, .{ .image = .{ .texture = texture, .rect = rect } }) catch {};
+    }
+
+    pub fn pushNineSlice(self: *CommandList, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void {
+        _ = self.commands.append(self.allocator, .{
+            .nine_slice = .{ .texture = texture, .rect = rect, .slices_px = slices_px, .tint = tint },
+        }) catch {};
     }
 
     pub fn pushClip(self: *CommandList, rect: Rect) void {

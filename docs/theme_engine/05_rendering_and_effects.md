@@ -93,6 +93,9 @@ If “materials” feels too big initially, implement in slices:
 - Implemented: **4-corner gradients** (`gradient4`) for filled rects and filled rounded rects.
   - StyleSheet `fill` can be a solid color or `{ "gradient4": { "tl": ..., "tr": ..., "bl": ..., "br": ... } }`.
   - Renderer implementation uses per-vertex colors (bilinear interpolation).
+- Implemented: **9-slice frames** (textured)
+  - StyleSheet `panel.frame` can reference an image and `slices_px`.
+  - Renderer implementation expands into 9 quads with appropriate UVs.
 
 ## Performance Notes
 

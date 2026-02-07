@@ -6,6 +6,7 @@ const update_checker = @import("../client/update_checker.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
+const image_cache = @import("image_cache.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
@@ -795,6 +796,27 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
             });
             dc.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
         },
+    }
+
+    // Optional theme-provided 9-slice frame image (Winamp-style chrome, but also useful for subtle frames).
+    if (ss.panel.frame_image) |rel_img| {
+        if (ss.panel.frame_slices_px) |slices| {
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (theme_runtime.resolveThemeAssetPath(path_buf[0..], rel_img)) |abs_path| {
+                image_cache.request(abs_path);
+                if (image_cache.get(abs_path)) |entry| {
+                    if (entry.state == .ready) {
+                        const tint = ss.panel.frame_tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
+                        dc.drawNineSlice(
+                            draw_context.DrawContext.textureFromId(entry.texture_id),
+                            rect,
+                            slices,
+                            tint,
+                        );
+                    }
+                }
+            }
+        }
     }
     theme.push(.heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });

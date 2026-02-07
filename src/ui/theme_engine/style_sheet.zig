@@ -33,6 +33,9 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
+    frame_image: ?[]const u8 = null,
+    frame_slices_px: ?[4]f32 = null,
+    frame_tint: ?Color = null,
 };
 
 pub const FocusRingStyle = struct {
@@ -140,6 +143,39 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("frame")) |fv| {
+        parsePanelFrame(out, fv, theme);
+    }
+}
+
+fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("image")) |iv| {
+        if (iv == .string) out.frame_image = iv.string;
+    }
+    if (obj.get("slices_px")) |sv| {
+        out.frame_slices_px = parseSlicesPx(sv) orelse out.frame_slices_px;
+    }
+    if (obj.get("tint")) |tv| {
+        out.frame_tint = parseColor(tv, theme) orelse out.frame_tint;
+    }
+}
+
+fn parseSlicesPx(v: std.json.Value) ?[4]f32 {
+    if (v != .array) return null;
+    if (v.array.items.len != 4) return null;
+    var out: [4]f32 = .{ 0, 0, 0, 0 };
+    var i: usize = 0;
+    while (i < 4) : (i += 1) {
+        const item = v.array.items[i];
+        out[i] = switch (item) {
+            .float => @floatCast(item.float),
+            .integer => @floatFromInt(item.integer),
+            else => return null,
+        };
+    }
+    return out;
 }
 
 fn parseFocusRing(out: *FocusRingStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {

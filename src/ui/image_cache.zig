@@ -143,6 +143,11 @@ pub fn request(url: []const u8) void {
     }
 
     if (builtin.cpu.arch == .wasm32) {
+        // WASM builds have no general filesystem access; require HTTP(S) URLs (or data URIs above).
+        if (std.mem.indexOf(u8, url, "://") == null) {
+            setFailed(cache, key, "unsupported (wasm file path)");
+            return;
+        }
         startWasmFetch(cache, key);
     } else {
         startNativeFetch(cache, key);
@@ -236,7 +241,21 @@ fn fetchThread(ctx: *FetchContext) void {
     const cache = ctx.cache;
     defer cache.allocator.destroy(ctx);
 
-    const bytes = image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
+    // If it looks like a URL, fetch over HTTP. Otherwise treat it as a filesystem path.
+    if (std.mem.indexOf(u8, ctx.url, "://") != null) {
+        const bytes = image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
+            setFailed(cache, ctx.url, @errorName(err));
+            return;
+        };
+        defer cache.allocator.free(bytes);
+
+        decodeImage(cache, ctx.url, bytes) catch |err| {
+            setFailed(cache, ctx.url, @errorName(err));
+        };
+        return;
+    }
+
+    const bytes = readFileBytes(cache.allocator, ctx.url) catch |err| {
         setFailed(cache, ctx.url, @errorName(err));
         return;
     };
@@ -245,6 +264,16 @@ fn fetchThread(ctx: *FetchContext) void {
     decodeImage(cache, ctx.url, bytes) catch |err| {
         setFailed(cache, ctx.url, @errorName(err));
     };
+}
+
+fn readFileBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const max_bytes: usize = 32 * 1024 * 1024;
+    var f = if (std.fs.path.isAbsolute(path))
+        try std.fs.openFileAbsolute(path, .{})
+    else
+        try std.fs.cwd().openFile(path, .{});
+    defer f.close();
+    return try f.readToEndAlloc(allocator, max_bytes);
 }
 
 fn startWasmFetch(cache: *ImageCache, key: []u8) void {

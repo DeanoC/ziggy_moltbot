@@ -128,6 +128,14 @@ Example (sketch):
     "thickness": 3.0,
     "color": "#6BE4B2FF",
     "glow_material": "mat.focus_glow"
+  },
+  "panel": {
+    "fill": "colors.surface",
+    "frame": {
+      "image": "assets/images/panel_frame.png",
+      "slices_px": [8, 8, 8, 8],
+      "tint": "#FFFFFFCC"
+    }
   }
 }
 ```

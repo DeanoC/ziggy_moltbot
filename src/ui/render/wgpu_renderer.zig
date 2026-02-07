@@ -118,6 +118,8 @@ const ImageTexture = struct {
     view: zgpu.wgpu.TextureView,
     sampler: zgpu.wgpu.Sampler,
     bind_group: zgpu.wgpu.BindGroup,
+    width: u32,
+    height: u32,
 };
 
 pub const Renderer = struct {
@@ -543,6 +545,10 @@ pub const Renderer = struct {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     self.pushImage(image_cmd, current_scissor);
                 },
+                .nine_slice => |ns_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushNineSlice(ns_cmd, current_scissor);
+                },
             }
         }
     }
@@ -813,6 +819,78 @@ pub const Renderer = struct {
             .{ 1.0, 1.0 },
             .{ 1.0, 1.0, 1.0, 1.0 },
         );
+        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, texture.bind_group);
+    }
+
+    fn pushNineSlice(self: *Renderer, cmd: command_list.NineSliceCmd, scissor: Scissor) void {
+        const tex_id: u32 = @intCast(cmd.texture);
+        const texture = self.ensureImageTexture(tex_id) orelse return;
+        if (texture.width == 0 or texture.height == 0) return;
+
+        const w_tex: f32 = @floatFromInt(texture.width);
+        const h_tex: f32 = @floatFromInt(texture.height);
+
+        const left_src = std.math.clamp(cmd.slices_px[0], 0.0, w_tex);
+        const top_src = std.math.clamp(cmd.slices_px[1], 0.0, h_tex);
+        const right_src = std.math.clamp(cmd.slices_px[2], 0.0, w_tex);
+        const bottom_src = std.math.clamp(cmd.slices_px[3], 0.0, h_tex);
+
+        const dst_w = cmd.rect.max[0] - cmd.rect.min[0];
+        const dst_h = cmd.rect.max[1] - cmd.rect.min[1];
+        if (dst_w <= 0.0 or dst_h <= 0.0) return;
+
+        // If the destination rect is too small to fit corners, proportionally shrink corners.
+        var left = left_src;
+        var right = right_src;
+        var top = top_src;
+        var bottom = bottom_src;
+        if (left + right > dst_w and (left + right) > 0.0001) {
+            const s = dst_w / (left + right);
+            left *= s;
+            right *= s;
+        }
+        if (top + bottom > dst_h and (top + bottom) > 0.0001) {
+            const s = dst_h / (top + bottom);
+            top *= s;
+            bottom *= s;
+        }
+
+        const x0 = cmd.rect.min[0];
+        const x1 = x0 + left;
+        const x3 = cmd.rect.max[0];
+        const x2 = x3 - right;
+        const y0 = cmd.rect.min[1];
+        const y1 = y0 + top;
+        const y3 = cmd.rect.max[1];
+        const y2 = y3 - bottom;
+
+        const u_min: f32 = 0.0;
+        const u_left: f32 = left_src / w_tex;
+        const u_max: f32 = 1.0;
+        const u_right: f32 = (w_tex - right_src) / w_tex;
+        const v_min: f32 = 0.0;
+        const v_top: f32 = top_src / h_tex;
+        const v_max: f32 = 1.0;
+        const v_bottom: f32 = (h_tex - bottom_src) / h_tex;
+
+        const start = self.textured_vertices.items.len;
+        const tint = cmd.tint;
+
+        // Top row
+        self.appendTexturedQuad(.{ x0, y0 }, .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 }, .{ u_min, v_min }, .{ u_left, v_top }, tint);
+        self.appendTexturedQuad(.{ x1, y0 }, .{ x2, y0 }, .{ x2, y1 }, .{ x1, y1 }, .{ u_left, v_min }, .{ u_right, v_top }, tint);
+        self.appendTexturedQuad(.{ x2, y0 }, .{ x3, y0 }, .{ x3, y1 }, .{ x2, y1 }, .{ u_right, v_min }, .{ u_max, v_top }, tint);
+
+        // Middle row
+        self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
+        self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+        self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
+
+        // Bottom row
+        self.appendTexturedQuad(.{ x0, y2 }, .{ x1, y2 }, .{ x1, y3 }, .{ x0, y3 }, .{ u_min, v_bottom }, .{ u_left, v_max }, tint);
+        self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
+        self.appendTexturedQuad(.{ x2, y2 }, .{ x3, y2 }, .{ x3, y3 }, .{ x2, y3 }, .{ u_right, v_bottom }, .{ u_max, v_max }, tint);
+
         self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, texture.bind_group);
     }
 
@@ -1552,6 +1630,8 @@ pub const Renderer = struct {
             .view = view,
             .sampler = sampler,
             .bind_group = bind_group,
+            .width = entry.width,
+            .height = entry.height,
         }) catch {
             bind_group.release();
             sampler.release();

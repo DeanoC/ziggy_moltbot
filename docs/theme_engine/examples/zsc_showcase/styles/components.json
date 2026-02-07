@@ -36,7 +36,12 @@
         "br": "colors.surface"
       }
     },
-    "border": "colors.divider"
+    "border": "colors.divider",
+    "frame": {
+      "image": "assets/images/panel_frame.png",
+      "slices_px": [8, 8, 8, 8],
+      "tint": "#FFFFFFCC"
+    }
   },
   "focus_ring": {
     "thickness": 4.0,

@@ -33,6 +33,7 @@ pub const ThemeEngine = struct {
     runtime_light: ?*theme_tokens.Theme = null,
     runtime_dark: ?*theme_tokens.Theme = null,
     active_pack_path: ?[]u8 = null,
+    active_pack_root: ?[]u8 = null,
 
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
     styles: style_sheet.StyleSheetStore,
@@ -63,8 +64,13 @@ pub const ThemeEngine = struct {
             self.allocator.free(p);
         }
         self.active_pack_path = null;
+        if (self.active_pack_root) |p| {
+            self.allocator.free(p);
+        }
+        self.active_pack_root = null;
         self.styles.deinit();
         runtime.setStyleSheets(.{}, .{});
+        runtime.setThemePackRootPath(null);
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -77,9 +83,12 @@ pub const ThemeEngine = struct {
         self.runtime_dark = null;
         if (self.active_pack_path) |p| self.allocator.free(p);
         self.active_pack_path = null;
+        if (self.active_pack_root) |p| self.allocator.free(p);
+        self.active_pack_root = null;
         self.styles.deinit();
         self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
         runtime.setStyleSheets(.{}, .{});
+        runtime.setThemePackRootPath(null);
     }
 
     pub fn setProfile(self: *ThemeEngine, p: Profile) void {
@@ -132,6 +141,20 @@ pub const ThemeEngine = struct {
         // Swap in new themes.
         theme_mod.setRuntimeTheme(.light, light_theme);
         theme_mod.setRuntimeTheme(.dark, dark_theme);
+
+        // Record root path for asset resolution (e.g. frame images).
+        if (self.active_pack_root) |p| self.allocator.free(p);
+        var root_for_assets: []const u8 = pack.root_path;
+        var abs_tmp: ?[]u8 = null;
+        defer if (abs_tmp) |buf| self.allocator.free(buf);
+        if (!std.fs.path.isAbsolute(root_for_assets) and builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi) {
+            if (try resolveRelativeToExeDir(self.allocator, root_for_assets)) |abs| {
+                abs_tmp = abs;
+                root_for_assets = abs_tmp.?;
+            }
+        }
+        self.active_pack_root = try self.allocator.dupe(u8, root_for_assets);
+        runtime.setThemePackRootPath(self.active_pack_root);
 
         // Replace owned themes.
         if (self.runtime_light) |prev| freeTheme(self.allocator, prev);
