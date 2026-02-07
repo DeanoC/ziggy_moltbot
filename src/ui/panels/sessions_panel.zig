@@ -13,6 +13,7 @@ const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const cursor = @import("../input/cursor.zig");
 const widgets = @import("../widgets/widgets.zig");
+const panel_chrome = @import("../panel_chrome.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -98,7 +99,11 @@ fn drawSessionList(
     action: *SessionPanelAction,
 ) void {
     const t = theme.activeTheme();
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
@@ -229,6 +234,12 @@ fn drawSessionDetailsPane(
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, rect);
     defer dc.deinit();
+
+    panel_chrome.draw(&dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     handleWheelScroll(queue, rect, &details_scroll_y, details_scroll_max, 40.0);
 

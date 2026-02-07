@@ -5,6 +5,7 @@ const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
 const widgets = @import("../widgets/widgets.zig");
+const panel_chrome = @import("../panel_chrome.zig");
 
 var draw_ctx_toggle = false;
 var scroll_y: f32 = 0.0;
@@ -159,7 +160,11 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
     theme.push(.heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();

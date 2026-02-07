@@ -32,6 +32,7 @@ const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
 const profiler = @import("../utils/profiler.zig");
+const panel_chrome = @import("panel_chrome.zig");
 
 pub const SendMessageAction = struct {
     session_key: []u8,
@@ -127,7 +128,11 @@ fn drawCustomMenuBar(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
         .{ menu_width, menu_height },
     );
-    dc.drawRoundedRect(menu_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    panel_chrome.draw(dc, menu_rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const has_control = manager.hasPanel(.Control);
     const has_chat = manager.hasPanel(.Chat);

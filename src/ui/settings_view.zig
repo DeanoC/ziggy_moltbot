@@ -6,13 +6,12 @@ const update_checker = @import("../client/update_checker.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
-const image_cache = @import("image_cache.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
-const style_sheet = @import("theme_engine/style_sheet.zig");
+const panel_chrome = @import("panel_chrome.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -783,66 +782,12 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     const line_height = dc.lineHeight();
 
     const radius = ss.panel.radius orelse t.radius.md;
-    // Optional soft shadow behind panels (implemented as layered fills; later can become a material).
-    if (ss.panel.shadow.color) |shadow_color| {
-        const blur = ss.panel.shadow.blur_px orelse 12.0;
-        const spread = ss.panel.shadow.spread_px orelse 0.0;
-        const offset = ss.panel.shadow.offset orelse .{ 0.0, 6.0 };
-        const steps_u8 = ss.panel.shadow.steps orelse 10;
-        const steps: u32 = @max(1, @min(@as(u32, steps_u8), 24));
-
-        var i: u32 = 0;
-        while (i < steps) : (i += 1) {
-            const t01: f32 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(steps));
-            const grow = spread + blur * t01;
-            const rr = draw_context.Rect{
-                .min = .{ rect.min[0] - grow + offset[0], rect.min[1] - grow + offset[1] },
-                .max = .{ rect.max[0] + grow + offset[0], rect.max[1] + grow + offset[1] },
-            };
-            var c = shadow_color;
-            // Outer layers are more transparent.
-            const falloff = (1.0 - t01);
-            c[3] *= (falloff * falloff) * 0.65;
-            if (c[3] <= 0.001) continue;
-            dc.drawRoundedRect(rr, radius + grow, .{ .fill = c });
-        }
-    }
-    const fill = ss.panel.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
-    const border = ss.panel.border orelse t.colors.border;
-    switch (fill) {
-        .solid => |c| dc.drawRoundedRect(rect, radius, .{ .fill = c, .stroke = border, .thickness = 1.0 }),
-        .gradient4 => |g| {
-            dc.drawRoundedRectGradient(rect, radius, .{
-                .tl = g.tl,
-                .tr = g.tr,
-                .bl = g.bl,
-                .br = g.br,
-            });
-            dc.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
-        },
-    }
-
-    // Optional theme-provided 9-slice frame image (Winamp-style chrome, but also useful for subtle frames).
-    if (ss.panel.frame_image.isSet()) {
-        const rel_img = ss.panel.frame_image.slice();
-        if (ss.panel.frame_slices_px) |slices| {
-            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            if (theme_runtime.resolveThemeAssetPath(path_buf[0..], rel_img)) |abs_path| {
-                image_cache.request(abs_path);
-                if (image_cache.get(abs_path)) |entry| {
-                    if (entry.state == .ready) {
-                        const tint = ss.panel.frame_tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
-                        dc.drawNineSlice(
-                            draw_context.DrawContext.textureFromId(entry.texture_id),
-                            rect,
-                            slices,
-                            tint,
-                        );
-                    }
-                }
-            }
-        }
-    }
+    panel_chrome.draw(dc, rect, .{
+        .radius = radius,
+        .draw_shadow = true,
+        .draw_frame = true,
+        .draw_border = true,
+    });
     theme.push(.heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
