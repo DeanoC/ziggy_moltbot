@@ -56,6 +56,14 @@ Use the example theme pack in this repo as a starting point:
 - `docs/theme_engine/examples/zsc_clean/styles/components.json`
 - `docs/theme_engine/examples/zsc_showcase/manifest.json` (recommended for testing new features)
 
+### Android Note (Writable Themes Folder)
+
+On Android, ZiggyStarClaw changes the process working directory to the SDL pref path (app-writable).
+Theme packs referenced as `themes/<id>` therefore live under that pref directory.
+
+The app also embeds the built-in example packs and will auto-install them into `themes/zsc_clean` and
+`themes/zsc_showcase` if the user selects them and they are missing.
+
 Add config fields (proposal):
 
 ```json

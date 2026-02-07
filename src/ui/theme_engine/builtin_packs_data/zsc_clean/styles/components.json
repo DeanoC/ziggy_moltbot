@@ -1,0 +1,44 @@
+{
+  "button": {
+    "primary": {
+      "radius": "radius.md",
+      "padding": [14, 10],
+      "fill": "colors.primary",
+      "text": "#FFFFFFFF",
+      "border": "#00000000"
+    },
+    "secondary": {
+      "radius": "radius.sm",
+      "padding": [12, 9],
+      "fill": "colors.surface",
+      "text": "colors.text_primary",
+      "border": "colors.border"
+    }
+  },
+  "panel": {
+    "radius": "radius.md",
+    "fill": "colors.surface",
+    "border": "colors.border"
+  },
+  "focus_ring": {
+    "thickness": 3.0,
+    "color": "#6BE4B2FF"
+  },
+  "checkbox": {
+    "radius": "radius.sm",
+    "fill": "colors.surface",
+    "border": "colors.border",
+    "fill_checked": "colors.primary",
+    "border_checked": "colors.primary",
+    "check": "#FFFFFFFF"
+  },
+  "text_input": {
+    "radius": "radius.md",
+    "fill": "colors.surface",
+    "border": "colors.border",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#6BE4B240",
+    "caret": "colors.text_primary"
+  }
+}

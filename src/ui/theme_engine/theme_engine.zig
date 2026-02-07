@@ -8,6 +8,7 @@ const profile = @import("profile.zig");
 const schema = @import("schema.zig");
 const theme_package = @import("theme_package.zig");
 const style_sheet = @import("style_sheet.zig");
+const builtin_packs = @import("builtin_packs.zig");
 pub const runtime = @import("runtime.zig");
 
 pub const PlatformCaps = profile.PlatformCaps;
@@ -147,7 +148,7 @@ pub const ThemeEngine = struct {
         var root_for_assets: []const u8 = pack.root_path;
         var abs_tmp: ?[]u8 = null;
         defer if (abs_tmp) |buf| self.allocator.free(buf);
-        if (!std.fs.path.isAbsolute(root_for_assets) and builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi) {
+        if (!std.fs.path.isAbsolute(root_for_assets) and builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi and !builtin.target.abi.isAndroid()) {
             if (try resolveRelativeToExeDir(self.allocator, root_for_assets)) |abs| {
                 abs_tmp = abs;
                 root_for_assets = abs_tmp.?;
@@ -203,6 +204,26 @@ pub const ThemeEngine = struct {
             if (self.active_pack_path) |p| self.allocator.free(p);
             self.active_pack_path = try self.allocator.dupe(u8, path);
             return;
+        }
+        // If the user asked for a built-in pack under `themes/<id>` and it isn't present,
+        // attempt to install it into the writable filesystem (Android pref path, etc)
+        // then retry once.
+        if (last_err == error.MissingFile and self.caps.supports_filesystem_write) {
+            if (try builtin_packs.installIfBuiltinThemePathAlloc(self.allocator, path)) {
+                var retry = ThemePackCandidates.init(self.allocator, path);
+                defer retry.deinit();
+                try retry.populate();
+                for (retry.items()) |cand| {
+                    self.loadAndApplyThemePackDir(cand) catch |err| {
+                        last_err = err;
+                        if (err == error.MissingFile) continue;
+                        return err;
+                    };
+                    if (self.active_pack_path) |p| self.allocator.free(p);
+                    self.active_pack_path = try self.allocator.dupe(u8, path);
+                    return;
+                }
+            }
         }
         return last_err;
     }
