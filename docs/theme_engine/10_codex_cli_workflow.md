@@ -54,6 +54,7 @@ Use the example theme pack in this repo as a starting point:
 - `docs/theme_engine/examples/zsc_clean/manifest.json`
 - `docs/theme_engine/examples/zsc_clean/tokens/base.json`
 - `docs/theme_engine/examples/zsc_clean/styles/components.json`
+- `docs/theme_engine/examples/zsc_showcase/manifest.json` (recommended for testing new features)
 
 Add config fields (proposal):
 

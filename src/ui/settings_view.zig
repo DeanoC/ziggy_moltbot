@@ -296,7 +296,7 @@ fn drawAppearanceCard(
         width - padding * 2.0,
         "Theme pack path",
         ensureEditor(&theme_pack_editor, allocator),
-        .{ .placeholder = "themes/zsc_clean" },
+        .{ .placeholder = "themes/zsc_showcase" },
     );
 
     const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
@@ -323,14 +323,23 @@ fn drawAppearanceCard(
     const button_y = cursor_y;
     var button_x = rect.min[0] + padding;
 
-    const example_w = buttonWidth(dc, "Use example pack", t);
-    const example_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ example_w, button_height });
-    if (widgets.button.draw(dc, example_rect, "Use example pack", queue, .{ .variant = .secondary })) {
+    const clean_w = buttonWidth(dc, "Use clean pack", t);
+    const clean_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ clean_w, button_height });
+    if (widgets.button.draw(dc, clean_rect, "Use clean pack", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_clean");
         profile_choice = .desktop;
         appearance_changed = true;
     }
-    button_x += example_w + t.spacing.xs;
+    button_x += clean_w + t.spacing.xs;
+
+    const showcase_w = buttonWidth(dc, "Use showcase pack", t);
+    const showcase_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ showcase_w, button_height });
+    if (widgets.button.draw(dc, showcase_rect, "Use showcase pack", queue, .{ .variant = .secondary })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_showcase");
+        profile_choice = .desktop;
+        appearance_changed = true;
+    }
+    button_x += showcase_w + t.spacing.xs;
 
     const theme_pack_text = editorText(theme_pack_editor);
     const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);

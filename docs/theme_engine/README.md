@@ -35,11 +35,16 @@ A minimal example theme pack (tokens + styles) lives at:
 - `docs/theme_engine/examples/zsc_clean/tokens/base.json`
 - `docs/theme_engine/examples/zsc_clean/styles/components.json`
 
+There is also a **showcase** pack intended for testing newly implemented features as they land:
+- `docs/theme_engine/examples/zsc_showcase/manifest.json`
+
 When you run `zig build`, the example pack is also installed next to the executable at:
 - `zig-out/bin/themes/zsc_clean`
+- `zig-out/bin/themes/zsc_showcase`
 
 So config can use:
 - `"ui_theme_pack": "themes/zsc_clean"`
+- `"ui_theme_pack": "themes/zsc_showcase"`
 
 ## Key Concepts (Terms)
 

@@ -1,0 +1,35 @@
+{
+  "button": {
+    "primary": {
+      "radius": "radius.lg",
+      "fill": "colors.primary",
+      "text": "colors.background",
+      "border": "colors.primary"
+    },
+    "secondary": {
+      "radius": "radius.md",
+      "fill": "colors.surface",
+      "text": "colors.text_primary",
+      "border": "colors.border"
+    },
+    "ghost": {
+      "radius": "radius.full",
+      "fill": "#00000000",
+      "text": "colors.primary",
+      "border": "colors.primary"
+    }
+  },
+  "panel": {
+    "radius": "radius.lg",
+    "fill": "colors.surface",
+    "border": "colors.divider"
+  },
+  "focus_ring": {
+    "thickness": 4.0,
+    "color": "colors.primary"
+  },
+
+  "_notes": {
+    "purpose": "This pack is meant to exercise every implemented theme-engine feature (tokens, light/dark overrides, per-mode stylesheet resolution, focus ring, panel chrome, runtime reload)."
+  }
+}

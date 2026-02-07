@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": "zsc.showcase",
+  "name": "Theme Engine Showcase",
+  "author": "ZiggyStarClaw",
+  "license": "MIT",
+  "defaults": {
+    "variant": "dark",
+    "profile": "desktop"
+  },
+  "capabilities": {
+    "requires_multi_window": false,
+    "requires_custom_shaders": false
+  }
+}

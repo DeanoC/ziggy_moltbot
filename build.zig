@@ -193,12 +193,18 @@ pub fn build(b: *std.Build) void {
         b.installArtifact(native_exe);
         // Ship a default example theme pack alongside the executable so theme packs work
         // consistently in dev (zig-out) and deployed installs.
-        const example_theme = b.addInstallDirectory(.{
+        const clean_example_theme = b.addInstallDirectory(.{
             .source_dir = b.path("docs/theme_engine/examples/zsc_clean"),
             .install_dir = .bin,
             .install_subdir = "themes/zsc_clean",
         });
-        b.getInstallStep().dependOn(&example_theme.step);
+        b.getInstallStep().dependOn(&clean_example_theme.step);
+        const showcase_example_theme = b.addInstallDirectory(.{
+            .source_dir = b.path("docs/theme_engine/examples/zsc_showcase"),
+            .install_dir = .bin,
+            .install_subdir = "themes/zsc_showcase",
+        });
+        b.getInstallStep().dependOn(&showcase_example_theme.step);
 
         const cli_module = b.createModule(.{
             .root_source_file = b.path("src/main_cli.zig"),
