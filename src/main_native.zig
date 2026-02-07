@@ -1712,7 +1712,7 @@ pub fn main() !void {
             }
         }
 
-        if (ui_action.spawn_window and theme_eng.active_profile.allow_multi_window) {
+        if (ui_action.spawn_window and theme_eng.caps.supports_multi_window) {
             const index: usize = ui_windows.items.len + 1;
             var title_buf: [64]u8 = undefined;
             const title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";

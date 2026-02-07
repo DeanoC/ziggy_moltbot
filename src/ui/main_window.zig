@@ -127,7 +127,10 @@ fn drawCustomMenuBar(
     const menu_width: f32 = 240.0;
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
-    const allow_multi_window = theme_runtime.getProfile().allow_multi_window;
+    // Multi-window is a platform capability (desktop native), not a UI profile feature.
+    // Even if the user is running the Phone/Tablet profile on desktop, they may still want
+    // detachable/multi-window UI (Winamp-style use case).
+    const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
     const item_count: f32 = if (allow_multi_window) 4.0 else 3.0;
     const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
