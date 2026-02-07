@@ -15,7 +15,7 @@ pub const Options = struct {
 };
 
 pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Options) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const ss = theme_runtime.getStyleSheet();
 
     const radius = opts.radius orelse ss.panel.radius orelse t.radius.md;

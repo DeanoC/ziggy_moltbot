@@ -74,8 +74,11 @@ pub fn apply() void {
 }
 
 pub fn applyTypography(scale: f32) void {
+    applyTypographyFor(activeTheme(), scale);
+}
+
+pub fn applyTypographyFor(t: *const Theme, scale: f32) void {
     if (scale <= 0.0) return;
-    const t = activeTheme();
     const body_size = t.typography.body_size * scale;
     const heading_size = t.typography.heading_size * scale;
     const title_size = t.typography.title_size * scale;
@@ -91,7 +94,10 @@ pub fn applyTypography(scale: f32) void {
 }
 
 pub fn push(role: FontRole) void {
-    const t = activeTheme();
+    pushFor(activeTheme(), role);
+}
+
+pub fn pushFor(t: *const Theme, role: FontRole) void {
     const scale = if (last_scale > 0.0) last_scale else 1.0;
     font_system.push(role, scale, t);
 }

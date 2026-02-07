@@ -449,7 +449,7 @@ fn drawSessionDetailsCustom(
 
     const source_height = std.math.clamp(viewport_height * 0.5, 260.0, 380.0);
     const source_rect = draw_context.Rect.fromMinSize(.{ origin[0], cursor_y }, .{ width, source_height });
-    const source_action = components.composite.source_browser.draw(allocator, .{
+    const source_action = components.composite.source_browser.draw(allocator, dc, .{
         .id = "session_source_browser",
         .sources = sources_buf[0..sources_len],
         .selected_source = selected_source,

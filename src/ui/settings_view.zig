@@ -231,13 +231,13 @@ fn editorText(editor: ?text_editor.TextEditor) []const u8 {
 
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Settings", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -259,11 +259,11 @@ fn drawAppearanceCard(
     width: f32,
     action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const checkbox_height = line_height + t.spacing.xs * 2.0;
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = line_height + t.spacing.xs * 2.0;
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
@@ -420,10 +420,10 @@ fn drawConnectionCard(
     dirty: bool,
     action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const checkbox_height = line_height + t.spacing.xs * 2.0;
     const button_height = line_height + t.spacing.xs * 2.0;
 
@@ -558,10 +558,10 @@ fn drawUpdatesCard(
     app_version: []const u8,
     action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = line_height + t.spacing.xs * 2.0;
     const progress_height: f32 = 10.0;
 
@@ -776,7 +776,7 @@ fn calcUpdatesHeight(
 }
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const ss = theme_runtime.getStyleSheet();
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
@@ -788,7 +788,7 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
         .draw_frame = true,
         .draw_border = true,
     });
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -806,10 +806,10 @@ fn drawLabeledInput(
     editor: *text_editor.TextEditor,
     opts: widgets.text_input.Options,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
     return labeledInputHeight(input_height, line_height, t);
@@ -829,7 +829,7 @@ fn drawCheckboxRow(
     value: *bool,
     disabled: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const row_height = line_height + t.spacing.xs * 2.0;
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, row_height });
@@ -847,7 +847,7 @@ fn badgeSize(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.T
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);
@@ -866,7 +866,7 @@ fn badgeColor(t: *const theme.Theme, variant: BadgeVariant) colors.Color {
 }
 
 fn drawProgressBar(dc: *draw_context.DrawContext, rect: draw_context.Rect, fraction: f32) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const clamped = std.math.clamp(fraction, 0.0, 1.0);
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.border, 0.2), .stroke = t.colors.border, .thickness = 1.0 });
     if (clamped > 0.0) {
@@ -902,7 +902,7 @@ fn drawDownloadOverlay(
     queue: *input_state.InputQueue,
     snapshot: update_checker.Snapshot,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const downloading = snapshot.download_status == .downloading;
     if (downloading) {
         download_popup_opened = true;
@@ -932,7 +932,7 @@ fn drawDownloadOverlay(
     const card_rect = draw_context.Rect.fromMinSize(card_pos, .{ card_width, card_height });
 
     dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Downloading update...", .{ card_rect.min[0] + padding, card_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 

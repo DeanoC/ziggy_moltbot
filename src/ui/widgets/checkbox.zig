@@ -16,7 +16,7 @@ pub fn draw(
     queue: *input_state.InputQueue,
     opts: Options,
 ) bool {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const profile = theme_runtime.getProfile();
     const hovered = profile.allow_hover_states and rect.contains(queue.state.mouse_pos);
     var clicked = false;

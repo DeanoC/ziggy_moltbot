@@ -71,7 +71,7 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
 
     const source_height = @max(220.0, @min(360.0, content_rect.size()[1] * 0.35));
     const source_rect = draw_context.Rect.fromMinSize(.{ content_rect.min[0], cursor_y }, .{ project_width, source_height });
-    _ = components.composite.source_browser.draw(allocator, .{
+    _ = components.composite.source_browser.draw(allocator, &dc, .{
         .id = "showcase_source",
         .sources = &[_]components.composite.source_browser.Source{
             .{ .name = "Local Workspace", .source_type = .local, .connected = true },

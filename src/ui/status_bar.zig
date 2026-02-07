@@ -23,7 +23,7 @@ pub fn drawCustom(
     message_count: usize,
     last_error: ?[]const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const spacing = t.spacing.sm;
     const label = t.colors.text_secondary;
     const value = t.colors.text_primary;
@@ -87,7 +87,7 @@ fn drawBadgeCustom(
     x: f32,
     bar_rect: draw_context.Rect,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeBaseColor(t, variant);
     const bg = if (filled) base else colors.withAlpha(base, 0.14);
     const border = colors.withAlpha(base, if (filled) 0.4 else 0.55);

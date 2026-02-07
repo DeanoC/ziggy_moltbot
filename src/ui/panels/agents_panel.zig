@@ -538,7 +538,7 @@ fn drawAddAgentCard(
     const t = theme.activeTheme();
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = line_height + t.spacing.xs * 2.0;
 
     const id_text = editorText(add_id_editor);
@@ -651,7 +651,7 @@ fn drawLabeledInput(
     const t = theme.activeTheme();
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
     return labeledInputHeight(input_height, line_height, t);

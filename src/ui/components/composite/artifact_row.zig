@@ -14,7 +14,7 @@ pub fn rowHeight(dc: *draw_context.DrawContext, t: *const theme.Theme) f32 {
 }
 
 pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, args: Args) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const row_height = rect.size()[1];
     const icon_size = row_height - t.spacing.xs * 2.0;
     const icon_rect = draw_context.Rect.fromMinSize(

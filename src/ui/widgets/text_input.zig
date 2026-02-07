@@ -10,8 +10,7 @@ pub const Options = struct {
     mask_char: ?u8 = null,
 };
 
-pub fn defaultHeight(line_height: f32) f32 {
-    const t = theme.activeTheme();
+pub fn defaultHeight(t: *const theme.Theme, line_height: f32) f32 {
     return line_height + t.spacing.xs * 2.0;
 }
 
@@ -32,7 +31,7 @@ pub fn draw(
 
     if (!editor.focused and editor.isEmpty()) {
         if (opts.placeholder) |placeholder| {
-            const t = theme.activeTheme();
+            const t = ctx.theme;
             const pos = .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs };
             ctx.drawText(placeholder, pos, .{ .color = t.colors.text_secondary });
         }

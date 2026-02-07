@@ -103,7 +103,7 @@ pub const TextEditor = struct {
         opts: Options,
     ) Action {
         var action = Action{};
-        const t = theme.activeTheme();
+        const t = ctx.theme;
         const padding = .{ t.spacing.sm, t.spacing.xs };
 
         const text_min = .{ rect.min[0] + padding[0], rect.min[1] + padding[1] };

@@ -677,7 +677,7 @@ fn drawInvokeCard(
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
 
-    const height = invokeCardHeight(dc.lineHeight());
+    const height = invokeCardHeight(dc.theme, dc.lineHeight());
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
@@ -1043,10 +1043,9 @@ fn selectedNodeHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, 
     return height;
 }
 
-fn invokeCardHeight(line_height: f32) f32 {
-    const t = theme.activeTheme();
+fn invokeCardHeight(t: *const theme.Theme, line_height: f32) f32 {
     const padding = t.spacing.md;
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = line_height + t.spacing.xs * 2.0;
 
     var height = padding + line_height + t.spacing.sm;
@@ -1073,7 +1072,7 @@ fn drawLabeledInput(
     const t = theme.activeTheme();
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
     return labeledInputHeight(input_height, line_height, t);

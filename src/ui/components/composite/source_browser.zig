@@ -102,17 +102,16 @@ fn sourceGroupLabel(source_type: SourceType) []const u8 {
     };
 }
 
-pub fn draw(allocator: std.mem.Allocator, args: Args) Action {
+pub fn draw(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, args: Args) Action {
+    _ = allocator;
     var action = Action{};
-    const t = theme.activeTheme();
+    const t = dc.theme;
     var split_state = args.split_state orelse &default_split_state;
     if (split_state.size == 0.0) {
         split_state.size = 220.0;
     }
 
     const panel_rect = args.rect orelse return action;
-    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
-    defer dc.deinit();
     dc.drawRoundedRect(panel_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
@@ -140,10 +139,10 @@ pub fn draw(allocator: std.mem.Allocator, args: Args) Action {
     );
 
     const queue = input_router.getQueue();
-    drawSourcesPane(args, &dc, left_rect, queue, &action);
-    handleSplitter(&dc, content_rect, left_rect, queue, split_state, min_primary, max_primary, splitter_w);
+    drawSourcesPane(args, dc, left_rect, queue, &action);
+    handleSplitter(dc, content_rect, left_rect, queue, split_state, min_primary, max_primary, splitter_w);
     if (right_rect.size()[0] > 0.0) {
-        drawFilesPane(args, &dc, right_rect, queue, &action);
+        drawFilesPane(args, dc, right_rect, queue, &action);
     }
 
     return action;
@@ -156,7 +155,7 @@ fn drawSourcesPane(
     queue: *input_state.InputQueue,
     action: *Action,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
 
@@ -164,7 +163,7 @@ fn drawSourcesPane(
 
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sources", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -265,7 +264,7 @@ fn drawFilesPane(
     queue: *input_state.InputQueue,
     action: *Action,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
 
@@ -375,7 +374,7 @@ fn drawSourceRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -414,7 +413,7 @@ fn drawSectionHeader(
     section: Section,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -446,7 +445,7 @@ fn drawFileRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const hovered = rect.contains(queue.state.mouse_pos);
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -545,7 +544,7 @@ fn handleSplitter(
     max_primary: f32,
     splitter_w: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const splitter_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0], content_rect.min[1] },
         .{ splitter_w, content_rect.size()[1] },
