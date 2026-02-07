@@ -321,15 +321,17 @@ fn drawDetail(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, rect:
     cursor_y += dc.lineHeight() + t.spacing.xs;
 
     const meta_color = t.colors.text_secondary;
-    var buf: [64]u8 = undefined;
+    var buf: [96]u8 = undefined;
+    var time_buf: [32]u8 = undefined;
     const sev = severityLabel(it.severity);
     const st = effectiveStatus(selected_index, it.status);
     const status = if (st == .unread) "unread" else "read";
-    const meta = std.fmt.bufPrint(&buf, "{s} · {s}", .{ sev, status }) catch "";
+    const when = formatRelativeTime(std.time.milliTimestamp(), it.created_at_ms, &time_buf);
+    const meta = std.fmt.bufPrint(&buf, "{s} · {s} · {s}", .{ sev, status, when }) catch "";
     dc.drawText(meta, .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
-    dc.drawText("Tip: Press Enter (or r) to toggle read/unread (mock only).", .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
+    dc.drawText("Tip: Press Enter (or a) to toggle read/unread (mock only).", .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
     const body_w = rect.size()[0] - pad * 2.0;
@@ -374,8 +376,14 @@ fn drawItemCard(
     dc.drawText(it.title, .{ x, y }, .{ .color = title_color });
     y += dc.lineHeight() + t.spacing.xs;
 
-    var meta_buf: [64]u8 = undefined;
-    const meta = std.fmt.bufPrint(&meta_buf, "{s} · {s}", .{ severityLabel(it.severity), if (status == .unread) "unread" else "read" }) catch "";
+    var meta_buf: [96]u8 = undefined;
+    var time_buf: [32]u8 = undefined;
+    const when = formatRelativeTime(std.time.milliTimestamp(), it.created_at_ms, &time_buf);
+    const meta = std.fmt.bufPrint(
+        &meta_buf,
+        "{s} · {s} · {s}",
+        .{ severityLabel(it.severity), if (status == .unread) "unread" else "read", when },
+    ) catch "";
     dc.drawText(meta, .{ x, y }, .{ .color = t.colors.text_secondary });
 
     return clicked;
@@ -574,4 +582,23 @@ fn mockItems() []const Item {
         .{ .id = "evt_002", .title = "Node offline: living-room", .body = "Last heartbeat exceeded threshold.\n\nIn the real inbox, this would include actions (e.g. retry/wake/ping).", .severity = .warning, .status = .unread, .created_at_ms = now - 1000 * 60 * 5 },
         .{ .id = "evt_003", .title = "Supermemory 401 (auth)", .body = "Plugin returned HTTP 401 for request /search.\n\nIn production, this should dedupe and surface remediation hints.", .severity = .danger, .status = .unread, .created_at_ms = now - 1000 * 60 * 2 },
     };
+}
+
+fn formatRelativeTime(now_ms: i64, ts_ms: i64, buf: []u8) []const u8 {
+    const delta_ms = if (now_ms > ts_ms) now_ms - ts_ms else 0;
+    const seconds = @as(u64, @intCast(@divTrunc(delta_ms, 1000)));
+    const minutes = seconds / 60;
+    const hours = minutes / 60;
+    const days = hours / 24;
+
+    if (seconds < 60) {
+        return std.fmt.bufPrint(buf, "{d}s ago", .{seconds}) catch "just now";
+    }
+    if (minutes < 60) {
+        return std.fmt.bufPrint(buf, "{d}m ago", .{minutes}) catch "today";
+    }
+    if (hours < 24) {
+        return std.fmt.bufPrint(buf, "{d}h ago", .{hours}) catch "today";
+    }
+    return std.fmt.bufPrint(buf, "{d}d ago", .{days}) catch "days ago";
 }
