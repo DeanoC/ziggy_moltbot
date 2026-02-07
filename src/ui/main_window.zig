@@ -154,12 +154,20 @@ fn drawCustomMenuBar(
     const has_showcase = manager.hasPanel(.Showcase);
     var cursor_y = menu_rect.min[1] + menu_padding;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Workspace", has_control)) {
-        manager.ensurePanel(.Control);
+        if (has_control) {
+            _ = manager.closePanelByKind(.Control);
+        } else {
+            manager.ensurePanel(.Control);
+        }
         win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
     if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Chat", has_chat)) {
-        manager.ensurePanel(.Chat);
+        if (has_chat) {
+            _ = manager.closePanelByKind(.Chat);
+        } else {
+            manager.ensurePanel(.Chat);
+        }
         win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
