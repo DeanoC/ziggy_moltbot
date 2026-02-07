@@ -50,26 +50,26 @@ pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Option
 fn drawPanelShadow(dc: *draw_context.DrawContext, rect: draw_context.Rect, radius: f32) void {
     const ss = theme_runtime.getStyleSheet();
     if (ss.panel.shadow.color) |shadow_color| {
-        const blur = ss.panel.shadow.blur_px orelse 12.0;
-        const spread = ss.panel.shadow.spread_px orelse 0.0;
+        const blur = @max(0.0, ss.panel.shadow.blur_px orelse 12.0);
+        const spread = @max(0.0, ss.panel.shadow.spread_px orelse 0.0);
         const offset = ss.panel.shadow.offset orelse .{ 0.0, 6.0 };
-        const steps_u8 = ss.panel.shadow.steps orelse 10;
-        const steps: u32 = @max(1, @min(@as(u32, steps_u8), 24));
 
-        var i: u32 = 0;
-        while (i < steps) : (i += 1) {
-            const t01: f32 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(steps));
-            const grow = spread + blur * t01;
-            const rr = draw_context.Rect{
-                .min = .{ rect.min[0] - grow + offset[0], rect.min[1] - grow + offset[1] },
-                .max = .{ rect.max[0] + grow + offset[0], rect.max[1] + grow + offset[1] },
-            };
-            var c = shadow_color;
-            const falloff = (1.0 - t01);
-            c[3] *= (falloff * falloff) * 0.65;
-            if (c[3] <= 0.001) continue;
-            dc.drawRoundedRect(rr, radius + grow, .{ .fill = c });
-        }
+        const shape_rect = draw_context.Rect{
+            .min = .{ rect.min[0] + offset[0] - spread, rect.min[1] + offset[1] - spread },
+            .max = .{ rect.max[0] + offset[0] + spread, rect.max[1] + offset[1] + spread },
+        };
+        const draw_rect = draw_context.Rect{
+            .min = .{ shape_rect.min[0] - blur, shape_rect.min[1] - blur },
+            .max = .{ shape_rect.max[0] + blur, shape_rect.max[1] + blur },
+        };
+
+        const w = shape_rect.max[0] - shape_rect.min[0];
+        const h = shape_rect.max[1] - shape_rect.min[1];
+        const r_max = @min(w, h) * 0.5;
+        const r = @max(0.0, @min(radius + spread, r_max));
+
+        // Single GPU draw using an SDF rounded-rect shader.
+        dc.drawSoftRoundedRect(draw_rect, shape_rect, r, .fill_soft, 0.0, blur, shadow_color);
     }
 }
 
@@ -94,4 +94,3 @@ fn drawPanelFrame(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
         tint,
     );
 }
-

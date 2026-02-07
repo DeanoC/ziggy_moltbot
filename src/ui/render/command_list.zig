@@ -50,6 +50,25 @@ pub const RoundedRectGradientCmd = struct {
     colors: Gradient4,
 };
 
+pub const SoftFxKind = enum(u8) {
+    // Filled rounded rect with a soft edge (used for drop shadows).
+    fill_soft = 0,
+    // Soft stroke around rounded rect edge (used for glow/focus effects).
+    stroke_soft = 1,
+};
+
+pub const SoftRoundedRectCmd = struct {
+    // The quad we render (usually expanded to cover blur).
+    draw_rect: Rect,
+    // The rounded-rect boundary the SDF is computed against.
+    rect: Rect,
+    radius: f32,
+    kind: SoftFxKind,
+    thickness: f32 = 0.0,
+    blur_px: f32 = 0.0,
+    color: Color,
+};
+
 pub const TextCmd = struct {
     text_offset: usize,
     text_len: usize,
@@ -88,6 +107,7 @@ pub const Command = union(enum) {
     rect_gradient: RectGradientCmd,
     rounded_rect: RoundedRectCmd,
     rounded_rect_gradient: RoundedRectGradientCmd,
+    soft_rounded_rect: SoftRoundedRectCmd,
     text: TextCmd,
     line: LineCmd,
     image: ImageCmd,
@@ -160,6 +180,29 @@ pub const CommandList = struct {
     pub fn pushRoundedRectGradient(self: *CommandList, rect: Rect, radius: f32, colors: Gradient4) void {
         _ = self.commands.append(self.allocator, .{
             .rounded_rect_gradient = .{ .rect = rect, .radius = radius, .colors = colors },
+        }) catch {};
+    }
+
+    pub fn pushSoftRoundedRect(
+        self: *CommandList,
+        draw_rect: Rect,
+        rect: Rect,
+        radius: f32,
+        kind: SoftFxKind,
+        thickness: f32,
+        blur_px: f32,
+        color: Color,
+    ) void {
+        _ = self.commands.append(self.allocator, .{
+            .soft_rounded_rect = .{
+                .draw_rect = draw_rect,
+                .rect = rect,
+                .radius = radius,
+                .kind = kind,
+                .thickness = thickness,
+                .blur_px = blur_px,
+                .color = color,
+            },
         }) catch {};
     }
 

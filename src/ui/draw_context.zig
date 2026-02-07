@@ -18,11 +18,17 @@ pub const Gradient4 = struct {
     br: Color,
 };
 
+pub const SoftFxKind = enum(u8) {
+    fill_soft = 0,
+    stroke_soft = 1,
+};
+
 pub const RenderBackend = struct {
     drawRect: *const fn (ctx: *DrawContext, rect: Rect, style: RectStyle) void,
     drawRectGradient: *const fn (ctx: *DrawContext, rect: Rect, colors: Gradient4) void,
     drawRoundedRect: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, style: RectStyle) void,
     drawRoundedRectGradient: *const fn (ctx: *DrawContext, rect: Rect, radius: f32, colors: Gradient4) void,
+    drawSoftRoundedRect: *const fn (ctx: *DrawContext, draw_rect: Rect, rect: Rect, radius: f32, kind: SoftFxKind, thickness: f32, blur_px: f32, color: Color) void,
     drawText: *const fn (ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void,
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
     drawImage: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect) void,
@@ -156,6 +162,19 @@ pub const DrawContext = struct {
         self.render.drawRoundedRectGradient(self, rect, radius, colors);
     }
 
+    pub fn drawSoftRoundedRect(
+        self: *DrawContext,
+        draw_rect: Rect,
+        rect: Rect,
+        radius: f32,
+        kind: SoftFxKind,
+        thickness: f32,
+        blur_px: f32,
+        color: Color,
+    ) void {
+        self.render.drawSoftRoundedRect(self, draw_rect, rect, radius, kind, thickness, blur_px, color);
+    }
+
     pub fn drawText(self: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
         self.render.drawText(self, text, pos, style);
     }
@@ -239,6 +258,7 @@ fn nullDrawRect(_: *DrawContext, _: Rect, _: RectStyle) void {}
 fn nullDrawRectGradient(_: *DrawContext, _: Rect, _: Gradient4) void {}
 fn nullDrawRoundedRect(_: *DrawContext, _: Rect, _: f32, _: RectStyle) void {}
 fn nullDrawRoundedRectGradient(_: *DrawContext, _: Rect, _: f32, _: Gradient4) void {}
+fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxKind, _: f32, _: f32, _: Color) void {}
 fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
@@ -251,6 +271,7 @@ const null_render_backend = RenderBackend{
     .drawRectGradient = nullDrawRectGradient,
     .drawRoundedRect = nullDrawRoundedRect,
     .drawRoundedRectGradient = nullDrawRoundedRectGradient,
+    .drawSoftRoundedRect = nullDrawSoftRoundedRect,
     .drawText = nullDrawText,
     .drawLine = nullDrawLine,
     .drawImage = nullDrawImage,
@@ -297,6 +318,32 @@ fn recordDrawRoundedRectGradient(ctx: *DrawContext, rect: Rect, radius: f32, col
     });
 }
 
+fn recordDrawSoftRoundedRect(
+    ctx: *DrawContext,
+    draw_rect: Rect,
+    rect: Rect,
+    radius: f32,
+    kind: SoftFxKind,
+    thickness: f32,
+    blur_px: f32,
+    color: Color,
+) void {
+    const list = ctx.command_list orelse return;
+    const cmd_kind: command_list.SoftFxKind = switch (kind) {
+        .fill_soft => .fill_soft,
+        .stroke_soft => .stroke_soft,
+    };
+    list.pushSoftRoundedRect(
+        .{ .min = draw_rect.min, .max = draw_rect.max },
+        .{ .min = rect.min, .max = rect.max },
+        radius,
+        cmd_kind,
+        thickness,
+        blur_px,
+        color,
+    );
+}
+
 fn recordDrawText(ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void {
     const list = ctx.command_list orelse return;
     const role = font_system.currentRole();
@@ -340,6 +387,7 @@ const record_render_backend = RenderBackend{
     .drawRectGradient = recordDrawRectGradient,
     .drawRoundedRect = recordDrawRoundedRect,
     .drawRoundedRectGradient = recordDrawRoundedRectGradient,
+    .drawSoftRoundedRect = recordDrawSoftRoundedRect,
     .drawText = recordDrawText,
     .drawLine = recordDrawLine,
     .drawImage = recordDrawImage,

@@ -15,6 +15,7 @@ const Color = command_list.Color;
 const Rect = command_list.Rect;
 const FontRole = command_list.FontRole;
 const Gradient4 = command_list.Gradient4;
+const SoftFxKind = command_list.SoftFxKind;
 
 const ShapeVertex = struct {
     pos: Vec2,
@@ -27,6 +28,24 @@ const TexVertex = struct {
     color: [4]f32,
 };
 
+const SdfVertex = struct {
+    pos: Vec2,
+    // Emscripten wgpu wrapper only exposes float32x2/float32x4 vertex formats,
+    // so we store the param index as a float in `param[0]`.
+    param: [2]f32,
+};
+
+// Must match `FxParams` in `ui.sdf.wgsl` (std430-ish rules; keep 16-byte alignment).
+const SdfFxParams = extern struct {
+    rect_min: Vec2,
+    rect_max: Vec2,
+    radius: f32,
+    kind: u32,
+    thickness: f32,
+    blur_px: f32,
+    color: [4]f32,
+};
+
 const Scissor = struct {
     x: u32,
     y: u32,
@@ -34,7 +53,7 @@ const Scissor = struct {
     height: u32,
 };
 
-const PipelineKind = enum { shape, textured };
+const PipelineKind = enum { shape, sdf, textured };
 
 const RenderItem = struct {
     kind: PipelineKind,
@@ -130,13 +149,22 @@ pub const Renderer = struct {
     shape_pipeline: zgpu.wgpu.RenderPipeline,
     shape_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     shape_bind_group: zgpu.wgpu.BindGroup,
+    sdf_pipeline: zgpu.wgpu.RenderPipeline,
+    sdf_bind_group_layout: zgpu.wgpu.BindGroupLayout,
+    sdf_bind_group: zgpu.wgpu.BindGroup,
+    sdf_param_buffer: zgpu.wgpu.Buffer,
+    sdf_param_capacity: usize,
     texture_pipeline: zgpu.wgpu.RenderPipeline,
     texture_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     shape_vertex_buffer: zgpu.wgpu.Buffer,
     shape_vertex_capacity: usize,
+    sdf_vertex_buffer: zgpu.wgpu.Buffer,
+    sdf_vertex_capacity: usize,
     textured_vertex_buffer: zgpu.wgpu.Buffer,
     textured_vertex_capacity: usize,
     shape_vertices: std.ArrayList(ShapeVertex) = .empty,
+    sdf_vertices: std.ArrayList(SdfVertex) = .empty,
+    sdf_params: std.ArrayList(SdfFxParams) = .empty,
     textured_vertices: std.ArrayList(TexVertex) = .empty,
     render_items: std.ArrayList(RenderItem) = .empty,
     scratch_points: std.ArrayList(Vec2) = .empty,
@@ -190,6 +218,59 @@ pub const Renderer = struct {
             .entries = &shape_bind_group_entries,
         });
 
+        const sdf_param_capacity: usize = 1024;
+        const sdf_param_buffer = device.createBuffer(.{
+            .label = "ui.sdf.params",
+            .usage = .{ .storage = true, .copy_dst = true },
+            .size = sdf_param_capacity * @sizeOf(SdfFxParams),
+        });
+
+        const sdf_bgl_entries = [_]zgpu.wgpu.BindGroupLayoutEntry{
+            .{
+                .binding = 0,
+                .visibility = .{ .vertex = true, .fragment = true },
+                .buffer = .{
+                    .binding_type = .uniform,
+                    .has_dynamic_offset = .false,
+                    .min_binding_size = @sizeOf(Uniforms),
+                },
+            },
+            .{
+                .binding = 1,
+                .visibility = .{ .fragment = true },
+                .buffer = .{
+                    .binding_type = .read_only_storage,
+                    .has_dynamic_offset = .false,
+                    .min_binding_size = @sizeOf(SdfFxParams),
+                },
+            },
+        };
+        const sdf_bind_group_layout = device.createBindGroupLayout(.{
+            .label = "ui.sdf_bgl",
+            .entry_count = sdf_bgl_entries.len,
+            .entries = &sdf_bgl_entries,
+        });
+        const sdf_bind_group_entries = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .buffer = sdf_param_buffer,
+                .offset = 0,
+                .size = sdf_param_capacity * @sizeOf(SdfFxParams),
+            },
+        };
+        const sdf_bind_group = device.createBindGroup(.{
+            .label = "ui.sdf_bg",
+            .layout = sdf_bind_group_layout,
+            .entry_count = sdf_bind_group_entries.len,
+            .entries = &sdf_bind_group_entries,
+        });
+
         const texture_bgl_entries = [_]zgpu.wgpu.BindGroupLayoutEntry{
             .{
                 .binding = 0,
@@ -223,6 +304,13 @@ pub const Renderer = struct {
             .bind_group_layouts = &[_]zgpu.wgpu.BindGroupLayout{shape_bind_group_layout},
         });
         defer shape_pipeline_layout.release();
+
+        const sdf_pipeline_layout = device.createPipelineLayout(.{
+            .label = "ui.sdf_pipeline_layout",
+            .bind_group_layout_count = 1,
+            .bind_group_layouts = &[_]zgpu.wgpu.BindGroupLayout{sdf_bind_group_layout},
+        });
+        defer sdf_pipeline_layout.release();
 
         const texture_pipeline_layout = device.createPipelineLayout(.{
             .label = "ui.texture_pipeline_layout",
@@ -265,6 +353,73 @@ pub const Renderer = struct {
         ;
         const shape_shader = zgpu.createWgslShaderModule(device, shape_shader_src, "ui.shape.wgsl");
         defer shape_shader.release();
+
+        const sdf_shader_src: [:0]const u8 =
+            \\struct Uniforms {
+            \\    screen_size: vec2<f32>,
+            \\}
+            \\
+            \\struct FxParams {
+            \\    rect_min: vec2<f32>,
+            \\    rect_max: vec2<f32>,
+            \\    radius: f32,
+            \\    kind: u32,
+            \\    thickness: f32,
+            \\    blur_px: f32,
+            \\    color: vec4<f32>,
+            \\}
+            \\
+            \\@group(0) @binding(0) var<uniform> u: Uniforms;
+            \\@group(0) @binding(1) var<storage, read> params: array<FxParams>;
+            \\
+            \\struct VertexInput {
+            \\    @location(0) pos: vec2<f32>,
+            \\    @location(1) param: vec2<f32>,
+            \\};
+            \\
+            \\struct VertexOutput {
+            \\    @builtin(position) pos: vec4<f32>,
+            \\    @location(0) pos_px: vec2<f32>,
+            \\    @location(1) @interpolate(flat) param_index: u32,
+            \\};
+            \\
+            \\fn sdRoundRect(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+            \\    let r = max(0.0, radius);
+            \\    let hs = max(half_size, vec2<f32>(0.0, 0.0));
+            \\    let q = abs(p) - (hs - vec2<f32>(r, r));
+            \\    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+            \\}
+            \\
+            \\@vertex
+            \\fn vs_main(input: VertexInput) -> VertexOutput {
+            \\    var out: VertexOutput;
+            \\    let ndc_x = (input.pos.x / u.screen_size.x) * 2.0 - 1.0;
+            \\    let ndc_y = 1.0 - (input.pos.y / u.screen_size.y) * 2.0;
+            \\    out.pos = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+            \\    out.pos_px = input.pos;
+            \\    out.param_index = u32(input.param.x + 0.5);
+            \\    return out;
+            \\}
+            \\
+            \\@fragment
+            \\fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+            \\    let p = params[input.param_index];
+            \\    let center = (p.rect_min + p.rect_max) * 0.5;
+            \\    let half_size = (p.rect_max - p.rect_min) * 0.5;
+            \\    let d = sdRoundRect(input.pos_px - center, half_size, p.radius);
+            \\    let blur = max(0.0001, p.blur_px);
+            \\    var a: f32 = 0.0;
+            \\    if (p.kind == 0u) { // fill_soft
+            \\        a = smoothstep(blur, 0.0, d);
+            \\    } else { // stroke_soft
+            \\        let half_t = max(0.0, p.thickness) * 0.5;
+            \\        a = smoothstep(blur, 0.0, abs(d) - half_t);
+            \\    }
+            \\    return vec4<f32>(p.color.rgb, p.color.a * a);
+            \\}
+        ;
+        const sdf_shader = zgpu.createWgslShaderModule(device, sdf_shader_src, "ui.sdf.wgsl");
+        defer sdf_shader.release();
 
         const textured_shader_src: [:0]const u8 =
             \\struct Uniforms {
@@ -317,6 +472,16 @@ pub const Renderer = struct {
             .attributes = &shape_vertex_attrs,
         }};
 
+        const sdf_vertex_attrs = [_]zgpu.wgpu.VertexAttribute{
+            .{ .format = .float32x2, .offset = 0, .shader_location = 0 },
+            .{ .format = .float32x2, .offset = @sizeOf(Vec2), .shader_location = 1 },
+        };
+        const sdf_vertex_buffers = [_]zgpu.wgpu.VertexBufferLayout{.{
+            .array_stride = @sizeOf(SdfVertex),
+            .attribute_count = sdf_vertex_attrs.len,
+            .attributes = &sdf_vertex_attrs,
+        }};
+
         const textured_vertex_attrs = [_]zgpu.wgpu.VertexAttribute{
             .{ .format = .float32x2, .offset = 0, .shader_location = 0 },
             .{ .format = .float32x2, .offset = @sizeOf(Vec2), .shader_location = 1 },
@@ -365,6 +530,24 @@ pub const Renderer = struct {
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
 
+        const sdf_pipeline = device.createRenderPipeline(.{
+            .label = "ui.sdf.pipeline",
+            .layout = sdf_pipeline_layout,
+            .vertex = .{
+                .module = sdf_shader,
+                .entry_point = "vs_main",
+                .buffer_count = sdf_vertex_buffers.len,
+                .buffers = &sdf_vertex_buffers,
+            },
+            .fragment = &.{
+                .module = sdf_shader,
+                .entry_point = "fs_main",
+                .target_count = color_target.len,
+                .targets = &color_target,
+            },
+            .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+        });
+
         const texture_pipeline = device.createRenderPipeline(.{
             .label = "ui.texture.pipeline",
             .layout = texture_pipeline_layout,
@@ -389,6 +572,11 @@ pub const Renderer = struct {
             .usage = .{ .vertex = true, .copy_dst = true },
             .size = initial_capacity * @sizeOf(ShapeVertex),
         });
+        const sdf_vertex_buffer = device.createBuffer(.{
+            .label = "ui.sdf.vertices",
+            .usage = .{ .vertex = true, .copy_dst = true },
+            .size = initial_capacity * @sizeOf(SdfVertex),
+        });
         const textured_vertex_buffer = device.createBuffer(.{
             .label = "ui.texture.vertices",
             .usage = .{ .vertex = true, .copy_dst = true },
@@ -403,12 +591,21 @@ pub const Renderer = struct {
             .shape_pipeline = shape_pipeline,
             .shape_bind_group_layout = shape_bind_group_layout,
             .shape_bind_group = shape_bind_group,
+            .sdf_pipeline = sdf_pipeline,
+            .sdf_bind_group_layout = sdf_bind_group_layout,
+            .sdf_bind_group = sdf_bind_group,
+            .sdf_param_buffer = sdf_param_buffer,
+            .sdf_param_capacity = sdf_param_capacity,
             .texture_pipeline = texture_pipeline,
             .texture_bind_group_layout = texture_bind_group_layout,
             .shape_vertex_buffer = shape_vertex_buffer,
             .shape_vertex_capacity = initial_capacity,
+            .sdf_vertex_buffer = sdf_vertex_buffer,
+            .sdf_vertex_capacity = initial_capacity,
             .textured_vertex_buffer = textured_vertex_buffer,
             .textured_vertex_capacity = initial_capacity,
+            .sdf_vertices = std.ArrayList(SdfVertex).empty,
+            .sdf_params = std.ArrayList(SdfFxParams).empty,
             .font_atlases = std.AutoHashMap(FontKey, FontAtlas).init(allocator),
             .image_textures = std.AutoHashMap(u32, ImageTexture).init(allocator),
         };
@@ -436,14 +633,21 @@ pub const Renderer = struct {
         }
 
         self.shape_vertex_buffer.release();
+        self.sdf_vertex_buffer.release();
         self.textured_vertex_buffer.release();
+        self.sdf_param_buffer.release();
         self.uniform_buffer.release();
         self.shape_bind_group.release();
         self.shape_bind_group_layout.release();
+        self.sdf_bind_group.release();
+        self.sdf_bind_group_layout.release();
         self.texture_bind_group_layout.release();
         self.shape_pipeline.release();
+        self.sdf_pipeline.release();
         self.texture_pipeline.release();
         self.shape_vertices.deinit(self.allocator);
+        self.sdf_vertices.deinit(self.allocator);
+        self.sdf_params.deinit(self.allocator);
         self.textured_vertices.deinit(self.allocator);
         self.render_items.deinit(self.allocator);
         self.scratch_points.deinit(self.allocator);
@@ -456,6 +660,8 @@ pub const Renderer = struct {
         self.screen_width = if (width > 0) width else 1;
         self.screen_height = if (height > 0) height else 1;
         self.shape_vertices.clearRetainingCapacity();
+        self.sdf_vertices.clearRetainingCapacity();
+        self.sdf_params.clearRetainingCapacity();
         self.textured_vertices.clearRetainingCapacity();
         self.render_items.clearRetainingCapacity();
         self.scratch_points.clearRetainingCapacity();
@@ -466,6 +672,8 @@ pub const Renderer = struct {
         const zone = profiler.zone("wgpu.record");
         defer zone.end();
         self.shape_vertices.clearRetainingCapacity();
+        self.sdf_vertices.clearRetainingCapacity();
+        self.sdf_params.clearRetainingCapacity();
         self.textured_vertices.clearRetainingCapacity();
         self.render_items.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
@@ -533,6 +741,10 @@ pub const Renderer = struct {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     self.pushRoundedRectGradient(rect_cmd.rect, rect_cmd.radius, rect_cmd.colors, current_scissor);
                 },
+                .soft_rounded_rect => |fx_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushSoftRoundedRect(fx_cmd, current_scissor);
+                },
                 .line => |line_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     self.pushLine(line_cmd.from, line_cmd.to, line_cmd.width, line_cmd.color, current_scissor);
@@ -559,6 +771,8 @@ pub const Renderer = struct {
         if (self.render_items.items.len == 0) return;
 
         self.ensureShapeCapacity(self.shape_vertices.items.len);
+        self.ensureSdfVertexCapacity(self.sdf_vertices.items.len);
+        self.ensureSdfParamCapacity(self.sdf_params.items.len);
         self.ensureTexturedCapacity(self.textured_vertices.items.len);
 
         const uniforms = Uniforms{
@@ -570,6 +784,12 @@ pub const Renderer = struct {
         self.queue.writeBuffer(self.uniform_buffer, 0, Uniforms, &[_]Uniforms{uniforms});
         if (self.shape_vertices.items.len > 0) {
             self.queue.writeBuffer(self.shape_vertex_buffer, 0, ShapeVertex, self.shape_vertices.items);
+        }
+        if (self.sdf_vertices.items.len > 0) {
+            self.queue.writeBuffer(self.sdf_vertex_buffer, 0, SdfVertex, self.sdf_vertices.items);
+        }
+        if (self.sdf_params.items.len > 0) {
+            self.queue.writeBuffer(self.sdf_param_buffer, 0, SdfFxParams, self.sdf_params.items);
         }
         if (self.textured_vertices.items.len > 0) {
             self.queue.writeBuffer(self.textured_vertex_buffer, 0, TexVertex, self.textured_vertices.items);
@@ -589,6 +809,12 @@ pub const Renderer = struct {
                         pass.setBindGroup(0, self.shape_bind_group, null);
                         const shape_bytes: u64 = @intCast(self.shape_vertices.items.len * @sizeOf(ShapeVertex));
                         pass.setVertexBuffer(0, self.shape_vertex_buffer, 0, shape_bytes);
+                    },
+                    .sdf => {
+                        pass.setPipeline(self.sdf_pipeline);
+                        pass.setBindGroup(0, self.sdf_bind_group, null);
+                        const sdf_bytes: u64 = @intCast(self.sdf_vertices.items.len * @sizeOf(SdfVertex));
+                        pass.setVertexBuffer(0, self.sdf_vertex_buffer, 0, sdf_bytes);
                     },
                     .textured => {
                         pass.setPipeline(self.texture_pipeline);
@@ -628,6 +854,55 @@ pub const Renderer = struct {
             .size = next_capacity * @sizeOf(ShapeVertex),
         });
         self.shape_vertex_capacity = next_capacity;
+    }
+
+    fn ensureSdfVertexCapacity(self: *Renderer, needed: usize) void {
+        if (needed <= self.sdf_vertex_capacity) return;
+        var next_capacity = if (self.sdf_vertex_capacity > 0) self.sdf_vertex_capacity else 1024;
+        while (next_capacity < needed) : (next_capacity *= 2) {}
+        self.sdf_vertex_buffer.release();
+        self.sdf_vertex_buffer = self.device.createBuffer(.{
+            .label = "ui.sdf.vertices",
+            .usage = .{ .vertex = true, .copy_dst = true },
+            .size = next_capacity * @sizeOf(SdfVertex),
+        });
+        self.sdf_vertex_capacity = next_capacity;
+    }
+
+    fn ensureSdfParamCapacity(self: *Renderer, needed: usize) void {
+        if (needed <= self.sdf_param_capacity) return;
+        var next_capacity = if (self.sdf_param_capacity > 0) self.sdf_param_capacity else 1024;
+        while (next_capacity < needed) : (next_capacity *= 2) {}
+        self.sdf_param_buffer.release();
+        self.sdf_param_buffer = self.device.createBuffer(.{
+            .label = "ui.sdf.params",
+            .usage = .{ .storage = true, .copy_dst = true },
+            .size = next_capacity * @sizeOf(SdfFxParams),
+        });
+        self.sdf_param_capacity = next_capacity;
+
+        // Rebind to the resized params buffer.
+        self.sdf_bind_group.release();
+        const entries = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .buffer = self.sdf_param_buffer,
+                .offset = 0,
+                .size = self.sdf_param_capacity * @sizeOf(SdfFxParams),
+            },
+        };
+        self.sdf_bind_group = self.device.createBindGroup(.{
+            .label = "ui.sdf_bg",
+            .layout = self.sdf_bind_group_layout,
+            .entry_count = entries.len,
+            .entries = &entries,
+        });
     }
 
     fn ensureTexturedCapacity(self: *Renderer, needed: usize) void {
@@ -717,6 +992,31 @@ pub const Renderer = struct {
             self.appendShapeTriangleColors(center, a, b, center_color, ca, cb);
         }
         self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
+    fn pushSoftRoundedRect(self: *Renderer, cmd: command_list.SoftRoundedRectCmd, scissor: Scissor) void {
+        const start = self.sdf_vertices.items.len;
+        const param_index: u32 = @intCast(self.sdf_params.items.len);
+        const kind_u32: u32 = switch (cmd.kind) {
+            .fill_soft => 0,
+            .stroke_soft => 1,
+        };
+        _ = self.sdf_params.append(self.allocator, .{
+            .rect_min = cmd.rect.min,
+            .rect_max = cmd.rect.max,
+            .radius = cmd.radius,
+            .kind = kind_u32,
+            .thickness = cmd.thickness,
+            .blur_px = cmd.blur_px,
+            .color = cmd.color,
+        }) catch {};
+
+        const p0 = cmd.draw_rect.min;
+        const p1 = .{ cmd.draw_rect.max[0], cmd.draw_rect.min[1] };
+        const p2 = cmd.draw_rect.max;
+        const p3 = .{ cmd.draw_rect.min[0], cmd.draw_rect.max[1] };
+        self.appendSdfQuad(p0, p1, p2, p3, param_index);
+        self.pushRenderItem(.sdf, start, self.sdf_vertices.items.len - start, scissor, null);
     }
 
     fn pushRoundedRectStroke(
@@ -932,6 +1232,17 @@ pub const Renderer = struct {
     ) void {
         self.appendShapeTriangleColors(p0, p1, p2, c0, c1, c2);
         self.appendShapeTriangleColors(p0, p2, p3, c0, c2, c3);
+    }
+
+    fn appendSdfQuad(self: *Renderer, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, param_index: u32) void {
+        const idx: f32 = @floatFromInt(param_index);
+        const p = .{ idx, 0.0 };
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p0, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p1, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p2, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p0, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p2, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p3, .param = p }) catch {};
     }
 
     fn appendShapeLineQuad(self: *Renderer, from: Vec2, to: Vec2, width: f32, color: Color) void {

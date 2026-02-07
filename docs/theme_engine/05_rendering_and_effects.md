@@ -98,8 +98,8 @@ If “materials” feels too big initially, implement in slices:
   - Renderer implementation expands into 9 quads with appropriate UVs.
 - Implemented: **Soft shadows and glows** (approximation)
   - StyleSheet `panel.shadow` and `focus_ring.glow`.
-  - Current implementation is layered fills/strokes using existing primitives (portable across native/wasm/android).
-  - Future optimization: collapse into a dedicated material/shader to reduce command count and improve quality.
+  - Current implementation uses a dedicated **SDF rounded-rect shader** (single draw per shadow/glow).
+  - This keeps the API portable across native/wasm/android while staying “GPU powered”.
 
 ## Performance Notes
 

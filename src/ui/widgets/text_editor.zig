@@ -200,43 +200,31 @@ fn drawFocusRing(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *co
     const color = ss.focus_ring.color orelse t.colors.primary;
     if (thickness <= 0.0) return;
 
-    // Optional outer glow (layered strokes).
-    if (ss.focus_ring.glow.color) |glow_color| {
-        const blur = ss.focus_ring.glow.blur_px orelse 14.0;
-        const spread = ss.focus_ring.glow.spread_px orelse 0.0;
-        const offset = ss.focus_ring.glow.offset orelse .{ 0.0, 0.0 };
-        const steps_u8 = ss.focus_ring.glow.steps orelse 10;
-        const steps: u32 = @max(1, @min(@as(u32, steps_u8), 24));
-
-        // Ensure the thickest glow stays outside the control rect.
-        const max_thickness = thickness + (blur + spread) * 2.0;
-        const inset_glow: f32 = max_thickness * 0.5;
-        const glow_rect = draw_context.Rect{
-            .min = .{ rect.min[0] - inset_glow + offset[0], rect.min[1] - inset_glow + offset[1] },
-            .max = .{ rect.max[0] + inset_glow + offset[0], rect.max[1] + inset_glow + offset[1] },
-        };
-
-        var i: u32 = 0;
-        while (i < steps) : (i += 1) {
-            const t01: f32 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(steps));
-            // From outer (thick, faint) to inner (thinner, stronger).
-            const th = thickness + (blur + spread) * (1.0 - t01) * 2.0;
-            var c = glow_color;
-            c[3] *= (t01 * t01) * 0.55;
-            if (c[3] <= 0.001 or th <= thickness) continue;
-            ctx.drawRoundedRect(glow_rect, t.radius.md + inset_glow, .{
-                .fill = null,
-                .stroke = c,
-                .thickness = th,
-            });
-        }
-    }
-
     const inset: f32 = thickness * 0.5;
     const ring_rect = draw_context.Rect{
         .min = .{ rect.min[0] - inset, rect.min[1] - inset },
         .max = .{ rect.max[0] + inset, rect.max[1] + inset },
     };
+
+    // Optional outer glow (single SDF GPU draw).
+    if (ss.focus_ring.glow.color) |glow_color| {
+        const blur = @max(0.0, ss.focus_ring.glow.blur_px orelse 14.0);
+        const spread = @max(0.0, ss.focus_ring.glow.spread_px orelse 0.0);
+        const offset = ss.focus_ring.glow.offset orelse .{ 0.0, 0.0 };
+        const glow_thickness = thickness + spread * 2.0;
+        const expand = glow_thickness * 0.5 + blur;
+
+        const boundary_rect = draw_context.Rect{
+            .min = .{ ring_rect.min[0] + offset[0], ring_rect.min[1] + offset[1] },
+            .max = .{ ring_rect.max[0] + offset[0], ring_rect.max[1] + offset[1] },
+        };
+        const draw_rect = draw_context.Rect{
+            .min = .{ boundary_rect.min[0] - expand, boundary_rect.min[1] - expand },
+            .max = .{ boundary_rect.max[0] + expand, boundary_rect.max[1] + expand },
+        };
+        ctx.drawSoftRoundedRect(draw_rect, boundary_rect, t.radius.md + inset, .stroke_soft, glow_thickness, blur, glow_color);
+    }
+
     ctx.drawRoundedRect(ring_rect, t.radius.md + inset, .{
         .fill = null,
         .stroke = color,
