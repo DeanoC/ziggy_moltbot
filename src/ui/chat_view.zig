@@ -330,55 +330,75 @@ pub fn drawCustom(
     const total_items: usize = visible_count + stream_count;
     var item_index: usize = 0;
 
+    // Virtualization/clip (MVP): avoid measuring/layouting every message every frame.
+    // We only measure within an extended viewport; far-off items use cached or estimated heights.
+    const view_top = state.scroll_y;
+    const view_bottom = state.scroll_y + rect.size()[1];
+    const overscan = rect.size()[1];
+    const ext_top = if (view_top > overscan) view_top - overscan else 0.0;
+    const ext_bottom = view_bottom + overscan;
+
     var idx: usize = 0;
     while (idx < messages.len) : (idx += 1) {
         const msg = messages[idx];
         if (shouldSkipMessage(msg, inbox, opts.show_tool_output)) continue;
         const align_right = std.mem.eql(u8, msg.role, "user");
-        const cache = ensureMessageCache(
-            allocator,
-            state,
-            ctx,
-            msg,
-            bubble_width,
-            line_height,
-            padding,
-        );
-        const view_top = state.scroll_y;
-        const view_bottom = state.scroll_y + rect.size()[1];
-        const bubble_top = content_y;
-        const bubble_bottom = content_y + cache.height;
-        const visible = !(bubble_bottom < view_top or bubble_top > view_bottom);
 
-        var layout_height = cache.height;
-        var layout_text_len = cache.text_len;
-        if (visible) {
-            const layout = drawMessage(
+        const bubble_top = content_y;
+
+        const cached: ?MessageCache = if (state.message_cache) |*map| blk: {
+            if (map.getPtr(msg.id)) |ptr| break :blk ptr.*;
+            break :blk null;
+        } else null;
+
+        var layout_height: f32 = if (cached) |c| c.height else estimateMessageHeight(line_height, padding, msg.attachments);
+        var layout_text_len: usize = if (cached) |c| c.text_len else msg.content.len;
+
+        var bubble_bottom = content_y + layout_height;
+        const near = !(bubble_bottom < ext_top or bubble_top > ext_bottom);
+        if (near) {
+            const cache = ensureMessageCache(
                 allocator,
+                state,
                 ctx,
-                rect,
-                msg.id,
-                msg.role,
-                msg.content,
-                msg.timestamp,
-                now_ms,
-                msg.attachments,
-                align_right,
+                msg,
                 bubble_width,
                 line_height,
                 padding,
-                content_y,
-                state.scroll_y,
-                doc_base,
-                selection,
-                mouse_pos,
             );
-            if (hover_doc_index == null and layout.hover_index != null) {
-                hover_doc_index = layout.hover_index;
+            layout_height = cache.height;
+            layout_text_len = cache.text_len;
+            bubble_bottom = content_y + layout_height;
+
+            const visible = !(bubble_bottom < view_top or bubble_top > view_bottom);
+            if (visible) {
+                const layout = drawMessage(
+                    allocator,
+                    ctx,
+                    rect,
+                    msg.id,
+                    msg.role,
+                    msg.content,
+                    msg.timestamp,
+                    now_ms,
+                    msg.attachments,
+                    align_right,
+                    bubble_width,
+                    line_height,
+                    padding,
+                    content_y,
+                    state.scroll_y,
+                    doc_base,
+                    selection,
+                    mouse_pos,
+                );
+                if (hover_doc_index == null and layout.hover_index != null) {
+                    hover_doc_index = layout.hover_index;
+                }
+                layout_height = layout.height;
+                layout_text_len = layout.text_len;
+                updateMessageCache(state, msg.id, cache, layout_height, layout_text_len);
             }
-            layout_height = layout.height;
-            layout_text_len = layout.text_len;
-            updateMessageCache(state, msg.id, cache, layout_height, layout_text_len);
         }
 
         content_y += layout_height + t.spacing.sm;
@@ -844,6 +864,25 @@ fn attachmentStateHash(attachments: ?[]const types.ChatAttachment) u64 {
         }
     }
     return hasher.final();
+}
+
+fn estimateMessageHeight(line_height: f32, padding: f32, attachments: ?[]const types.ChatAttachment) f32 {
+    // Cheap estimate used for far-off items when we don't want to measure.
+    // Over-estimation is generally safer than under-estimation (less likely to "skip" visibility).
+    const header_height = line_height;
+    const header_gap = theme.activeTheme().spacing.xs;
+    const approx_lines: f32 = 3.0;
+    var attachments_height: f32 = 0.0;
+    if (attachments) |items| {
+        // Roughly: one line per non-image attachment, plus a fixed block for images.
+        var non_images: f32 = 0.0;
+        var images: f32 = 0.0;
+        for (items) |a| {
+            if (isImageAttachment(a)) images += 1.0 else non_images += 1.0;
+        }
+        attachments_height = non_images * (line_height + header_gap) + images * 200.0;
+    }
+    return padding * 2.0 + header_height + header_gap + approx_lines * line_height + attachments_height;
 }
 
 fn ensureMessageCache(
