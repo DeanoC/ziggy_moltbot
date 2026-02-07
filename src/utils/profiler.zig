@@ -34,6 +34,10 @@ const ztracy = if (tracy_enabled) @import("ztracy") else struct {
     }
 
     pub inline fn FrameMark() void {}
+
+    pub inline fn PlotF(_: [*:0]const u8, _: f64) void {}
+    pub inline fn PlotU(_: [*:0]const u8, _: u64) void {}
+    pub inline fn PlotI(_: [*:0]const u8, _: i64) void {}
 };
 
 pub const Zone = if (tracy_enabled) struct {
@@ -75,5 +79,23 @@ pub inline fn frameMark() void {
 pub inline fn setThreadName(comptime name: [:0]const u8) void {
     if (tracy_enabled) {
         ztracy.SetThreadName(name.ptr);
+    }
+}
+
+pub inline fn plotF(comptime name: [:0]const u8, value: f64) void {
+    if (tracy_enabled) {
+        ztracy.PlotF(name.ptr, value);
+    }
+}
+
+pub inline fn plotU(comptime name: [:0]const u8, value: u64) void {
+    if (tracy_enabled) {
+        ztracy.PlotU(name.ptr, value);
+    }
+}
+
+pub inline fn plotI(comptime name: [:0]const u8, value: i64) void {
+    if (tracy_enabled) {
+        ztracy.PlotI(name.ptr, value);
     }
 }

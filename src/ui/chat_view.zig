@@ -383,7 +383,16 @@ pub fn drawCustom(
     const now_ms = std.time.milliTimestamp();
     const selection = selectionRange(state);
     var hover_doc_index: ?usize = null;
+    var visible_messages: u64 = 0;
+    var measures_per_frame: u64 = 0;
 
+    var timer = std.time.Timer.start() catch null;
+    var mark0: u64 = 0;
+    var mark1: u64 = 0;
+    var mark2: u64 = 0;
+    if (timer) |*t0| mark0 = t0.read();
+
+    const layout_zone = profiler.zone(@src(), "chat.layout");
     ensureVirtualState(
         allocator,
         state,
@@ -421,12 +430,18 @@ pub fn drawCustom(
     const first = findFirstVisibleIndex(&state.virt, padding, ext_top);
     const last_excl = findFirstTopAfterIndex(&state.virt, padding, ext_bottom);
 
+    layout_zone.end();
+    if (timer) |*t1| mark1 = t1.read();
+
+    const render_zone = profiler.zone(@src(), "chat.render");
+
     var i: usize = first;
     while (i < last_excl and i < total_items) : (i += 1) {
         const item = state.virt.items.items[i];
         const item_top = padding + state.virt.prefix_strides.items[i];
         const item_bottom = item_top + item.height;
         const visible = !(item_bottom < view_top or item_top > view_bottom);
+        if (visible) visible_messages += 1;
 
         const doc_base = state.virt.prefix_doc_units.items[i];
 
@@ -455,6 +470,7 @@ pub fn drawCustom(
                         doc_base,
                         selection,
                         mouse_pos,
+                        &measures_per_frame,
                     );
                     if (hover_doc_index == null and layout.hover_index != null) {
                         hover_doc_index = layout.hover_index;
@@ -473,6 +489,7 @@ pub fn drawCustom(
                         bubble_width,
                         line_height,
                         padding,
+                        &measures_per_frame,
                     );
                     if (cache.height != item.height or cache.text_len != item.text_len) {
                         virtualUpdateItemMetrics(state, i, cache.height, cache.text_len, gap, separator_len);
@@ -501,6 +518,7 @@ pub fn drawCustom(
                             doc_base,
                             selection,
                             mouse_pos,
+                            &measures_per_frame,
                         );
                         if (hover_doc_index == null and layout.hover_index != null) {
                             hover_doc_index = layout.hover_index;
@@ -517,6 +535,7 @@ pub fn drawCustom(
                             bubble_width,
                             line_height,
                             padding,
+                            &measures_per_frame,
                         );
                         if (layout.height != item.height or layout.text_len != item.text_len) {
                             virtualUpdateItemMetrics(state, i, layout.height, layout.text_len, gap, separator_len);
@@ -526,6 +545,8 @@ pub fn drawCustom(
             },
         }
     }
+    render_zone.end();
+    if (timer) |*t2| mark2 = t2.read();
 
     // Recompute after any height updates.
     content_height = virtualContentHeight(&state.virt, padding, gap);
@@ -642,6 +663,23 @@ pub fn drawCustom(
     if (state.follow_tail and (!user_scrolled or content_changed or force_to_bottom)) {
         state.scroll_y = max_scroll;
     }
+
+    const layout_ms: f64 = if (timer != null and mark1 >= mark0)
+        @as(f64, @floatFromInt(mark1 - mark0)) / 1_000_000.0
+    else
+        0.0;
+    const render_ms: f64 = if (timer != null and mark2 >= mark1)
+        @as(f64, @floatFromInt(mark2 - mark1)) / 1_000_000.0
+    else
+        0.0;
+
+    profiler.plotU("chat.total_messages", @intCast(messages.len));
+    profiler.plotU("chat.total_items", @intCast(total_items));
+    profiler.plotU("chat.window_items", @intCast(last_excl - first));
+    profiler.plotU("chat.visible_messages", visible_messages);
+    profiler.plotU("chat.measures_per_frame", measures_per_frame);
+    profiler.plotF("chat.layout_ms", layout_ms);
+    profiler.plotF("chat.render_ms", render_ms);
 
     drawScrollbar(ctx, rect, state.scroll_y, max_scroll);
 }
@@ -1014,8 +1052,10 @@ fn drawMessage(
     doc_base: usize,
     selection: ?[2]usize,
     mouse_pos: [2]f32,
-) MessageLayout {
+    measures_per_frame: ?*u64,
+) MessageLayout { 
     _ = id;
+    if (measures_per_frame) |counter| counter.* += 1;
     const t = theme.activeTheme();
     const bubble = components.composite.message_bubble.bubbleColors(role, t);
     const bubble_x = if (align_right)
@@ -1289,6 +1329,7 @@ fn ensureMessageCache(
     bubble_width: f32,
     line_height: f32,
     padding: f32,
+    measures_per_frame: ?*u64,
 ) MessageCache {
     const cache_map = ensureMessageCacheMap(state, allocator);
     const content_len = msg.content.len;
@@ -1316,6 +1357,7 @@ fn ensureMessageCache(
         bubble_width,
         line_height,
         padding,
+        measures_per_frame,
     );
     const new_cache = MessageCache{
         .content_len = content_len,
@@ -1338,7 +1380,9 @@ fn measureMessageLayout(
     bubble_width: f32,
     line_height: f32,
     padding: f32,
+    measures_per_frame: ?*u64,
 ) MessageLayout {
+    if (measures_per_frame) |counter| counter.* += 1;
     var display = buildDisplayText(allocator, content);
     defer display.deinit(allocator);
 
