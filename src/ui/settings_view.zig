@@ -10,6 +10,7 @@ const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
@@ -766,10 +767,14 @@ fn calcUpdatesHeight(
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
     const t = theme.activeTheme();
+    const ss = theme_runtime.getStyleSheet();
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    const radius = ss.panel.radius orelse t.radius.md;
+    const fill = ss.panel.fill orelse t.colors.surface;
+    const border = ss.panel.border orelse t.colors.border;
+    dc.drawRoundedRect(rect, radius, .{ .fill = fill, .stroke = border, .thickness = 1.0 });
     theme.push(.heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();

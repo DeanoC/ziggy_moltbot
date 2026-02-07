@@ -6,6 +6,7 @@ const input_events = @import("../input/input_events.zig");
 const text_input_backend = @import("../input/text_input_backend.zig");
 const clipboard = @import("../clipboard.zig");
 const theme = @import("../theme.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const Options = struct {
     submit_on_enter: bool = true,
@@ -148,6 +149,9 @@ pub const TextEditor = struct {
             ensureCaretVisible(self, caret_pos[1], line_height, view_height, max_scroll);
         }
 
+        if (self.focused) {
+            drawFocusRing(ctx, rect, t);
+        }
         drawBackground(ctx, rect, t);
         ctx.pushClip(rect);
         defer ctx.popClip();
@@ -187,6 +191,24 @@ fn drawBackground(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *c
         .fill = t.colors.surface,
         .stroke = t.colors.border,
         .thickness = 1.0,
+    });
+}
+
+fn drawFocusRing(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *const theme.Theme) void {
+    const ss = theme_runtime.getStyleSheet();
+    const thickness = ss.focus_ring.thickness orelse 2.0;
+    const color = ss.focus_ring.color orelse t.colors.primary;
+    if (thickness <= 0.0) return;
+
+    const inset: f32 = thickness * 0.5;
+    const ring_rect = draw_context.Rect{
+        .min = .{ rect.min[0] - inset, rect.min[1] - inset },
+        .max = .{ rect.max[0] + inset, rect.max[1] + inset },
+    };
+    ctx.drawRoundedRect(ring_rect, t.radius.md + inset, .{
+        .fill = null,
+        .stroke = color,
+        .thickness = thickness,
     });
 }
 
