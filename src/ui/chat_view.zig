@@ -332,9 +332,6 @@ pub fn drawCustom(
 
     // Virtualization/clip (MVP): avoid measuring/layouting every message every frame.
     // We only measure within an extended viewport; far-off items use cached or estimated heights.
-    // NOTE: We still walk the full message list to accumulate layout/doc offsets (O(N) per frame).
-    // Next step per docs/spec_zsc_chat_virtualization.md: windowed rendering with top/bottom spacers
-    // + prefix sums / seeking so steady-state work is ~O(visible + overscan).
     const view_top = state.scroll_y;
     const view_bottom = state.scroll_y + rect.size()[1];
     const overscan = rect.size()[1];
