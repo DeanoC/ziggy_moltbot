@@ -631,17 +631,29 @@ pub fn main() !void {
 
                 // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
                 // We also keep the wrapper process alive (bWaitOnReturn=True) so Task Scheduler stop/status work.
+                // IMPORTANT: Task Scheduler can report "Running" even if the child process is crashing.
+                // We append wrapper diagnostics to the same node.log so users have something to inspect.
                 const vbs = try std.fmt.allocPrint(
                     allocator,
                     "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
                         "Set env=sh.Environment(\"Process\")\r\n" ++
+                        "Set fso=CreateObject(\"Scripting.FileSystemObject\")\r\n" ++
+                        "Sub LogLine(s)\r\n" ++
+                        "  On Error Resume Next\r\n" ++
+                        "  Set lf=fso.OpenTextFile(\"{s}\", 8, True)\r\n" ++
+                        "  lf.WriteLine Now & \" [wrapper] \" & s\r\n" ++
+                        "  lf.Close\r\n" ++
+                        "End Sub\r\n" ++
                         "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
                         "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
+                        "LogLine \"starting\"\r\n" ++
                         "Do\r\n" ++
+                        "  LogLine \"launching node\"\r\n" ++
                         "  rc = sh.Run(\"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator\", 0, True)\r\n" ++
+                        "  LogLine \"node exited rc=\" & rc\r\n" ++
                         "  WScript.Sleep 5000\r\n" ++
                         "Loop\r\n",
-                    .{ log_path, exe_path, node_cfg_path },
+                    .{ log_path, log_path, exe_path, node_cfg_path },
                 );
                 defer allocator.free(vbs);
 
