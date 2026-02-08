@@ -79,6 +79,24 @@ pub const ThemeEngine = struct {
     active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget()),
     styles: style_sheet.StyleSheetStore,
     windows: ?[]schema.WindowTemplate = null,
+    // Pack-owned copies of manifest metadata/defaults so cached packs can be re-activated
+    // without re-reading JSON from disk.
+    pack_meta_set: bool = false,
+    pack_meta_id: ?[]u8 = null,
+    pack_meta_name: ?[]u8 = null,
+    pack_meta_author: ?[]u8 = null,
+    pack_meta_license: ?[]u8 = null,
+    pack_meta_defaults_variant: ?[]u8 = null,
+    pack_meta_defaults_profile: ?[]u8 = null,
+    pack_meta_requires_multi_window: bool = false,
+    pack_meta_requires_custom_shaders: bool = false,
+    render_defaults: runtime.RenderDefaults = .{},
+    workspace_layouts: [4]runtime.WorkspaceLayoutPreset = .{ .{}, .{}, .{}, .{} },
+    workspace_layouts_set: [4]bool = .{ false, false, false, false },
+
+    // Cache of previously loaded packs (keyed by raw pack path). The currently-active pack
+    // lives in the ThemeEngine fields above and is not stored in this map.
+    pack_cache: std.StringHashMapUnmanaged(PackState) = .{},
 
     // Web (Emscripten) theme pack loading is async; we keep a single in-flight job.
     web_job: ?*WebPackJob = null,
@@ -106,6 +124,88 @@ pub const ThemeEngine = struct {
         }
     };
 
+    const PackState = struct {
+        runtime_light: ?*theme_tokens.Theme = null,
+        runtime_dark: ?*theme_tokens.Theme = null,
+        pack_tokens_light: ?schema.TokensFile = null,
+        pack_tokens_dark: ?schema.TokensFile = null,
+        profile_themes_light: [4]?*theme_tokens.Theme = .{ null, null, null, null },
+        profile_themes_dark: [4]?*theme_tokens.Theme = .{ null, null, null, null },
+        base_styles_light: style_sheet.StyleSheet = .{},
+        base_styles_dark: style_sheet.StyleSheet = .{},
+        profile_styles_light: [4]style_sheet.StyleSheet = .{ .{}, .{}, .{}, .{} },
+        profile_styles_dark: [4]style_sheet.StyleSheet = .{ .{}, .{}, .{}, .{} },
+        profile_styles_cached: [4]bool = .{ false, false, false, false },
+        profile_overrides: [4]StoredProfileOverride = .{ .{}, .{}, .{}, .{} },
+        active_pack_root: ?[]u8 = null,
+        styles: style_sheet.StyleSheetStore,
+        windows: ?[]schema.WindowTemplate = null,
+        pack_meta_set: bool = false,
+        pack_meta_id: ?[]u8 = null,
+        pack_meta_name: ?[]u8 = null,
+        pack_meta_author: ?[]u8 = null,
+        pack_meta_license: ?[]u8 = null,
+        pack_meta_defaults_variant: ?[]u8 = null,
+        pack_meta_defaults_profile: ?[]u8 = null,
+        pack_meta_requires_multi_window: bool = false,
+        pack_meta_requires_custom_shaders: bool = false,
+        render_defaults: runtime.RenderDefaults = .{},
+        workspace_layouts: [4]runtime.WorkspaceLayoutPreset = .{ .{}, .{}, .{}, .{} },
+        workspace_layouts_set: [4]bool = .{ false, false, false, false },
+
+        fn deinit(self: *PackState, allocator: std.mem.Allocator) void {
+            if (self.runtime_light) |ptr| freeTheme(allocator, ptr);
+            if (self.runtime_dark) |ptr| freeTheme(allocator, ptr);
+            self.runtime_light = null;
+            self.runtime_dark = null;
+            if (self.pack_tokens_light) |*t| allocator.free(t.typography.font_family);
+            if (self.pack_tokens_dark) |*t| allocator.free(t.typography.font_family);
+            self.pack_tokens_light = null;
+            self.pack_tokens_dark = null;
+
+            // Per-profile caches and overrides.
+            var i: usize = 0;
+            while (i < 4) : (i += 1) {
+                if (self.profile_themes_light[i]) |ptr| {
+                    if (self.runtime_light == null or ptr != self.runtime_light.?) freeTheme(allocator, ptr);
+                }
+                if (self.profile_themes_dark[i]) |ptr| {
+                    if (self.runtime_dark == null or ptr != self.runtime_dark.?) freeTheme(allocator, ptr);
+                }
+                self.profile_themes_light[i] = null;
+                self.profile_themes_dark[i] = null;
+                self.profile_styles_cached[i] = false;
+                self.profile_styles_light[i] = .{};
+                self.profile_styles_dark[i] = .{};
+                self.profile_overrides[i].deinit(allocator);
+            }
+
+            if (self.active_pack_root) |p| allocator.free(p);
+            self.active_pack_root = null;
+            self.styles.deinit();
+            if (self.windows) |v| theme_package.freeWindowTemplates(allocator, v);
+            self.windows = null;
+
+            if (self.pack_meta_id) |v| allocator.free(v);
+            if (self.pack_meta_name) |v| allocator.free(v);
+            if (self.pack_meta_author) |v| allocator.free(v);
+            if (self.pack_meta_license) |v| allocator.free(v);
+            if (self.pack_meta_defaults_variant) |v| allocator.free(v);
+            if (self.pack_meta_defaults_profile) |v| allocator.free(v);
+            self.pack_meta_id = null;
+            self.pack_meta_name = null;
+            self.pack_meta_author = null;
+            self.pack_meta_license = null;
+            self.pack_meta_defaults_variant = null;
+            self.pack_meta_defaults_profile = null;
+            self.pack_meta_set = false;
+            self.pack_meta_requires_multi_window = false;
+            self.pack_meta_requires_custom_shaders = false;
+
+            self.* = undefined;
+        }
+    };
+
     pub fn init(allocator: std.mem.Allocator, caps: PlatformCaps) ThemeEngine {
         return .{
             .allocator = allocator,
@@ -114,6 +214,24 @@ pub const ThemeEngine = struct {
             .styles = style_sheet.StyleSheetStore.initEmpty(allocator),
             .windows = null,
         };
+    }
+
+    fn clearPackMetaOwned(self: *ThemeEngine) void {
+        if (self.pack_meta_id) |v| self.allocator.free(v);
+        if (self.pack_meta_name) |v| self.allocator.free(v);
+        if (self.pack_meta_author) |v| self.allocator.free(v);
+        if (self.pack_meta_license) |v| self.allocator.free(v);
+        if (self.pack_meta_defaults_variant) |v| self.allocator.free(v);
+        if (self.pack_meta_defaults_profile) |v| self.allocator.free(v);
+        self.pack_meta_id = null;
+        self.pack_meta_name = null;
+        self.pack_meta_author = null;
+        self.pack_meta_license = null;
+        self.pack_meta_defaults_variant = null;
+        self.pack_meta_defaults_profile = null;
+        self.pack_meta_set = false;
+        self.pack_meta_requires_multi_window = false;
+        self.pack_meta_requires_custom_shaders = false;
     }
 
     pub fn deinit(self: *ThemeEngine) void {
@@ -148,13 +266,27 @@ pub const ThemeEngine = struct {
         }
         if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
         self.windows = null;
+        self.clearPackMetaOwned();
+        self.render_defaults = .{};
+        self.workspace_layouts_set = .{ false, false, false, false };
         self.styles.deinit();
+        {
+            var it = self.pack_cache.iterator();
+            while (it.next()) |entry| {
+                entry.value_ptr.deinit(self.allocator);
+                const k = entry.key_ptr.*;
+                self.allocator.free(@constCast(k));
+            }
+            self.pack_cache.deinit(self.allocator);
+            self.pack_cache = .{};
+        }
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
         runtime.clearWorkspaceLayouts();
         runtime.setRenderDefaults(.{});
         runtime.clearPackDefaults();
+        runtime.clearPackMeta();
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -178,11 +310,14 @@ pub const ThemeEngine = struct {
         self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
         if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
         self.windows = null;
+        self.clearPackMetaOwned();
+        self.render_defaults = .{};
+        self.workspace_layouts_set = .{ false, false, false, false };
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
         runtime.clearWorkspaceLayouts();
-        runtime.setRenderDefaults(.{});
+        runtime.setRenderDefaults(self.render_defaults);
         runtime.clearPackDefaults();
         runtime.clearPackMeta();
         runtime.setPackStatus(.ok, "Theme pack disabled");
@@ -310,6 +445,16 @@ pub const ThemeEngine = struct {
 
         // Pack-wide defaults are used as runtime fallbacks when the user config doesn't
         // explicitly override mode/profile.
+        self.clearPackMetaOwned();
+        self.pack_meta_set = true;
+        self.pack_meta_id = try self.allocator.dupe(u8, pack.manifest.id);
+        self.pack_meta_name = try self.allocator.dupe(u8, pack.manifest.name);
+        self.pack_meta_author = try self.allocator.dupe(u8, pack.manifest.author);
+        self.pack_meta_license = try self.allocator.dupe(u8, pack.manifest.license);
+        self.pack_meta_defaults_variant = try self.allocator.dupe(u8, pack.manifest.defaults.variant);
+        self.pack_meta_defaults_profile = try self.allocator.dupe(u8, pack.manifest.defaults.profile);
+        self.pack_meta_requires_multi_window = pack.manifest.capabilities.requires_multi_window;
+        self.pack_meta_requires_custom_shaders = pack.manifest.capabilities.requires_custom_shaders;
         runtime.setPackDefaults(pack.manifest.defaults.variant, pack.manifest.defaults.profile);
         runtime.setPackMeta(pack.manifest);
 
@@ -318,10 +463,11 @@ pub const ThemeEngine = struct {
             ui_commands.ImageSampling.nearest
         else
             ui_commands.ImageSampling.linear;
-        runtime.setRenderDefaults(.{
+        self.render_defaults = .{
             .image_sampling = defaults_sampling,
             .pixel_snap_textured = pack.manifest.defaults.pixel_snap_textured,
-        });
+        };
+        runtime.setRenderDefaults(self.render_defaults);
 
         // Adopt optional multi-window templates (ThemeEngine owns the memory).
         if (self.windows) |v| theme_package.freeWindowTemplates(self.allocator, v);
@@ -348,6 +494,233 @@ pub const ThemeEngine = struct {
 
         // base_theme was only a builder input; no longer needed.
         freeTheme(self.allocator, base_theme);
+    }
+
+    fn applyCurrentPackToRuntimeBase(self: *ThemeEngine) void {
+        // Apply the currently loaded pack state (already in ThemeEngine fields) to the global runtime.
+        theme_mod.setRuntimeTheme(.light, self.runtime_light);
+        theme_mod.setRuntimeTheme(.dark, self.runtime_dark);
+
+        runtime.setThemePackRootPath(self.active_pack_root);
+        runtime.setStyleSheets(self.base_styles_light, self.base_styles_dark);
+        runtime.setWindowTemplates(self.windows orelse &[_]schema.WindowTemplate{});
+
+        runtime.clearWorkspaceLayouts();
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            if (!self.workspace_layouts_set[i]) continue;
+            const id: ProfileId = switch (i) {
+                0 => .desktop,
+                1 => .phone,
+                2 => .tablet,
+                else => .fullscreen,
+            };
+            runtime.setWorkspaceLayout(id, self.workspace_layouts[i]);
+        }
+
+        runtime.setRenderDefaults(self.render_defaults);
+        if (self.pack_meta_set) {
+            runtime.setPackDefaults(self.pack_meta_defaults_variant orelse "", self.pack_meta_defaults_profile orelse "");
+            runtime.setPackMetaFields(
+                self.pack_meta_id orelse "",
+                self.pack_meta_name orelse "",
+                self.pack_meta_author orelse "",
+                self.pack_meta_license orelse "",
+                self.pack_meta_defaults_variant orelse "",
+                self.pack_meta_defaults_profile orelse "",
+                self.pack_meta_requires_multi_window,
+                self.pack_meta_requires_custom_shaders,
+            );
+        } else {
+            runtime.clearPackDefaults();
+            runtime.clearPackMeta();
+        }
+    }
+
+    fn takePackState(self: *ThemeEngine) PackState {
+        const st: PackState = .{
+            .runtime_light = self.runtime_light,
+            .runtime_dark = self.runtime_dark,
+            .pack_tokens_light = self.pack_tokens_light,
+            .pack_tokens_dark = self.pack_tokens_dark,
+            .profile_themes_light = self.profile_themes_light,
+            .profile_themes_dark = self.profile_themes_dark,
+            .base_styles_light = self.base_styles_light,
+            .base_styles_dark = self.base_styles_dark,
+            .profile_styles_light = self.profile_styles_light,
+            .profile_styles_dark = self.profile_styles_dark,
+            .profile_styles_cached = self.profile_styles_cached,
+            .profile_overrides = self.profile_overrides,
+            .active_pack_root = self.active_pack_root,
+            .styles = self.styles,
+            .windows = self.windows,
+            .pack_meta_set = self.pack_meta_set,
+            .pack_meta_id = self.pack_meta_id,
+            .pack_meta_name = self.pack_meta_name,
+            .pack_meta_author = self.pack_meta_author,
+            .pack_meta_license = self.pack_meta_license,
+            .pack_meta_defaults_variant = self.pack_meta_defaults_variant,
+            .pack_meta_defaults_profile = self.pack_meta_defaults_profile,
+            .pack_meta_requires_multi_window = self.pack_meta_requires_multi_window,
+            .pack_meta_requires_custom_shaders = self.pack_meta_requires_custom_shaders,
+            .render_defaults = self.render_defaults,
+            .workspace_layouts = self.workspace_layouts,
+            .workspace_layouts_set = self.workspace_layouts_set,
+        };
+
+        self.runtime_light = null;
+        self.runtime_dark = null;
+        self.pack_tokens_light = null;
+        self.pack_tokens_dark = null;
+        self.profile_themes_light = .{ null, null, null, null };
+        self.profile_themes_dark = .{ null, null, null, null };
+        self.base_styles_light = .{};
+        self.base_styles_dark = .{};
+        self.profile_styles_light = .{ .{}, .{}, .{}, .{} };
+        self.profile_styles_dark = .{ .{}, .{}, .{}, .{} };
+        self.profile_styles_cached = .{ false, false, false, false };
+        self.profile_overrides = .{ .{}, .{}, .{}, .{} };
+        self.active_pack_root = null;
+        self.styles = style_sheet.StyleSheetStore.initEmpty(self.allocator);
+        self.windows = null;
+        self.pack_meta_set = false;
+        self.pack_meta_id = null;
+        self.pack_meta_name = null;
+        self.pack_meta_author = null;
+        self.pack_meta_license = null;
+        self.pack_meta_defaults_variant = null;
+        self.pack_meta_defaults_profile = null;
+        self.pack_meta_requires_multi_window = false;
+        self.pack_meta_requires_custom_shaders = false;
+        self.render_defaults = .{};
+        self.workspace_layouts_set = .{ false, false, false, false };
+
+        return st;
+    }
+
+    fn restorePackState(self: *ThemeEngine, st: PackState) void {
+        self.runtime_light = st.runtime_light;
+        self.runtime_dark = st.runtime_dark;
+        self.pack_tokens_light = st.pack_tokens_light;
+        self.pack_tokens_dark = st.pack_tokens_dark;
+        self.profile_themes_light = st.profile_themes_light;
+        self.profile_themes_dark = st.profile_themes_dark;
+        self.base_styles_light = st.base_styles_light;
+        self.base_styles_dark = st.base_styles_dark;
+        self.profile_styles_light = st.profile_styles_light;
+        self.profile_styles_dark = st.profile_styles_dark;
+        self.profile_styles_cached = st.profile_styles_cached;
+        self.profile_overrides = st.profile_overrides;
+        self.active_pack_root = st.active_pack_root;
+        self.styles = st.styles;
+        self.windows = st.windows;
+        self.pack_meta_set = st.pack_meta_set;
+        self.pack_meta_id = st.pack_meta_id;
+        self.pack_meta_name = st.pack_meta_name;
+        self.pack_meta_author = st.pack_meta_author;
+        self.pack_meta_license = st.pack_meta_license;
+        self.pack_meta_defaults_variant = st.pack_meta_defaults_variant;
+        self.pack_meta_defaults_profile = st.pack_meta_defaults_profile;
+        self.pack_meta_requires_multi_window = st.pack_meta_requires_multi_window;
+        self.pack_meta_requires_custom_shaders = st.pack_meta_requires_custom_shaders;
+        self.render_defaults = st.render_defaults;
+        self.workspace_layouts = st.workspace_layouts;
+        self.workspace_layouts_set = st.workspace_layouts_set;
+    }
+
+    fn cacheActivePack(self: *ThemeEngine) !void {
+        const key = self.active_pack_path orelse return;
+        const st = self.takePackState();
+        // If an entry already exists for the same logical key, drop it to avoid leaking
+        // the cached pack (can happen if a pack was loaded directly while still cached).
+        if (self.pack_cache.fetchRemove(key)) |kv| {
+            var v = kv.value;
+            v.deinit(self.allocator);
+            self.allocator.free(@constCast(kv.key));
+        }
+        // Transfer ownership of the key string to the cache.
+        try self.pack_cache.put(self.allocator, key, st);
+        self.active_pack_path = null;
+    }
+
+    fn activateBuiltinForRender(self: *ThemeEngine) void {
+        _ = self;
+        // Reset active pack state to "built-in theme" without touching the cache.
+        theme_mod.setRuntimeTheme(.light, null);
+        theme_mod.setRuntimeTheme(.dark, null);
+
+        runtime.setStyleSheets(.{}, .{});
+        runtime.setThemePackRootPath(null);
+        runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
+        runtime.clearWorkspaceLayouts();
+        runtime.setRenderDefaults(.{});
+        runtime.clearPackDefaults();
+        runtime.clearPackMeta();
+    }
+
+    /// Activate a theme pack for rendering (used by multi-window draws).
+    /// This can switch between previously loaded packs without re-reading JSON each frame.
+    pub fn activateThemePackForRender(self: *ThemeEngine, pack_path: ?[]const u8, force_reload: bool) !void {
+        if (builtin.target.os.tag == .emscripten) {
+            // Web builds don't support native multi-window; keep existing behavior.
+            try self.applyThemePackDirFromPath(pack_path, force_reload);
+            return;
+        }
+
+        const desired = pack_path orelse "";
+        if (desired.len == 0) {
+            if (self.active_pack_path != null) {
+                try self.cacheActivePack();
+            }
+            self.activateBuiltinForRender();
+            return;
+        }
+
+        if (!force_reload) {
+            if (self.active_pack_path) |cur| {
+                if (std.mem.eql(u8, cur, desired)) return;
+            }
+        }
+
+        if (force_reload) {
+            if (self.pack_cache.fetchRemove(desired)) |kv| {
+                var v = kv.value;
+                v.deinit(self.allocator);
+                self.allocator.free(@constCast(kv.key));
+            }
+        }
+
+        // If the desired pack is cached, restore it and apply runtime state.
+        if (!force_reload) {
+            if (self.pack_cache.fetchRemove(desired)) |kv| {
+                if (self.active_pack_path != null) {
+                    try self.cacheActivePack();
+                }
+                self.active_pack_path = @constCast(kv.key);
+                self.restorePackState(kv.value);
+                self.applyCurrentPackToRuntimeBase();
+                return;
+            }
+        } else {
+            if (self.active_pack_path != null) {
+                // Cache current pack before reload switch, unless we're reloading in-place.
+                if (self.active_pack_path) |cur| {
+                    if (!std.mem.eql(u8, cur, desired)) {
+                        try self.cacheActivePack();
+                    }
+                }
+            }
+        }
+
+        // Fall back to loading from disk into the active engine state.
+        if (self.active_pack_path != null) {
+            if (self.active_pack_path) |cur| {
+                if (!std.mem.eql(u8, cur, desired)) {
+                    try self.cacheActivePack();
+                }
+            }
+        }
+        try self.applyThemePackDirFromPath(pack_path, force_reload);
     }
 
     /// Applies a theme pack from a directory path, tracking the currently applied pack.
@@ -604,7 +977,16 @@ pub const ThemeEngine = struct {
         return null;
     }
 
-    fn applyWorkspaceLayoutForProfile(layout: schema.WorkspaceLayout, id: ProfileId) void {
+    fn workspaceIndexForId(id: ProfileId) usize {
+        return switch (id) {
+            .desktop => 0,
+            .phone => 1,
+            .tablet => 2,
+            .fullscreen => 3,
+        };
+    }
+
+    fn applyWorkspaceLayoutForProfile(self: *ThemeEngine, layout: schema.WorkspaceLayout, id: ProfileId) void {
         var preset: runtime.WorkspaceLayoutPreset = .{};
         preset.close_others = layout.close_others;
 
@@ -626,25 +1008,30 @@ pub const ThemeEngine = struct {
             preset.custom_layout_min_right_width = cl.min_right_width;
         }
 
+        const idx = workspaceIndexForId(id);
+        self.workspace_layouts[idx] = preset;
+        self.workspace_layouts_set[idx] = true;
         runtime.setWorkspaceLayout(id, preset);
     }
 
     fn loadWorkspaceLayoutsFromBytes(self: *ThemeEngine, bytes: []const u8) void {
         runtime.clearWorkspaceLayouts();
+        self.workspace_layouts_set = .{ false, false, false, false };
         if (bytes.len == 0) return;
 
         var parsed = schema.parseJson(schema.WorkspaceLayoutsFile, self.allocator, bytes) catch return;
         defer parsed.deinit();
         if (parsed.value.schema_version != 1) return;
 
-        if (parsed.value.desktop) |layout| applyWorkspaceLayoutForProfile(layout, .desktop);
-        if (parsed.value.phone) |layout| applyWorkspaceLayoutForProfile(layout, .phone);
-        if (parsed.value.tablet) |layout| applyWorkspaceLayoutForProfile(layout, .tablet);
-        if (parsed.value.fullscreen) |layout| applyWorkspaceLayoutForProfile(layout, .fullscreen);
+        if (parsed.value.desktop) |layout| self.applyWorkspaceLayoutForProfile(layout, .desktop);
+        if (parsed.value.phone) |layout| self.applyWorkspaceLayoutForProfile(layout, .phone);
+        if (parsed.value.tablet) |layout| self.applyWorkspaceLayoutForProfile(layout, .tablet);
+        if (parsed.value.fullscreen) |layout| self.applyWorkspaceLayoutForProfile(layout, .fullscreen);
     }
 
     fn loadWorkspaceLayoutsFromDir(self: *ThemeEngine, root_path: []const u8) void {
         runtime.clearWorkspaceLayouts();
+        self.workspace_layouts_set = .{ false, false, false, false };
 
         var dir = std.fs.cwd().openDir(root_path, .{}) catch return;
         defer dir.close();
@@ -1141,20 +1528,33 @@ fn applyWebJob(job: *WebPackJob) void {
     runtime.setThemePackRootPath(eng.active_pack_root);
 
     if (job.manifest) |m| {
+        eng.clearPackMetaOwned();
+        eng.pack_meta_set = true;
+        eng.pack_meta_id = eng.allocator.dupe(u8, m.id) catch null;
+        eng.pack_meta_name = eng.allocator.dupe(u8, m.name) catch null;
+        eng.pack_meta_author = eng.allocator.dupe(u8, m.author) catch null;
+        eng.pack_meta_license = eng.allocator.dupe(u8, m.license) catch null;
+        eng.pack_meta_defaults_variant = eng.allocator.dupe(u8, m.defaults.variant) catch null;
+        eng.pack_meta_defaults_profile = eng.allocator.dupe(u8, m.defaults.profile) catch null;
+        eng.pack_meta_requires_multi_window = m.capabilities.requires_multi_window;
+        eng.pack_meta_requires_custom_shaders = m.capabilities.requires_custom_shaders;
         runtime.setPackDefaults(m.defaults.variant, m.defaults.profile);
         runtime.setPackMeta(m);
         const defaults_sampling = if (std.ascii.eqlIgnoreCase(m.defaults.image_sampling, "nearest"))
             ui_commands.ImageSampling.nearest
         else
             ui_commands.ImageSampling.linear;
-        runtime.setRenderDefaults(.{
+        eng.render_defaults = .{
             .image_sampling = defaults_sampling,
             .pixel_snap_textured = m.defaults.pixel_snap_textured,
-        });
+        };
+        runtime.setRenderDefaults(eng.render_defaults);
     } else {
+        eng.clearPackMetaOwned();
+        eng.render_defaults = .{};
         runtime.clearPackDefaults();
         runtime.clearPackMeta();
-        runtime.setRenderDefaults(.{});
+        runtime.setRenderDefaults(eng.render_defaults);
     }
 
     if (eng.active_pack_path) |p| eng.allocator.free(p);

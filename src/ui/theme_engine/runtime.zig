@@ -112,6 +112,27 @@ pub fn setPackMeta(m: schema.Manifest) void {
     pack_meta_requires_custom_shaders = m.capabilities.requires_custom_shaders;
 }
 
+pub fn setPackMetaFields(
+    id: []const u8,
+    name: []const u8,
+    author: []const u8,
+    license: []const u8,
+    defaults_variant: []const u8,
+    defaults_profile: []const u8,
+    requires_multi_window: bool,
+    requires_custom_shaders: bool,
+) void {
+    pack_meta_set = true;
+    pack_meta_id_len = copyTrunc(pack_meta_id_buf[0..], id);
+    pack_meta_name_len = copyTrunc(pack_meta_name_buf[0..], name);
+    pack_meta_author_len = copyTrunc(pack_meta_author_buf[0..], author);
+    pack_meta_license_len = copyTrunc(pack_meta_license_buf[0..], license);
+    pack_meta_variant_len = copyTrunc(pack_meta_variant_buf[0..], defaults_variant);
+    pack_meta_profile_len = copyTrunc(pack_meta_profile_buf[0..], defaults_profile);
+    pack_meta_requires_multi_window = requires_multi_window;
+    pack_meta_requires_custom_shaders = requires_custom_shaders;
+}
+
 pub fn getPackMeta() ?PackMeta {
     if (!pack_meta_set) return null;
     return .{

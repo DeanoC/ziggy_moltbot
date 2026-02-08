@@ -52,9 +52,14 @@ pub const WindowUiState = struct {
     // Track which profile layouts have been applied for this window so theme layout
     // presets don't fight user-driven layout changes every frame.
     theme_layout_applied: [4]bool = .{ false, false, false, false },
+    // Optional per-window theme pack override. When null, the window uses the global config pack.
+    theme_pack_override: ?[]u8 = null,
+    // When set (by the Window menu), the native main loop will force-reload the window's pack.
+    theme_pack_reload_requested: bool = false,
 
     pub fn deinit(self: *WindowUiState, allocator: std.mem.Allocator) void {
         self.nav.deinit(allocator);
+        if (self.theme_pack_override) |buf| allocator.free(buf);
         self.* = undefined;
     }
 };
@@ -74,6 +79,7 @@ pub const UiAction = struct {
     save_config: bool = false,
     reload_theme_pack: bool = false,
     browse_theme_pack: bool = false,
+    browse_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     spawn_window: bool = false,
@@ -131,6 +137,7 @@ fn drawCustomMenuBar(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     manager: *panel_manager.PanelManager,
+    cfg: *const config.Config,
     action: *UiAction,
     win_state: *WindowUiState,
 ) void {
@@ -165,7 +172,13 @@ fn drawCustomMenuBar(
     const templates_all = theme_runtime.getWindowTemplates();
     const max_templates: usize = 8;
     const templates = templates_all[0..@min(templates_all.len, max_templates)];
-    const item_count: f32 = 3.0 + (if (allow_multi_window) (1.0 + @as(f32, @floatFromInt(templates.len))) else 0.0);
+    const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+    const max_recent: usize = 4;
+    const recent_shown: usize = @min(recent.len, max_recent);
+    const theme_items_u: usize = @as(usize, 3) + (if (win_state.theme_pack_override != null) @as(usize, 1) else @as(usize, 0)) + recent_shown;
+    const multi_items_u: usize = if (allow_multi_window) (1 + templates.len) else 0;
+    const item_count_u: usize = 3 + theme_items_u + multi_items_u;
+    const item_count: f32 = @floatFromInt(item_count_u);
     const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
@@ -207,6 +220,107 @@ fn drawCustomMenuBar(
         }
         win_state.custom_window_menu_open = false;
     }
+
+    const can_browse_pack = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
+    const global_pack = cfg.ui_theme_pack orelse "";
+    const effective_pack = win_state.theme_pack_override orelse global_pack;
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Global",
+        win_state.theme_pack_override == null,
+    )) {
+        if (win_state.theme_pack_override) |buf| {
+            dc.allocator.free(buf);
+            win_state.theme_pack_override = null;
+        }
+        win_state.theme_layout_applied = .{ false, false, false, false };
+        win_state.custom_window_menu_open = false;
+    }
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Browse...",
+        false,
+    )) {
+        if (can_browse_pack) {
+            action.browse_theme_pack_override = true;
+        }
+        win_state.custom_window_menu_open = false;
+    }
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Reload",
+        false,
+    )) {
+        if (effective_pack.len > 0) {
+            win_state.theme_pack_reload_requested = true;
+        }
+        win_state.custom_window_menu_open = false;
+    }
+
+    if (win_state.theme_pack_override != null) {
+        cursor_y += item_height;
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "Theme pack: Clear override",
+            false,
+        )) {
+            if (win_state.theme_pack_override) |buf| {
+                dc.allocator.free(buf);
+                win_state.theme_pack_override = null;
+            }
+            win_state.theme_layout_applied = .{ false, false, false, false };
+            win_state.custom_window_menu_open = false;
+        }
+    }
+
+    // Quick picks from the global MRU list.
+    if (recent_shown > 0) {
+        var i: usize = 0;
+        while (i < recent_shown) : (i += 1) {
+            const item = recent[i];
+            var label_buf: [200]u8 = undefined;
+            const short = blk: {
+                const prefix = "themes/";
+                if (std.mem.startsWith(u8, item, prefix)) break :blk item[prefix.len..];
+                const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                break :blk item;
+            };
+            const item_label = std.fmt.bufPrint(&label_buf, "Theme: {s}", .{short}) catch "Theme";
+
+            cursor_y += item_height;
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                item_label,
+                win_state.theme_pack_override != null and std.mem.eql(u8, win_state.theme_pack_override.?, item),
+            )) {
+                const owned = dc.allocator.dupe(u8, item) catch null;
+                if (owned) |buf| {
+                    if (win_state.theme_pack_override) |old| dc.allocator.free(old);
+                    win_state.theme_pack_override = buf;
+                    win_state.theme_layout_applied = .{ false, false, false, false };
+                }
+                win_state.custom_window_menu_open = false;
+            }
+        }
+    }
+
     if (allow_multi_window) {
         cursor_y += item_height;
         if (drawMenuItem(
@@ -671,7 +785,7 @@ fn drawWorkspaceHost(
     }
     syncAttachmentFetches(allocator, manager);
 
-    drawCustomMenuBar(&dc, menu_rect, queue, manager, action, win_state);
+    drawCustomMenuBar(&dc, menu_rect, queue, manager, cfg, action, win_state);
 
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;

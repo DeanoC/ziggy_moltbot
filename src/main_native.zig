@@ -64,6 +64,8 @@ const UiWindow = struct {
 const ThemePackBrowse = struct {
     mutex: std.Thread.Mutex = .{},
     in_flight: bool = false,
+    target: enum { config, window_override } = .config,
+    target_window_id: u32 = 0,
     // Allocated with std.heap.c_allocator by the SDL callback, then consumed on the main thread.
     pending_path: ?[]u8 = null,
     pending_error: bool = false,
@@ -134,7 +136,39 @@ fn computeThemePackJsonSignature(root_path: []const u8) u64 {
     return hasher.final();
 }
 
+fn computeFileSignature(path: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update("zsc.file.sig.v1");
+    hasher.update(path);
+    const st = std.fs.cwd().statFile(path) catch return 0;
+    hashStat(&hasher, st);
+    return hasher.final();
+}
+
+fn resolveThemePackWatchTargetAlloc(allocator: std.mem.Allocator, raw_path: []const u8) ?[]u8 {
+    if (raw_path.len == 0) return null;
+
+    // Absolute paths: just resolve and use directly.
+    if (std.fs.path.isAbsolute(raw_path)) {
+        return std.fs.cwd().realpathAlloc(allocator, raw_path) catch null;
+    }
+
+    // First try relative to current working directory.
+    if (std.fs.cwd().access(raw_path, .{})) |_| {
+        return std.fs.cwd().realpathAlloc(allocator, raw_path) catch null;
+    } else |_| {}
+
+    // Then try relative to the executable directory (production builds).
+    const exe = std.fs.selfExePathAlloc(allocator) catch return null;
+    defer allocator.free(exe);
+    const exe_dir = std.fs.path.dirname(exe) orelse return null;
+    const joined = std.fs.path.join(allocator, &.{ exe_dir, raw_path }) catch return null;
+    defer allocator.free(joined);
+    return std.fs.cwd().realpathAlloc(allocator, joined) catch null;
+}
+
 fn updateThemePackWatch(
+    allocator: std.mem.Allocator,
     watch: *ThemePackWatch,
     theme_eng: *theme_engine.ThemeEngine,
     cfg: *const config.Config,
@@ -145,13 +179,19 @@ fn updateThemePackWatch(
         return;
     }
 
-    const root = theme_engine.runtime.getThemePackRootPath() orelse return;
-    if (root.len == 0) return;
+    const raw = cfg.ui_theme_pack orelse "";
+    if (raw.len == 0) return;
+
+    const resolved = resolveThemePackWatchTargetAlloc(allocator, raw) orelse return;
+    defer allocator.free(resolved);
+
+    const is_zip = resolved.len >= 4 and std.ascii.eqlIgnoreCase(resolved[resolved.len - 4 ..], ".zip");
+    const root = if (is_zip) resolved else themePackRootFromSelection(resolved);
 
     const root_hash = std.hash.Wyhash.hash(0, root);
     if (root_hash != watch.last_root_hash or watch.last_sig == 0 or pack_applied_this_frame) {
         watch.last_root_hash = root_hash;
-        watch.last_sig = computeThemePackJsonSignature(root);
+        watch.last_sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(root);
         watch.pending_sig = 0;
         watch.pending_at_ms = 0;
         watch.next_poll_ms = 0;
@@ -162,7 +202,7 @@ fn updateThemePackWatch(
     if (watch.next_poll_ms != 0 and now_ms < watch.next_poll_ms) return;
     watch.next_poll_ms = now_ms + 500;
 
-    const sig = computeThemePackJsonSignature(root);
+    const sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(root);
     if (sig == 0 or sig == watch.last_sig) {
         watch.pending_sig = 0;
         watch.pending_at_ms = 0;
@@ -177,16 +217,7 @@ fn updateThemePackWatch(
     }
     if (now_ms - watch.pending_at_ms < 250) return;
 
-    // Only reload if the user has a configured path; signature is computed from the active root.
-    const path = cfg.ui_theme_pack orelse "";
-    if (path.len == 0) {
-        watch.last_sig = sig;
-        watch.pending_sig = 0;
-        watch.pending_at_ms = 0;
-        return;
-    }
-
-    theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch {};
+    theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true) catch {};
     watch.last_sig = sig;
     watch.pending_sig = 0;
     watch.pending_at_ms = 0;
@@ -1702,6 +1733,13 @@ pub fn main() !void {
                 const w_fb_width: u32 = if (w_fb_w > 0) @intCast(w_fb_w) else 1;
                 const w_fb_height: u32 = if (w_fb_h > 0) @intCast(w_fb_h) else 1;
 
+                // Per-window theme pack override: activate the correct pack before we resolve
+                // profile/mode/typography and emit draw commands for this window.
+                const desired_pack: ?[]const u8 = w.ui_state.theme_pack_override orelse cfg.ui_theme_pack;
+                const force_reload_pack = w.ui_state.theme_pack_reload_requested;
+                if (w.ui_state.theme_pack_reload_requested) w.ui_state.theme_pack_reload_requested = false;
+                theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+
                 // Multi-window: each window can have a different framebuffer size (and potentially DPI),
                 // so resolve profile and typography scale per window before we record its UI commands.
                 // This makes "auto" profile selection (desktop/phone/tablet/fullscreen) window-local,
@@ -1778,7 +1816,7 @@ pub fn main() !void {
 
         var pack_applied_this_frame = false;
         if (ui_action.config_updated or ui_action.reload_theme_pack) {
-            const applied_ok = if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack))
+            const applied_ok = if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, ui_action.reload_theme_pack))
                 true
             else |err| blk: {
                 if (cfg.ui_theme_pack) |pack_path| {
@@ -1799,14 +1837,18 @@ pub fn main() !void {
             // Profile/typography are resolved per-window during UI draw.
         }
 
-        updateThemePackWatch(&theme_pack_watch, &theme_eng, &cfg, pack_applied_this_frame);
+        updateThemePackWatch(allocator, &theme_pack_watch, &theme_eng, &cfg, pack_applied_this_frame);
 
         // Theme pack browse dialog (desktop only).
-        if (ui_action.browse_theme_pack) {
+        if (ui_action.browse_theme_pack or ui_action.browse_theme_pack_override) {
             if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
                 theme_pack_browse.mutex.lock();
                 const can_launch = !theme_pack_browse.in_flight;
-                if (can_launch) theme_pack_browse.in_flight = true;
+                if (can_launch) {
+                    theme_pack_browse.in_flight = true;
+                    theme_pack_browse.target = if (ui_action.browse_theme_pack_override) .window_override else .config;
+                    theme_pack_browse.target_window_id = if (ui_action.browse_theme_pack_override) active_window.id else 0;
+                }
                 theme_pack_browse.mutex.unlock();
                 if (can_launch) {
                     const themes_dir_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
@@ -1833,12 +1875,18 @@ pub fn main() !void {
         // Consume browse dialog result.
         var picked_c: ?[]u8 = null;
         var had_error: bool = false;
+        var browse_target: @TypeOf(theme_pack_browse.target) = .config;
+        var browse_target_wid: u32 = 0;
         {
             theme_pack_browse.mutex.lock();
             picked_c = theme_pack_browse.pending_path;
             theme_pack_browse.pending_path = null;
             had_error = theme_pack_browse.pending_error;
             theme_pack_browse.pending_error = false;
+            browse_target = theme_pack_browse.target;
+            browse_target_wid = theme_pack_browse.target_window_id;
+            theme_pack_browse.target = .config;
+            theme_pack_browse.target_window_id = 0;
             theme_pack_browse.mutex.unlock();
         }
         if (picked_c) |picked| {
@@ -1867,15 +1915,16 @@ pub fn main() !void {
 
             if (stored) |path| {
                 defer allocator.free(path);
+                switch (browse_target) {
+                    .config => {
+                        const new_value = allocator.dupe(u8, path) catch null;
+                        if (new_value) |owned| {
+                            if (cfg.ui_theme_pack) |v| allocator.free(v);
+                            cfg.ui_theme_pack = owned;
+                            ui.syncSettings(allocator, cfg);
 
-                const new_value = allocator.dupe(u8, path) catch null;
-                if (new_value) |owned| {
-                    if (cfg.ui_theme_pack) |v| allocator.free(v);
-                    cfg.ui_theme_pack = owned;
-                    ui.syncSettings(allocator, cfg);
-
-                    // Apply immediately; only persist if apply succeeded.
-                    if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true)) |_| {
+                            // Apply immediately; only persist if apply succeeded.
+                    if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true)) |_| {
                         if (cfg.ui_theme_pack) |pack_path| {
                             _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
                         }
@@ -1885,6 +1934,27 @@ pub fn main() !void {
                     } else |err| {
                         logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
                     }
+                        }
+                    },
+                    .window_override => {
+                        // Validate/apply first; only set override if it loads.
+                        if (theme_eng.activateThemePackForRender(path, true)) |_| {
+                            var target_window: ?*UiWindow = null;
+                            for (ui_windows.items) |w| {
+                                if (w.id == browse_target_wid) {
+                                    target_window = w;
+                                    break;
+                                }
+                            }
+                            if (target_window) |tw| {
+                                if (tw.ui_state.theme_pack_override) |old| allocator.free(old);
+                                tw.ui_state.theme_pack_override = allocator.dupe(u8, path) catch null;
+                                tw.ui_state.theme_layout_applied = .{ false, false, false, false };
+                            }
+                        } else |err| {
+                            logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
+                        }
+                    },
                 }
             }
         } else if (had_error) {
