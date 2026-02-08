@@ -9,6 +9,7 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const operator_view = @import("operator_view.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 pub const ApprovalsInboxAction = struct {
     resolve_approval: ?operator_view.ExecApprovalResolveAction = null,
@@ -246,6 +247,9 @@ fn drawApprovalCard(
     queue: *input_state.InputQueue,
     approval: types.ExecApproval,
 ) ApprovalDecision {
+    nav_router.pushScope(std.hash.Wyhash.hash(0, approval.id));
+    defer nav_router.popScope();
+
     const t = dc.theme;
     const padding = t.spacing.md;
 

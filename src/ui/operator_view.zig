@@ -10,6 +10,7 @@ const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 pub const NodeInvokeAction = struct {
     node_id: []u8,
@@ -918,6 +919,9 @@ fn drawApprovalCard(
     queue: *input_state.InputQueue,
     approval: types.ExecApproval,
 ) ApprovalDecision {
+    nav_router.pushScope(std.hash.Wyhash.hash(0, approval.id));
+    defer nav_router.popScope();
+
     const t = dc.theme;
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();

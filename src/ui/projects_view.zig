@@ -10,6 +10,7 @@ const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
@@ -632,6 +633,8 @@ fn drawArtifactsCard(
 
     for (previews, 0..) |preview, idx| {
         _ = idx;
+        nav_router.pushScope(std.hash.Wyhash.hash(0, preview.url));
+        defer nav_router.popScope();
         const name = preview.name;
         dc.drawText(name, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
         cursor_y += line_height + t.spacing.xs;
