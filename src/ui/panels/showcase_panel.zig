@@ -7,9 +7,11 @@ const theme = @import("../theme.zig");
 const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
+const nav_router = @import("../input/nav_router.zig");
 
 var draw_ctx_toggle = false;
 var sdf_debug_enabled = false;
+var input_debug_enabled = false;
 var scroll_y: f32 = 0.0;
 var scroll_max: f32 = 0.0;
 
@@ -122,12 +124,113 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
     const sdf_height = sdfDebugCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
     cursor_y += sdf_height + t.spacing.md;
 
+    const input_height = inputDebugCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
+    cursor_y += input_height + t.spacing.md;
+
     dc.popClip();
 
     const content_height = (cursor_y + scroll_y) - content_rect.min[1];
     scroll_max = @max(0.0, content_height - content_rect.size()[1]);
     if (scroll_y > scroll_max) scroll_y = scroll_max;
     if (scroll_y < 0.0) scroll_y = 0.0;
+}
+
+fn inputDebugCard(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    pos: [2]f32,
+    width: f32,
+    t: *const theme.Theme,
+) f32 {
+    const padding = t.spacing.md;
+    const line_height = dc.lineHeight();
+    const toggle_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
+    const lines: f32 = 7.0;
+    const content_height = toggle_height + t.spacing.sm + (if (input_debug_enabled) (lines * (line_height + t.spacing.xs)) else 0.0);
+    const height = padding + line_height + t.spacing.xs + content_height + padding;
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
+
+    var cursor_y = drawCardBase(dc, rect, "Input Diagnostics");
+    const left = rect.min[0] + padding;
+
+    var enabled = input_debug_enabled;
+    _ = widgets.checkbox.draw(
+        dc,
+        draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ rect.size()[0] - padding * 2.0, toggle_height }),
+        "Show input + nav debug",
+        &enabled,
+        queue,
+        .{},
+    );
+    input_debug_enabled = enabled;
+    cursor_y += toggle_height + t.spacing.sm;
+
+    if (!input_debug_enabled) return height;
+
+    const p = theme_runtime.getProfile();
+    var buf0: [256]u8 = undefined;
+    var buf1: [256]u8 = undefined;
+    var buf2: [256]u8 = undefined;
+    var buf3: [256]u8 = undefined;
+    var buf4: [256]u8 = undefined;
+    var buf5: [256]u8 = undefined;
+
+    const profile_line = std.fmt.bufPrint(
+        &buf0,
+        "Profile: {s}  modality: {s}  hit_target_min_px: {d}",
+        .{ @tagName(p.id), @tagName(p.modality), @as(u32, @intFromFloat(p.hit_target_min_px)) },
+    ) catch "Profile: (format error)";
+    dc.drawText(profile_line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    const pointer_line = std.fmt.bufPrint(
+        &buf1,
+        "Pointer: {s}  dragging: {s}  drag_delta: ({d:.1},{d:.1})",
+        .{
+            @tagName(queue.state.pointer_kind),
+            if (queue.state.pointer_dragging) "true" else "false",
+            queue.state.pointer_drag_delta[0],
+            queue.state.pointer_drag_delta[1],
+        },
+    ) catch "Pointer: (format error)";
+    dc.drawText(pointer_line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    const mouse_line = std.fmt.bufPrint(
+        &buf2,
+        "Mouse: pos=({d:.1},{d:.1})  down_left={s}",
+        .{
+            queue.state.mouse_pos[0],
+            queue.state.mouse_pos[1],
+            if (queue.state.mouse_down_left) "true" else "false",
+        },
+    ) catch "Mouse: (format error)";
+    dc.drawText(mouse_line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    const nav_state = nav_router.get();
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused_id = if (nav_state) |nav| nav.focused_id else null;
+    const nav_items_prev = if (nav_state) |nav| nav.prev_items.items.len else 0;
+    const nav_line = std.fmt.bufPrint(
+        &buf3,
+        "Nav: active={s}  focused_id={s}  prev_items={d}",
+        .{
+            if (nav_active) "true" else "false",
+            if (focused_id) |id| (std.fmt.bufPrint(&buf4, "0x{x}", .{id}) catch "0x?") else "(none)",
+            nav_items_prev,
+        },
+    ) catch "Nav: (format error)";
+    dc.drawText(nav_line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    const events_line = std.fmt.bufPrint(&buf5, "Events this frame: {d}", .{queue.events.items.len}) catch "Events: (format error)";
+    dc.drawText(events_line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    dc.drawText("Touch/pen scroll starts after ~8px drag.", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+
+    return height;
 }
 
 fn sdfDebugCard(
