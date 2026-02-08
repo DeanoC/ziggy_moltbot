@@ -103,6 +103,9 @@ pub const PanelStyle = struct {
     frame_image: AssetPath = .{},
     frame_slices_px: ?[4]f32 = null,
     frame_tint: ?Color = null,
+    // If false, the 9-slice center cell is not drawn (useful when the source image has
+    // an opaque center but you want it to behave like a border/frame).
+    frame_draw_center: bool = true,
 };
 
 pub const FocusRingStyle = struct {
@@ -277,6 +280,9 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
     }
     if (obj.get("tint")) |tv| {
         out.frame_tint = parseColor(tv, theme) orelse out.frame_tint;
+    }
+    if (obj.get("draw_center")) |bv| {
+        if (bv == .bool) out.frame_draw_center = bv.bool;
     }
 }
 

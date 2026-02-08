@@ -1260,7 +1260,9 @@ pub const Renderer = struct {
 
         // Middle row
         self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
-        self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+        if (cmd.draw_center) {
+            self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+        }
         self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
 
         // Bottom row
