@@ -358,7 +358,7 @@ fn drawList(
     }
 
     const card_gap = t.spacing.sm;
-    const card_h = dc.lineHeight() * 2.0 + t.spacing.sm * 2.0;
+    const card_h = dc.lineHeight() * 3.0 + t.spacing.sm * 2.0;
     const total_h = (@as(f32, @floatFromInt(visible_indices.len)) * (card_h + card_gap)) - card_gap;
 
     list_scroll_max = @max(0.0, total_h - rect.size()[1]);
@@ -519,6 +519,11 @@ fn drawItemCard(
     const status = effectiveStatus(item_index, it.status);
     const title_color = if (status == .unread) t.colors.text_primary else t.colors.text_secondary;
     dc.drawText(it.title, .{ x, y }, .{ .color = title_color });
+    y += dc.lineHeight() + t.spacing.xs;
+
+    var preview_buf: [96]u8 = undefined;
+    const preview = previewSnippet(it.body, &preview_buf);
+    dc.drawText(preview, .{ x, y }, .{ .color = t.colors.text_secondary });
     y += dc.lineHeight() + t.spacing.xs;
 
     var meta_buf: [96]u8 = undefined;
@@ -782,6 +787,30 @@ fn handleWheelScroll(
     }
     if (scroll_y.* < 0.0) scroll_y.* = 0.0;
     if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+}
+
+fn previewSnippet(text: []const u8, buf: []u8) []const u8 {
+    if (text.len == 0 or buf.len == 0) return "";
+
+    const first_line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    const line = std.mem.trim(u8, text[0..first_line_end], " \t\r");
+
+    if (line.len <= buf.len) {
+        std.mem.copyForwards(u8, buf[0..line.len], line);
+        return buf[0..line.len];
+    }
+
+    if (buf.len <= 3) {
+        std.mem.copyForwards(u8, buf, line[0..buf.len]);
+        return buf;
+    }
+
+    const head_len: usize = buf.len - 3;
+    std.mem.copyForwards(u8, buf[0..head_len], line[0..head_len]);
+    buf[head_len] = '.';
+    buf[head_len + 1] = '.';
+    buf[head_len + 2] = '.';
+    return buf[0 .. head_len + 3];
 }
 
 fn mockItems() []const Item {
