@@ -33,6 +33,8 @@ var selected_index: usize = 0;
 // for interactive toggling (read/unread) until the real data/store lands.
 var mock_status_overrides: [3]?Status = .{ null, null, null };
 
+var search_editor: ?widgets.text_editor.TextEditor = null;
+
 pub fn draw(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
@@ -71,10 +73,18 @@ pub fn draw(
     );
 
     const items = mockItems();
-    const counts = computeCounts(items);
+
+    const search = drawSearch(allocator, &dc, list_rect, queue);
+    const query = std.mem.trim(u8, editorText(search_editor), " \t\n");
+
+    const counts = computeCounts(items, query);
 
     const prev_filter = active_filter;
-    const filters_h = drawFilters(&dc, list_rect, queue, counts);
+    const filters_rect = draw_context.Rect.fromMinSize(
+        .{ list_rect.min[0], list_rect.min[1] + search.height + t.spacing.sm },
+        .{ list_rect.size()[0], 0.0 },
+    );
+    const filters_h = drawFilters(&dc, filters_rect, queue, counts);
 
     // Keyboard shortcuts: left/right cycles filter.
     for (queue.events.items) |evt| {
@@ -99,15 +109,20 @@ pub fn draw(
         }
     }
 
-    if (active_filter != prev_filter) {
+    if (active_filter != prev_filter or search.changed) {
         list_scroll_y = 0.0;
     }
 
     var visible = std.ArrayList(usize).empty;
     defer visible.deinit(allocator);
     for (items, 0..) |it, idx| {
+        if (!matchesQuery(it, query)) continue;
         if (!matchesFilter(idx, it)) continue;
         _ = visible.append(allocator, idx) catch {};
+    }
+
+    if (visible.items.len > 1) {
+        std.sort.heap(usize, visible.items, items, itemCreatedDesc);
     }
 
     // Ensure selection stays on a visible item.
@@ -136,9 +151,10 @@ pub fn draw(
         }
     }
 
+    const reserved_h = search.height + t.spacing.sm + filters_h + t.spacing.sm;
     const list_body = draw_context.Rect.fromMinSize(
-        .{ list_rect.min[0], list_rect.min[1] + filters_h + t.spacing.sm },
-        .{ list_rect.size()[0], list_rect.size()[1] - filters_h - t.spacing.sm },
+        .{ list_rect.min[0], list_rect.min[1] + reserved_h },
+        .{ list_rect.size()[0], list_rect.size()[1] - reserved_h },
     );
 
     drawList(&dc, list_body, queue, items, visible.items);
@@ -159,7 +175,7 @@ fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *in
     theme.pop();
 
     const subtitle_y = top + title_h + t.spacing.xs;
-    dc.drawText("Placeholder data + basic shell (list/filters/detail)", .{ left, subtitle_y }, .{ .color = t.colors.text_secondary });
+    dc.drawText("Placeholder data + basic shell (list/search/filters/detail)", .{ left, subtitle_y }, .{ .color = t.colors.text_secondary });
 
     return t.spacing.md + title_h + t.spacing.xs + dc.lineHeight() + t.spacing.sm;
 }
@@ -170,15 +186,68 @@ const Counts = struct {
     read: usize,
 };
 
-fn computeCounts(items: []const Item) Counts {
-    var c: Counts = .{ .total = items.len, .unread = 0, .read = 0 };
+fn computeCounts(items: []const Item, query: []const u8) Counts {
+    var c: Counts = .{ .total = 0, .unread = 0, .read = 0 };
     for (items, 0..) |it, idx| {
+        if (!matchesQuery(it, query)) continue;
+        c.total += 1;
         switch (effectiveStatus(idx, it.status)) {
             .unread => c.unread += 1,
             .read => c.read += 1,
         }
     }
     return c;
+}
+
+const SearchRowResult = struct {
+    height: f32,
+    changed: bool,
+};
+
+fn drawSearch(
+    allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+) SearchRowResult {
+    const t = theme.activeTheme();
+    const line_h = dc.lineHeight();
+    const input_h = widgets.text_input.defaultHeight(line_h);
+
+    if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) {
+        return .{ .height = input_h, .changed = false };
+    }
+
+    const editor = ensureEditor(&search_editor, allocator);
+    const gap = t.spacing.xs;
+    const clear_label = "Clear";
+    const clear_w = dc.measureText(clear_label, 0.0)[0] + t.spacing.sm * 2.0;
+
+    const min_input_w: f32 = 80.0;
+    const can_show_clear = rect.size()[0] > min_input_w + gap + clear_w;
+    const has_query = std.mem.trim(u8, editor.slice(), " \t\n").len > 0;
+
+    const input_w = if (can_show_clear) rect.size()[0] - clear_w - gap else rect.size()[0];
+    const input_rect = draw_context.Rect.fromMinSize(rect.min, .{ input_w, input_h });
+    const action = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, .{
+        .placeholder = "Search...",
+    });
+
+    var changed = action.changed;
+
+    if (can_show_clear) {
+        const clear_rect = draw_context.Rect.fromMinSize(.{ input_rect.max[0] + gap, rect.min[1] }, .{ clear_w, input_h });
+        const clicked = widgets.button.draw(dc, clear_rect, clear_label, queue, .{
+            .variant = .ghost,
+            .disabled = !has_query,
+        });
+        if (clicked) {
+            editor.clear();
+            changed = true;
+        }
+    }
+
+    return .{ .height = input_h, .changed = changed };
 }
 
 fn drawFilters(
@@ -403,6 +472,45 @@ fn toggleMockRead(index: usize, base: Status) void {
         .unread => .read,
         .read => .unread,
     };
+}
+
+fn ensureEditor(slot: *?widgets.text_editor.TextEditor, allocator: std.mem.Allocator) *widgets.text_editor.TextEditor {
+    if (slot.* == null) {
+        slot.* = widgets.text_editor.TextEditor.init(allocator) catch unreachable;
+    }
+    return &slot.*.?;
+}
+
+fn editorText(editor: ?widgets.text_editor.TextEditor) []const u8 {
+    if (editor) |value| {
+        return value.slice();
+    }
+    return "";
+}
+
+fn itemCreatedDesc(items: []const Item, a: usize, b: usize) bool {
+    return items[a].created_at_ms > items[b].created_at_ms;
+}
+
+fn matchesQuery(it: Item, query: []const u8) bool {
+    if (query.len == 0) return true;
+    return containsIgnoreCase(it.title, query) or containsIgnoreCase(it.body, query) or containsIgnoreCase(it.id, query);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) break;
+        }
+        if (j == needle.len) return true;
+    }
+
+    return false;
 }
 
 fn matchesFilter(index: usize, it: Item) bool {
