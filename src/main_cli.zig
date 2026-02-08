@@ -494,8 +494,21 @@ pub fn main() !void {
             .user;
 
         if (!cfg_exists) {
+            // Bootstrap config non-interactively when possible.
+            //
+            // If only --url is provided, prompt only for the auth token (so users don't get stuck
+            // at a URL prompt even though they already passed one).
             if (override_url != null and override_token != null) {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
+            } else if (override_url != null and override_token == null) {
+                const secret_prompt = @import("utils/secret_prompt.zig");
+                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
+                defer allocator.free(tok);
+                if (tok.len == 0) return error.InvalidArguments;
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+            } else if (override_url == null and override_token != null) {
+                logger.err("--gateway-token was provided without --url; please pass --url too (ws://...:18789)", .{});
+                return error.InvalidArguments;
             }
         }
 
