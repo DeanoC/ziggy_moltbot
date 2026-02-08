@@ -44,6 +44,36 @@ var render_defaults: RenderDefaults = .{};
 var pack_default_mode: ?theme.Mode = null;
 var pack_default_profile: ?ProfileId = null;
 
+pub const PackStatusKind = enum {
+    none,
+    fetching,
+    ok,
+    failed,
+};
+
+var pack_status_kind: PackStatusKind = .none;
+var pack_status_buf: [512]u8 = undefined;
+var pack_status_len: usize = 0;
+
+pub fn setPackStatus(kind: PackStatusKind, msg: []const u8) void {
+    pack_status_kind = kind;
+    const n = @min(msg.len, pack_status_buf.len);
+    if (n > 0) @memcpy(pack_status_buf[0..n], msg[0..n]);
+    pack_status_len = n;
+}
+
+pub fn clearPackStatus() void {
+    pack_status_kind = .none;
+    pack_status_len = 0;
+}
+
+pub fn getPackStatus() struct { kind: PackStatusKind, msg: []const u8 } {
+    return .{
+        .kind = pack_status_kind,
+        .msg = pack_status_buf[0..pack_status_len],
+    };
+}
+
 fn profileIndex(id: ProfileId) usize {
     return switch (id) {
         .desktop => 0,

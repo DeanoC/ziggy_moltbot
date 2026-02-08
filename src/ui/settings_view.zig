@@ -321,8 +321,8 @@ fn drawAppearanceCard(
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
-    // Helper text + config path.
-    height += (line_height + t.spacing.xs) * 2.0;
+    // Helper text + config path + status line.
+    height += (line_height + t.spacing.xs) * 3.0;
     height += button_height + t.spacing.sm; // pack buttons row
     height += button_height + t.spacing.sm; // pack picker row
     height += button_height + padding; // profile picker row + bottom padding
@@ -371,6 +371,34 @@ fn drawAppearanceCard(
         var buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Config saves to: {s}/ziggystarclaw_config.json", .{cwd}) catch "Config saves to: (unknown)";
         dc.drawText(line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    }
+    cursor_y += line_height + t.spacing.xs;
+
+    // Theme pack status (last load result).
+    {
+        const status = theme_runtime.getPackStatus();
+        const badge_label: []const u8 = switch (status.kind) {
+            .none => "Idle",
+            .fetching => "Fetching",
+            .ok => "OK",
+            .failed => "Error",
+        };
+        const badge_variant: BadgeVariant = switch (status.kind) {
+            .fetching => .warning,
+            .ok => .success,
+            .failed => .danger,
+            .none => .neutral,
+        };
+
+        const badge_sz = badgeSize(dc, badge_label, t);
+        const badge_rect = draw_context.Rect.fromMinSize(.{ rect.min[0] + padding, cursor_y }, badge_sz);
+        drawBadge(dc, badge_rect, badge_label, badge_variant);
+        const msg = if (status.msg.len > 0) status.msg else "(no status)";
+        dc.drawText(
+            msg,
+            .{ badge_rect.max[0] + t.spacing.sm, cursor_y + t.spacing.xs * 0.5 },
+            .{ .color = t.colors.text_secondary },
+        );
     }
     cursor_y += line_height + t.spacing.xs;
 

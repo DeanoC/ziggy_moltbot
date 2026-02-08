@@ -184,6 +184,7 @@ pub const ThemeEngine = struct {
         runtime.clearWorkspaceLayouts();
         runtime.setRenderDefaults(.{});
         runtime.clearPackDefaults();
+        runtime.setPackStatus(.ok, "Theme pack disabled");
     }
 
     pub fn takeWebThemeChanged(self: *ThemeEngine) bool {
@@ -201,6 +202,7 @@ pub const ThemeEngine = struct {
         const raw = pack_root orelse "";
         if (raw.len == 0) {
             self.clearThemePack();
+            runtime.setPackStatus(.ok, "Theme pack disabled");
             self.web_theme_changed = true;
             return;
         }
@@ -209,6 +211,12 @@ pub const ThemeEngine = struct {
             if (self.active_pack_path) |p| {
                 if (std.mem.eql(u8, p, raw)) return;
             }
+        }
+
+        {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Fetching theme pack: {s}", .{raw}) catch "Fetching theme pack";
+            runtime.setPackStatus(.fetching, msg);
         }
 
         self.web_generation +%= 1;
@@ -356,6 +364,7 @@ pub const ThemeEngine = struct {
         const path = pack_path orelse "";
         if (path.len == 0) {
             self.clearThemePack();
+            runtime.setPackStatus(.ok, "Theme pack disabled");
             return;
         }
         // If the user points at an embedded built-in theme under `themes/<id>`, ensure any
@@ -386,11 +395,21 @@ pub const ThemeEngine = struct {
                 last_err = err;
                 // Missing file: keep trying fallbacks. Anything else: stop.
                 if (err == error.MissingFile) continue;
+                {
+                    var buf: [512]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&buf, "Failed to load pack: {s} ({s})", .{ path, @errorName(err) }) catch "Failed to load pack";
+                    runtime.setPackStatus(.failed, msg);
+                }
                 return err;
             };
             // Success.
             if (self.active_pack_path) |p| self.allocator.free(p);
             self.active_pack_path = try self.allocator.dupe(u8, path);
+            {
+                var buf: [512]u8 = undefined;
+                const msg = std.fmt.bufPrint(&buf, "Loaded theme pack: {s}", .{path}) catch "Loaded theme pack";
+                runtime.setPackStatus(.ok, msg);
+            }
             return;
         }
         // If the user asked for a built-in pack under `themes/<id>` and it isn't present,
@@ -405,13 +424,28 @@ pub const ThemeEngine = struct {
                     self.loadAndApplyThemePackDir(cand) catch |err| {
                         last_err = err;
                         if (err == error.MissingFile) continue;
+                        {
+                            var buf: [512]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&buf, "Failed to load pack: {s} ({s})", .{ path, @errorName(err) }) catch "Failed to load pack";
+                            runtime.setPackStatus(.failed, msg);
+                        }
                         return err;
                     };
                     if (self.active_pack_path) |p| self.allocator.free(p);
                     self.active_pack_path = try self.allocator.dupe(u8, path);
+                    {
+                        var buf: [512]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&buf, "Loaded theme pack: {s}", .{path}) catch "Loaded theme pack";
+                        runtime.setPackStatus(.ok, msg);
+                    }
                     return;
                 }
             }
+        }
+        {
+            var buf: [512]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "Failed to load pack: {s} ({s})", .{ path, @errorName(last_err) }) catch "Failed to load pack";
+            runtime.setPackStatus(.failed, msg);
         }
         return last_err;
     }
@@ -909,6 +943,16 @@ fn webFetchError(user_ctx: usize, msg: []const u8) void {
         return;
     }
 
+    {
+        var buf: [512]u8 = undefined;
+        const err_line = std.fmt.bufPrint(&buf, "Failed to fetch theme pack: {s}/{s} ({s})", .{
+            job.root,
+            job.last_rel,
+            msg,
+        }) catch "Failed to fetch theme pack";
+        runtime.setPackStatus(.failed, err_line);
+    }
+
     // Network-ish errors: try cached version before failing (lets offline loads work).
     if (!looksLikeHttpError(msg)) {
         if (cacheGet(job, job.last_rel)) |cached| {
@@ -1176,6 +1220,12 @@ fn applyWebJob(job: *WebPackJob) void {
     eng.loadWorkspaceLayoutsFromBytes(job.workspace_layouts_raw orelse "");
 
     freeTheme(eng.allocator, base_theme);
+
+    {
+        var buf: [512]u8 = undefined;
+        const ok_line = std.fmt.bufPrint(&buf, "Loaded theme pack: {s}", .{job.root}) catch "Loaded theme pack";
+        runtime.setPackStatus(.ok, ok_line);
+    }
 
     eng.web_theme_changed = true;
     eng.web_job = null;

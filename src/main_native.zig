@@ -71,6 +71,31 @@ const ThemePackBrowse = struct {
 
 var theme_pack_browse: ThemePackBrowse = .{};
 
+fn dirHasManifest(path: []const u8) bool {
+    if (path.len == 0) return false;
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.fs.openDirAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openDir(path, .{}) catch return false;
+    defer dir.close();
+    const f = dir.openFile("manifest.json", .{}) catch return false;
+    f.close();
+    return true;
+}
+
+fn themePackRootFromSelection(selection: []const u8) []const u8 {
+    // If the user selects a subdirectory inside a pack, walk upward until we find `manifest.json`.
+    var cur = selection;
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        if (dirHasManifest(cur)) return cur;
+        const parent = std.fs.path.dirname(cur) orelse break;
+        if (parent.len == 0 or parent.len == cur.len) break;
+        cur = parent;
+    }
+    return selection;
+}
+
 fn sdlDialogPickThemePack(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
     _ = userdata;
     _ = filter;
@@ -1683,7 +1708,7 @@ pub fn main() !void {
         if (picked_c) |picked| {
             defer std.heap.c_allocator.free(picked);
 
-            const chosen = picked;
+            const chosen = themePackRootFromSelection(picked);
             // Prefer storing a portable relative path when the chosen folder is under ./themes.
             const themes_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
             defer if (themes_abs) |v| allocator.free(v);
