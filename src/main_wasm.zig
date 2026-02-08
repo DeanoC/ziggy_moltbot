@@ -783,9 +783,10 @@ fn sendExecApprovalResolveRequest(request_id: []const u8, decision: operator_vie
         return;
     }
 
+    const decision_label = approvalDecisionLabel(decision);
     const params = approvals_proto.ExecApprovalResolveParams{
         .id = request_id,
-        .decision = approvalDecisionLabel(decision),
+        .decision = decision_label,
     };
     const request = requests.buildRequestPayload(allocator, "exec.approval.resolve", params) catch |err| {
         logger.warn("Failed to build exec.approval.resolve request: {}", .{err});
@@ -801,15 +802,22 @@ fn sendExecApprovalResolveRequest(request_id: []const u8, decision: operator_vie
         allocator.free(request.id);
         return;
     };
-    errdefer allocator.free(target_copy);
+    const decision_copy = allocator.dupe(u8, decision_label) catch {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        return;
+    };
 
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
-        ctx.setPendingApprovalResolveRequest(request.id, target_copy);
+        ctx.setPendingApprovalResolveRequest(request.id, target_copy, decision_copy);
         ctx.clearOperatorNotice();
     } else {
         allocator.free(request.payload);
         allocator.free(request.id);
+        allocator.free(target_copy);
+        allocator.free(decision_copy);
     }
 }
 
