@@ -10,11 +10,31 @@ var pending_text_inputs: std.ArrayList([]u8) = .empty;
 var collect_window: ?*sdl.SDL_Window = null;
 var collect_window_id: u32 = 0;
 
+const PrimaryTouch = struct {
+    window_id: u32,
+    touch_id: sdl.SDL_TouchID,
+    finger_id: sdl.SDL_FingerID,
+    pos_px: [2]f32,
+    down: bool,
+};
+
+const PrimaryPen = struct {
+    window_id: u32,
+    which: sdl.SDL_PenID,
+    pos_px: [2]f32,
+    down: bool,
+};
+
+var primary_touch: ?PrimaryTouch = null;
+var primary_pen: ?PrimaryPen = null;
+
 pub fn init(allocator: std.mem.Allocator) void {
     if (pending_allocator != null) return;
     pending_allocator = allocator;
     text_input_supported = false;
     pending_text_inputs = .empty;
+    primary_touch = null;
+    primary_pen = null;
 }
 
 pub fn deinit() void {
@@ -26,6 +46,8 @@ pub fn deinit() void {
     pending_text_inputs = .empty;
     pending_allocator = null;
     text_input_supported = false;
+    primary_touch = null;
+    primary_pen = null;
 }
 
 pub fn pushEvent(event: *const sdl.SDL_Event) void {
@@ -49,6 +71,9 @@ pub fn setCollectWindow(window: ?*sdl.SDL_Window) void {
 
 pub fn collect(allocator: std.mem.Allocator, queue: *input_state.InputQueue) void {
     const alloc = pending_allocator orelse return;
+
+    queue.state.pointer_kind = .mouse;
+    queue.state.pointer_drag_delta = .{ 0.0, 0.0 };
 
     const scale = if (collect_window) |w|
         windowToFramebufferScale(w)
@@ -85,6 +110,23 @@ pub fn collect(allocator: std.mem.Allocator, queue: *input_state.InputQueue) voi
         for (pasted) |text| {
             // Ownership of `text` transfers to the queue (freed in InputQueue.clear()).
             queue.push(allocator, .{ .text_input = .{ .text = text } });
+        }
+    }
+
+    // If we have an active touch/pen pointer, treat it as the primary pointer for the frame.
+    // This makes touch "just work" with existing mouse-driven widgets and lets views opt-in
+    // to drag scrolling via `queue.state.pointer_drag_delta`.
+    if (primary_touch) |touch| {
+        if (touch.down and (collect_window_id == 0 or touch.window_id == collect_window_id)) {
+            queue.state.mouse_pos = touch.pos_px;
+            queue.state.mouse_down_left = true;
+            queue.state.pointer_kind = .touch;
+        }
+    } else if (primary_pen) |pen| {
+        if (pen.down and (collect_window_id == 0 or pen.window_id == collect_window_id)) {
+            queue.state.mouse_pos = pen.pos_px;
+            queue.state.mouse_down_left = true;
+            queue.state.pointer_kind = .pen;
         }
     }
 
@@ -214,6 +256,90 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
                 queue.push(allocator, .{ .gamepad_axis = .{ .which = which, .axis = axis, .value = value } });
             }
         },
+        sdl.SDL_EVENT_FINGER_DOWN => {
+            const pos = touchPosPx(event.tfinger, scale);
+            primary_touch = .{
+                .window_id = @intCast(event.tfinger.windowID),
+                .touch_id = event.tfinger.touchID,
+                .finger_id = event.tfinger.fingerID,
+                .pos_px = pos,
+                .down = true,
+            };
+            queue.state.mouse_pos = pos;
+            queue.state.mouse_down_left = true;
+            queue.state.pointer_kind = .touch;
+            queue.push(allocator, .{ .mouse_down = .{ .button = .left, .pos = pos } });
+        },
+        sdl.SDL_EVENT_FINGER_MOTION => {
+            const pos = touchPosPx(event.tfinger, scale);
+            const dpx = touchDeltaPx(event.tfinger, scale);
+            if (primary_touch) |*touch| {
+                if (touch.touch_id == event.tfinger.touchID and touch.finger_id == event.tfinger.fingerID) {
+                    touch.pos_px = pos;
+                    touch.down = true;
+                }
+            }
+            queue.state.mouse_pos = pos;
+            queue.state.pointer_kind = .touch;
+            queue.state.pointer_drag_delta[0] += dpx[0];
+            queue.state.pointer_drag_delta[1] += dpx[1];
+            queue.push(allocator, .{ .mouse_move = .{ .pos = pos } });
+        },
+        sdl.SDL_EVENT_FINGER_UP, sdl.SDL_EVENT_FINGER_CANCELED => {
+            const pos = touchPosPx(event.tfinger, scale);
+            if (primary_touch) |touch| {
+                if (touch.touch_id == event.tfinger.touchID and touch.finger_id == event.tfinger.fingerID) {
+                    primary_touch = null;
+                }
+            }
+            queue.state.mouse_pos = pos;
+            queue.state.mouse_down_left = false;
+            queue.state.pointer_kind = .touch;
+            queue.push(allocator, .{ .mouse_up = .{ .button = .left, .pos = pos } });
+        },
+        sdl.SDL_EVENT_PEN_DOWN => {
+            const pos = .{ event.ptouch.x * scale[0], event.ptouch.y * scale[1] };
+            primary_pen = .{
+                .window_id = @intCast(event.ptouch.windowID),
+                .which = event.ptouch.which,
+                .pos_px = pos,
+                .down = true,
+            };
+            queue.state.mouse_pos = pos;
+            queue.state.mouse_down_left = true;
+            queue.state.pointer_kind = .pen;
+            queue.push(allocator, .{ .mouse_down = .{ .button = .left, .pos = pos } });
+        },
+        sdl.SDL_EVENT_PEN_UP => {
+            const pos = .{ event.ptouch.x * scale[0], event.ptouch.y * scale[1] };
+            if (primary_pen) |pen| {
+                if (pen.which == event.ptouch.which) primary_pen = null;
+            }
+            queue.state.mouse_pos = pos;
+            queue.state.mouse_down_left = false;
+            queue.state.pointer_kind = .pen;
+            queue.push(allocator, .{ .mouse_up = .{ .button = .left, .pos = pos } });
+        },
+        sdl.SDL_EVENT_PEN_MOTION => {
+            const pos = .{ event.pmotion.x * scale[0], event.pmotion.y * scale[1] };
+            if (primary_pen) |*pen| {
+                if (pen.which == event.pmotion.which) {
+                    queue.state.pointer_drag_delta[0] += pos[0] - pen.pos_px[0];
+                    queue.state.pointer_drag_delta[1] += pos[1] - pen.pos_px[1];
+                    pen.pos_px = pos;
+                }
+            } else {
+                primary_pen = .{
+                    .window_id = @intCast(event.pmotion.windowID),
+                    .which = event.pmotion.which,
+                    .pos_px = pos,
+                    .down = (event.pmotion.pen_state & sdl.SDL_PEN_INPUT_DOWN) != 0,
+                };
+            }
+            queue.state.mouse_pos = pos;
+            queue.state.pointer_kind = .pen;
+            queue.push(allocator, .{ .mouse_move = .{ .pos = pos } });
+        },
         else => {},
     }
 }
@@ -226,6 +352,13 @@ fn eventWindowId(event: sdl.SDL_Event) ?u32 {
         sdl.SDL_EVENT_KEY_DOWN, sdl.SDL_EVENT_KEY_UP => event.key.windowID,
         sdl.SDL_EVENT_TEXT_INPUT => event.text.windowID,
         sdl.SDL_EVENT_WINDOW_FOCUS_GAINED, sdl.SDL_EVENT_WINDOW_FOCUS_LOST => event.window.windowID,
+        sdl.SDL_EVENT_FINGER_DOWN,
+        sdl.SDL_EVENT_FINGER_UP,
+        sdl.SDL_EVENT_FINGER_MOTION,
+        sdl.SDL_EVENT_FINGER_CANCELED,
+        => event.tfinger.windowID,
+        sdl.SDL_EVENT_PEN_DOWN, sdl.SDL_EVENT_PEN_UP => event.ptouch.windowID,
+        sdl.SDL_EVENT_PEN_MOTION => event.pmotion.windowID,
         else => null,
     };
 }
@@ -258,6 +391,48 @@ fn windowToFramebufferScale(win: *sdl.SDL_Window) [2]f32 {
     const sx: f32 = @as(f32, @floatFromInt(pw)) / @as(f32, @floatFromInt(w));
     const sy: f32 = @as(f32, @floatFromInt(ph)) / @as(f32, @floatFromInt(h));
     return .{ sx, sy };
+}
+
+fn windowSizeInPixelsForEvent(touch_evt: sdl.SDL_TouchFingerEvent) ?[2]f32 {
+    const win = sdl.SDL_GetWindowFromID(touch_evt.windowID) orelse return null;
+    var pw: c_int = 0;
+    var ph: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(win, &pw, &ph);
+    if (pw <= 0 or ph <= 0) return null;
+    return .{ @as(f32, @floatFromInt(pw)), @as(f32, @floatFromInt(ph)) };
+}
+
+fn touchPosPx(touch_evt: sdl.SDL_TouchFingerEvent, scale: [2]f32) [2]f32 {
+    if (windowSizeInPixelsForEvent(touch_evt)) |wh| {
+        return .{ touch_evt.x * wh[0], touch_evt.y * wh[1] };
+    }
+    if (collect_window) |w| {
+        var pw: c_int = 0;
+        var ph: c_int = 0;
+        _ = sdl.SDL_GetWindowSizeInPixels(w, &pw, &ph);
+        if (pw > 0 and ph > 0) {
+            const wh = .{ @as(f32, @floatFromInt(pw)), @as(f32, @floatFromInt(ph)) };
+            return .{ touch_evt.x * wh[0], touch_evt.y * wh[1] };
+        }
+    }
+    // Last resort: treat normalized values as already in framebuffer-ish space.
+    return .{ touch_evt.x * scale[0], touch_evt.y * scale[1] };
+}
+
+fn touchDeltaPx(touch_evt: sdl.SDL_TouchFingerEvent, scale: [2]f32) [2]f32 {
+    if (windowSizeInPixelsForEvent(touch_evt)) |wh| {
+        return .{ touch_evt.dx * wh[0], touch_evt.dy * wh[1] };
+    }
+    if (collect_window) |w| {
+        var pw: c_int = 0;
+        var ph: c_int = 0;
+        _ = sdl.SDL_GetWindowSizeInPixels(w, &pw, &ph);
+        if (pw > 0 and ph > 0) {
+            const wh = .{ @as(f32, @floatFromInt(pw)), @as(f32, @floatFromInt(ph)) };
+            return .{ touch_evt.dx * wh[0], touch_evt.dy * wh[1] };
+        }
+    }
+    return .{ touch_evt.dx * scale[0], touch_evt.dy * scale[1] };
 }
 
 fn mouseToFramebufferScale() [2]f32 {
