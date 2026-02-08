@@ -6,7 +6,9 @@ const input_state = @import("input_state.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const NavItem = struct {
+    id: u64,
     rect: draw_context.Rect,
+    enabled: bool = true,
 
     pub fn center(self: NavItem) [2]f32 {
         return .{
@@ -34,7 +36,8 @@ pub const NavState = struct {
     active: bool = false,
 
     // Selection state based on the previous frame's registered items.
-    focused_idx: usize = 0,
+    focused_id: ?u64 = null,
+    focused_idx_fallback: usize = 0,
     cursor_pos: [2]f32 = .{ 0.0, 0.0 },
 
     // Simple time-based repeat for stick/dpad.
@@ -85,16 +88,30 @@ pub const NavState = struct {
                     (viewport.min[1] + viewport.max[1]) * 0.5,
                 };
             } else {
-                self.focused_idx = @min(self.focused_idx, self.prev_items.items.len - 1);
-                self.cursor_pos = self.prev_items.items[self.focused_idx].center();
+                if (self.focused_id) |id| {
+                    if (findItemById(self.prev_items.items, id)) |it| {
+                        self.cursor_pos = it.center();
+                    } else {
+                        // Focused item disappeared; fall back to a stable index in draw order.
+                        self.focused_idx_fallback = @min(self.focused_idx_fallback, self.prev_items.items.len - 1);
+                        const it = self.prev_items.items[self.focused_idx_fallback];
+                        self.focused_id = it.id;
+                        self.cursor_pos = it.center();
+                    }
+                } else {
+                    self.focused_idx_fallback = @min(self.focused_idx_fallback, self.prev_items.items.len - 1);
+                    const it = self.prev_items.items[self.focused_idx_fallback];
+                    self.focused_id = it.id;
+                    self.cursor_pos = it.center();
+                }
             }
 
             queue.state.mouse_pos = self.cursor_pos;
 
             if (self.actions.activate) {
-                // Widgets generally look for a left mouse up inside rect to count as click.
-                queue.push(allocator, .{ .mouse_down = .{ .button = .left, .pos = self.cursor_pos } });
-                queue.push(allocator, .{ .mouse_up = .{ .button = .left, .pos = self.cursor_pos } });
+                if (self.focused_id) |id| {
+                    queue.push(allocator, .{ .nav_activate = id });
+                }
             }
         }
 
@@ -107,14 +124,18 @@ pub const NavState = struct {
         std.mem.swap(@TypeOf(self.prev_items), &self.prev_items, &self.curr_items);
     }
 
-    pub fn registerItem(self: *NavState, allocator: std.mem.Allocator, rect: draw_context.Rect) void {
-        _ = self.curr_items.append(allocator, .{ .rect = rect }) catch {};
+    pub fn registerItem(self: *NavState, allocator: std.mem.Allocator, id: u64, rect: draw_context.Rect) void {
+        _ = self.curr_items.append(allocator, .{ .id = id, .rect = rect }) catch {};
     }
 
     pub fn isFocusedRect(self: *const NavState, rect: draw_context.Rect, queue: *const input_state.InputQueue) bool {
         if (!self.active) return false;
-        // Cursor is pinned to the focused item's center, so containment is a cheap proxy.
         return rect.contains(queue.state.mouse_pos);
+    }
+
+    pub fn isFocusedId(self: *const NavState, id: u64) bool {
+        if (!self.active) return false;
+        return self.focused_id != null and self.focused_id.? == id;
     }
 
     fn handleInputs(self: *NavState, queue: *input_state.InputQueue) void {
@@ -201,9 +222,10 @@ pub const NavState = struct {
     fn cycle(self: *NavState, delta: i32) void {
         if (self.prev_items.items.len == 0) return;
         const len_i = @as(i32, @intCast(self.prev_items.items.len));
-        var idx_i = @as(i32, @intCast(@min(self.focused_idx, self.prev_items.items.len - 1)));
+        var idx_i = @as(i32, @intCast(@min(self.focused_idx_fallback, self.prev_items.items.len - 1)));
         idx_i = @mod(idx_i + delta, len_i);
-        self.focused_idx = @as(usize, @intCast(idx_i));
+        self.focused_idx_fallback = @as(usize, @intCast(idx_i));
+        self.focused_id = self.prev_items.items[self.focused_idx_fallback].id;
     }
 
     fn move(self: *NavState, dir: MoveDir, now_ms: i64) void {
@@ -214,14 +236,16 @@ pub const NavState = struct {
 
         if (self.prev_items.items.len == 0) return;
 
-        self.focused_idx = @min(self.focused_idx, self.prev_items.items.len - 1);
-        const from = self.prev_items.items[self.focused_idx].center();
+        const from = if (self.focused_id) |id|
+            (findItemById(self.prev_items.items, id) orelse self.prev_items.items[@min(self.focused_idx_fallback, self.prev_items.items.len - 1)]).center()
+        else
+            self.prev_items.items[@min(self.focused_idx_fallback, self.prev_items.items.len - 1)].center();
 
         var best_idx: ?usize = null;
         var best_score: f32 = 0.0;
 
         for (self.prev_items.items, 0..) |it, idx| {
-            if (idx == self.focused_idx) continue;
+            if (self.focused_id != null and it.id == self.focused_id.?) continue;
             const c = it.center();
             const dx = c[0] - from[0];
             const dy = c[1] - from[1];
@@ -245,6 +269,16 @@ pub const NavState = struct {
             }
         }
 
-        if (best_idx) |idx| self.focused_idx = idx;
+        if (best_idx) |idx| {
+            self.focused_idx_fallback = idx;
+            self.focused_id = self.prev_items.items[idx].id;
+        }
     }
 };
+
+fn findItemById(items: []const NavItem, id: u64) ?NavItem {
+    for (items) |it| {
+        if (it.id == id) return it;
+    }
+    return null;
+}

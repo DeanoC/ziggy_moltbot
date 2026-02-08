@@ -250,12 +250,13 @@ fn drawTab(
 ) bool {
     const t = dc.theme;
     const nav_state = nav_router.get();
-    if (nav_state) |nav| nav.registerItem(dc.allocator, rect);
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "tab", label) else 0;
+    if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
     const nav_active = if (nav_state) |nav| nav.isActive() else false;
-    const focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
 
     const allow_hover = theme_runtime.getProfile().allow_hover_states;
-    const hovered = rect.contains(queue.state.mouse_pos) and (allow_hover or nav_active);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -266,6 +267,9 @@ fn drawTab(
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     const base = if (active) t.colors.primary else t.colors.surface;

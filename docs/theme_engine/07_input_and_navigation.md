@@ -23,9 +23,10 @@ In multi-window mode, gamepad events are treated as **global** and routed to the
 
 Controller navigation currently works by:
 - collecting a per-frame list of focusable rectangles (buttons, checkboxes, control-panel tabs, etc.)
+- generating stable focus ids per widget (widget kind+label, a per-scope seed like panel id/list item id, and a per-callsite seed)
 - using d-pad / left stick to move selection between those rectangles using a simple geometric nearest-in-direction heuristic
 - pinning a virtual cursor to the focused item's center
-- generating synthetic left-clicks on `A` (South face button) so existing widgets keep working without special controller code paths
+- generating a `nav_activate` event on `A` (South face button) that core widgets interpret as click/toggle/focus
 - drawing a visible focus indicator via the theme focus ring (thickness/color/glow are theme-controlled)
 
 ## Proposed Additions

@@ -121,6 +121,7 @@ pub const InputEvent = union(enum) {
     gamepad_button_down: GamepadButtonEvent,
     gamepad_button_up: GamepadButtonEvent,
     gamepad_axis: GamepadAxisEvent,
+    nav_activate: u64,
     focus_gained,
     focus_lost,
 

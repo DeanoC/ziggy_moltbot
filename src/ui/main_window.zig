@@ -595,6 +595,10 @@ fn drawWorkspaceHost(
 
     for (layout_result.slice()) |panel_slot| {
         if (selectPanelForKind(manager, panel_slot.kind)) |panel| {
+            // Namespace controller-nav ids to the panel, so identical labels in different panels don't collide.
+            nav_router.pushScope(panel.id);
+            defer nav_router.popScope();
+
             const focused = if (manager.workspace.focused_panel_id) |id| id == panel.id else false;
             panel.state.is_focused = focused;
             const frame = drawPanelFrame(&dc, panel_slot.rect, panel.title, queue, focused);
@@ -724,6 +728,15 @@ fn drawFullscreenHost(
     );
     const content_h = @max(1.0, host_rect.size()[1] - header_h - status_h);
     const content_rect = draw_context.Rect.fromMinSize(.{ host_rect.min[0], header_rect.max[1] }, .{ host_rect.size()[0], content_h });
+    const hints_h = line_h + t.spacing.sm * 2.0;
+    const content_main_rect = if (content_rect.size()[1] > hints_h + t.spacing.sm)
+        draw_context.Rect.fromMinSize(content_rect.min, .{ content_rect.size()[0], content_rect.size()[1] - hints_h - t.spacing.sm })
+    else
+        content_rect;
+    const hints_rect = if (content_rect.size()[1] > hints_h + t.spacing.sm)
+        draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_main_rect.max[1] + t.spacing.sm }, .{ content_rect.size()[0], hints_h })
+    else
+        draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_rect.max[1] - hints_h }, .{ content_rect.size()[0], hints_h });
 
     // Header chrome.
     dc.drawRect(header_rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -744,39 +757,51 @@ fn drawFullscreenHost(
     // Main content.
     switch (win_state.fullscreen_page) {
         .home => {
-            drawFullscreenHome(dc, content_rect, queue, win_state, manager);
+            nav_router.pushScope(1);
+            drawFullscreenHome(dc, content_main_rect, queue, win_state, manager);
+            nav_router.popScope();
         },
         .agents => {
+            nav_router.pushScope(2);
             ensureOnlyPanelKind(manager, .Control);
             if (selectPanelForKind(manager, .Control)) |panel| {
                 panel.data.Control.active_tab = .Agents;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
             }
+            nav_router.popScope();
         },
         .settings => {
+            nav_router.pushScope(3);
             ensureOnlyPanelKind(manager, .Control);
             if (selectPanelForKind(manager, .Control)) |panel| {
                 panel.data.Control.active_tab = .Settings;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
             }
+            nav_router.popScope();
         },
         .chat => {
+            nav_router.pushScope(4);
             ensureOnlyPanelKind(manager, .Chat);
             if (selectPanelForKind(manager, .Chat)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
             }
+            nav_router.popScope();
         },
         .showcase => {
+            nav_router.pushScope(5);
             ensureOnlyPanelKind(manager, .Showcase);
             if (selectPanelForKind(manager, .Showcase)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
             }
+            nav_router.popScope();
         },
     }
+
+    drawControllerHints(dc, hints_rect, win_state.fullscreen_page != .home);
 
     status_bar.drawCustom(
         dc,
@@ -788,6 +813,43 @@ fn drawFullscreenHost(
         0,
         ctx.last_error,
     );
+}
+
+fn drawControllerHints(dc: *draw_context.DrawContext, rect: draw_context.Rect, show_back: bool) void {
+    const t = dc.theme;
+    dc.drawRoundedRect(rect, t.radius.md, .{
+        .fill = colors.withAlpha(t.colors.surface, 0.55),
+        .stroke = colors.withAlpha(t.colors.border, 0.7),
+        .thickness = 1.0,
+    });
+
+    const gap = t.spacing.sm;
+    const pad_x = t.spacing.md;
+    const pill_h = rect.size()[1] - t.spacing.xs * 2.0;
+    var cursor_x = rect.min[0] + pad_x;
+    const y = rect.min[1] + t.spacing.xs;
+
+    cursor_x = drawHintPill(dc, .{ cursor_x, y }, pill_h, "A Select");
+    cursor_x += gap;
+    if (show_back) {
+        cursor_x = drawHintPill(dc, .{ cursor_x, y }, pill_h, "B Back");
+        cursor_x += gap;
+    }
+    _ = drawHintPill(dc, .{ cursor_x, y }, pill_h, "LB/RB Tabs");
+}
+
+fn drawHintPill(dc: *draw_context.DrawContext, pos: [2]f32, h: f32, label: []const u8) f32 {
+    const t = dc.theme;
+    const text_sz = dc.measureText(label, 0.0);
+    const w = text_sz[0] + t.spacing.md * 2.0;
+    const r = draw_context.Rect.fromMinSize(pos, .{ w, h });
+    dc.drawRoundedRect(r, t.radius.lg, .{
+        .fill = colors.withAlpha(t.colors.background, 0.35),
+        .stroke = colors.withAlpha(t.colors.border, 0.6),
+        .thickness = 1.0,
+    });
+    dc.drawText(label, .{ r.min[0] + t.spacing.md, r.min[1] + (h - text_sz[1]) * 0.5 }, .{ .color = t.colors.text_secondary });
+    return r.max[0];
 }
 
 fn drawFullscreenHome(

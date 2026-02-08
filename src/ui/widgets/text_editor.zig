@@ -110,8 +110,13 @@ pub const TextEditor = struct {
         const t = ctx.theme;
         const padding = .{ t.spacing.sm, t.spacing.xs };
         const nav_state = nav_router.get();
-        if (nav_state) |nav| nav.registerItem(ctx.allocator, rect);
-        const nav_focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+        const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "text_editor", "editor") else 0;
+        if (nav_state) |nav| nav.registerItem(ctx.allocator, nav_id, rect);
+        const nav_active = if (nav_state) |nav| nav.isActive() else false;
+        const nav_focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+        if (nav_active and nav_focused and nav_router.wasActivated(queue, nav_id)) {
+            self.focused = true;
+        }
 
         const text_min = .{ rect.min[0] + padding[0], rect.min[1] + padding[1] };
         const text_max = .{ rect.max[0] - padding[0], rect.max[1] - padding[1] };
@@ -156,7 +161,7 @@ pub const TextEditor = struct {
             ensureCaretVisible(self, caret_pos[1], line_height, view_height, max_scroll);
         }
 
-        if (self.focused or nav_focused) {
+        if (self.focused or (nav_active and nav_focused)) {
             const ss = theme_runtime.getStyleSheet();
             const radius = ss.text_input.radius orelse t.radius.md;
             focus_ring.draw(ctx, rect, radius);

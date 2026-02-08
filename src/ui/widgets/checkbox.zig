@@ -45,11 +45,12 @@ pub fn draw(
     const t = ctx.theme;
     const profile = theme_runtime.getProfile();
     const nav_state = nav_router.get();
-    if (nav_state) |nav| nav.registerItem(ctx.allocator, rect);
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "checkbox", label) else 0;
+    if (nav_state) |nav| nav.registerItem(ctx.allocator, nav_id, rect);
     const nav_active = if (nav_state) |nav| nav.isActive() else false;
-    const focused = if (nav_state) |nav| nav.isFocusedRect(rect, queue) else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
 
-    const hovered = (profile.allow_hover_states or nav_active) and rect.contains(queue.state.mouse_pos);
+    const hovered = (profile.allow_hover_states and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     const ss = theme_runtime.getStyleSheet();
     const cs = ss.checkbox;
     var clicked = false;
@@ -63,6 +64,9 @@ pub fn draw(
                 },
                 else => {},
             }
+        }
+        if (!clicked and nav_active and focused) {
+            clicked = nav_router.wasActivated(queue, nav_id);
         }
     }
 

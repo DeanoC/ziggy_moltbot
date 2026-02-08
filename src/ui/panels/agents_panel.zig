@@ -9,6 +9,7 @@ const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
+const nav_router = @import("../input/nav_router.zig");
 const cursor = @import("../input/cursor.zig");
 const widgets = @import("../widgets/widgets.zig");
 const text_editor = @import("../widgets/text_editor.zig");
@@ -503,6 +504,11 @@ fn drawAgentSessionRow(
     const button_width = (inner_rect.size()[0] - total_gap) / button_count;
     const button_y = inner_rect.max[1] - button_height;
     var button_x = inner_rect.min[0];
+
+    // Scope interactive controls to the session key so repeating labels like "Open"
+    // produce unique/stable nav ids across rows.
+    nav_router.pushScope(std.hash.Wyhash.hash(0, session.key));
+    defer nav_router.popScope();
 
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_width, button_height }), "Open", queue, .{ .variant = .secondary })) {
         if (setSessionAction(allocator, agent.id, session.key)) |session_action| {
