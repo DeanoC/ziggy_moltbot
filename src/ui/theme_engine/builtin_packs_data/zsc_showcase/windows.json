@@ -7,6 +7,7 @@
       "width": 960,
       "height": 720,
       "profile": "desktop",
+      "variant": "light",
       "panels": ["workspace"]
     },
     {
@@ -15,6 +16,7 @@
       "width": 560,
       "height": 720,
       "profile": "desktop",
+      "variant": "dark",
       "panels": ["chat"],
       "focused_panel": "chat"
     },
@@ -24,8 +26,8 @@
       "width": 900,
       "height": 720,
       "profile": "desktop",
+      "variant": "dark",
       "panels": ["showcase"]
     }
   ]
 }
-
