@@ -65,7 +65,6 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     download_popup_opened = false;
 }
 
-
 pub fn draw(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -197,7 +196,6 @@ fn editorText(editor: ?text_editor.TextEditor) []const u8 {
     }
     return "";
 }
-
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
     const t = theme.activeTheme();
@@ -394,7 +392,7 @@ fn drawWindowsNodeServiceCard(
     cursor_y += line_height + t.spacing.xs;
 
     dc.drawText(
-        "Logs: C:/ProgramData/ZiggyStarClaw/logs",
+        "Logs: node-service.log (next to config.json)",
         .{ content_x, cursor_y },
         .{ .color = t.colors.text_secondary },
     );

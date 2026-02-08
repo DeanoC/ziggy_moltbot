@@ -14,6 +14,7 @@ const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
 const config = @import("client/config.zig");
+const unified_config = @import("unified_config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
@@ -871,7 +872,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
     allocator.free(msg.role);
@@ -1384,13 +1384,32 @@ pub fn main() !void {
         }
 
         if (ui_action.open_node_logs and builtin.os.tag == .windows) {
-            const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
-            defer if (programdata) |v| allocator.free(v);
-            const root: []const u8 = programdata orelse "C:\\ProgramData";
-            const logs_dir = std.fs.path.join(allocator, &.{ root, "ZiggyStarClaw", "logs" }) catch null;
-            if (logs_dir) |p| {
-                defer allocator.free(p);
-                openPath(allocator, p);
+            // Node runner logs are written to node-service.log next to the unified node config.
+            const node_cfg_path = unified_config.defaultConfigPath(allocator) catch null;
+            if (node_cfg_path) |cfg_path| {
+                defer allocator.free(cfg_path);
+
+                const cfg_dir = std.fs.path.dirname(cfg_path) orelse ".";
+                const log_path = std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" }) catch null;
+                if (log_path) |p| {
+                    defer allocator.free(p);
+
+                    const log_exists = blk: {
+                        std.fs.cwd().access(p, .{}) catch |err| switch (err) {
+                            error.FileNotFound => break :blk false,
+                            else => break :blk false,
+                        };
+                        break :blk true;
+                    };
+
+                    if (log_exists) {
+                        openPath(allocator, p);
+                    } else {
+                        openPath(allocator, cfg_dir);
+                    }
+                } else {
+                    openPath(allocator, cfg_dir);
+                }
             }
         }
 
