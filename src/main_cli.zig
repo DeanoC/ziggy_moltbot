@@ -605,6 +605,13 @@ pub fn main() !void {
             const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
             defer allocator.free(log_path);
 
+            // Create the log file up-front so users have a concrete place to look even if
+            // the node fails early or can't initialize file logging.
+            // (We avoid truncating to preserve any prior logs.)
+            _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
+                logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
+            };
+
             // Prefer a VBScript launcher (no console window). If Windows Script Host is disabled,
             // fall back to PowerShell; as a last resort, use a cmd script (may show a window).
             const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;

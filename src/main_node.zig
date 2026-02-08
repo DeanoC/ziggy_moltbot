@@ -727,7 +727,18 @@ fn handleNodeMessage(
                                 handled_pairing = true;
                             }
                             if (!handled_pairing) {
-                                logger.err("Error: {s}", .{msg.string});
+                                if (std.mem.indexOf(u8, msg.string, "unauthorized role: node") != null) {
+                                    logger.err("Error: {s}", .{msg.string});
+                                    logger.err(
+                                        "Node auth hint: you are connecting with a token that is not allowed to claim role=node. " ++
+                                            "This usually means node-mode is using gateway/auth token (operator/shared) instead of a paired node token. " ++
+                                            "Ensure your config.json has node.nodeToken populated and that the node service is using that config.",
+                                        .{},
+                                    );
+                                    handled_pairing = true;
+                                } else {
+                                    logger.err("Error: {s}", .{msg.string});
+                                }
                             }
                         }
                     }
