@@ -1304,8 +1304,8 @@ fn drawPanelFrame(
     };
 }
 
-pub fn syncSettings(cfg: config.Config) void {
-    @import("settings_view.zig").syncFromConfig(cfg);
+pub fn syncSettings(allocator: std.mem.Allocator, cfg: config.Config) void {
+    @import("settings_view.zig").syncFromConfig(allocator, cfg);
 }
 
 pub fn deinit(allocator: std.mem.Allocator) void {

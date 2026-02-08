@@ -191,8 +191,8 @@ pub fn draw(
     return action;
 }
 
-pub fn syncFromConfig(cfg: config.Config) void {
-    syncBuffers(std.heap.page_allocator, cfg);
+pub fn syncFromConfig(allocator: std.mem.Allocator, cfg: config.Config) void {
+    syncBuffers(allocator, cfg);
 }
 
 fn clearThemePackEntries(allocator: std.mem.Allocator) void {

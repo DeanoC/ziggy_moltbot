@@ -1711,7 +1711,7 @@ pub fn main() !void {
                 if (new_value) |owned| {
                     if (cfg.ui_theme_pack) |v| allocator.free(v);
                     cfg.ui_theme_pack = owned;
-                    ui.syncSettings(cfg);
+                    ui.syncSettings(allocator, cfg);
 
                     // Apply immediately; only persist if apply succeeded.
                     if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true)) |_| {
@@ -1925,7 +1925,7 @@ pub fn main() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
-            ui.syncSettings(cfg);
+            ui.syncSettings(allocator, cfg);
         }
 
         if (ui_action.connect) {

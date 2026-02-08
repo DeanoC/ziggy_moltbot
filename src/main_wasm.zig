@@ -1052,7 +1052,6 @@ fn sendChatMessageRequest(session_key: []const u8, message: []const u8) void {
     }
 }
 
-
 fn openWebSocket() void {
     const url_z = std.mem.concat(allocator, u8, &.{ cfg.server_url, "\x00" }) catch return;
     defer allocator.free(url_z);
@@ -1327,7 +1326,7 @@ fn frame() callconv(.c) void {
             theme.setMode(theme.modeFromLabel(label));
             theme.apply();
         }
-        ui.syncSettings(cfg);
+        ui.syncSettings(allocator, cfg);
     }
 
     if (ui_action.connect) {
