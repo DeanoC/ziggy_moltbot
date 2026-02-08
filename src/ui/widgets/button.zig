@@ -1,7 +1,9 @@
+const std = @import("std");
 const draw_context = @import("../draw_context.zig");
 const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
+const image_cache = @import("../image_cache.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const style_sheet = @import("../theme_engine/style_sheet.zig");
 const nav_router = @import("../input/nav_router.zig");
@@ -169,13 +171,56 @@ pub fn draw(
             });
             ctx.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
         },
-        .image => |_| {
-            // Image paints are primarily for panel chrome; buttons fall back to a solid fill.
-            ctx.drawRoundedRect(rect, radius, .{
-                .fill = t.colors.surface,
-                .stroke = border,
-                .thickness = 1.0,
-            });
+        .image => |img| {
+            if (!img.path.isSet()) return false;
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const abs_path = theme_runtime.resolveThemeAssetPath(path_buf[0..], img.path.slice()) orelse return false;
+            image_cache.request(abs_path);
+            const entry = image_cache.get(abs_path) orelse return false;
+            if (entry.state != .ready) return false;
+            const w: f32 = @floatFromInt(@max(entry.width, 1));
+            const h: f32 = @floatFromInt(@max(entry.height, 1));
+            const scale = img.scale orelse 1.0;
+            var tint = img.tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
+            if (opts.disabled) tint[3] *= 0.6;
+            const offset = img.offset_px orelse .{ 0.0, 0.0 };
+            const size = rect.size();
+
+            if (img.mode == .tile) {
+                const uv0_x = offset[0] / (w * scale);
+                const uv0_y = offset[1] / (h * scale);
+                const uv1_x = uv0_x + (size[0] / (w * scale));
+                const uv1_y = uv0_y + (size[1] / (h * scale));
+                ctx.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ uv0_x, uv0_y },
+                    .{ uv1_x, uv1_y },
+                    tint,
+                    true,
+                );
+            } else {
+                ctx.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ 0.0, 0.0 },
+                    .{ 1.0, 1.0 },
+                    tint,
+                    false,
+                );
+            }
+
+            // Simple state overlay (keeps image fill but still feels interactive).
+            if (!opts.disabled) {
+                if (pressed) {
+                    ctx.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.10) });
+                } else if (hovered) {
+                    ctx.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
+                }
+            }
+
+            // Border pass.
+            ctx.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border, .thickness = 1.0 });
         },
     }
 

@@ -1,6 +1,6 @@
 {
   "panel": {
-    "radius": "radius.md",
+    "radius": 0,
     "fill": {
       "image": {
         "path": "assets/images/brushed_metal_tile.png",
@@ -29,7 +29,7 @@
   },
   "button": {
     "primary": {
-      "radius": "radius.sm",
+      "radius": 0,
       "fill": {
         "gradient4": {
           "tl": "#7FB6FFFF",
@@ -42,33 +42,35 @@
       "border": "#1B3E7CFF"
     },
     "secondary": {
-      "radius": "radius.sm",
+      "radius": 0,
       "fill": {
-        "gradient4": {
-          "tl": "#F9F9F9FF",
-          "tr": "#F9F9F9FF",
-          "bl": "#DADADAFF",
-          "br": "#DADADAFF"
+        "image": {
+          "path": "assets/images/toolbar_metal_tile.png",
+          "mode": "tile",
+          "scale": 1.0,
+          "tint": "#FFFFFFFF",
+          "offset_px": [0, 0]
         }
       },
       "text": "#1A1A1AFF",
       "border": "#6B6B6BFF"
     },
     "ghost": {
-      "radius": "radius.sm",
+      "radius": 0,
       "fill": "#00000000",
       "text": "colors.text_primary",
       "border": "#00000000"
     }
   },
   "text_input": {
-    "radius": "radius.sm",
+    "radius": 0,
     "fill": {
-      "gradient4": {
-        "tl": "#FFFFFFE6",
-        "tr": "#FFFFFFE6",
-        "bl": "#E8E8E8E6",
-        "br": "#E8E8E8E6"
+      "image": {
+        "path": "assets/images/toolbar_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFEE",
+        "offset_px": [0, 0]
       }
     },
     "border": "#5D5D5DFF",
@@ -78,13 +80,14 @@
     "caret": "colors.text_primary"
   },
   "checkbox": {
-    "radius": "radius.sm",
+    "radius": 0,
     "fill": {
-      "gradient4": {
-        "tl": "#F9F9F9FF",
-        "tr": "#F9F9F9FF",
-        "bl": "#DADADAFF",
-        "br": "#DADADAFF"
+      "image": {
+        "path": "assets/images/toolbar_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
       }
     },
     "border": "#6B6B6BFF",
@@ -106,4 +109,3 @@
     }
   }
 }
-
