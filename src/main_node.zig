@@ -689,9 +689,21 @@ fn handleNodeMessage(
                                             cfg.node.nodeToken = try allocator.dupe(u8, token.string);
 
                                             if (conn) |cm| {
+                                                // After pairing completes, we MUST switch the connection to use the paired node token
+                                                // for WS Authorization + connect.auth.token + device-auth payload.
+                                                // Otherwise the gateway may treat us as an operator and reject node-only methods
+                                                // like node.heartbeat with "unauthorized role: node".
+                                                cm.setHandshakeToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update handshake token: {s}", .{@errorName(err)});
+                                                };
+                                                cm.setConnectAuthToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update connect auth token: {s}", .{@errorName(err)});
+                                                };
                                                 cm.setDeviceAuthToken(cfg.node.nodeToken) catch |err| {
                                                     logger.warn("Failed to update device auth token: {s}", .{@errorName(err)});
                                                 };
+                                                // Force a reconnect so the gateway re-registers us under role=node using the new token.
+                                                cm.disconnect();
                                             }
 
                                             saveUpdatedNodeToken(allocator, cfg_path, token.string) catch |err| {
