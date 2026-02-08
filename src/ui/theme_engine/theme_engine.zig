@@ -26,6 +26,21 @@ pub const PlatformCaps = profile.PlatformCaps;
 pub const ProfileId = profile.ProfileId;
 pub const Profile = profile.Profile;
 
+fn profileIndexForId(id: ProfileId) usize {
+    return switch (id) {
+        .desktop => 0,
+        .phone => 1,
+        .tablet => 2,
+        .fullscreen => 3,
+    };
+}
+
+fn dupTokensFileAlloc(allocator: std.mem.Allocator, src: schema.TokensFile) !schema.TokensFile {
+    var out = src;
+    out.typography.font_family = try allocator.dupe(u8, src.typography.font_family);
+    return out;
+}
+
 pub const ThemeContext = struct {
     profile: Profile,
     // Tokens are the existing `Theme` struct used throughout the UI.
@@ -44,6 +59,20 @@ pub const ThemeEngine = struct {
     // Owned runtime themes (stable pointers handed to `ui/theme.zig`).
     runtime_light: ?*theme_tokens.Theme = null,
     runtime_dark: ?*theme_tokens.Theme = null,
+    pack_tokens_light: ?schema.TokensFile = null,
+    pack_tokens_dark: ?schema.TokensFile = null,
+
+    // Cached per-profile runtime themes and resolved stylesheets (to support theme-pack
+    // profile overrides like `profiles/phone.json`).
+    profile_themes_light: [4]?*theme_tokens.Theme = .{ null, null, null, null },
+    profile_themes_dark: [4]?*theme_tokens.Theme = .{ null, null, null, null },
+    base_styles_light: style_sheet.StyleSheet = .{},
+    base_styles_dark: style_sheet.StyleSheet = .{},
+    profile_styles_light: [4]style_sheet.StyleSheet = .{ .{}, .{}, .{}, .{} },
+    profile_styles_dark: [4]style_sheet.StyleSheet = .{ .{}, .{}, .{}, .{} },
+    profile_styles_cached: [4]bool = .{ false, false, false, false },
+
+    profile_overrides: [4]StoredProfileOverride = .{ .{}, .{}, .{}, .{} },
     active_pack_path: ?[]u8 = null,
     active_pack_root: ?[]u8 = null,
 
@@ -55,6 +84,27 @@ pub const ThemeEngine = struct {
     web_job: ?*WebPackJob = null,
     web_generation: u32 = 0,
     web_theme_changed: bool = false,
+
+    const StoredProfileOverride = struct {
+        ui_scale: ?f32 = null,
+        hit_target_min_px: ?f32 = null,
+        tokens: schema.TokensOverrideFile = .{},
+        owned_font_family: ?[]u8 = null,
+
+        fn deinit(self: *StoredProfileOverride, allocator: std.mem.Allocator) void {
+            if (self.owned_font_family) |buf| allocator.free(buf);
+            self.* = .{};
+        }
+
+        fn hasTokenOverrides(self: *const StoredProfileOverride) bool {
+            if (self.tokens.colors != null) return true;
+            if (self.tokens.typography != null) return true;
+            if (self.tokens.spacing != null) return true;
+            if (self.tokens.radius != null) return true;
+            if (self.tokens.shadows != null) return true;
+            return false;
+        }
+    };
 
     pub fn init(allocator: std.mem.Allocator, caps: PlatformCaps) ThemeEngine {
         return .{
@@ -79,6 +129,11 @@ pub const ThemeEngine = struct {
         }
         self.runtime_light = null;
         self.runtime_dark = null;
+        if (self.pack_tokens_light) |*t| self.allocator.free(t.typography.font_family);
+        if (self.pack_tokens_dark) |*t| self.allocator.free(t.typography.font_family);
+        self.pack_tokens_light = null;
+        self.pack_tokens_dark = null;
+        self.freeProfileCaches();
         if (self.active_pack_path) |p| {
             self.allocator.free(p);
         }
@@ -109,6 +164,11 @@ pub const ThemeEngine = struct {
         if (self.runtime_dark) |ptr| freeTheme(self.allocator, ptr);
         self.runtime_light = null;
         self.runtime_dark = null;
+        if (self.pack_tokens_light) |*t| self.allocator.free(t.typography.font_family);
+        if (self.pack_tokens_dark) |*t| self.allocator.free(t.typography.font_family);
+        self.pack_tokens_light = null;
+        self.pack_tokens_dark = null;
+        self.freeProfileCaches();
         if (self.active_pack_path) |p| self.allocator.free(p);
         self.active_pack_path = null;
         if (self.active_pack_root) |p| self.allocator.free(p);
@@ -177,8 +237,11 @@ pub const ThemeEngine = struct {
         cfg_profile_label: ?[]const u8,
     ) void {
         const requested = profile.profileFromLabel(cfg_profile_label);
-        self.active_profile = profile.resolveProfile(self.caps, framebuffer_width, framebuffer_height, requested);
+        var resolved = profile.resolveProfile(self.caps, framebuffer_width, framebuffer_height, requested);
+        self.applyProfileOverride(&resolved);
+        self.active_profile = resolved;
         runtime.setProfile(self.active_profile);
+        self.applyPackForProfile(self.active_profile.id);
     }
 
     pub fn loadAndApplyThemePackDir(self: *ThemeEngine, root_path: []const u8) !void {
@@ -208,8 +271,12 @@ pub const ThemeEngine = struct {
             const ss_light = try style_sheet.parseResolved(self.allocator, self.styles.raw_json, light_theme);
             const ss_dark = try style_sheet.parseResolved(self.allocator, self.styles.raw_json, dark_theme);
             runtime.setStyleSheets(ss_light, ss_dark);
+            self.base_styles_light = ss_light;
+            self.base_styles_dark = ss_dark;
         } else {
             runtime.setStyleSheets(.{}, .{});
+            self.base_styles_light = .{};
+            self.base_styles_dark = .{};
         }
 
         // Swap in new themes.
@@ -255,6 +322,14 @@ pub const ThemeEngine = struct {
         if (self.runtime_dark) |prev| freeTheme(self.allocator, prev);
         self.runtime_light = light_theme;
         self.runtime_dark = dark_theme;
+
+        if (self.pack_tokens_light) |*t| self.allocator.free(t.typography.font_family);
+        if (self.pack_tokens_dark) |*t| self.allocator.free(t.typography.font_family);
+        self.pack_tokens_light = try dupTokensFileAlloc(self.allocator, pack.tokens_light orelse pack.tokens_base);
+        self.pack_tokens_dark = try dupTokensFileAlloc(self.allocator, pack.tokens_dark orelse pack.tokens_base);
+
+        self.loadProfileOverridesFromDir(pack.root_path) catch {};
+        self.clearProfileThemeCaches();
 
         // base_theme was only a builder input; no longer needed.
         freeTheme(self.allocator, base_theme);
@@ -335,6 +410,149 @@ pub const ThemeEngine = struct {
         }
         return last_err;
     }
+
+    fn freeProfileCaches(self: *ThemeEngine) void {
+        self.clearProfileThemeCaches();
+        var i: usize = 0;
+        while (i < self.profile_overrides.len) : (i += 1) {
+            self.profile_overrides[i].deinit(self.allocator);
+        }
+    }
+
+    fn clearProfileThemeCaches(self: *ThemeEngine) void {
+        var i: usize = 0;
+        while (i < 4) : (i += 1) {
+            if (self.profile_themes_light[i]) |ptr| {
+                if (self.runtime_light == null or ptr != self.runtime_light.?) freeTheme(self.allocator, ptr);
+            }
+            if (self.profile_themes_dark[i]) |ptr| {
+                if (self.runtime_dark == null or ptr != self.runtime_dark.?) freeTheme(self.allocator, ptr);
+            }
+            self.profile_themes_light[i] = null;
+            self.profile_themes_dark[i] = null;
+            self.profile_styles_cached[i] = false;
+            self.profile_styles_light[i] = .{};
+            self.profile_styles_dark[i] = .{};
+        }
+    }
+
+    fn applyProfileOverride(self: *ThemeEngine, p: *Profile) void {
+        const idx = profileIndexForId(p.id);
+        const ov = &self.profile_overrides[idx];
+        if (ov.ui_scale) |v| p.ui_scale = v;
+        if (ov.hit_target_min_px) |v| p.hit_target_min_px = v;
+    }
+
+    fn applyPackForProfile(self: *ThemeEngine, id: ProfileId) void {
+        if (self.runtime_light == null or self.runtime_dark == null) return;
+        const idx = profileIndexForId(id);
+        const ov = &self.profile_overrides[idx];
+
+        if (!ov.hasTokenOverrides()) {
+            theme_mod.setRuntimeTheme(.light, self.runtime_light);
+            theme_mod.setRuntimeTheme(.dark, self.runtime_dark);
+            runtime.setStyleSheets(self.base_styles_light, self.base_styles_dark);
+            return;
+        }
+
+        if (self.profile_themes_light[idx] == null or self.profile_themes_dark[idx] == null) {
+            const ltoks = self.pack_tokens_light orelse return;
+            const dtoks = self.pack_tokens_dark orelse return;
+
+            const merged_light = schema.mergeTokens(self.allocator, ltoks, ov.tokens) catch ltoks;
+            const merged_dark = schema.mergeTokens(self.allocator, dtoks, ov.tokens) catch dtoks;
+
+            const light_font = merged_light.typography.font_family;
+            const dark_font = merged_dark.typography.font_family;
+            const light_needs_free = (merged_light.typography.font_family.ptr != ltoks.typography.font_family.ptr);
+            const dark_needs_free = (merged_dark.typography.font_family.ptr != dtoks.typography.font_family.ptr);
+
+            const light_theme = buildRuntimeTheme(self.allocator, merged_light) catch null;
+            const dark_theme = buildRuntimeTheme(self.allocator, merged_dark) catch null;
+
+            if (light_needs_free) self.allocator.free(light_font);
+            if (dark_needs_free) self.allocator.free(dark_font);
+
+            if (light_theme) |ptr| self.profile_themes_light[idx] = ptr;
+            if (dark_theme) |ptr| self.profile_themes_dark[idx] = ptr;
+
+            if (self.styles.raw_json.len > 0 and light_theme != null and dark_theme != null) {
+                self.profile_styles_light[idx] = style_sheet.parseResolved(self.allocator, self.styles.raw_json, self.profile_themes_light[idx].?) catch self.base_styles_light;
+                self.profile_styles_dark[idx] = style_sheet.parseResolved(self.allocator, self.styles.raw_json, self.profile_themes_dark[idx].?) catch self.base_styles_dark;
+                self.profile_styles_cached[idx] = true;
+            }
+        }
+
+        theme_mod.setRuntimeTheme(.light, self.profile_themes_light[idx] orelse self.runtime_light);
+        theme_mod.setRuntimeTheme(.dark, self.profile_themes_dark[idx] orelse self.runtime_dark);
+        if (self.profile_styles_cached[idx]) {
+            runtime.setStyleSheets(self.profile_styles_light[idx], self.profile_styles_dark[idx]);
+        } else {
+            runtime.setStyleSheets(self.base_styles_light, self.base_styles_dark);
+        }
+    }
+
+    fn loadProfileOverridesFromDir(self: *ThemeEngine, root_path: []const u8) !void {
+        // Reset all overrides, then load any present files.
+        var i: usize = 0;
+        while (i < self.profile_overrides.len) : (i += 1) {
+            self.profile_overrides[i].deinit(self.allocator);
+        }
+
+        var dir = std.fs.cwd().openDir(root_path, .{}) catch return;
+        defer dir.close();
+
+        const pairs = [_]struct { id: ProfileId, rel: []const u8 }{
+            .{ .id = .desktop, .rel = "profiles/desktop.json" },
+            .{ .id = .phone, .rel = "profiles/phone.json" },
+            .{ .id = .tablet, .rel = "profiles/tablet.json" },
+            .{ .id = .fullscreen, .rel = "profiles/fullscreen.json" },
+        };
+
+        for (pairs) |pinfo| {
+            const bytes = dir.readFileAlloc(self.allocator, pinfo.rel, 256 * 1024) catch continue;
+            defer self.allocator.free(bytes);
+
+            var parsed = schema.parseJson(schema.ProfileOverridesFile, self.allocator, bytes) catch continue;
+            defer parsed.deinit();
+
+            const idx = profileIndexForId(pinfo.id);
+            const dst = &self.profile_overrides[idx];
+            dst.deinit(self.allocator);
+
+            if (parsed.value.ui_scale) |v| dst.ui_scale = v;
+            if (parsed.value.hit_target_min_px) |v| dst.hit_target_min_px = v;
+
+            if (parsed.value.overrides) |ov| {
+                if (ov.ui_scale) |v| dst.ui_scale = v;
+                if (ov.hit_target_min_px) |v| dst.hit_target_min_px = v;
+                if (ov.components) |c| {
+                    if (c.hit_target_min_px) |v| dst.hit_target_min_px = v;
+                    if (c.button) |b| {
+                        if (b.hit_target_min_px) |v| dst.hit_target_min_px = v;
+                    }
+                }
+
+                dst.tokens.colors = ov.colors;
+                dst.tokens.spacing = ov.spacing;
+                dst.tokens.radius = ov.radius;
+                dst.tokens.shadows = ov.shadows;
+                if (ov.typography) |ty| {
+                    var tcopy = ty;
+                    if (ty.font_family) |ff| {
+                        const owned = self.allocator.dupe(u8, ff) catch null;
+                        if (owned) |buf| {
+                            dst.owned_font_family = buf;
+                            tcopy.font_family = buf;
+                        } else {
+                            tcopy.font_family = null;
+                        }
+                    }
+                    dst.tokens.typography = tcopy;
+                }
+            }
+        }
+    }
 };
 
 const WebStage = enum {
@@ -343,6 +561,10 @@ const WebStage = enum {
     tokens_light,
     tokens_dark,
     styles,
+    profile_desktop,
+    profile_phone,
+    profile_tablet,
+    profile_fullscreen,
 };
 
 const WebPackJob = struct {
@@ -357,6 +579,7 @@ const WebPackJob = struct {
     tokens_light: ?schema.TokensFile = null,
     tokens_dark: ?schema.TokensFile = null,
     styles_raw: ?[]u8 = null,
+    profile_raw: [4]?[]u8 = .{ null, null, null, null },
     last_rel: []const u8 = "",
 
     fn init(engine: *ThemeEngine, generation: u32, root: []const u8) !*WebPackJob {
@@ -373,6 +596,9 @@ const WebPackJob = struct {
     fn deinit(self: *WebPackJob) void {
         self.allocator.free(self.root);
         if (self.styles_raw) |bytes| self.allocator.free(bytes);
+        for (self.profile_raw) |maybe| {
+            if (maybe) |buf| self.allocator.free(buf);
+        }
         if (self.manifest) |*m| freeManifestStrings(self.allocator, m);
         if (self.tokens_base) |*t| freeTokensStrings(self.allocator, t);
         if (self.tokens_light) |*t| freeTokensStrings(self.allocator, t);
@@ -564,6 +790,38 @@ fn webFetchSuccess(user_ctx: usize, bytes: []const u8) void {
             if (bytes.len > 0) {
                 job.styles_raw = job.allocator.dupe(u8, bytes) catch null;
             }
+            job.stage = .profile_desktop;
+            job.fetchRel("profiles/desktop.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .profile_desktop => {
+            if (bytes.len > 0) job.profile_raw[0] = job.allocator.dupe(u8, bytes) catch null;
+            job.stage = .profile_phone;
+            job.fetchRel("profiles/phone.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .profile_phone => {
+            if (bytes.len > 0) job.profile_raw[1] = job.allocator.dupe(u8, bytes) catch null;
+            job.stage = .profile_tablet;
+            job.fetchRel("profiles/tablet.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .profile_tablet => {
+            if (bytes.len > 0) job.profile_raw[2] = job.allocator.dupe(u8, bytes) catch null;
+            job.stage = .profile_fullscreen;
+            job.fetchRel("profiles/fullscreen.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .profile_fullscreen => {
+            if (bytes.len > 0) job.profile_raw[3] = job.allocator.dupe(u8, bytes) catch null;
             applyWebJob(job);
         },
     }
@@ -606,6 +864,38 @@ fn webFetchError(user_ctx: usize, msg: []const u8) void {
                 return;
             },
             .styles => {
+                job.stage = .profile_desktop;
+                job.fetchRel("profiles/desktop.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .profile_desktop => {
+                job.stage = .profile_phone;
+                job.fetchRel("profiles/phone.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .profile_phone => {
+                job.stage = .profile_tablet;
+                job.fetchRel("profiles/tablet.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .profile_tablet => {
+                job.stage = .profile_fullscreen;
+                job.fetchRel("profiles/fullscreen.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .profile_fullscreen => {
                 applyWebJob(job);
                 return;
             },
@@ -645,6 +935,13 @@ fn applyWebJob(job: *WebPackJob) void {
         eng.web_job = null;
         return;
     };
+
+    // Tear down any previous per-profile caches tied to the old pack before we swap pointers.
+    if (eng.pack_tokens_light) |*t| eng.allocator.free(t.typography.font_family);
+    if (eng.pack_tokens_dark) |*t| eng.allocator.free(t.typography.font_family);
+    eng.pack_tokens_light = null;
+    eng.pack_tokens_dark = null;
+    eng.freeProfileCaches();
 
     // Build runtime themes.
     const base_theme = buildRuntimeTheme(eng.allocator, base) catch {
@@ -698,9 +995,13 @@ fn applyWebJob(job: *WebPackJob) void {
         const ss_dark: style_sheet.StyleSheet = style_sheet.parseResolved(eng.allocator, raw, dark_theme) catch .{};
         eng.styles.resolved = .{};
         runtime.setStyleSheets(ss_light, ss_dark);
+        eng.base_styles_light = ss_light;
+        eng.base_styles_dark = ss_dark;
         job.styles_raw = null; // ownership transferred
     } else {
         runtime.setStyleSheets(.{}, .{});
+        eng.base_styles_light = .{};
+        eng.base_styles_dark = .{};
     }
 
     // Swap in new themes.
@@ -733,6 +1034,61 @@ fn applyWebJob(job: *WebPackJob) void {
     if (eng.runtime_dark) |prev| freeTheme(eng.allocator, prev);
     eng.runtime_light = light_theme;
     eng.runtime_dark = dark_theme;
+
+    // Persist pack tokens so we can apply `profiles/*.json` overrides on web builds too.
+    // Note: tokens_light/dark are optional; fall back to base tokens.
+    eng.pack_tokens_light = dupTokensFileAlloc(eng.allocator, job.tokens_light orelse base) catch null;
+    eng.pack_tokens_dark = dupTokensFileAlloc(eng.allocator, job.tokens_dark orelse base) catch null;
+
+    // Load optional per-profile overrides (bytes already fetched/cached by WebPackJob).
+    // Missing or invalid files are ignored.
+    const pairs = [_]struct { id: ProfileId, idx: usize }{
+        .{ .id = .desktop, .idx = 0 },
+        .{ .id = .phone, .idx = 1 },
+        .{ .id = .tablet, .idx = 2 },
+        .{ .id = .fullscreen, .idx = 3 },
+    };
+    for (pairs) |pinfo| {
+        const bytes = job.profile_raw[pinfo.idx] orelse continue;
+        var parsed = schema.parseJson(schema.ProfileOverridesFile, eng.allocator, bytes) catch continue;
+        defer parsed.deinit();
+
+        const dst = &eng.profile_overrides[profileIndexForId(pinfo.id)];
+        dst.deinit(eng.allocator);
+
+        if (parsed.value.ui_scale) |v| dst.ui_scale = v;
+        if (parsed.value.hit_target_min_px) |v| dst.hit_target_min_px = v;
+
+        if (parsed.value.overrides) |ov| {
+            if (ov.ui_scale) |v| dst.ui_scale = v;
+            if (ov.hit_target_min_px) |v| dst.hit_target_min_px = v;
+            if (ov.components) |c| {
+                if (c.hit_target_min_px) |v| dst.hit_target_min_px = v;
+                if (c.button) |b| {
+                    if (b.hit_target_min_px) |v| dst.hit_target_min_px = v;
+                }
+            }
+
+            dst.tokens.colors = ov.colors;
+            dst.tokens.spacing = ov.spacing;
+            dst.tokens.radius = ov.radius;
+            dst.tokens.shadows = ov.shadows;
+            if (ov.typography) |ty| {
+                var tcopy = ty;
+                if (ty.font_family) |ff| {
+                    const owned = eng.allocator.dupe(u8, ff) catch null;
+                    if (owned) |buf| {
+                        dst.owned_font_family = buf;
+                        tcopy.font_family = buf;
+                    } else {
+                        tcopy.font_family = null;
+                    }
+                }
+                dst.tokens.typography = tcopy;
+            }
+        }
+    }
+    eng.clearProfileThemeCaches();
 
     freeTheme(eng.allocator, base_theme);
 

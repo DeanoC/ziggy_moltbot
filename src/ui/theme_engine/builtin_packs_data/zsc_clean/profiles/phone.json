@@ -1,0 +1,9 @@
+{
+  "profile": "phone",
+  "overrides": {
+    "typography": { "body_size": 18.0, "heading_size": 20.0 },
+    "spacing": { "sm": 12.0, "md": 20.0 },
+    "components": { "hit_target_min_px": 52.0 }
+  }
+}
+

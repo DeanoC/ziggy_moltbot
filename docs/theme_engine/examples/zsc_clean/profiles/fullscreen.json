@@ -1,0 +1,10 @@
+{
+  "profile": "fullscreen",
+  "overrides": {
+    "ui_scale": 1.35,
+    "typography": { "body_size": 18.0, "heading_size": 22.0, "title_size": 26.0 },
+    "spacing": { "sm": 14.0, "md": 22.0, "lg": 30.0 },
+    "components": { "hit_target_min_px": 60.0 }
+  }
+}
+

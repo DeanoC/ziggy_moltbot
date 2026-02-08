@@ -244,3 +244,47 @@ pub fn mergeTokens(
 pub fn parseJson(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8) !std.json.Parsed(T) {
     return std.json.parseFromSlice(T, allocator, bytes, .{ .ignore_unknown_fields = true });
 }
+
+// -----------------------------------------------------------------------------
+// Profile overrides (`profiles/*.json`)
+// -----------------------------------------------------------------------------
+
+pub const ProfileOverridesComponents = struct {
+    // Applies to the resolved profile's `hit_target_min_px`.
+    hit_target_min_px: ?f32 = null,
+
+    // Optional nested component scopes (kept small; expand as needed).
+    button: ?ProfileOverridesButton = null,
+};
+
+pub const ProfileOverridesButton = struct {
+    hit_target_min_px: ?f32 = null,
+};
+
+pub const ProfileOverrides = struct {
+    // Profile-level tuning.
+    ui_scale: ?f32 = null,
+    hit_target_min_px: ?f32 = null,
+
+    // Token overrides (same shape as TokensOverrideFile).
+    colors: ?ColorsOverride = null,
+    typography: ?TypographyOverride = null,
+    spacing: ?SpacingOverride = null,
+    radius: ?RadiusOverride = null,
+    shadows: ?ShadowsOverride = null,
+
+    // Component knobs (mapped onto Profile fields for now).
+    components: ?ProfileOverridesComponents = null,
+};
+
+pub const ProfileOverridesFile = struct {
+    // Optional metadata; ignored by loader besides validation/debug.
+    profile: ?[]const u8 = null,
+
+    // Back-compat: allow overrides at the root (as used by zsc_showcase).
+    ui_scale: ?f32 = null,
+    hit_target_min_px: ?f32 = null,
+
+    // Preferred structure (as described in docs).
+    overrides: ?ProfileOverrides = null,
+};

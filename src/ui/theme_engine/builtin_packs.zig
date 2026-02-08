@@ -20,6 +20,9 @@ const packs = [_]BuiltinPack{
         .files = &[_]PackFile{
             .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/manifest.json") },
             .{ .rel_path = "windows.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/windows.json") },
+            .{ .rel_path = "profiles/phone.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/profiles/phone.json") },
+            .{ .rel_path = "profiles/tablet.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/profiles/tablet.json") },
+            .{ .rel_path = "profiles/fullscreen.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/profiles/fullscreen.json") },
             .{ .rel_path = "tokens/base.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/tokens/base.json") },
             .{ .rel_path = "tokens/light.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/tokens/light.json") },
             .{ .rel_path = "tokens/dark.json", .bytes = @embedFile("builtin_packs_data/zsc_clean/tokens/dark.json") },
@@ -55,6 +58,9 @@ const packs = [_]BuiltinPack{
         .files = &[_]PackFile{
             .{ .rel_path = "manifest.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/manifest.json") },
             .{ .rel_path = "windows.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/windows.json") },
+            .{ .rel_path = "profiles/phone.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/profiles/phone.json") },
+            .{ .rel_path = "profiles/tablet.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/profiles/tablet.json") },
+            .{ .rel_path = "profiles/fullscreen.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/profiles/fullscreen.json") },
             .{ .rel_path = "tokens/base.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/tokens/base.json") },
             .{ .rel_path = "tokens/light.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/tokens/light.json") },
             .{ .rel_path = "tokens/dark.json", .bytes = @embedFile("builtin_packs_data/zsc_showcase/tokens/dark.json") },
