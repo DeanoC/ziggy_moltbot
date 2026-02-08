@@ -140,6 +140,10 @@ pub fn draw(
             }
         }
         if (!is_visible) selected_index = visible.items[0];
+    } else {
+        // No visible items: clear selection so the detail view doesn't keep rendering
+        // a now-hidden item (e.g. after Archive/Delete).
+        selected_index = items.len;
     }
 
     handleListKeys(queue, visible.items);
@@ -399,7 +403,7 @@ fn drawDetail(
     const pad = t.spacing.md;
     var cursor_y = rect.min[1] + pad;
 
-    if (items.len == 0 or selected_index >= items.len) {
+    if (items.len == 0 or selected_index >= items.len or isHidden(selected_index)) {
         dc.drawText("Select an item", .{ rect.min[0] + pad, cursor_y }, .{ .color = t.colors.text_secondary });
         return;
     }
@@ -448,12 +452,16 @@ fn drawDetail(
         const archive_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ archive_w, btn_h });
         if (widgets.button.draw(dc, archive_rect, archive_label, queue, .{ .variant = .ghost })) {
             hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
         }
 
         x += archive_w + btn_gap;
         const delete_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ delete_w, btn_h });
         if (widgets.button.draw(dc, delete_rect, delete_label, queue, .{ .variant = .ghost })) {
             hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
         }
 
         cursor_y += btn_h + t.spacing.sm;
@@ -465,12 +473,16 @@ fn drawDetail(
         const archive_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ archive_w, btn_h });
         if (widgets.button.draw(dc, archive_rect, archive_label, queue, .{ .variant = .ghost })) {
             hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
         }
 
         x += archive_w + btn_gap;
         const delete_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ delete_w, btn_h });
         if (widgets.button.draw(dc, delete_rect, delete_label, queue, .{ .variant = .ghost })) {
             hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
         }
 
         cursor_y += btn_h + t.spacing.sm;
