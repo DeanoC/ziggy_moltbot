@@ -44,7 +44,8 @@ pub fn draw(
 ) bool {
     const t = ctx.theme;
     const nav_state = nav_router.get();
-    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "checkbox", label) else 0;
+    const widget_id = nav_router.makeWidgetId(@returnAddress(), "checkbox", label);
+    const nav_id: u64 = if (nav_state != null) widget_id else 0;
     if (nav_state) |nav| nav.registerItem(ctx.allocator, nav_id, rect);
     const nav_active = if (nav_state) |nav| nav.isActive() else false;
     const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
@@ -56,12 +57,20 @@ pub fn draw(
     if (!opts.disabled) {
         for (queue.events.items) |evt| {
             switch (evt) {
+                .mouse_down => |md| {
+                    if (md.button == .left and rect.contains(md.pos)) {
+                        if (queue.state.mouse_capture_left_id == 0) {
+                            queue.state.mouse_capture_left_id = widget_id;
+                        }
+                    }
+                },
                 .mouse_up => |mu| {
-                    if (mu.button == .left and rect.contains(mu.pos)) {
+                    if (mu.button == .left and queue.state.mouse_capture_left_id == widget_id) {
                         // Touch/pen drags should scroll, not toggle.
-                        if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        if (rect.contains(mu.pos) and (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging)) {
                             clicked = true;
                         }
+                        queue.state.mouse_capture_left_id = 0;
                     }
                 },
                 else => {},

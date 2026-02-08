@@ -466,6 +466,10 @@ pub fn drawWindow(
 
     if (manager.workspace.dirty) action.save_workspace = true;
 
+    // Clear any pointer capture on mouse-up/focus-lost even if the release happened
+    // outside widgets (important when spawning new windows during a click).
+    input_state.endFrame(queue);
+
     return action;
 }
 
