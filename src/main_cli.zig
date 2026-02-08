@@ -105,12 +105,13 @@ const usage =
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
     \\Node service helpers (Windows Task Scheduler / Linux systemd)
+    \\  node service <action>      Convenience: install|uninstall|start|stop|status
     \\  --node-service-install    Install and enable node-mode background service
     \\  --node-service-uninstall  Uninstall the background service
     \\  --node-service-start      Start the service now
     \\  --node-service-stop       Stop the service
     \\  --node-service-status     Show service status
-    \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
+    \\  --node-service-mode <m>   onlogon|onstart (default: onstart on Windows; onlogon elsewhere)
     \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
     \\
     \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
@@ -200,7 +201,7 @@ pub fn main() !void {
     var node_service_start = false;
     var node_service_stop = false;
     var node_service_status = false;
-    var node_service_mode: win_service.InstallMode = .onlogon;
+    var node_service_mode: win_service.InstallMode = if (builtin.os.tag == .windows) .onstart else .onlogon;
     var node_service_name: ?[]const u8 = null;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
@@ -224,6 +225,42 @@ pub fn main() !void {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.print("ziggystarclaw-cli {s}\n", .{build_options.app_version});
             return;
+        } else if (i == 1 and std.mem.eql(u8, arg, "node")) {
+            // Minimal verb-noun style convenience wrapper:
+            //   ziggystarclaw-cli node service install|uninstall|start|stop|status
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const noun = args[i + 1];
+            if (!std.mem.eql(u8, noun, "service")) {
+                logger.err("Unknown subcommand: node {s}", .{noun});
+                return error.InvalidArguments;
+            }
+            if (i + 2 >= args.len) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            }
+            const action = args[i + 2];
+            if (std.mem.eql(u8, action, "install")) {
+                node_service_install = true;
+            } else if (std.mem.eql(u8, action, "uninstall")) {
+                node_service_uninstall = true;
+            } else if (std.mem.eql(u8, action, "start")) {
+                node_service_start = true;
+            } else if (std.mem.eql(u8, action, "stop")) {
+                node_service_stop = true;
+            } else if (std.mem.eql(u8, action, "status")) {
+                node_service_status = true;
+            } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            } else {
+                logger.err("Unknown node service action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
+            // Skip "node service <action>".
+            i += 2;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -419,6 +456,14 @@ pub fn main() !void {
         // not root's, otherwise the service will fail to read its config.
         const node_cfg_path = if (config_path_set) blk: {
             break :blk try allocator.dupe(u8, config_path);
+        } else if (builtin.os.tag == .windows and node_service_mode == .onstart) blk: {
+            // System-scope default (boot-start on Windows).
+            const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+            if (programdata) |pd| {
+                defer allocator.free(pd);
+                break :blk try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "config.json" });
+            }
+            break :blk try allocator.dupe(u8, "C:\\ProgramData\\ZiggyStarClaw\\config.json");
         } else if (builtin.os.tag == .linux and node_service_mode == .onstart and std.posix.geteuid() == 0) blk: {
             const sudo_user = std.process.getEnvVarOwned(allocator, "SUDO_USER") catch null;
             if (sudo_user) |u| {
@@ -443,16 +488,21 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        const storage_scope: node_register.StorageScope = if (builtin.os.tag == .windows and node_service_mode == .onstart)
+            .system
+        else
+            .user;
+
         if (!cfg_exists) {
             if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?);
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
             }
         }
 
         if (builtin.os.tag == .linux) {
             if (node_service_install) {
                 // Ensure config has a valid node token/id before enabling the service.
-                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
+                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
                 const unit = linux_service.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
                     if (err == linux_service.ServiceError.AccessDenied) {
@@ -512,23 +562,37 @@ pub fn main() !void {
             //
             // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
             // can approve without re-running commands.
-            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
-            // Install a short wrapper script so we can:
+            // Install a small wrapper script so we can:
             // - avoid schtasks /TR length limits
-            // - always redirect logs to a file for debugging
-            // - avoid relying on Task Scheduler working directory
+            // - run hidden (no console window) even for ONLOGON tasks
+            // - ensure predictable logging to %ProgramData%\ZiggyStarClaw\logs\node.log
+            // - keep the task process alive so stop/status behave sensibly
+            // - automatically restart the node if it exits/crashes
             const exe_path = try std.fs.selfExePathAlloc(allocator);
             defer allocator.free(exe_path);
 
-            // Best-effort: place wrapper + logs alongside the config (typically %APPDATA%\ZiggyStarClaw).
+            // Place wrapper alongside the config.
             const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
             std.fs.cwd().makePath(cfg_dir) catch {};
 
-            const log_path = try std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" });
+            // Predictable log location.
+            const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+            defer if (programdata) |v| allocator.free(v);
+            const programdata_root: []const u8 = programdata orelse "C:\\ProgramData";
+
+            const zsc_dir = try std.fs.path.join(allocator, &.{ programdata_root, "ZiggyStarClaw" });
+            defer allocator.free(zsc_dir);
+            const logs_dir = try std.fs.path.join(allocator, &.{ zsc_dir, "logs" });
+            defer allocator.free(logs_dir);
+            std.fs.cwd().makePath(logs_dir) catch {};
+
+            const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
             defer allocator.free(log_path);
 
-            // Prefer a VBScript launcher (no console window). Fallback to cmd if Windows Script Host is missing.
+            // Prefer a VBScript launcher (no console window). If Windows Script Host is disabled,
+            // fall back to PowerShell; as a last resort, use a cmd script (may show a window).
             const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
             defer if (windir) |v| allocator.free(v);
 
@@ -545,12 +609,18 @@ pub fn main() !void {
                 defer allocator.free(vbs_path);
 
                 // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
-                // We still use cmd /c for output redirection.
+                // We also keep the wrapper process alive (bWaitOnReturn=True) so Task Scheduler stop/status work.
                 const vbs = try std.fmt.allocPrint(
                     allocator,
                     "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
-                        "sh.Run \"cmd /c \"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator --log-level debug >> \"\"\"\"{s}\"\"\"\" 2>&1\"\"\", 0, False\r\n",
-                    .{ exe_path, node_cfg_path, log_path },
+                        "Set env=sh.Environment(\"Process\")\r\n" ++
+                        "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
+                        "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
+                        "Do\r\n" ++
+                        "  rc = sh.Run(\"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator\", 0, True)\r\n" ++
+                        "  WScript.Sleep 5000\r\n" ++
+                        "Loop\r\n",
+                    .{ log_path, exe_path, node_cfg_path },
                 );
                 defer allocator.free(vbs);
 
@@ -574,18 +644,84 @@ pub fn main() !void {
 
                 logger.info("Installed scheduled task for node-mode (hidden via wscript).", .{});
                 _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-                _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+                _ = std.fs.File.stdout().write("Logs: ") catch {};
+                _ = std.fs.File.stdout().write(log_path) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
                 return;
             }
 
-            // Fallback: cmd wrapper (may open a console window)
+            // PowerShell fallback (hidden)
+            const ps1_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.ps1" });
+            defer allocator.free(ps1_path);
+
+            const ps1 = try std.fmt.allocPrint(
+                allocator,
+                "$ErrorActionPreference = 'Continue'\r\n" ++
+                    "$env:MOLT_LOG_FILE = '{s}'\r\n" ++
+                    "$env:MOLT_LOG_LEVEL = 'debug'\r\n" ++
+                    "while ($true) {{\r\n" ++
+                    "  $p = Start-Process -FilePath '{s}' -ArgumentList @('--node-mode','--config','{s}','--as-node','--no-operator') -WindowStyle Hidden -PassThru -Wait\r\n" ++
+                    "  Start-Sleep -Seconds 5\r\n" ++
+                    "}}\r\n",
+                .{ log_path, exe_path, node_cfg_path },
+            );
+            defer allocator.free(ps1);
+
+            {
+                const f = try std.fs.cwd().createFile(ps1_path, .{ .truncate = true });
+                defer f.close();
+                try f.writeAll(ps1);
+            }
+
+            const powershell_path = if (windir) |v|
+                try std.fs.path.join(allocator, &.{ v, "System32", "WindowsPowerShell", "v1.0", "powershell.exe" })
+            else
+                try allocator.dupe(u8, "powershell");
+            defer allocator.free(powershell_path);
+
+            const task_run = try std.fmt.allocPrint(
+                allocator,
+                "\"{s}\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{s}\"",
+                .{ powershell_path, ps1_path },
+            );
+            defer allocator.free(task_run);
+
+            const installed = blk: {
+                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
+                    if (err == win_service.ServiceError.AccessDenied) {
+                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                        return;
+                    }
+                    logger.warn("PowerShell wrapper install failed: {s}; falling back to cmd wrapper.", .{@errorName(err)});
+                    break :blk false;
+                };
+                break :blk true;
+            };
+
+            if (installed) {
+                logger.info("Installed scheduled task for node-mode (PowerShell wrapper).", .{});
+                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+                _ = std.fs.File.stdout().write("Logs: ") catch {};
+                _ = std.fs.File.stdout().write(log_path) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                return;
+            }
+
+            // Last resort: cmd wrapper (may open a console window on ONLOGON tasks)
             const cmd_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
             defer allocator.free(cmd_path);
 
             const cmd = try std.fmt.allocPrint(
                 allocator,
-                "@echo off\r\nsetlocal\r\n\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug >> \"{s}\" 2>&1\r\n",
-                .{ exe_path, node_cfg_path, log_path },
+                "@echo off\r\n" ++
+                    "setlocal\r\n" ++
+                    "set \"MOLT_LOG_FILE={s}\"\r\n" ++
+                    "set \"MOLT_LOG_LEVEL=debug\"\r\n" ++
+                    ":loop\r\n" ++
+                    "\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator\r\n" ++
+                    "timeout /t 5 /nobreak >nul\r\n" ++
+                    "goto loop\r\n",
+                .{ log_path, exe_path, node_cfg_path },
             );
             defer allocator.free(cmd);
 
@@ -595,10 +731,10 @@ pub fn main() !void {
                 try f.writeAll(cmd);
             }
 
-            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
-            defer allocator.free(task_run);
+            const cmd_task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
+            defer allocator.free(cmd_task_run);
 
-            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {  
+            win_service.installTaskCommand(allocator, cmd_task_run, node_service_mode, node_service_name) catch |err| {
                 if (err == win_service.ServiceError.AccessDenied) {
                     logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
                     return;
@@ -608,7 +744,9 @@ pub fn main() !void {
 
             logger.info("Installed scheduled task for node-mode (cmd wrapper).", .{});
             _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-            _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+            _ = std.fs.File.stdout().write("Logs: ") catch {};
+            _ = std.fs.File.stdout().write(log_path) catch {};
+            _ = std.fs.File.stdout().write("\n") catch {};
             return;
         }
         if (node_service_uninstall) {
@@ -641,7 +779,7 @@ pub fn main() !void {
         // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
         // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
         // user to paste the node token explicitly.
-        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait, node_opts.display_name);
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait, node_opts.display_name, .user);
         return;
     }
 

@@ -126,6 +126,13 @@ pub fn installTaskCommand(
     try argv.append(allocator, "/SC");
     try argv.append(allocator, schedule);
 
+    // For ONSTART, default to SYSTEM so the node can run without a logged-in user.
+    // (This is the closest thing to a "service" without a dedicated SCM service wrapper.)
+    if (mode == .onstart) {
+        try argv.append(allocator, "/RU");
+        try argv.append(allocator, "SYSTEM");
+    }
+
     // Best-effort: run at highest privileges when available.
     try argv.append(allocator, "/RL");
     try argv.append(allocator, "HIGHEST");

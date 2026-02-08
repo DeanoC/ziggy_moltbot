@@ -147,7 +147,20 @@ fn bestEffortDefaultName(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ host, platform });
 }
 
-pub fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
+pub const StorageScope = enum {
+    /// Per-user storage (e.g. %APPDATA% on Windows).
+    user,
+    /// System-wide storage (e.g. %ProgramData% on Windows). Intended for always-on service mode.
+    system,
+};
+
+pub fn writeDefaultConfig(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    gateway_url: []const u8,
+    gateway_token: []const u8,
+    scope: StorageScope,
+) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
@@ -155,8 +168,14 @@ pub fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gatewa
     const default_name = try bestEffortDefaultName(allocator);
     defer allocator.free(default_name);
 
-    const identity_path: []const u8 = node_platform.defaultNodeDeviceIdentityPathTemplate();
-    const approvals_path: []const u8 = node_platform.defaultExecApprovalsPathTemplate();
+    const identity_path: []const u8 = switch (scope) {
+        .user => node_platform.defaultNodeDeviceIdentityPathTemplate(),
+        .system => node_platform.defaultSystemNodeDeviceIdentityPathTemplate(),
+    };
+    const approvals_path: []const u8 = switch (scope) {
+        .user => node_platform.defaultExecApprovalsPathTemplate(),
+        .system => node_platform.defaultSystemExecApprovalsPathTemplate(),
+    };
 
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
@@ -245,7 +264,14 @@ fn saveUpdatedNodeConfig(
     try wf.writeAll("\n");
 }
 
-pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool, display_name: ?[]const u8) !void {
+pub fn run(
+    allocator: std.mem.Allocator,
+    config_path: ?[]const u8,
+    insecure_tls: bool,
+    wait_for_approval: bool,
+    display_name: ?[]const u8,
+    scope: StorageScope,
+) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
@@ -271,7 +297,7 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         if (tok.len == 0) return error.InvalidArguments;
         logger.info("(received {d} chars)", .{tok.len});
 
-        try writeDefaultConfig(allocator, cfg_path, url, tok);
+        try writeDefaultConfig(allocator, cfg_path, url, tok, scope);
         break :blk try unified_config.load(allocator, cfg_path);
     };
     defer cfg.deinit(allocator);

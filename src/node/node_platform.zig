@@ -84,6 +84,30 @@ pub fn defaultExecApprovalsPathTemplate() []const u8 {
         "~/.config/ziggystarclaw/exec-approvals.json";
 }
 
+/// System-wide storage templates (primarily for always-on Windows service mode).
+///
+/// NOTE: unified_config expands %ProgramData% at load time.
+pub fn defaultSystemNodeStorageDirTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw"
+    else
+        "~/.config/ziggystarclaw";
+}
+
+pub fn defaultSystemNodeDeviceIdentityPathTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw\\node-device.json"
+    else
+        "~/.config/ziggystarclaw/node-device.json";
+}
+
+pub fn defaultSystemExecApprovalsPathTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw\\exec-approvals.json"
+    else
+        "~/.config/ziggystarclaw/exec-approvals.json";
+}
+
 // -----------------------------------------------------------------------------
 // Notifications (placeholder)
 // -----------------------------------------------------------------------------
