@@ -287,14 +287,16 @@ pub fn run(
             backupConfigIfExists(allocator, cfg_path);
         }
 
-        const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. ws://wizball.tail...:18789): ");
+        const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. wss://wizball.tail*.ts.net): ");
         defer allocator.free(url);
         if (url.len == 0) return error.InvalidArguments;
 
+        // Token is OPTIONAL in Tailscale Serve setups (gateway.auth.allowTailscale=true) because
+        // the gateway can authenticate via identity headers injected by the proxy.
+        // Keep prompting for it because direct WS/HTTP deployments still need it, but allow empty.
         const secret_prompt = @import("utils/secret_prompt.zig");
-        const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
+        const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
         defer allocator.free(tok);
-        if (tok.len == 0) return error.InvalidArguments;
         logger.info("(received {d} chars)", .{tok.len});
 
         try writeDefaultConfig(allocator, cfg_path, url, tok, scope);
@@ -306,8 +308,8 @@ pub fn run(
     ensureParentDir(cfg.node.execApprovalsPath);
     if (cfg.logging.file) |p| ensureParentDir(p);
 
-    if (cfg.gateway.wsUrl.len == 0 or cfg.gateway.authToken.len == 0) {
-        logger.err("Config missing gateway.wsUrl and/or gateway.authToken", .{});
+    if (cfg.gateway.wsUrl.len == 0) {
+        logger.err("Config missing gateway.wsUrl", .{});
         return error.InvalidArguments;
     }
 
@@ -349,7 +351,8 @@ pub fn run(
         var ws = websocket_client.WebSocketClient.init(
             allocator,
             ws_url,
-            // Keep websocket handshake token as the shared gateway token.
+            // Token used for the initial WebSocket handshake (Authorization header).
+            // In Tailscale Serve mode, this can be empty because the proxy can inject identity headers.
             cfg.gateway.authToken,
             insecure_tls,
             null,
@@ -376,8 +379,11 @@ pub fn run(
         });
 
         // IMPORTANT: connect.auth.token must match the websocket Authorization token.
-        ws.setConnectAuthToken(cfg.gateway.authToken);
-        ws.setDeviceAuthToken(cfg.gateway.authToken);
+        // Only set these when a shared gateway token is provided.
+        if (cfg.gateway.authToken.len > 0) {
+            ws.setConnectAuthToken(cfg.gateway.authToken);
+            ws.setDeviceAuthToken(cfg.gateway.authToken);
+        }
 
         try ws.connect();
 
