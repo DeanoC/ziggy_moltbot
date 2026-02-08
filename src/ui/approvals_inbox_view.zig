@@ -416,7 +416,7 @@ fn drawTab(
     const nav_active = if (nav_state) |navp| navp.isActive() else false;
     const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
 
-    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const allow_hover = theme_runtime.allowHover(queue);
     const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {

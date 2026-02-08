@@ -63,11 +63,10 @@ pub fn draw(
     const nav_active = if (nav_state) |nav| nav.isActive() else false;
     const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
 
-    const profile = theme_runtime.getProfile();
-    const allow_hover = profile.allow_hover_states;
+    const allow_hover = theme_runtime.allowHover(queue);
     const inside = rect.contains(queue.state.mouse_pos);
     const hovered = (allow_hover and inside) or (nav_active and focused);
-    const active = (allow_hover and inside) and queue.state.mouse_down_left;
+    const pressed = inside and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
 
     const ss = theme_runtime.getStyleSheet();
     const variant_style = switch (opts.variant) {
@@ -115,7 +114,7 @@ pub fn draw(
     };
 
     var fill = base_bg;
-    if (active) {
+    if (pressed) {
         fill = active_bg;
     } else if (hovered) {
         fill = hover_bg;

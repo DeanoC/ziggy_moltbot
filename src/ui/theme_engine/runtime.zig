@@ -2,6 +2,7 @@ const profile = @import("profile.zig");
 const schema = @import("schema.zig");
 const style_sheet = @import("style_sheet.zig");
 const theme = @import("../theme.zig");
+const input_state = @import("../input/input_state.zig");
 const std = @import("std");
 
 pub const PlatformCaps = profile.PlatformCaps;
@@ -36,6 +37,13 @@ pub fn activeNav() bool {
     // The nav system can be active outside fullscreen as well, but for now this is enough
     // to drive larger hit targets and reduced hover-only styling.
     return active_profile.modality == .controller;
+}
+
+pub fn allowHover(queue: *const input_state.InputQueue) bool {
+    const p = getProfile();
+    if (!p.allow_hover_states) return false;
+    // Only show hover states for a real mouse pointer.
+    return queue.state.pointer_kind == .mouse;
 }
 
 pub fn setStyleSheet(sheet: StyleSheet) void {

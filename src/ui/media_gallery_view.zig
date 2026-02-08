@@ -299,7 +299,7 @@ fn drawThumb(
         }
     }
 
-    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const allow_hover = theme_runtime.allowHover(queue);
     const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or focused;
     const base = if (selected) t.colors.primary else t.colors.surface;
     const bg = colors.withAlpha(base, if (selected) 0.18 else if (hovered) 0.12 else 0.08);

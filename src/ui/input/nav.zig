@@ -107,6 +107,9 @@ pub const NavState = struct {
             }
 
             queue.state.mouse_pos = self.cursor_pos;
+            queue.state.pointer_kind = .nav;
+            queue.state.pointer_drag_delta = .{ 0.0, 0.0 };
+            queue.state.pointer_dragging = false;
 
             if (self.actions.activate) {
                 if (self.focused_id) |id| {
