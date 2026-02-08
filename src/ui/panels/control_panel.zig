@@ -36,6 +36,15 @@ pub const ControlPanelAction = struct {
     download_update: bool = false,
     open_download: bool = false,
     install_update: bool = false,
+
+    // Windows node runner helpers (Task Scheduler wrapper)
+    node_service_install_onlogon: bool = false,
+    node_service_start: bool = false,
+    node_service_stop: bool = false,
+    node_service_status: bool = false,
+    node_service_uninstall: bool = false,
+    open_node_logs: bool = false,
+
     refresh_nodes: bool = false,
     select_node: ?[]u8 = null,
     invoke_node: ?operator_view.NodeInvokeAction = null,
@@ -145,6 +154,13 @@ pub fn draw(
             action.download_update = settings_action.download_update;
             action.open_download = settings_action.open_download;
             action.install_update = settings_action.install_update;
+
+            action.node_service_install_onlogon = settings_action.node_service_install_onlogon;
+            action.node_service_start = settings_action.node_service_start;
+            action.node_service_stop = settings_action.node_service_stop;
+            action.node_service_status = settings_action.node_service_status;
+            action.node_service_uninstall = settings_action.node_service_uninstall;
+            action.open_node_logs = settings_action.open_node_logs;
         },
         else => unreachable,
     }

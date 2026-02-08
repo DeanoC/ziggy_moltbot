@@ -14,6 +14,7 @@ const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
 const config = @import("client/config.zig");
+const unified_config = @import("unified_config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
@@ -111,6 +112,146 @@ fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
     child.spawn() catch |err| {
         logger.warn("Failed to open path: {}", .{err});
     };
+}
+
+const WinNodeServiceJobKind = enum {
+    install_onlogon,
+    uninstall,
+    start,
+    stop,
+    status,
+};
+
+const WinNodeServiceJob = struct {
+    kind: WinNodeServiceJobKind,
+    url: []u8,
+    token: []u8,
+    insecure_tls: bool,
+
+    fn deinit(self: *WinNodeServiceJob) void {
+        std.heap.page_allocator.free(self.url);
+        std.heap.page_allocator.free(self.token);
+    }
+};
+
+fn spawnWinNodeServiceJob(kind: WinNodeServiceJobKind, url: []const u8, token: []const u8, insecure_tls: bool) void {
+    // Copy inputs so the UI config can change/free independently.
+    const job = std.heap.page_allocator.create(WinNodeServiceJob) catch return;
+    job.* = .{
+        .kind = kind,
+        .url = std.heap.page_allocator.dupe(u8, url) catch {
+            std.heap.page_allocator.destroy(job);
+            return;
+        },
+        .token = std.heap.page_allocator.dupe(u8, token) catch {
+            std.heap.page_allocator.free(job.url);
+            std.heap.page_allocator.destroy(job);
+            return;
+        },
+        .insecure_tls = insecure_tls,
+    };
+
+    _ = std.Thread.spawn(.{}, runWinNodeServiceJob, .{job}) catch {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+        return;
+    };
+}
+
+fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
+    defer {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+    }
+
+    const allocator = std.heap.page_allocator;
+
+    const cli = findSiblingExecutable(allocator, if (builtin.os.tag == .windows) "ziggystarclaw-cli.exe" else "ziggystarclaw-cli") catch |err| {
+        logger.err("node service: failed to resolve cli path: {}", .{err});
+        return;
+    };
+    defer allocator.free(cli);
+
+    const action_args: []const []const u8 = switch (job.kind) {
+        .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
+        .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
+        .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
+        .stop => &.{ "node", "service", "stop", "--node-service-mode", "onlogon" },
+        .status => &.{ "node", "service", "status", "--node-service-mode", "onlogon" },
+    };
+
+    // Build argv = [cli] + action_args + common bootstrap args
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+
+    argv.append(allocator, cli) catch return;
+    argv.appendSlice(allocator, action_args) catch return;
+
+    // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
+    argv.append(allocator, "--url") catch return;
+    argv.append(allocator, job.url) catch return;
+    argv.append(allocator, "--gateway-token") catch return;
+    argv.append(allocator, job.token) catch return;
+
+    if (job.insecure_tls) {
+        argv.append(allocator, "--insecure-tls") catch {};
+    }
+
+    // Be verbose in logs.
+    argv.append(allocator, "--log-level") catch {};
+    argv.append(allocator, "debug") catch {};
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+
+    child.spawn() catch |err| {
+        logger.err("node service: spawn failed: {}", .{err});
+        return;
+    };
+
+    const term = child.wait() catch |err| {
+        logger.err("node service: wait failed: {}", .{err});
+        return;
+    };
+
+    switch (term) {
+        .Exited => |code| {
+            if (code == 0) {
+                logger.info("node service: {s} ok", .{@tagName(job.kind)});
+            } else {
+                logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+            }
+        },
+        else => {
+            logger.err("node service: {s} terminated unexpectedly", .{@tagName(job.kind)});
+        },
+    }
+}
+
+fn findSiblingExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+    const dir = std.fs.path.dirname(exe) orelse ".";
+    const candidate = try std.fs.path.join(allocator, &.{ dir, name });
+
+    std.fs.cwd().access(candidate, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Fall back to PATH.
+            allocator.free(candidate);
+            return allocator.dupe(u8, name);
+        },
+        else => {
+            allocator.free(candidate);
+            return err;
+        },
+    };
+
+    return candidate;
 }
 
 fn installUpdate(allocator: std.mem.Allocator, archive_path: []const u8) bool {
@@ -731,7 +872,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
     allocator.free(msg.role);
@@ -1242,6 +1382,55 @@ pub fn main() !void {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+
+        if (ui_action.open_node_logs and builtin.os.tag == .windows) {
+            // Node runner logs are written to node-service.log next to the unified node config.
+            const node_cfg_path = unified_config.defaultConfigPath(allocator) catch null;
+            if (node_cfg_path) |cfg_path| {
+                defer allocator.free(cfg_path);
+
+                const cfg_dir = std.fs.path.dirname(cfg_path) orelse ".";
+                const log_path = std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" }) catch null;
+                if (log_path) |p| {
+                    defer allocator.free(p);
+
+                    const log_exists = blk: {
+                        std.fs.cwd().access(p, .{}) catch |err| switch (err) {
+                            error.FileNotFound => break :blk false,
+                            else => break :blk false,
+                        };
+                        break :blk true;
+                    };
+
+                    if (log_exists) {
+                        openPath(allocator, p);
+                    } else {
+                        openPath(allocator, cfg_dir);
+                    }
+                } else {
+                    openPath(allocator, cfg_dir);
+                }
+            }
+        }
+
+        if (builtin.os.tag == .windows) {
+            if (ui_action.node_service_install_onlogon) {
+                spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_uninstall) {
+                spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_start) {
+                spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_stop) {
+                spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_status) {
+                spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+        }
+
         if (ui_action.open_url) |url| {
             defer allocator.free(url);
             openUrl(allocator, url);
