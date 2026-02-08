@@ -602,7 +602,7 @@ pub fn main() !void {
                 try allocator.dupe(u8, "wscript.exe");
             defer allocator.free(wscript_path);
 
-            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) == null;
+            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) != null;
 
             if (wscript_ok) {
                 const vbs_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.vbs" });
