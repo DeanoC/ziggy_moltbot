@@ -710,7 +710,9 @@ fn drawControllerFocusOverlay(
     for (items) |it| {
         if (!it.rect.contains(pos)) continue;
         if (!host_rect.contains(it.center())) continue;
-        widgets.focus_ring.draw(dc, it.rect, dc.theme.radius.sm);
+        const h = it.rect.size()[1];
+        const approx_radius = std.math.clamp(h * 0.25, dc.theme.radius.sm, dc.theme.radius.lg);
+        widgets.focus_ring.draw(dc, it.rect, approx_radius);
         break;
     }
 }

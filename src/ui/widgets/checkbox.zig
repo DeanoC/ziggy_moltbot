@@ -82,7 +82,9 @@ pub fn draw(
     }
 
     const line_h = ctx.lineHeight();
-    const box_size = @min(rect.size()[1], line_h);
+    // If the checkbox row is tall (phone/fullscreen hit targets), keep the box large enough
+    // to match the intended interaction affordance.
+    const box_size = @min(rect.size()[1], @max(line_h, rect.size()[1] * 0.6));
     const box_min = .{
         rect.min[0],
         rect.min[1] + (rect.size()[1] - box_size) * 0.5,
