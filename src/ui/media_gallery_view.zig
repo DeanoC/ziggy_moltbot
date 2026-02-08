@@ -11,6 +11,8 @@ const cursor = @import("input/cursor.zig");
 const image_cache = @import("image_cache.zig");
 const ui_systems = @import("ui_systems.zig");
 const drag_drop = @import("systems/drag_drop.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 const MediaItem = struct {
     name: []const u8,
@@ -235,6 +237,20 @@ fn drawThumb(
     const t = dc.theme;
     const selected = selected_index != null and selected_index.? == idx;
 
+    // Scope each thumb so controller nav IDs stay stable and unique in a grid.
+    var scope: u64 = std.hash.Wyhash.hash(0, "media_gallery.thumb");
+    scope = std.hash.Wyhash.hash(scope, item.url);
+    scope = std.hash.Wyhash.hash(scope, std.mem.asBytes(&idx));
+    nav_router.pushScope(scope);
+    defer nav_router.popScope();
+
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "media_gallery.thumb", "thumb") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -249,6 +265,9 @@ fn drawThumb(
                 if (mu.button == .left and rect.contains(mu.pos) and !(thumb_drag_index == idx and thumb_drag_started)) {
                     clicked = true;
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -278,7 +297,8 @@ fn drawThumb(
         }
     }
 
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or focused;
     const base = if (selected) t.colors.primary else t.colors.surface;
     const bg = colors.withAlpha(base, if (selected) 0.18 else if (hovered) 0.12 else 0.08);
     const border_alpha: f32 = if (selected) 0.8 else if (hovered) 0.6 else 0.4;
