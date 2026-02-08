@@ -12,6 +12,7 @@ const clipboard = @import("../clipboard.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const cursor = @import("../input/cursor.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 
@@ -113,7 +114,7 @@ fn drawSessionList(
     theme.pop();
 
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     cursor_y += line_height + t.spacing.xs;
 
     const refresh_label = "Refresh";
@@ -156,7 +157,7 @@ fn drawSessionList(
     );
     if (list_rect.size()[0] <= 0.0 or list_rect.size()[1] <= 0.0) return;
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const total_height = @as(f32, @floatFromInt(ctx.sessions.items.len)) * (row_height + row_gap);
     list_scroll_max = @max(0.0, total_height - list_rect.size()[1]);
@@ -600,7 +601,7 @@ fn drawAttachmentPreviewCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const width = rect.size()[0];
     const content_width = width - padding * 2.0;
     const preview = if (selected_file_index != null and selected_file_index.? < previews.len)

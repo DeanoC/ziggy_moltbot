@@ -6,6 +6,7 @@ const input_router = @import("../../input/input_router.zig");
 const input_state = @import("../../input/input_state.zig");
 const widgets = @import("../../widgets/widgets.zig");
 const cursor = @import("../../input/cursor.zig");
+const theme_runtime = @import("../../theme_engine/runtime.zig");
 
 pub const SourceType = enum {
     local,
@@ -157,7 +158,7 @@ fn drawSourcesPane(
 ) void {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
@@ -185,7 +186,7 @@ fn drawSourcesPane(
 
     var content_height: f32 = 0.0;
     var last_type: ?SourceType = null;
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     for (args.sources) |source| {
         if (last_type == null or last_type.? != source.source_type) {
@@ -266,7 +267,7 @@ fn drawFilesPane(
 ) void {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
@@ -299,7 +300,7 @@ fn drawFilesPane(
         .{ list_rect.size()[0] - padding * 2.0, list_rect.size()[1] - padding * 2.0 },
     );
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     var content_height: f32 = 0.0;
     if (args.sections.len > 0) {

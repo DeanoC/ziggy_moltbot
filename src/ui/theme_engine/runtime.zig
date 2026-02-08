@@ -31,6 +31,13 @@ pub fn getProfile() Profile {
     return active_profile;
 }
 
+pub fn activeNav() bool {
+    // Use the resolved profile as the authoritative signal for controller-first UI.
+    // The nav system can be active outside fullscreen as well, but for now this is enough
+    // to drive larger hit targets and reduced hover-only styling.
+    return active_profile.modality == .controller;
+}
+
 pub fn setStyleSheet(sheet: StyleSheet) void {
     setStyleSheets(sheet, sheet);
 }

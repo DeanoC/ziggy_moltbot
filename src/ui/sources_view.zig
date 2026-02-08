@@ -10,6 +10,7 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 const source_browser = components.composite.source_browser;
 
@@ -183,7 +184,7 @@ fn drawHeader(
     const subtitle_height = dc.lineHeight();
     dc.drawText("Indexed Content", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-    const button_height = subtitle_height + t.spacing.xs * 2.0;
+    const button_height = @max(subtitle_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const button_label = "Add Source";
     const button_width = buttonWidth(dc, button_label, t);
     const button_rect = draw_context.Rect.fromMinSize(
@@ -278,7 +279,7 @@ fn drawSourcesPanel(
     drawSourcesList(allocator, ctx, dc, list_rect, queue, sources, map, active_index, action);
 
     const add_label = "+ Add Source";
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const button_width = buttonWidth(dc, add_label, t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, rect.max[1] - padding - button_height },
@@ -302,7 +303,7 @@ fn drawSourcesList(
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const group_height = line_height + t.spacing.xs + 1.0;
 
     var total_height: f32 = 0.0;
@@ -410,7 +411,7 @@ fn drawFilesPanel(
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
 
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const button_width = buttonWidth(dc, "Project Files ▾", t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, cursor_y },
@@ -448,7 +449,7 @@ fn drawFilesList(
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const section_height = line_height + t.spacing.xs * 2.0;
 
     var total_height: f32 = 0.0;
@@ -678,7 +679,7 @@ fn drawSelectedFileCard(
     dc.drawText(preview.role, .{ rect.min[0] + padding + 60.0, cursor_y }, .{ .color = t.colors.text_primary });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const open_label = "Open in Editor";
     const open_width = buttonWidth(dc, open_label, t);
     const open_rect = draw_context.Rect.fromMinSize(
@@ -710,7 +711,7 @@ fn computeSelectedCardHeight(dc: *draw_context.DrawContext, previews: []const se
         return padding * 2.0 + title_height + t.spacing.sm + body_height;
     }
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const body_height = line_height * 3.0 + t.spacing.xs * 2.0 + t.spacing.sm + button_height;
     return padding * 2.0 + title_height + t.spacing.sm + body_height;
 }

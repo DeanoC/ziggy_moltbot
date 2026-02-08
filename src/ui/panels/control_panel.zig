@@ -142,7 +142,7 @@ fn drawTabs(
 ) f32 {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const tab_height = line_height + t.spacing.xs * 2.0;
+    const tab_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const bar_height = tab_height + t.spacing.sm * 2.0;
     const bar_rect = draw_context.Rect.fromMinSize(rect.min, .{ rect.size()[0], bar_height });
     dc.drawRect(bar_rect, .{ .fill = t.colors.surface });

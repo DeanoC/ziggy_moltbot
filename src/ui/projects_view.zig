@@ -9,6 +9,7 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
@@ -137,7 +138,7 @@ fn drawHeader(
     const subtitle_height = ctx.lineHeight();
     ctx.drawText("ZiggyStarClaw", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-    const button_height = subtitle_height + t.spacing.xs * 2.0;
+    const button_height = @max(subtitle_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const buttons_y = cursor_y + subtitle_height + gap;
 
     const new_label = "New Project";
@@ -210,7 +211,7 @@ fn drawSidebar(
     cursor_y += line_height + t.spacing.xs;
 
     const new_label = "+ New Project";
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const new_width = buttonWidth(dc, new_label, t);
     const new_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, cursor_y },
@@ -307,7 +308,7 @@ fn drawProjectList(
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const content_height = @as(f32, @floatFromInt(ctx.sessions.items.len)) * (row_height + row_gap);
     sidebar_scroll_max = @max(0.0, content_height - rect.size()[1]);
@@ -604,7 +605,7 @@ fn drawArtifactsCard(
     const title_height = dc.lineHeight();
     theme.pop();
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const row_spacing = t.spacing.sm;
 
     var body_height: f32 = 0.0;

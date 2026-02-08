@@ -669,7 +669,29 @@ fn drawWorkspaceHost(
         ctx.last_error,
     );
 
+    drawControllerFocusOverlay(&dc, queue, host_rect);
+
     ui_systems.endFrame(&dc);
+}
+
+fn drawControllerFocusOverlay(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    host_rect: draw_context.Rect,
+) void {
+    const nav_state = nav_router.get() orelse return;
+    if (!nav_state.isActive()) return;
+
+    // Find the rect that contains the virtual cursor. This is approximate but fast and
+    // works well because the cursor is pinned to the focused item's center.
+    const pos = queue.state.mouse_pos;
+    const items = nav_state.prev_items.items;
+    for (items) |it| {
+        if (!it.rect.contains(pos)) continue;
+        if (!host_rect.contains(it.center())) continue;
+        widgets.focus_ring.draw(dc, it.rect, dc.theme.radius.sm);
+        break;
+    }
 }
 
 fn ensureOnlyPanelKind(manager: *panel_manager.PanelManager, kind: workspace.PanelKind) void {
@@ -802,6 +824,7 @@ fn drawFullscreenHost(
     }
 
     drawControllerHints(dc, hints_rect, win_state.fullscreen_page != .home);
+    drawControllerFocusOverlay(dc, queue, host_rect);
 
     status_bar.drawCustom(
         dc,

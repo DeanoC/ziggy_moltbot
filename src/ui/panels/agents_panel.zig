@@ -14,6 +14,7 @@ const cursor = @import("../input/cursor.zig");
 const widgets = @import("../widgets/widgets.zig");
 const text_editor = @import("../widgets/text_editor.zig");
 const panel_chrome = @import("../panel_chrome.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 pub const AgentSessionAction = struct {
     agent_id: []u8,
@@ -134,7 +135,7 @@ fn drawAgentList(
     theme.pop();
 
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     cursor_y += line_height + t.spacing.xs;
 
     const refresh_label = "Refresh Sessions";
@@ -163,7 +164,7 @@ fn drawAgentList(
         return;
     }
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const total_height = @as(f32, @floatFromInt(registry.agents.items.len)) * (row_height + row_gap);
     list_scroll_max = @max(0.0, total_height - list_rect.size()[1]);
@@ -329,7 +330,7 @@ fn drawAgentActionsCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const content_width = width - padding * 2.0;
     const gap = t.spacing.sm;
 
@@ -399,7 +400,7 @@ fn drawAgentSessionsCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const row_gap = t.spacing.sm;
     const row_height = line_height * 3.0 + t.spacing.xs * 2.0 + t.spacing.sm * 2.0 + button_height;
 
@@ -467,7 +468,7 @@ fn drawAgentSessionRow(
     const t = dc.theme;
     const padding = t.spacing.xs;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.surface, 0.6), .stroke = t.colors.border, .thickness = 1.0 });
     const inner_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, rect.min[1] + padding },
@@ -545,7 +546,7 @@ fn drawAddAgentCard(
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const input_height = widgets.text_input.defaultHeight(t, line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     const id_text = editorText(add_id_editor);
     const name_text = editorText(add_name_editor);

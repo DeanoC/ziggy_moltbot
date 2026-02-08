@@ -6,6 +6,7 @@ const input_state = @import("../input/input_state.zig");
 const theme = @import("../theme.zig");
 const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 
 var draw_ctx_toggle = false;
 var sdf_debug_enabled = false;
@@ -138,7 +139,7 @@ fn sdfDebugCard(
 ) f32 {
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const toggle_height = line_height + t.spacing.xs * 2.0;
+    const toggle_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const demo_h: f32 = 220.0;
     const content_height = toggle_height + t.spacing.sm + (if (sdf_debug_enabled) demo_h else 0.0);
     const height = padding + line_height + t.spacing.xs + content_height + padding;
@@ -263,7 +264,7 @@ fn drawContextDemoCard(
 ) f32 {
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const button_label = "Context Button";
     const button_width = buttonWidth(dc, button_label, t);
     const content_height = button_height + t.spacing.sm + line_height;

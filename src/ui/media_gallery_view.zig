@@ -351,7 +351,7 @@ fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: dra
 fn drawViewerControls(dc: *draw_context.DrawContext, queue: *input_state.InputQueue, pos: [2]f32) f32 {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     var cursor_x = pos[0];
     const cursor_y = pos[1];
 
@@ -417,7 +417,7 @@ fn drawViewerArea(dc: *draw_context.DrawContext, item: MediaItem, rect: draw_con
     sys.drag_drop.registerDropTarget(.{
         .id = "media_viewer",
         .bounds = .{ .min = rect.min, .max = rect.max },
-        .accepts = &[_][]const u8{ "image" },
+        .accepts = &[_][]const u8{"image"},
         .on_drop = handleDrop,
     }) catch {};
 

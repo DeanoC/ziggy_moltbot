@@ -8,6 +8,7 @@ const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 var split_width: f32 = 520.0;
 var split_dragging = false;
@@ -146,7 +147,7 @@ fn drawLeftPanel(
         cursor_y += row_h + t.spacing.md;
     }
 
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const button_width = buttonWidth(dc, "View Logs", t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ inner_rect.min[0], cursor_y },

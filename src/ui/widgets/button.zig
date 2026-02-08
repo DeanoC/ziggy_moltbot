@@ -43,6 +43,12 @@ pub const Options = struct {
     radius: ?f32 = null,
 };
 
+pub fn defaultHeight(t: *const theme.Theme, line_height: f32) f32 {
+    const profile = theme_runtime.getProfile();
+    const base = line_height + t.spacing.xs * 2.0;
+    return @max(base, profile.hit_target_min_px);
+}
+
 pub fn draw(
     ctx: *draw_context.DrawContext,
     rect: draw_context.Rect,

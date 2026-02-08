@@ -9,6 +9,7 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 pub const NodeInvokeAction = struct {
     node_id: []u8,
@@ -221,7 +222,7 @@ fn drawSidebar(
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
 
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const refresh_w = buttonWidth(dc, "Refresh", t);
     const describe_w = buttonWidth(dc, "Describe Selected", t);
 
@@ -302,7 +303,7 @@ fn drawNodesList(
 ) f32 {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     var y = start_y;
 
@@ -495,7 +496,7 @@ fn drawSelectedNodeCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     const height = selectedNodeHeight(dc, ctx, width);
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
@@ -675,7 +676,7 @@ fn drawInvokeCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     const height = invokeCardHeight(dc.theme, dc.lineHeight());
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
@@ -773,7 +774,7 @@ fn drawNoticeCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const body_height = measureWrappedTextHeight(allocator, dc, notice, width - padding * 2.0);
     const height = padding + line_height + t.spacing.sm + body_height + t.spacing.sm + button_height + padding;
 
@@ -812,7 +813,7 @@ fn drawResultCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const height = padding + line_height + t.spacing.sm + result_box_height + t.spacing.sm + button_height + padding;
 
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
@@ -901,7 +902,7 @@ fn approvalCardHeight(
     height += 1.0 + t.spacing.xs;
     height += approval_payload_height + t.spacing.sm;
     if (can_resolve) {
-        const button_height = line_height + t.spacing.xs * 2.0;
+        const button_height = widgets.button.defaultHeight(t, line_height);
         height += button_height * 3.0 + t.spacing.xs * 2.0;
     } else {
         height += line_height;
@@ -920,7 +921,7 @@ fn drawApprovalCard(
     const t = dc.theme;
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const max_width = rect.size()[0] - padding * 2.0;
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -995,7 +996,7 @@ fn selectedNodeHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, 
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     var height = padding + line_height + t.spacing.sm;
 
     if (ctx.current_node == null) {
@@ -1046,7 +1047,7 @@ fn selectedNodeHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, 
 fn invokeCardHeight(t: *const theme.Theme, line_height: f32) f32 {
     const padding = t.spacing.md;
     const input_height = widgets.text_input.defaultHeight(t, line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     var height = padding + line_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);

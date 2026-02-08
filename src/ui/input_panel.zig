@@ -4,6 +4,7 @@ const draw_context = @import("draw_context.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const widgets = @import("widgets/widgets.zig");
 const input_state = @import("input/input_state.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
@@ -31,7 +32,7 @@ pub fn draw(
 
     const t = ctx.theme;
     const line_h = ctx.lineHeight();
-    const button_height = @max(28.0, line_h + t.spacing.xs * 2.0);
+    const button_height = @max(widgets.button.defaultHeight(t, line_h), theme_runtime.getProfile().hit_target_min_px);
     const gap = t.spacing.xs;
     var editor_height = rect.size()[1] - button_height - gap;
     if (editor_height < 40.0) {
@@ -108,8 +109,8 @@ fn drawEmojiPicker(
 ) void {
     const t = ctx.theme;
     const emojis = [_][]const u8{
-        "😀", "😁", "😂", "🤣", "😊", "😍", "😎", "🤔", "🙌", "👍", "🔥", "🎉",
-        "✅", "⚠️", "❌", "💡", "🧪", "🛠️", "📌", "📎", "📝", "🚀", "🐛", "🧠",
+        "😀", "😁",   "😂", "🤣", "😊", "😍",    "😎", "🤔", "🙌", "👍", "🔥", "🎉",
+        "✅",  "⚠️", "❌",  "💡", "🧪", "🛠️", "📌", "📎", "📝", "🚀", "🐛", "🧠",
     };
     const cols: usize = 6;
     const rows: usize = (emojis.len + cols - 1) / cols;

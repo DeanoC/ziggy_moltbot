@@ -8,6 +8,7 @@ const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const operator_view = @import("operator_view.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 
 pub const ApprovalsInboxAction = struct {
     resolve_approval: ?operator_view.ExecApprovalResolveAction = null,
@@ -134,7 +135,7 @@ fn drawFilters(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const pill_height = line_height + t.spacing.xs * 2.0;
+    const pill_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
 
     var all_buf: [24]u8 = undefined;
     var pending_buf: [24]u8 = undefined;
@@ -283,7 +284,7 @@ fn drawApprovalCard(
 
     var decision: ApprovalDecision = .none;
     if (approval.can_resolve) {
-        const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+        const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
         const approve_w = buttonWidth(dc, "Approve", t);
         const decline_w = buttonWidth(dc, "Decline", t);
         const allow_w = buttonWidth(dc, "Allow Always", t);

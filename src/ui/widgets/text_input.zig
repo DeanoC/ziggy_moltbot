@@ -12,7 +12,9 @@ pub const Options = struct {
 };
 
 pub fn defaultHeight(t: *const theme.Theme, line_height: f32) f32 {
-    return line_height + t.spacing.xs * 2.0;
+    const profile = theme_runtime.getProfile();
+    const base = line_height + t.spacing.xs * 2.0;
+    return @max(base, profile.hit_target_min_px);
 }
 
 pub fn draw(

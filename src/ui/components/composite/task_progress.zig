@@ -116,7 +116,7 @@ pub fn draw(
 
     if (args.show_logs_button) {
         cursor_y += t.spacing.sm;
-        const button_height = line_height + t.spacing.xs * 2.0;
+        const button_height = widgets.button.defaultHeight(t, line_height);
         const button_rect = draw_context.Rect.fromMinSize(
             .{ rect.min[0], cursor_y },
             .{ buttonWidth(dc, "View Logs", t), button_height },

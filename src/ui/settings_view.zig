@@ -260,9 +260,9 @@ fn drawAppearanceCard(
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const checkbox_height = line_height + t.spacing.xs * 2.0;
+    const checkbox_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const input_height = widgets.text_input.defaultHeight(t, line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
@@ -449,8 +449,8 @@ fn drawConnectionCard(
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const input_height = widgets.text_input.defaultHeight(t, line_height);
-    const checkbox_height = line_height + t.spacing.xs * 2.0;
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const checkbox_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     var height = padding + line_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t) * 3.0;
@@ -587,7 +587,7 @@ fn drawUpdatesCard(
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const input_height = widgets.text_input.defaultHeight(t, line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const progress_height: f32 = 10.0;
 
     const height = calcUpdatesHeight(snapshot, t, line_height, input_height, button_height, progress_height);
@@ -856,7 +856,7 @@ fn drawCheckboxRow(
 ) f32 {
     const t = dc.theme;
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, row_height });
     _ = widgets.checkbox.draw(dc, rect, label, value, queue, .{ .disabled = disabled });
     return row_height + t.spacing.xs;
@@ -944,7 +944,7 @@ fn drawDownloadOverlay(
     const line_height = dc.lineHeight();
     const padding = t.spacing.md;
     const progress_height = line_height;
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const extra_button = if (downloading) 0.0 else button_height + t.spacing.sm;
     const card_height = padding + line_height + t.spacing.xs + progress_height + extra_button + padding;
 
