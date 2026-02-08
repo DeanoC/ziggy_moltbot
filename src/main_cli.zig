@@ -502,12 +502,13 @@ pub fn main() !void {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
             } else if (override_url != null and override_token == null) {
                 const secret_prompt = @import("utils/secret_prompt.zig");
-                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
+                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
                 defer allocator.free(tok);
-                if (tok.len == 0) return error.InvalidArguments;
+                // Token may be empty when connecting via Tailscale Serve with gateway.auth.allowTailscale=true.
+                // If the gateway requires a shared token, the subsequent connect/register step will fail with auth.
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
             } else if (override_url == null and override_token != null) {
-                logger.err("--gateway-token was provided without --url; please pass --url too (ws://...:18789)", .{});
+                logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
                 return error.InvalidArguments;
             }
         }
