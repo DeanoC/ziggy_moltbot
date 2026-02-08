@@ -9,6 +9,7 @@ moltbot_config.json
 moltbot_device.json
 .pyc
 __pycache__/
+assets/images/
 
 # local debug / identity artifacts
 ziggystarclaw_config.json

@@ -170,7 +170,8 @@ Example (sketch):
     "frame": {
       "image": "assets/images/panel_frame.png",
       "slices_px": [8, 8, 8, 8],
-      "tint": "#FFFFFFCC"
+      "tint": "#FFFFFFCC",
+      "draw_center": true
     }
   }
 }
@@ -203,6 +204,28 @@ Where a component field expects a `fill`, ZiggyStarClaw currently supports:
   }
 }
 ```
+
+3. Image paint (stretch or tile):
+
+```json
+{
+  "fill": {
+    "image": {
+      "path": "assets/images/brushed_metal_tile.png",
+      "mode": "tile",
+      "scale": 1.0,
+      "tint": "#FFFFFFFF",
+      "offset_px": [0, 0]
+    }
+  }
+}
+```
+
+Notes:
+- `mode`: `"stretch"` (default) or `"tile"`.
+- `scale`: optional. For `"tile"`, higher values produce fewer/larger tiles.
+- `tint`: optional multiply tint.
+- `offset_px`: optional tiling origin offset.
 
 ### Effect Values (Implemented)
 

@@ -1,0 +1,109 @@
+{
+  "panel": {
+    "radius": "radius.md",
+    "fill": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "border": "#00000000",
+    "shadow": {
+      "color": "#00000030",
+      "blur_px": 14,
+      "spread_px": 0,
+      "offset": [0, 6],
+      "falloff_exp": 1.0,
+      "ignore_clip": false,
+      "blend": "alpha"
+    },
+    "frame": {
+      "image": "assets/images/brushed_metal_panel_frame.png",
+      "slices_px": [96, 96, 96, 96],
+      "tint": "#FFFFFFFF",
+      "draw_center": false
+    }
+  },
+  "button": {
+    "primary": {
+      "radius": "radius.sm",
+      "fill": {
+        "gradient4": {
+          "tl": "#7FB6FFFF",
+          "tr": "#7FB6FFFF",
+          "bl": "#2E6DD6FF",
+          "br": "#2E6DD6FF"
+        }
+      },
+      "text": "#FFFFFFFF",
+      "border": "#1B3E7CFF"
+    },
+    "secondary": {
+      "radius": "radius.sm",
+      "fill": {
+        "gradient4": {
+          "tl": "#F9F9F9FF",
+          "tr": "#F9F9F9FF",
+          "bl": "#DADADAFF",
+          "br": "#DADADAFF"
+        }
+      },
+      "text": "#1A1A1AFF",
+      "border": "#6B6B6BFF"
+    },
+    "ghost": {
+      "radius": "radius.sm",
+      "fill": "#00000000",
+      "text": "colors.text_primary",
+      "border": "#00000000"
+    }
+  },
+  "text_input": {
+    "radius": "radius.sm",
+    "fill": {
+      "gradient4": {
+        "tl": "#FFFFFFE6",
+        "tr": "#FFFFFFE6",
+        "bl": "#E8E8E8E6",
+        "br": "#E8E8E8E6"
+      }
+    },
+    "border": "#5D5D5DFF",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#2E6DD633",
+    "caret": "colors.text_primary"
+  },
+  "checkbox": {
+    "radius": "radius.sm",
+    "fill": {
+      "gradient4": {
+        "tl": "#F9F9F9FF",
+        "tr": "#F9F9F9FF",
+        "bl": "#DADADAFF",
+        "br": "#DADADAFF"
+      }
+    },
+    "border": "#6B6B6BFF",
+    "fill_checked": "colors.primary",
+    "border_checked": "#1B3E7CFF",
+    "check": "#FFFFFFFF"
+  },
+  "focus_ring": {
+    "thickness": 2.0,
+    "color": "#2E6DD6FF",
+    "glow": {
+      "color": "#2E6DD666",
+      "blur_px": 10,
+      "spread_px": 0,
+      "offset": [0, 0],
+      "falloff_exp": 1.1,
+      "ignore_clip": true,
+      "blend": "additive"
+    }
+  }
+}
+

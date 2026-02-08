@@ -205,6 +205,12 @@ pub fn build(b: *std.Build) void {
             .install_subdir = "themes/zsc_showcase",
         });
         b.getInstallStep().dependOn(&showcase_example_theme.step);
+        const brushed_metal_example_theme = b.addInstallDirectory(.{
+            .source_dir = b.path("docs/theme_engine/examples/zsc_brushed_metal"),
+            .install_dir = .bin,
+            .install_subdir = "themes/zsc_brushed_metal",
+        });
+        b.getInstallStep().dependOn(&brushed_metal_example_theme.step);
 
         const cli_module = b.createModule(.{
             .root_source_file = b.path("src/main_cli.zig"),
