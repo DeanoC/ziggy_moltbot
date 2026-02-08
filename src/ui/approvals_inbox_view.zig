@@ -407,7 +407,14 @@ fn drawTab(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "approvals_inbox.tab", label) else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -418,6 +425,9 @@ fn drawTab(
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     const base = if (active) t.colors.primary else t.colors.surface;
@@ -430,6 +440,10 @@ fn drawTab(
     const text_size = dc.measureText(label, 0.0);
     const text_pos = .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 };
     dc.drawText(label, text_pos, .{ .color = text_color });
+
+    if (focused) {
+        widgets.focus_ring.draw(dc, rect, t.radius.lg);
+    }
 
     return clicked;
 }
