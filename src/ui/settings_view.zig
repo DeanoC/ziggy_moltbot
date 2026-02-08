@@ -208,6 +208,9 @@ fn refreshThemePackEntries(allocator: std.mem.Allocator) void {
     clearThemePackEntries(allocator);
     theme_pack_entries_loaded = true;
 
+    // std.fs directory iteration isn't available on wasm/wasi builds.
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) return;
+
     var themes_dir = std.fs.cwd().openDir("themes", .{ .iterate = true }) catch return;
     defer themes_dir.close();
 
@@ -321,9 +324,7 @@ fn drawAppearanceCard(
     // Helper text + config path.
     height += (line_height + t.spacing.xs) * 2.0;
     height += button_height + t.spacing.sm; // pack buttons row
-    if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
-        height += button_height + t.spacing.sm; // pack picker row
-    }
+    height += button_height + t.spacing.sm; // pack picker row
     height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
@@ -377,50 +378,41 @@ fn drawAppearanceCard(
     const button_y = cursor_y;
     var button_x = rect.min[0] + padding;
 
-    const clean_w = buttonWidth(dc, "Clean", t);
-    const clean_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ clean_w, button_height });
-    if (widgets.button.draw(dc, clean_rect, "Clean", queue, .{ .variant = .secondary })) {
-        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_clean");
-        profile_choice = .desktop;
-        appearance_changed = true;
-    }
-    button_x += clean_w + t.spacing.xs;
+    // In browser builds, we can't scan local folders. Keep a few quick picks.
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        const clean_w = buttonWidth(dc, "Clean", t);
+        const clean_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ clean_w, button_height });
+        if (widgets.button.draw(dc, clean_rect, "Clean", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_clean");
+            profile_choice = .desktop;
+            appearance_changed = true;
+        }
+        button_x += clean_w + t.spacing.xs;
 
-    const showcase_w = buttonWidth(dc, "Showcase", t);
-    const showcase_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ showcase_w, button_height });
-    if (widgets.button.draw(dc, showcase_rect, "Showcase", queue, .{ .variant = .secondary })) {
-        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_showcase");
-        profile_choice = .desktop;
-        appearance_changed = true;
-    }
-    button_x += showcase_w + t.spacing.xs;
+        const showcase_w = buttonWidth(dc, "Showcase", t);
+        const showcase_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ showcase_w, button_height });
+        if (widgets.button.draw(dc, showcase_rect, "Showcase", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_showcase");
+            profile_choice = .desktop;
+            appearance_changed = true;
+        }
+        button_x += showcase_w + t.spacing.xs;
 
-    const winamp_w = buttonWidth(dc, "Winamp", t);
-    const winamp_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_w, button_height });
-    if (widgets.button.draw(dc, winamp_rect, "Winamp", queue, .{ .variant = .secondary })) {
-        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
-        profile_choice = .desktop;
-        // The winamp-ish pack is authored with intentionally dark fills in the style sheet.
-        // Switching to dark mode by default avoids a "mixed" look where token-driven panels
-        // render light while style-driven chrome stays dark.
-        theme_is_light = false;
-        theme.setMode(.dark);
-        theme.apply();
-        appearance_changed = true;
+        const winamp_w = buttonWidth(dc, "Winamp", t);
+        const winamp_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_w, button_height });
+        if (widgets.button.draw(dc, winamp_rect, "Winamp", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
+            profile_choice = .desktop;
+            // The winamp-ish pack is authored with intentionally dark fills in the style sheet.
+            // Switching to dark mode by default avoids a "mixed" look where token-driven panels
+            // render light while style-driven chrome stays dark.
+            theme_is_light = false;
+            theme.setMode(.dark);
+            theme.apply();
+            appearance_changed = true;
+        }
+        button_x += winamp_w + t.spacing.xs;
     }
-    button_x += winamp_w + t.spacing.xs;
-
-    const winamp_px_w = buttonWidth(dc, "Winamp px", t);
-    const winamp_px_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_px_w, button_height });
-    if (widgets.button.draw(dc, winamp_px_rect, "Winamp px", queue, .{ .variant = .secondary })) {
-        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp_pixel");
-        profile_choice = .desktop;
-        theme_is_light = false;
-        theme.setMode(.dark);
-        theme.apply();
-        appearance_changed = true;
-    }
-    button_x += winamp_px_w + t.spacing.xs;
 
     const theme_pack_text = editorText(theme_pack_editor);
     const current_pack = cfg.ui_theme_pack orelse "";
@@ -453,61 +445,85 @@ fn drawAppearanceCard(
     // Simple "picker" row: lists packs detected in ./themes (no OS file dialog required).
     if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
         if (!theme_pack_entries_loaded) refreshThemePackEntries(allocator);
+    }
 
-        const picker_label = "Installed packs:";
-        const picker_x = rect.min[0] + padding;
-        dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
-        var px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+    const can_open_folder = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
+    const can_refresh = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
 
+    const row_min_x = rect.min[0] + padding;
+    const row_max_x = rect.max[0] - padding;
+
+    // Right-side controls, anchored so they don't get pushed off-screen.
+    var right_x = row_max_x;
+    if (can_open_folder) {
+        const browse_w = buttonWidth(dc, "Open themes", t);
+        right_x -= browse_w;
+        const browse_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ browse_w, button_height });
+        if (widgets.button.draw(dc, browse_rect, "Open themes", queue, .{ .variant = .secondary })) {
+            action.open_themes_dir = true;
+        }
+        right_x -= t.spacing.xs;
+    } else {
+        const browse_w = buttonWidth(dc, "Open themes", t);
+        right_x -= browse_w;
+        const browse_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ browse_w, button_height });
+        _ = widgets.button.draw(dc, browse_rect, "Open themes", queue, .{ .variant = .secondary, .disabled = true });
+        right_x -= t.spacing.xs;
+    }
+
+    {
         const refresh_w = buttonWidth(dc, "Refresh", t);
-        const refresh_rect = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ refresh_w, button_height });
-        if (widgets.button.draw(dc, refresh_rect, "Refresh", queue, .{ .variant = .ghost })) {
+        right_x -= refresh_w;
+        const refresh_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ refresh_w, button_height });
+        if (widgets.button.draw(dc, refresh_rect, "Refresh", queue, .{ .variant = .ghost, .disabled = !can_refresh })) {
             refreshThemePackEntries(allocator);
         }
-        px += refresh_w + t.spacing.sm;
-
-        if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
-            const browse_w = buttonWidth(dc, "Browse...", t);
-            const browse_rect = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ browse_w, button_height });
-            if (widgets.button.draw(dc, browse_rect, "Browse...", queue, .{ .variant = .ghost })) {
-                action.open_themes_dir = true;
-            }
-            px += browse_w + t.spacing.sm;
-        }
-
-        if (theme_pack_entries.items.len == 0) {
-            dc.drawText("(none found)", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
-        } else {
-            const max_x = rect.max[0] - padding;
-            var shown: usize = 0;
-            for (theme_pack_entries.items) |entry| {
-                var buf: [256]u8 = undefined;
-                const full_path = std.fmt.bufPrint(&buf, "themes/{s}", .{entry.name}) catch entry.name;
-                const is_selected = std.mem.eql(u8, full_path, theme_pack_text);
-                const w = buttonWidth(dc, entry.name, t);
-                if (px + w > max_x) break;
-                const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
-                if (widgets.button.draw(dc, r, entry.name, queue, .{ .variant = if (is_selected) .primary else .secondary })) {
-                    ensureEditor(&theme_pack_editor, allocator).setText(allocator, full_path);
-                    appearance_changed = true;
-                }
-                px += w + t.spacing.xs;
-                shown += 1;
-            }
-
-            if (shown < theme_pack_entries.items.len and px + dc.measureText("...", 0.0)[0] < max_x) {
-                dc.drawText("...", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
-            }
-        }
-        cursor_y += button_height + t.spacing.sm;
+        right_x -= t.spacing.sm;
     }
+
+    const packs_label = "Packs:";
+    dc.drawText(packs_label, .{ row_min_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+    var px = row_min_x + dc.measureText(packs_label, 0.0)[0] + t.spacing.sm;
+    const avail_max_x = @max(px, right_x);
+
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        dc.drawText(
+            "(browser build: no local pack scan)",
+            .{ px, cursor_y + (button_height - line_height) * 0.5 },
+            .{ .color = t.colors.text_secondary },
+        );
+    } else if (theme_pack_entries.items.len == 0) {
+        dc.drawText("(none found in ./themes)", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+    } else {
+        var shown: usize = 0;
+        for (theme_pack_entries.items) |entry| {
+            var buf: [256]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&buf, "themes/{s}", .{entry.name}) catch entry.name;
+            const is_selected = std.mem.eql(u8, full_path, theme_pack_text);
+            const w = buttonWidth(dc, entry.name, t);
+            if (px + w > avail_max_x) break;
+            const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
+            if (widgets.button.draw(dc, r, entry.name, queue, .{ .variant = if (is_selected) .primary else .secondary })) {
+                ensureEditor(&theme_pack_editor, allocator).setText(allocator, full_path);
+                appearance_changed = true;
+            }
+            px += w + t.spacing.xs;
+            shown += 1;
+        }
+
+        if (shown < theme_pack_entries.items.len and px + dc.measureText("...", 0.0)[0] < avail_max_x) {
+            dc.drawText("...", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        }
+    }
+
+    cursor_y += button_height + t.spacing.sm;
 
     // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
     const picker_label = "Profile:";
     const picker_x = rect.min[0] + padding;
     dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
 
-    var px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+    var profile_px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
     const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
         .{ .id = .auto, .label = "Auto" },
         .{ .id = .desktop, .label = "Desktop" },
@@ -517,13 +533,13 @@ fn drawAppearanceCard(
     };
     for (choices) |c| {
         const w = buttonWidth(dc, c.label, t);
-        const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
+        const r = draw_context.Rect.fromMinSize(.{ profile_px, cursor_y }, .{ w, button_height });
         const is_selected = profile_choice == c.id;
         if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
             profile_choice = c.id;
             appearance_changed = true;
         }
-        px += w + t.spacing.xs;
+        profile_px += w + t.spacing.xs;
     }
 
     return height;

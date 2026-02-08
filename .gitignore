@@ -17,3 +17,6 @@ ziggystarclaw_device.json
 ziggystarclaw_operator_device.json
 ziggystarclaw_state.json
 scripts/debug_gateway.py
+
+# runtime theme packs (created next to cwd when applying/installing packs)
+themes/
