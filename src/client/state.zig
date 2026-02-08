@@ -392,6 +392,34 @@ pub const ClientContext = struct {
         resolved_at_ms: ?i64,
     ) !void {
         const allocator = self.allocator;
+
+        // If we already have a resolved entry (e.g. from a local resolve response),
+        // merge new data without clobbering the existing audit trail when payload
+        // fields are omitted.
+        for (self.approvals_resolved.items) |*existing| {
+            if (!std.mem.eql(u8, existing.id, id)) continue;
+
+            existing.can_resolve = false;
+
+            if (resolved_at_ms) |ms| {
+                existing.resolved_at_ms = ms;
+            }
+
+            if (resolved_by) |who| {
+                const duped = try allocator.dupe(u8, who);
+                if (existing.resolved_by) |old| allocator.free(old);
+                existing.resolved_by = duped;
+            }
+
+            if (decision) |value| {
+                const duped = try allocator.dupe(u8, value);
+                if (existing.decision) |old| allocator.free(old);
+                existing.decision = duped;
+            }
+
+            return;
+        }
+
         var resolved = self.takeApprovalById(id) orelse types.ExecApproval{
             .id = try allocator.dupe(u8, id),
             .payload_json = try allocator.dupe(u8, "{}"),
@@ -406,21 +434,24 @@ pub const ClientContext = struct {
         errdefer freeApproval(allocator, &resolved);
 
         resolved.can_resolve = false;
-        resolved.resolved_at_ms = resolved_at_ms orelse std.time.milliTimestamp();
 
-        if (resolved.resolved_by) |existing| allocator.free(existing);
-        resolved.resolved_by = if (resolved_by) |who|
-            try allocator.dupe(u8, who)
-        else
-            null;
+        if (resolved_at_ms) |ms| {
+            resolved.resolved_at_ms = ms;
+        }
 
-        if (resolved.decision) |existing| allocator.free(existing);
-        resolved.decision = if (decision) |value|
-            try allocator.dupe(u8, value)
-        else
-            null;
+        if (resolved_by) |who| {
+            const duped = try allocator.dupe(u8, who);
+            if (resolved.resolved_by) |old| allocator.free(old);
+            resolved.resolved_by = duped;
+        }
 
-        try self.upsertResolvedApprovalOwned(resolved);
+        if (decision) |value| {
+            const duped = try allocator.dupe(u8, value);
+            if (resolved.decision) |old| allocator.free(old);
+            resolved.decision = duped;
+        }
+
+        try self.approvals_resolved.append(allocator, resolved);
     }
 
     pub fn clearMessages(self: *ClientContext) void {
