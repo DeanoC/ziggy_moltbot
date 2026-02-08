@@ -144,7 +144,14 @@ fn drawCustomMenuBar(
     win_state: *WindowUiState,
 ) void {
     const t = dc.theme;
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    // Use the shared panel chrome (supports image/gradient fills) so "brushed metal" packs
+    // can theme the menu bar and other top-level chrome.
+    panel_chrome.draw(dc, rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = false,
+        .draw_border = true,
+    });
 
     const label = "Window";
     const button_width = dc.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
@@ -164,9 +171,9 @@ fn drawCustomMenuBar(
         return;
     }
 
-    const menu_width: f32 = 240.0;
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const menu_width: f32 = computeWindowMenuWidth(dc, cfg, win_state, item_height);
     // Multi-window is a platform capability (desktop native), not a UI profile feature.
     // Even if the user is running the Phone/Tablet profile on desktop, they may still want
     // detachable/multi-window UI (Winamp-style use case).
@@ -1349,6 +1356,81 @@ fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]cons
     return null;
 }
 
+fn menuItemWidth(dc: *draw_context.DrawContext, label: []const u8, item_height: f32, t: *const theme.Theme) f32 {
+    const line_height = dc.lineHeight();
+    const box_size = @min(item_height, line_height) * 0.9;
+    const label_w = dc.measureText(label, 0.0)[0];
+    // box + label + padding (match drawMenuItem layout).
+    return t.spacing.sm + box_size + t.spacing.xs + label_w + t.spacing.sm;
+}
+
+fn computeWindowMenuWidth(
+    dc: *draw_context.DrawContext,
+    cfg: *const config.Config,
+    win_state: *const WindowUiState,
+    item_height: f32,
+) f32 {
+    const t = dc.theme;
+    const templates_all = theme_runtime.getWindowTemplates();
+    const max_templates: usize = 8;
+    const templates = templates_all[0..@min(templates_all.len, max_templates)];
+    const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
+    const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+    const max_recent: usize = 4;
+    const recent_shown: usize = @min(recent.len, max_recent);
+
+    var max_w: f32 = 0.0;
+    const base_labels = [_][]const u8{
+        "Workspace",
+        "Chat",
+        "Showcase",
+        "Theme pack: Global",
+        "Theme pack: Browse...",
+        "Theme pack: Reload",
+        "Theme pack: Clear override",
+        "New Window",
+    };
+    for (base_labels) |lbl| {
+        max_w = @max(max_w, menuItemWidth(dc, lbl, item_height, t));
+    }
+
+    // Quick picks from the global MRU list (same label shortening logic as the draw loop).
+    if (recent_shown > 0) {
+        var i: usize = 0;
+        while (i < recent_shown) : (i += 1) {
+            const item = recent[i];
+            var label_buf: [200]u8 = undefined;
+            const short = blk: {
+                const prefix = "themes/";
+                if (std.mem.startsWith(u8, item, prefix)) break :blk item[prefix.len..];
+                const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                break :blk item;
+            };
+            const item_label = std.fmt.bufPrint(&label_buf, "Theme: {s}", .{short}) catch "Theme";
+            max_w = @max(max_w, menuItemWidth(dc, item_label, item_height, t));
+        }
+    }
+
+    if (allow_multi_window) {
+        for (templates, 0..) |tpl, idx| {
+            _ = idx;
+            var label_buf: [96]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const lbl = std.fmt.bufPrint(&label_buf, "New: {s}", .{title}) catch title;
+            max_w = @max(max_w, menuItemWidth(dc, lbl, item_height, t));
+        }
+    }
+
+    // Slightly widen if we show the "Clear override" line.
+    if (win_state.theme_pack_override != null) {
+        max_w = @max(max_w, menuItemWidth(dc, "Theme pack: Clear override", item_height, t));
+    }
+
+    // Clamp to a sane max so we don't cover the whole app on narrow windows.
+    return std.math.clamp(max_w, 240.0, 520.0);
+}
+
 fn drawPanelFrame(
     dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
@@ -1372,9 +1454,20 @@ fn drawPanelFrame(
     const header_height = @min(size[1], title_height + pad_y * 2.0);
     const header_rect = draw_context.Rect.fromMinSize(rect.min, .{ size[0], header_height });
 
+    // Panel background/chrome (supports image fills like brushed metal).
+    panel_chrome.draw(dc, rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = true,
+        .draw_border = false,
+    });
+
+    // Header overlay: slightly different tint to separate from content when using textures.
+    dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.55) });
+
+    // Focus border on top of theme border/frame.
     const border_color = if (focused) t.colors.primary else t.colors.border;
-    dc.drawRect(rect, .{ .fill = t.colors.background, .stroke = border_color, .thickness = 1.0 });
-    dc.drawRect(header_rect, .{ .fill = t.colors.surface });
+    dc.drawRect(rect, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
 
     const close_size = @min(header_height, @max(12.0, header_height - pad_y * 2.0));
     const close_rect = draw_context.Rect.fromMinSize(

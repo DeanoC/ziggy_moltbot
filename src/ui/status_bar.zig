@@ -3,6 +3,7 @@ const state = @import("../client/state.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
+const panel_chrome = @import("panel_chrome.zig");
 
 const BadgeVariant = enum {
     neutral,
@@ -11,7 +12,6 @@ const BadgeVariant = enum {
     warning,
     danger,
 };
-
 
 pub fn drawCustom(
     dc: *draw_context.DrawContext,
@@ -35,7 +35,12 @@ pub fn drawCustom(
     };
     const connection_variant: BadgeVariant = if (is_connected) .success else .neutral;
 
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    panel_chrome.draw(dc, rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = false,
+        .draw_border = true,
+    });
 
     const line_height = dc.lineHeight();
     var cursor_x = rect.min[0] + t.spacing.sm;
@@ -77,7 +82,6 @@ fn badgeBaseColor(t: *const theme.Theme, variant: BadgeVariant) colors.Color {
         .danger => t.colors.danger,
     };
 }
-
 
 fn drawBadgeCustom(
     dc: *draw_context.DrawContext,

@@ -13,6 +13,7 @@ const colors = @import("../theme/colors.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
+const panel_chrome = @import("../panel_chrome.zig");
 const nav_router = @import("../input/nav_router.zig");
 const focus_ring = @import("../widgets/focus_ring.zig");
 const widgets = @import("../widgets/widgets.zig");
@@ -155,7 +156,12 @@ fn drawTabs(
     const tab_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const bar_height = tab_height + t.spacing.sm * 2.0;
     const bar_rect = draw_context.Rect.fromMinSize(rect.min, .{ rect.size()[0], bar_height });
-    dc.drawRect(bar_rect, .{ .fill = t.colors.surface });
+    panel_chrome.draw(dc, bar_rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = false,
+        .draw_border = false,
+    });
     dc.drawLine(.{ bar_rect.min[0], bar_rect.max[1] }, .{ bar_rect.max[0], bar_rect.max[1] }, 1.0, t.colors.divider);
 
     const tab_gap = t.spacing.xs;
