@@ -147,7 +147,20 @@ fn bestEffortDefaultName(allocator: std.mem.Allocator) ![]u8 {
     return std.fmt.allocPrint(allocator, "{s}-{s}", .{ host, platform });
 }
 
-pub fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gateway_url: []const u8, gateway_token: []const u8) !void {
+pub const StorageScope = enum {
+    /// Per-user storage (e.g. %APPDATA% on Windows).
+    user,
+    /// System-wide storage (e.g. %ProgramData% on Windows). Intended for always-on service mode.
+    system,
+};
+
+pub fn writeDefaultConfig(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    gateway_url: []const u8,
+    gateway_token: []const u8,
+    scope: StorageScope,
+) !void {
     if (std.fs.path.dirname(path)) |dir| {
         std.fs.cwd().makePath(dir) catch {};
     }
@@ -155,8 +168,14 @@ pub fn writeDefaultConfig(allocator: std.mem.Allocator, path: []const u8, gatewa
     const default_name = try bestEffortDefaultName(allocator);
     defer allocator.free(default_name);
 
-    const identity_path: []const u8 = node_platform.defaultNodeDeviceIdentityPathTemplate();
-    const approvals_path: []const u8 = node_platform.defaultExecApprovalsPathTemplate();
+    const identity_path: []const u8 = switch (scope) {
+        .user => node_platform.defaultNodeDeviceIdentityPathTemplate(),
+        .system => node_platform.defaultSystemNodeDeviceIdentityPathTemplate(),
+    };
+    const approvals_path: []const u8 = switch (scope) {
+        .user => node_platform.defaultExecApprovalsPathTemplate(),
+        .system => node_platform.defaultSystemExecApprovalsPathTemplate(),
+    };
 
     // Keep it minimal + strict. No legacy keys.
     // IMPORTANT: build JSON via stringify to ensure proper escaping.
@@ -245,7 +264,14 @@ fn saveUpdatedNodeConfig(
     try wf.writeAll("\n");
 }
 
-pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls: bool, wait_for_approval: bool, display_name: ?[]const u8) !void {
+pub fn run(
+    allocator: std.mem.Allocator,
+    config_path: ?[]const u8,
+    insecure_tls: bool,
+    wait_for_approval: bool,
+    display_name: ?[]const u8,
+    scope: StorageScope,
+) !void {
     const cfg_path = config_path orelse try unified_config.defaultConfigPath(allocator);
     defer if (config_path == null) allocator.free(cfg_path);
 
@@ -261,17 +287,19 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
             backupConfigIfExists(allocator, cfg_path);
         }
 
-        const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. ws://wizball.tail...:18789): ");
+        const url = try promptLineAlloc(allocator, "Gateway WS URL (e.g. wss://wizball.tail*.ts.net): ");
         defer allocator.free(url);
         if (url.len == 0) return error.InvalidArguments;
 
+        // Token is OPTIONAL in Tailscale Serve setups (gateway.auth.allowTailscale=true) because
+        // the gateway can authenticate via identity headers injected by the proxy.
+        // Keep prompting for it because direct WS/HTTP deployments still need it, but allow empty.
         const secret_prompt = @import("utils/secret_prompt.zig");
-        const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token:");
+        const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
         defer allocator.free(tok);
-        if (tok.len == 0) return error.InvalidArguments;
         logger.info("(received {d} chars)", .{tok.len});
 
-        try writeDefaultConfig(allocator, cfg_path, url, tok);
+        try writeDefaultConfig(allocator, cfg_path, url, tok, scope);
         break :blk try unified_config.load(allocator, cfg_path);
     };
     defer cfg.deinit(allocator);
@@ -280,8 +308,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
     ensureParentDir(cfg.node.execApprovalsPath);
     if (cfg.logging.file) |p| ensureParentDir(p);
 
-    if (cfg.gateway.wsUrl.len == 0 or cfg.gateway.authToken.len == 0) {
-        logger.err("Config missing gateway.wsUrl and/or gateway.authToken", .{});
+    if (cfg.gateway.wsUrl.len == 0) {
+        logger.err("Config missing gateway.wsUrl", .{});
         return error.InvalidArguments;
     }
 
@@ -323,7 +351,8 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         var ws = websocket_client.WebSocketClient.init(
             allocator,
             ws_url,
-            // Keep websocket handshake token as the shared gateway token.
+            // Token used for the initial WebSocket handshake (Authorization header).
+            // In Tailscale Serve mode, this can be empty because the proxy can inject identity headers.
             cfg.gateway.authToken,
             insecure_tls,
             null,
@@ -350,8 +379,11 @@ pub fn run(allocator: std.mem.Allocator, config_path: ?[]const u8, insecure_tls:
         });
 
         // IMPORTANT: connect.auth.token must match the websocket Authorization token.
-        ws.setConnectAuthToken(cfg.gateway.authToken);
-        ws.setDeviceAuthToken(cfg.gateway.authToken);
+        // Only set these when a shared gateway token is provided.
+        if (cfg.gateway.authToken.len > 0) {
+            ws.setConnectAuthToken(cfg.gateway.authToken);
+            ws.setDeviceAuthToken(cfg.gateway.authToken);
+        }
 
         try ws.connect();
 

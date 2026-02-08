@@ -251,6 +251,7 @@ pub fn build(b: *std.Build) void {
             "tests/ui_tests.zig",
             "tests/image_cache_tests.zig",
             "tests/update_checker_tests.zig",
+            "tests/unified_config_programdata_tests.zig",
         };
 
         for (test_files) |test_path| {

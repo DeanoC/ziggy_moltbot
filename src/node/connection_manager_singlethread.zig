@@ -105,6 +105,16 @@ pub const SingleThreadConnectionManager = struct {
         self.connect_auth_token = tok_copy;
     }
 
+    /// Update the token used for the initial WebSocket handshake (Authorization header).
+    /// For node-mode this should match connect_auth_token.
+    pub fn setHandshakeToken(self: *SingleThreadConnectionManager, token: []const u8) !void {
+        if (std.mem.eql(u8, self.handshake_token, token)) return;
+
+        const tok_copy = try self.allocator.dupe(u8, token);
+        self.allocator.free(self.handshake_token);
+        self.handshake_token = tok_copy;
+    }
+
     /// Update the token used inside the device-auth signed payload.
     pub fn setDeviceAuthToken(self: *SingleThreadConnectionManager, token: []const u8) !void {
         if (std.mem.eql(u8, self.device_auth_token, token)) return;
