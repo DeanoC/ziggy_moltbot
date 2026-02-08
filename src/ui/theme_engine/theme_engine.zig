@@ -152,6 +152,7 @@ pub const ThemeEngine = struct {
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
+        runtime.clearWorkspaceLayouts();
         runtime.setRenderDefaults(.{});
         runtime.clearPackDefaults();
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
@@ -180,6 +181,7 @@ pub const ThemeEngine = struct {
         runtime.setStyleSheets(.{}, .{});
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
+        runtime.clearWorkspaceLayouts();
         runtime.setRenderDefaults(.{});
         runtime.clearPackDefaults();
     }
@@ -316,6 +318,9 @@ pub const ThemeEngine = struct {
         self.windows = pack.windows;
         pack.windows = null;
         runtime.setWindowTemplates(self.windows orelse &[_]schema.WindowTemplate{});
+
+        // Optional workspace layout presets.
+        self.loadWorkspaceLayoutsFromDir(pack.root_path);
 
         // Replace owned themes.
         if (self.runtime_light) |prev| freeTheme(self.allocator, prev);
@@ -553,6 +558,64 @@ pub const ThemeEngine = struct {
             }
         }
     }
+
+    fn parsePanelKindLabel(label: []const u8) ?@import("../workspace.zig").PanelKind {
+        if (std.ascii.eqlIgnoreCase(label, "workspace") or std.ascii.eqlIgnoreCase(label, "control")) return .Control;
+        if (std.ascii.eqlIgnoreCase(label, "chat")) return .Chat;
+        if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
+        if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
+        if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;
+        return null;
+    }
+
+    fn applyWorkspaceLayoutForProfile(layout: schema.WorkspaceLayout, id: ProfileId) void {
+        var preset: runtime.WorkspaceLayoutPreset = .{};
+        preset.close_others = layout.close_others;
+
+        if (layout.open_panels) |labels| {
+            for (labels) |label| {
+                const kind = parsePanelKindLabel(label) orelse continue;
+                if (preset.panels_len >= preset.panels.len) break;
+                preset.panels[preset.panels_len] = kind;
+                preset.panels_len += 1;
+            }
+        }
+
+        if (layout.focused_panel) |label| {
+            preset.focused = parsePanelKindLabel(label);
+        }
+        if (layout.custom_layout) |cl| {
+            preset.custom_layout_left_ratio = cl.left_ratio;
+            preset.custom_layout_min_left_width = cl.min_left_width;
+            preset.custom_layout_min_right_width = cl.min_right_width;
+        }
+
+        runtime.setWorkspaceLayout(id, preset);
+    }
+
+    fn loadWorkspaceLayoutsFromBytes(self: *ThemeEngine, bytes: []const u8) void {
+        runtime.clearWorkspaceLayouts();
+        if (bytes.len == 0) return;
+
+        var parsed = schema.parseJson(schema.WorkspaceLayoutsFile, self.allocator, bytes) catch return;
+        defer parsed.deinit();
+        if (parsed.value.schema_version != 1) return;
+
+        if (parsed.value.desktop) |layout| applyWorkspaceLayoutForProfile(layout, .desktop);
+        if (parsed.value.phone) |layout| applyWorkspaceLayoutForProfile(layout, .phone);
+        if (parsed.value.tablet) |layout| applyWorkspaceLayoutForProfile(layout, .tablet);
+        if (parsed.value.fullscreen) |layout| applyWorkspaceLayoutForProfile(layout, .fullscreen);
+    }
+
+    fn loadWorkspaceLayoutsFromDir(self: *ThemeEngine, root_path: []const u8) void {
+        runtime.clearWorkspaceLayouts();
+
+        var dir = std.fs.cwd().openDir(root_path, .{}) catch return;
+        defer dir.close();
+        const bytes = dir.readFileAlloc(self.allocator, "layouts/workspace.json", 256 * 1024) catch return;
+        defer self.allocator.free(bytes);
+        self.loadWorkspaceLayoutsFromBytes(bytes);
+    }
 };
 
 const WebStage = enum {
@@ -565,6 +628,7 @@ const WebStage = enum {
     profile_phone,
     profile_tablet,
     profile_fullscreen,
+    workspace_layouts,
 };
 
 const WebPackJob = struct {
@@ -580,6 +644,7 @@ const WebPackJob = struct {
     tokens_dark: ?schema.TokensFile = null,
     styles_raw: ?[]u8 = null,
     profile_raw: [4]?[]u8 = .{ null, null, null, null },
+    workspace_layouts_raw: ?[]u8 = null,
     last_rel: []const u8 = "",
 
     fn init(engine: *ThemeEngine, generation: u32, root: []const u8) !*WebPackJob {
@@ -599,6 +664,7 @@ const WebPackJob = struct {
         for (self.profile_raw) |maybe| {
             if (maybe) |buf| self.allocator.free(buf);
         }
+        if (self.workspace_layouts_raw) |buf| self.allocator.free(buf);
         if (self.manifest) |*m| freeManifestStrings(self.allocator, m);
         if (self.tokens_base) |*t| freeTokensStrings(self.allocator, t);
         if (self.tokens_light) |*t| freeTokensStrings(self.allocator, t);
@@ -822,6 +888,14 @@ fn webFetchSuccess(user_ctx: usize, bytes: []const u8) void {
         },
         .profile_fullscreen => {
             if (bytes.len > 0) job.profile_raw[3] = job.allocator.dupe(u8, bytes) catch null;
+            job.stage = .workspace_layouts;
+            job.fetchRel("layouts/workspace.json") catch {
+                job.deinit();
+                eng.web_job = null;
+            };
+        },
+        .workspace_layouts => {
+            if (bytes.len > 0) job.workspace_layouts_raw = job.allocator.dupe(u8, bytes) catch null;
             applyWebJob(job);
         },
     }
@@ -896,6 +970,14 @@ fn webFetchError(user_ctx: usize, msg: []const u8) void {
                 return;
             },
             .profile_fullscreen => {
+                job.stage = .workspace_layouts;
+                job.fetchRel("layouts/workspace.json") catch {
+                    job.deinit();
+                    eng.web_job = null;
+                };
+                return;
+            },
+            .workspace_layouts => {
                 applyWebJob(job);
                 return;
             },
@@ -1089,6 +1171,9 @@ fn applyWebJob(job: *WebPackJob) void {
         }
     }
     eng.clearProfileThemeCaches();
+
+    // Optional workspace layouts (`layouts/workspace.json`).
+    eng.loadWorkspaceLayoutsFromBytes(job.workspace_layouts_raw orelse "");
 
     freeTheme(eng.allocator, base_theme);
 

@@ -52,6 +52,29 @@ pub const WindowsFile = struct {
     windows: []WindowTemplate = &[_]WindowTemplate{},
 };
 
+/// Optional `layouts/workspace.json` provides per-profile workspace layout defaults.
+/// These are used to open/focus panels (and optionally close others) when a profile becomes active.
+pub const WorkspaceLayout = struct {
+    open_panels: ?[]const []const u8 = null,
+    focused_panel: ?[]const u8 = null,
+    close_others: bool = false,
+    custom_layout: ?WorkspaceCustomLayout = null,
+};
+
+pub const WorkspaceCustomLayout = struct {
+    left_ratio: ?f32 = null,
+    min_left_width: ?f32 = null,
+    min_right_width: ?f32 = null,
+};
+
+pub const WorkspaceLayoutsFile = struct {
+    schema_version: u32 = 1,
+    desktop: ?WorkspaceLayout = null,
+    phone: ?WorkspaceLayout = null,
+    tablet: ?WorkspaceLayout = null,
+    fullscreen: ?WorkspaceLayout = null,
+};
+
 pub const Shadow = struct {
     blur: f32,
     spread: f32,

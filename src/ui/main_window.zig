@@ -49,6 +49,9 @@ pub const WindowUiState = struct {
     nav: nav.NavState = .{},
 
     fullscreen_page: FullscreenPage = .home,
+    // Track which profile layouts have been applied for this window so theme layout
+    // presets don't fight user-driven layout changes every frame.
+    theme_layout_applied: [4]bool = .{ false, false, false, false },
 
     pub fn deinit(self: *WindowUiState, allocator: std.mem.Allocator) void {
         self.nav.deinit(allocator);
@@ -521,6 +524,8 @@ fn drawWorkspaceHost(
         return;
     }
 
+    applyThemeWorkspaceLayoutPreset(manager, win_state);
+
     const line_height = dc.lineHeight();
     const menu_height = customMenuHeight(line_height, t);
     const status_height = statusBarHeight(line_height, t);
@@ -693,6 +698,71 @@ fn drawWorkspaceHost(
     drawControllerFocusOverlay(&dc, queue, host_rect);
 
     ui_systems.endFrame(&dc);
+}
+
+fn applyThemeWorkspaceLayoutPreset(manager: *panel_manager.PanelManager, win_state: *WindowUiState) void {
+    const pid = theme_runtime.getProfile().id;
+    const idx: usize = switch (pid) {
+        .desktop => 0,
+        .phone => 1,
+        .tablet => 2,
+        .fullscreen => 3,
+    };
+    if (win_state.theme_layout_applied[idx]) return;
+    win_state.theme_layout_applied[idx] = true;
+
+    const preset = theme_runtime.getWorkspaceLayout(pid) orelse return;
+    const open_panels = preset.openPanels();
+    if (open_panels.len == 0) return;
+
+    for (open_panels) |kind| {
+        manager.ensurePanel(kind);
+    }
+
+    if (preset.close_others) {
+        var i: usize = 0;
+        while (i < manager.workspace.panels.items.len) {
+            const p = manager.workspace.panels.items[i];
+            var wanted = false;
+            for (open_panels) |k| {
+                if (k == p.kind) {
+                    wanted = true;
+                    break;
+                }
+            }
+            if (wanted) {
+                i += 1;
+                continue;
+            }
+            _ = manager.closePanel(p.id);
+            // closePanel compacts the list; don't increment.
+        }
+    }
+
+    // Apply custom layout sizing only if the user hasn't adjusted it yet (heuristic).
+    if (preset.custom_layout_left_ratio != null or preset.custom_layout_min_left_width != null or preset.custom_layout_min_right_width != null) {
+        const eps: f32 = 0.0005;
+        const def = workspace.CustomLayoutState{};
+        const cur = manager.workspace.custom_layout;
+        const untouched = (@abs(cur.left_ratio - def.left_ratio) <= eps) and
+            (@abs(cur.min_left_width - def.min_left_width) <= eps) and
+            (@abs(cur.min_right_width - def.min_right_width) <= eps);
+        if (untouched) {
+            if (preset.custom_layout_left_ratio) |v| manager.workspace.custom_layout.left_ratio = v;
+            if (preset.custom_layout_min_left_width) |v| manager.workspace.custom_layout.min_left_width = v;
+            if (preset.custom_layout_min_right_width) |v| manager.workspace.custom_layout.min_right_width = v;
+            manager.workspace.markDirty();
+        }
+    }
+
+    if (preset.focused) |focus_kind| {
+        for (manager.workspace.panels.items) |panel| {
+            if (panel.kind == focus_kind) {
+                manager.focusPanel(panel.id);
+                break;
+            }
+        }
+    }
 }
 
 fn drawControllerFocusOverlay(

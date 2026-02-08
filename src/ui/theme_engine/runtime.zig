@@ -3,6 +3,7 @@ const schema = @import("schema.zig");
 const style_sheet = @import("style_sheet.zig");
 const theme = @import("../theme.zig");
 const input_state = @import("../input/input_state.zig");
+const workspace = @import("../workspace.zig");
 const std = @import("std");
 
 pub const PlatformCaps = profile.PlatformCaps;
@@ -17,14 +18,40 @@ pub const RenderDefaults = struct {
     pixel_snap_textured: bool = false,
 };
 
+pub const WorkspaceLayoutPreset = struct {
+    panels: [8]workspace.PanelKind = undefined,
+    panels_len: u8 = 0,
+    focused: ?workspace.PanelKind = null,
+    close_others: bool = false,
+
+    custom_layout_left_ratio: ?f32 = null,
+    custom_layout_min_left_width: ?f32 = null,
+    custom_layout_min_right_width: ?f32 = null,
+
+    pub fn openPanels(self: *const WorkspaceLayoutPreset) []const workspace.PanelKind {
+        return self.panels[0..self.panels_len];
+    }
+};
+
 var active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps.defaultForTarget());
 var active_styles_light: StyleSheet = .{};
 var active_styles_dark: StyleSheet = .{};
 var active_pack_root: ?[]const u8 = null;
 var active_windows: []const WindowTemplate = &[_]WindowTemplate{};
+var active_workspace_layouts: [4]WorkspaceLayoutPreset = .{ .{}, .{}, .{}, .{} };
+var active_workspace_layouts_set: [4]bool = .{ false, false, false, false };
 var render_defaults: RenderDefaults = .{};
 var pack_default_mode: ?theme.Mode = null;
 var pack_default_profile: ?ProfileId = null;
+
+fn profileIndex(id: ProfileId) usize {
+    return switch (id) {
+        .desktop => 0,
+        .phone => 1,
+        .tablet => 2,
+        .fullscreen => 3,
+    };
+}
 
 pub fn setProfile(p: Profile) void {
     active_profile = p;
@@ -78,6 +105,23 @@ pub fn setWindowTemplates(templates: []const WindowTemplate) void {
 
 pub fn getWindowTemplates() []const WindowTemplate {
     return active_windows;
+}
+
+pub fn clearWorkspaceLayouts() void {
+    active_workspace_layouts_set = .{ false, false, false, false };
+    active_workspace_layouts = .{ .{}, .{}, .{}, .{} };
+}
+
+pub fn setWorkspaceLayout(id: ProfileId, preset: WorkspaceLayoutPreset) void {
+    const idx = profileIndex(id);
+    active_workspace_layouts[idx] = preset;
+    active_workspace_layouts_set[idx] = true;
+}
+
+pub fn getWorkspaceLayout(id: ProfileId) ?WorkspaceLayoutPreset {
+    const idx = profileIndex(id);
+    if (!active_workspace_layouts_set[idx]) return null;
+    return active_workspace_layouts[idx];
 }
 
 pub fn setRenderDefaults(v: RenderDefaults) void {

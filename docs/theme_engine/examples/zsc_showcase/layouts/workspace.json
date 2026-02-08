@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "desktop": {
+    "open_panels": ["control", "chat", "showcase"],
+    "focused_panel": "control",
+    "close_others": false,
+    "custom_layout": { "left_ratio": 0.38, "min_left_width": 360.0, "min_right_width": 360.0 }
+  },
+  "phone": {
+    "open_panels": ["control"],
+    "focused_panel": "control",
+    "close_others": true
+  },
+  "tablet": {
+    "open_panels": ["control", "chat"],
+    "focused_panel": "chat",
+    "close_others": false
+  }
+}
+
