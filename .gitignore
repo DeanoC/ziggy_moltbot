@@ -11,6 +11,8 @@ moltbot_device.json
 __pycache__/
 
 # local debug / identity artifacts
+ziggystarclaw_config.json
+ziggystarclaw_workspace.json
 ziggystarclaw_device.json
 ziggystarclaw_operator_device.json
 ziggystarclaw_state.json

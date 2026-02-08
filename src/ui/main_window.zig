@@ -73,6 +73,7 @@ pub const UiAction = struct {
     disconnect: bool = false,
     save_config: bool = false,
     reload_theme_pack: bool = false,
+    open_themes_dir: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     spawn_window: bool = false,
@@ -1124,6 +1125,7 @@ fn drawPanelContents(
             action.disconnect = control_action.disconnect;
             action.save_config = control_action.save_config;
             action.reload_theme_pack = control_action.reload_theme_pack;
+            action.open_themes_dir = control_action.open_themes_dir;
             action.clear_saved = control_action.clear_saved;
             action.config_updated = control_action.config_updated;
             action.refresh_sessions = control_action.refresh_sessions;

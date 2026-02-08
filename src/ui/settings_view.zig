@@ -19,6 +19,7 @@ pub const SettingsAction = struct {
     disconnect: bool = false,
     save: bool = false,
     reload_theme_pack: bool = false,
+    open_themes_dir: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
@@ -464,6 +465,15 @@ fn drawAppearanceCard(
             refreshThemePackEntries(allocator);
         }
         px += refresh_w + t.spacing.sm;
+
+        if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
+            const browse_w = buttonWidth(dc, "Browse...", t);
+            const browse_rect = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ browse_w, button_height });
+            if (widgets.button.draw(dc, browse_rect, "Browse...", queue, .{ .variant = .ghost })) {
+                action.open_themes_dir = true;
+            }
+            px += browse_w + t.spacing.sm;
+        }
 
         if (theme_pack_entries.items.len == 0) {
             dc.drawText("(none found)", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });

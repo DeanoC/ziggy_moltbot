@@ -1611,65 +1611,65 @@ pub fn main() !void {
         if (detach_req) |req| {
             // Detach: move the panel from the source window into a new window.
             detach_block: {
-            var source_window: ?*UiWindow = null;
-            for (ui_windows.items) |w| {
-                if (w.id == req.wid) {
-                    source_window = w;
-                    break;
-                }
-            }
-            if (source_window) |src_w| {
-                if (src_w.manager.takePanel(req.panel_id)) |panel| {
-                    var ws_new = workspace.Workspace.initEmpty(allocator);
-                    // Transfer the panel into the new window workspace.
-                    if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
-                        logger.warn("Failed to allocate detached window workspace: {}", .{err});
-                        // Put the panel back to avoid losing it.
-                        _ = src_w.manager.putPanel(panel) catch {};
-                        ws_new.deinit(allocator);
-                        break :detach_block;
+                var source_window: ?*UiWindow = null;
+                for (ui_windows.items) |w| {
+                    if (w.id == req.wid) {
+                        source_window = w;
+                        break;
                     }
-                    ws_new.focused_panel_id = panel.id;
-
-                    var title_buf: [192]u8 = undefined;
-                    const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
-                    const size = defaultWindowSizeForPanelKind(panel.kind);
-
-                    const new_win = createUiWindow(
-                        allocator,
-                        &gpu,
-                        title_z,
-                        size.w,
-                        size.h,
-                        window_flags,
-                        ws_new,
-                        &next_panel_id_global,
-                        true,
-                        src_w.profile_override,
-                        src_w.theme_mode_override,
-                        src_w.image_sampling_override,
-                        src_w.pixel_snap_textured_override,
-                    ) catch |err| blk: {
-                        logger.warn("Failed to detach panel into new window: {}", .{err});
-                        // Reattach: pull the panel back out of ws_new before freeing.
-                        const restored = ws_new.panels.pop();
-                        ws_new.deinit(allocator);
-                        if (restored) |p| {
-                            _ = src_w.manager.putPanel(p) catch {};
+                }
+                if (source_window) |src_w| {
+                    if (src_w.manager.takePanel(req.panel_id)) |panel| {
+                        var ws_new = workspace.Workspace.initEmpty(allocator);
+                        // Transfer the panel into the new window workspace.
+                        if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
+                            logger.warn("Failed to allocate detached window workspace: {}", .{err});
+                            // Put the panel back to avoid losing it.
+                            _ = src_w.manager.putPanel(panel) catch {};
+                            ws_new.deinit(allocator);
+                            break :detach_block;
                         }
-                        break :blk null;
-                    };
-                    if (new_win) |wnew| {
-                        var pos_x: c_int = 0;
-                        var pos_y: c_int = 0;
-                        _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
-                        _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
-                        ui_windows.append(allocator, wnew) catch {
-                            destroyUiWindow(allocator, wnew);
+                        ws_new.focused_panel_id = panel.id;
+
+                        var title_buf: [192]u8 = undefined;
+                        const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
+                        const size = defaultWindowSizeForPanelKind(panel.kind);
+
+                        const new_win = createUiWindow(
+                            allocator,
+                            &gpu,
+                            title_z,
+                            size.w,
+                            size.h,
+                            window_flags,
+                            ws_new,
+                            &next_panel_id_global,
+                            true,
+                            src_w.profile_override,
+                            src_w.theme_mode_override,
+                            src_w.image_sampling_override,
+                            src_w.pixel_snap_textured_override,
+                        ) catch |err| blk: {
+                            logger.warn("Failed to detach panel into new window: {}", .{err});
+                            // Reattach: pull the panel back out of ws_new before freeing.
+                            const restored = ws_new.panels.pop();
+                            ws_new.deinit(allocator);
+                            if (restored) |p| {
+                                _ = src_w.manager.putPanel(p) catch {};
+                            }
+                            break :blk null;
                         };
+                        if (new_win) |wnew| {
+                            var pos_x: c_int = 0;
+                            var pos_y: c_int = 0;
+                            _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
+                            _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
+                            ui_windows.append(allocator, wnew) catch {
+                                destroyUiWindow(allocator, wnew);
+                            };
+                        }
                     }
                 }
-            }
             }
         }
 
@@ -1770,6 +1770,11 @@ pub fn main() !void {
             if (snapshot.download_path) |path| {
                 openPath(allocator, path);
             }
+        }
+        if (ui_action.open_themes_dir) {
+            const themes_path = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+            defer if (themes_path) |v| allocator.free(v);
+            openPath(allocator, themes_path orelse "themes");
         }
         if (ui_action.install_update) {
             const snapshot = ctx.update_state.snapshot();

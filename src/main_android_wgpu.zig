@@ -604,7 +604,6 @@ fn sendChatMessageRequest(
     ctx.setPendingSendRequest(request.id);
 }
 
-
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
     allocator.free(msg.id);
     allocator.free(msg.role);
@@ -1186,6 +1185,11 @@ fn run() !void {
             if (snapshot.download_path) |path| {
                 openPath(allocator, path);
             }
+        }
+        if (ui_action.open_themes_dir) {
+            const themes_path = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+            defer if (themes_path) |v| allocator.free(v);
+            openPath(allocator, themes_path orelse "themes");
         }
         if (ui_action.install_update) {
             const snapshot = ctx.update_state.snapshot();

@@ -42,6 +42,9 @@ pub const TextEditor = struct {
     scroll_x: f32 = 0.0,
     focused: bool = false,
     dragging: bool = false,
+    drag_start_mouse: [2]f32 = .{ 0.0, 0.0 },
+    drag_anchor_cursor: usize = 0,
+    drag_selecting: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !TextEditor {
         _ = allocator;
@@ -314,6 +317,7 @@ fn handleMouse(
 ) void {
     const mouse = queue.state.mouse_pos;
     const inside = rect.contains(mouse);
+    const drag_threshold_px: f32 = 3.0;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_down => |md| {
@@ -321,18 +325,25 @@ fn handleMouse(
                 if (inside) {
                     editor.focused = true;
                     editor.dragging = true;
+                    editor.drag_selecting = false;
                     const local = .{ mouse[0] - text_rect.min[0] + editor.scroll_x, mouse[1] - text_rect.min[1] };
                     editor.cursor = cursorFromPosition(ctx, editor.buffer.items, lines, local, editor.scroll_y, editor.scroll_x, line_height, mask);
-                    editor.selection_anchor = editor.cursor;
+                    editor.drag_start_mouse = mouse;
+                    editor.drag_anchor_cursor = editor.cursor;
+                    // Avoid accidental "select all then overwrite" behavior on click+jitter.
+                    // We only start selecting after crossing a small drag threshold.
+                    editor.selection_anchor = null;
                 } else {
                     editor.focused = false;
                     editor.dragging = false;
+                    editor.drag_selecting = false;
                     editor.selection_anchor = null;
                 }
             },
             .mouse_up => |mu| {
                 if (mu.button == .left) {
                     editor.dragging = false;
+                    editor.drag_selecting = false;
                 }
             },
             .mouse_wheel => |mw| {
@@ -348,10 +359,19 @@ fn handleMouse(
         if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging) {
             // If the user started a scroll gesture on touch/pen, don't keep selecting text.
             editor.dragging = false;
+            editor.drag_selecting = false;
             editor.selection_anchor = null;
             return;
         }
         if (inside) {
+            if (!editor.drag_selecting) {
+                const dx = mouse[0] - editor.drag_start_mouse[0];
+                const dy = mouse[1] - editor.drag_start_mouse[1];
+                if (dx * dx + dy * dy >= drag_threshold_px * drag_threshold_px) {
+                    editor.drag_selecting = true;
+                    editor.selection_anchor = editor.drag_anchor_cursor;
+                }
+            }
             const local = .{ mouse[0] - text_rect.min[0] + editor.scroll_x, mouse[1] - text_rect.min[1] };
             editor.cursor = cursorFromPosition(ctx, editor.buffer.items, lines, local, editor.scroll_y, editor.scroll_x, line_height, mask);
         }
