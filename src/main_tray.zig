@@ -321,7 +321,12 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
-    // Use schtasks directly for status (simpler parsing + works even when CLI missing).
+    // NOTE: Avoid parsing `schtasks /Query` stdout for status.
+    // That output is localized (non-English Windows), which would keep the tray
+    // state stuck at `.unknown` and disable Start/Stop/Restart.
+    if (try queryServiceStatePowerShell(allocator)) |st| return st;
+
+    // Fallback: schtasks (best-effort; may be localized).
     const task_name = "ZiggyStarClaw Node";
     const argv = &.{ "schtasks", "/Query", "/TN", task_name, "/FO", "LIST" };
     const res = try runCapture(allocator, argv);
@@ -333,17 +338,50 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
     }
 
     if (res.stdout.len != 0) {
-        // Best-effort parse. Example output includes: "Status: Running" or "Status: Ready".
+        // Best-effort parse (English-only).
         if (std.mem.indexOf(u8, res.stdout, "Status:") != null) {
             if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
             return .stopped;
         }
-        // Some Windows versions use "Scheduled Task State:" in verbose mode.
         if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
         if (std.mem.indexOf(u8, res.stdout, "Ready") != null) return .stopped;
     }
 
     return .unknown;
+}
+
+fn queryServiceStatePowerShell(allocator: std.mem.Allocator) !?ServiceState {
+    // `Get-ScheduledTask` exposes `State` as an enum; `[int]$t.State` is stable and
+    // not localized, unlike `schtasks /Query` output.
+    const task_name = "ZiggyStarClaw Node";
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "$t=Get-ScheduledTask -TaskName '{s}' -ErrorAction SilentlyContinue; if ($null -eq $t) {{ 'NOTFOUND' }} else {{ [int]$t.State }}",
+        .{task_name},
+    );
+    defer allocator.free(script);
+
+    const candidates = [_][]const u8{ "powershell", "powershell.exe" };
+
+    for (candidates) |exe| {
+        const argv = &.{ exe, "-NoProfile", "-NonInteractive", "-Command", script };
+        const res = runCapture(allocator, argv) catch continue;
+        defer res.deinit(allocator);
+
+        if (res.exit_code != 0) continue;
+
+        const out = std.mem.trim(u8, res.stdout, " \t\r\n");
+        if (out.len == 0) continue;
+        if (std.mem.eql(u8, out, "NOTFOUND")) return .not_installed;
+
+        const state_num = std.fmt.parseInt(i32, out, 10) catch continue;
+        // ScheduledTaskState: Unknown=0, Disabled=1, Queued=2, Ready=3, Running=4
+        if (state_num == 4) return .running;
+        return .stopped;
+    }
+
+    // PowerShell not available (or missing Get-ScheduledTask).
+    return null;
 }
 
 fn tryRunCliServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {
