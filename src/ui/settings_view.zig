@@ -20,6 +20,9 @@ pub const SettingsAction = struct {
     save: bool = false,
     reload_theme_pack: bool = false,
     browse_theme_pack: bool = false,
+    browse_theme_pack_override: bool = false,
+    clear_theme_pack_override: bool = false,
+    reload_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
@@ -87,6 +90,7 @@ pub fn draw(
     update_state: *update_checker.UpdateState,
     app_version: []const u8,
     rect_override: ?draw_context.Rect,
+    window_theme_pack_override: ?[]const u8,
 ) SettingsAction {
     var action = SettingsAction{};
     const t = theme.activeTheme();
@@ -120,7 +124,7 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, card_x, cursor_y, card_width, &action);
+    cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, window_theme_pack_override, card_x, cursor_y, card_width, &action);
     cursor_y += t.spacing.md;
 
     const server_text = editorText(server_editor);
@@ -309,6 +313,7 @@ fn drawAppearanceCard(
     queue: *input_state.InputQueue,
     allocator: std.mem.Allocator,
     cfg: *const config.Config,
+    window_theme_pack_override: ?[]const u8,
     x: f32,
     y: f32,
     width: f32,
@@ -321,10 +326,12 @@ fn drawAppearanceCard(
     const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = widgets.button.defaultHeight(t, line_height);
     const can_watch_pack = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) and !builtin.target.abi.isAndroid();
+    const can_window_override = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) and !builtin.target.abi.isAndroid();
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
     if (can_watch_pack) height += checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
+    if (can_window_override) height += (line_height + t.spacing.xs) * 2.0 + button_height + t.spacing.sm;
     // Helper text + config path + status + pack details.
     height += (line_height + t.spacing.xs) * 4.0;
     height += button_height + t.spacing.sm; // pack buttons row
@@ -377,6 +384,53 @@ fn drawAppearanceCard(
         ensureEditor(&theme_pack_editor, allocator),
         .{ .placeholder = "themes/zsc_showcase" },
     );
+
+    if (can_window_override) {
+        const override_text = window_theme_pack_override orelse "";
+        const global_text = cfg.ui_theme_pack orelse "";
+        const effective_text = if (override_text.len > 0) override_text else global_text;
+
+        var buf0: [640]u8 = undefined;
+        const ov_line = if (override_text.len > 0)
+            (std.fmt.bufPrint(&buf0, "This window override: {s}", .{override_text}) catch "This window override: (format error)")
+        else
+            "This window override: (none)";
+        dc.drawText(ov_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+
+        var buf1: [640]u8 = undefined;
+        const eff_line = if (effective_text.len > 0)
+            (std.fmt.bufPrint(&buf1, "Effective pack: {s}", .{effective_text}) catch "Effective pack: (format error)")
+        else
+            "Effective pack: (built-in)";
+        dc.drawText(eff_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+
+        // Override buttons row.
+        const button_y = cursor_y;
+        var bx = rect.min[0] + padding;
+        const browse_w = buttonWidth(dc, "Browse override...", t);
+        const browse_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ browse_w, button_height });
+        if (widgets.button.draw(dc, browse_rect, "Browse override...", queue, .{ .variant = .secondary })) {
+            action.browse_theme_pack_override = true;
+        }
+        bx += browse_w + t.spacing.xs;
+
+        const use_global_w = buttonWidth(dc, "Use global", t);
+        const use_global_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ use_global_w, button_height });
+        if (widgets.button.draw(dc, use_global_rect, "Use global", queue, .{ .variant = .ghost, .disabled = override_text.len == 0 })) {
+            action.clear_theme_pack_override = true;
+        }
+        bx += use_global_w + t.spacing.xs;
+
+        const can_reload_override = effective_text.len > 0;
+        const reload_w = buttonWidth(dc, "Reload window pack", t);
+        const reload_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ reload_w, button_height });
+        if (widgets.button.draw(dc, reload_rect, "Reload window pack", queue, .{ .variant = .ghost, .disabled = !can_reload_override })) {
+            action.reload_theme_pack_override = true;
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
 
     const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
         "Edit path then press Apply or Reload (Reload re-fetches)."

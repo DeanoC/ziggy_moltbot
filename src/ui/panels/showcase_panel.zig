@@ -121,6 +121,9 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
     const demo_height = drawContextDemoCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
     cursor_y += demo_height + t.spacing.md;
 
+    const inspect_height = themePackInspectorCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
+    cursor_y += inspect_height + t.spacing.md;
+
     const sdf_height = sdfDebugCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
     cursor_y += sdf_height + t.spacing.md;
 
@@ -133,6 +136,196 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
     scroll_max = @max(0.0, content_height - content_rect.size()[1]);
     if (scroll_y > scroll_max) scroll_y = scroll_max;
     if (scroll_y < 0.0) scroll_y = 0.0;
+}
+
+fn themePackInspectorCard(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    pos: [2]f32,
+    width: f32,
+    t: *const theme.Theme,
+) f32 {
+    _ = queue;
+    const padding = t.spacing.md;
+    const line_height = dc.lineHeight();
+    const button_height = widgets.button.defaultHeight(t, line_height);
+
+    // Rough layout: a handful of fixed lines plus a few lists.
+    const templates = theme_runtime.getWindowTemplates();
+    const template_lines: f32 = @floatFromInt(@min(templates.len, 6));
+
+    const layout_profiles: f32 = 4.0;
+    const base_lines: f32 = 12.0; // status/root/meta/defaults + headings
+
+    const height = padding + line_height + t.spacing.xs +
+        (base_lines + template_lines + layout_profiles) * (line_height + t.spacing.xs) +
+        button_height + padding;
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
+
+    var cursor_y = drawCardBase(dc, rect, "Theme Pack Inspector");
+    const left = rect.min[0] + padding;
+
+    // Status + root.
+    {
+        const st = theme_runtime.getPackStatus();
+        var buf: [1024]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &buf,
+            "Status: {s}  msg: {s}",
+            .{ @tagName(st.kind), if (st.msg.len > 0) st.msg else "(none)" },
+        ) catch "Status: (format error)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    }
+    {
+        const root = theme_runtime.getThemePackRootPath() orelse "";
+        var buf: [1024]u8 = undefined;
+        const line = if (root.len > 0)
+            (std.fmt.bufPrint(&buf, "Root: {s}", .{root}) catch "Root: (format error)")
+        else
+            "Root: (built-in)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    }
+
+    // Manifest meta.
+    if (theme_runtime.getPackMeta()) |m| {
+        var buf: [1024]u8 = undefined;
+        const name = if (m.name.len > 0) m.name else m.id;
+        const line = std.fmt.bufPrint(
+            &buf,
+            "Pack: {s}  id={s}  author={s}  defaults={s}/{s}",
+            .{ name, m.id, if (m.author.len > 0) m.author else "(none)", m.defaults_variant, m.defaults_profile },
+        ) catch "Pack: (format error)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    } else {
+        dc.drawText("Pack: (none)", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    }
+
+    // Render defaults.
+    {
+        const rd = theme_runtime.getRenderDefaults();
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(
+            &buf,
+            "Render: image_sampling={s}  pixel_snap_textured={s}",
+            .{ @tagName(rd.image_sampling), if (rd.pixel_snap_textured) "true" else "false" },
+        ) catch "Render: (format error)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    }
+
+    // Token swatches.
+    {
+        dc.drawText("Tokens:", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+        cursor_y += line_height + t.spacing.xs;
+
+        const sw = @max(12.0, line_height * 0.8);
+        const gap = t.spacing.xs;
+        const row_h = @max(sw, line_height);
+        var x = left;
+        const max_x = rect.max[0] - padding;
+        const items = [_]struct { name: []const u8, color: [4]f32 }{
+            .{ .name = "bg", .color = t.colors.background },
+            .{ .name = "surface", .color = t.colors.surface },
+            .{ .name = "primary", .color = t.colors.primary },
+            .{ .name = "border", .color = t.colors.border },
+            .{ .name = "text", .color = t.colors.text_primary },
+        };
+        for (items) |it| {
+            const label_w = dc.measureText(it.name, 0.0)[0];
+            const need = sw + gap + label_w + t.spacing.sm;
+            if (x + need > max_x) {
+                x = left;
+                cursor_y += row_h + t.spacing.xs;
+            }
+            const r = draw_context.Rect.fromMinSize(.{ x, cursor_y + (row_h - sw) * 0.5 }, .{ sw, sw });
+            dc.drawRoundedRect(r, t.radius.sm, .{ .fill = it.color, .stroke = t.colors.border, .thickness = 1.0 });
+            dc.drawText(it.name, .{ r.max[0] + gap, cursor_y + (row_h - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+            x += need;
+        }
+        cursor_y += row_h + t.spacing.xs;
+    }
+
+    // Styles summary.
+    {
+        const ss = theme_runtime.getStyleSheet();
+        var buf: [1024]u8 = undefined;
+        const frame = if (ss.panel.frame_image.isSet()) ss.panel.frame_image.slice() else "(none)";
+        const line = std.fmt.bufPrint(
+            &buf,
+            "Styles: panel.radius={d:.1} frame={s}",
+            .{ ss.panel.radius orelse t.radius.md, frame },
+        ) catch "Styles: (format error)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+    }
+
+    // Window templates.
+    {
+        var buf: [256]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Window templates: {d}", .{templates.len}) catch "Window templates: (format error)";
+        dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+        cursor_y += line_height + t.spacing.xs;
+
+        for (templates[0..@min(templates.len, 6)]) |tpl| {
+            var buf2: [512]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const line2 = std.fmt.bufPrint(&buf2, " - {s}  ({d}x{d})", .{ title, tpl.width, tpl.height }) catch " - (format error)";
+            dc.drawText(line2, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+            cursor_y += line_height + t.spacing.xs;
+        }
+    }
+
+    // Workspace layout presets.
+    {
+        dc.drawText("Workspace layouts:", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+        cursor_y += line_height + t.spacing.xs;
+
+        const ids = [_]theme_runtime.ProfileId{ .desktop, .phone, .tablet, .fullscreen };
+        for (ids) |pid| {
+            const preset = theme_runtime.getWorkspaceLayout(pid);
+            var buf: [768]u8 = undefined;
+            const line = if (preset) |p| blk: {
+                const open = p.openPanels();
+                var tmp: [256]u8 = undefined;
+                var written: usize = 0;
+                for (open) |k| {
+                    if (written >= tmp.len) break;
+                    const name = @tagName(k);
+                    const add = std.fmt.bufPrint(tmp[written..], "{s}{s}", .{ if (written == 0) "" else ",", name }) catch break;
+                    written += add.len;
+                }
+                const list = tmp[0..written];
+                break :blk std.fmt.bufPrint(
+                    &buf,
+                    " - {s}: open=[{s}] focus={s} close_others={s}",
+                    .{
+                        @tagName(pid),
+                        list,
+                        if (p.focused) |fk| @tagName(fk) else "(none)",
+                        if (p.close_others) "true" else "false",
+                    },
+                ) catch " - (format error)";
+            } else blk: {
+                break :blk std.fmt.bufPrint(&buf, " - {s}: (none)", .{@tagName(pid)}) catch " - (format error)";
+            };
+            dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+            cursor_y += line_height + t.spacing.xs;
+        }
+    }
+
+    // A small “clip” button to reduce noise when testing reloads (keeps the inspector near the top).
+    const btn_label = if (scroll_y > 0.0) "Scroll to top" else "Scroll to top";
+    const bw = dc.measureText(btn_label, 0.0)[0] + t.spacing.md * 2.0;
+    const brect = draw_context.Rect.fromMinSize(.{ left, rect.max[1] - padding - button_height }, .{ bw, button_height });
+    if (widgets.button.draw(dc, brect, btn_label, input_router.getQueue(), .{ .variant = .ghost })) {
+        scroll_y = 0.0;
+    }
+
+    return height;
 }
 
 fn inputDebugCard(

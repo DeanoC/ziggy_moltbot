@@ -80,6 +80,8 @@ pub const UiAction = struct {
     reload_theme_pack: bool = false,
     browse_theme_pack: bool = false,
     browse_theme_pack_override: bool = false,
+    clear_theme_pack_override: bool = false,
+    reload_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     spawn_window: bool = false,
@@ -762,6 +764,7 @@ fn drawWorkspaceHost(
                 manager,
                 action,
                 pending_attachment,
+                win_state,
             );
             if (panel.kind == .Chat and draw_result.session_key != null) {
                 if (focused or active_session_key == null) {
@@ -998,7 +1001,7 @@ fn drawFullscreenHost(
                 panel.data.Control.active_tab = .Agents;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
         },
@@ -1009,7 +1012,7 @@ fn drawFullscreenHost(
                 panel.data.Control.active_tab = .Settings;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
         },
@@ -1017,7 +1020,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(4);
             ensureOnlyPanelKind(manager, .Chat);
             if (selectPanelForKind(manager, .Chat)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
         },
@@ -1025,7 +1028,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(5);
             ensureOnlyPanelKind(manager, .Showcase);
             if (selectPanelForKind(manager, .Showcase)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
         },
@@ -1136,6 +1139,7 @@ fn drawPanelContents(
     manager: *panel_manager.PanelManager,
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
     const zone = profiler.zone("ui.panel");
@@ -1234,12 +1238,16 @@ fn drawPanelContents(
                 app_version,
                 &panel.data.Control,
                 panel_rect,
+                win_state.theme_pack_override,
             );
             action.connect = control_action.connect;
             action.disconnect = control_action.disconnect;
             action.save_config = control_action.save_config;
             action.reload_theme_pack = control_action.reload_theme_pack;
             action.browse_theme_pack = control_action.browse_theme_pack;
+            action.browse_theme_pack_override = control_action.browse_theme_pack_override;
+            action.clear_theme_pack_override = control_action.clear_theme_pack_override;
+            action.reload_theme_pack_override = control_action.reload_theme_pack_override;
             action.clear_saved = control_action.clear_saved;
             action.config_updated = control_action.config_updated;
             action.refresh_sessions = control_action.refresh_sessions;

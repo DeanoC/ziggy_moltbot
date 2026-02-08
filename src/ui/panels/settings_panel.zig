@@ -14,6 +14,7 @@ pub fn draw(
     update_state: *update_checker.UpdateState,
     app_version: []const u8,
     rect_override: ?@import("../draw_context.zig").Rect,
+    window_theme_pack_override: ?[]const u8,
 ) SettingsPanelAction {
     return settings_view.draw(
         allocator,
@@ -23,5 +24,6 @@ pub fn draw(
         update_state,
         app_version,
         rect_override,
+        window_theme_pack_override,
     );
 }

@@ -23,6 +23,9 @@ pub const ControlPanelAction = struct {
     save_config: bool = false,
     reload_theme_pack: bool = false,
     browse_theme_pack: bool = false,
+    browse_theme_pack_override: bool = false,
+    clear_theme_pack_override: bool = false,
+    reload_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     refresh_sessions: bool = false,
@@ -72,6 +75,7 @@ pub fn draw(
     app_version: []const u8,
     panel: *workspace.ControlPanel,
     rect_override: ?draw_context.Rect,
+    window_theme_pack_override: ?[]const u8,
 ) ControlPanelAction {
     var action = ControlPanelAction{};
     const t = theme.activeTheme();
@@ -116,12 +120,16 @@ pub fn draw(
                 &ctx.update_state,
                 app_version,
                 content_rect,
+                window_theme_pack_override,
             );
             action.connect = settings_action.connect;
             action.disconnect = settings_action.disconnect;
             action.save_config = settings_action.save;
             action.reload_theme_pack = settings_action.reload_theme_pack;
             action.browse_theme_pack = settings_action.browse_theme_pack;
+            action.browse_theme_pack_override = settings_action.browse_theme_pack_override;
+            action.clear_theme_pack_override = settings_action.clear_theme_pack_override;
+            action.reload_theme_pack_override = settings_action.reload_theme_pack_override;
             action.clear_saved = settings_action.clear_saved;
             action.config_updated = settings_action.config_updated;
             action.check_updates = settings_action.check_updates;

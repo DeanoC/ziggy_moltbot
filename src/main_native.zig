@@ -1814,6 +1814,17 @@ pub fn main() !void {
             }
         }
 
+        if (ui_action.clear_theme_pack_override) {
+            if (active_window.ui_state.theme_pack_override) |buf| {
+                allocator.free(buf);
+                active_window.ui_state.theme_pack_override = null;
+            }
+            active_window.ui_state.theme_layout_applied = .{ false, false, false, false };
+        }
+        if (ui_action.reload_theme_pack_override) {
+            active_window.ui_state.theme_pack_reload_requested = true;
+        }
+
         var pack_applied_this_frame = false;
         if (ui_action.config_updated or ui_action.reload_theme_pack) {
             const applied_ok = if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, ui_action.reload_theme_pack))
