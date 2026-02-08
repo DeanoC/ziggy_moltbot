@@ -173,6 +173,9 @@ fn drawAgentList(
     dc.pushClip(list_rect);
     var row_y = list_rect.min[1] - list_scroll_y;
     for (registry.agents.items) |agent| {
+        nav_router.pushScope(std.hash.Wyhash.hash(0, agent.id));
+        defer nav_router.popScope();
+
         const row_rect = draw_context.Rect.fromMinSize(.{ list_rect.min[0], row_y }, .{ list_rect.size()[0], row_height });
         if (row_rect.max[1] >= list_rect.min[1] and row_rect.min[1] <= list_rect.max[1]) {
             const selected = if (panel.selected_agent_id) |sel| std.mem.eql(u8, sel, agent.id) else false;
@@ -193,7 +196,14 @@ fn drawAgentRow(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "agents_panel.agent_row", "row") else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -204,6 +214,9 @@ fn drawAgentRow(
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     if (selected or hovered) {
