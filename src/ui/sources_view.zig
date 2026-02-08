@@ -11,6 +11,7 @@ const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 const source_browser = components.composite.source_browser;
 
@@ -667,6 +668,15 @@ fn drawSelectedFileCard(
     }
 
     const preview = previews[selected_file_index.?];
+
+    // Scope actions to the selected file so repeating labels like "Open URL"
+    // don't collide when the user changes selection.
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(preview.url);
+    hasher.update(std.mem.asBytes(&preview.timestamp));
+    nav_router.pushScope(hasher.final());
+    defer nav_router.popScope();
+
     dc.drawText("Name:", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     dc.drawText(preview.name, .{ rect.min[0] + padding + 60.0, cursor_y }, .{ .color = t.colors.text_primary });
     cursor_y += dc.lineHeight() + t.spacing.xs;
