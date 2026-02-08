@@ -348,6 +348,16 @@ fn drawSourcesList(
             const selected = active_index != null and active_index.? == idx;
             var label_buf: [196]u8 = undefined;
             const label = sourceLabel(&label_buf, source);
+            var row_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.sources.source_row");
+            row_scope = std.hash.Wyhash.hash(row_scope, source.name);
+            row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&source.source_type));
+            row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&idx));
+            if (map[idx]) |session_index| {
+                row_scope = std.hash.Wyhash.hash(row_scope, ctx.sessions.items[session_index].key);
+            }
+            nav_router.pushScope(row_scope);
+            defer nav_router.popScope();
+
             if (drawSourceRow(dc, row_rect, label, selected, queue)) {
                 selected_source_index = idx;
                 selected_file_index = null;
@@ -370,7 +380,14 @@ fn drawSourceRow(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.source_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -378,6 +395,9 @@ fn drawSourceRow(
                 if (mu.button == .left and rect.contains(mu.pos)) {
                     clicked = true;
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
