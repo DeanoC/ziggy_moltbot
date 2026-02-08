@@ -71,6 +71,127 @@ const ThemePackBrowse = struct {
 
 var theme_pack_browse: ThemePackBrowse = .{};
 
+const ThemePackWatch = struct {
+    last_root_hash: u64 = 0,
+    last_sig: u64 = 0,
+    pending_sig: u64 = 0,
+    pending_at_ms: i64 = 0,
+    next_poll_ms: i64 = 0,
+};
+
+fn hashStat(hasher: *std.hash.Wyhash, st: std.fs.File.Stat) void {
+    hasher.update(std.mem.asBytes(&st.size));
+    hasher.update(std.mem.asBytes(&st.mtime));
+}
+
+fn hashFileMaybe(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, rel: []const u8) void {
+    hasher.update(rel);
+    const st = dir.statFile(rel) catch {
+        hasher.update("!missing");
+        return;
+    };
+    hashStat(hasher, st);
+}
+
+fn hashSubdirJsonFiles(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []const u8) void {
+    hasher.update(subdir);
+    var d = dir.openDir(subdir, .{ .iterate = true }) catch {
+        hasher.update("!no_dir");
+        return;
+    };
+    defer d.close();
+
+    var it = d.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+
+        hasher.update(entry.name);
+        const st = d.statFile(entry.name) catch {
+            hasher.update("!stat_err");
+            continue;
+        };
+        hashStat(hasher, st);
+    }
+}
+
+fn computeThemePackJsonSignature(root_path: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update("zsc.theme_pack.sig.v1");
+
+    var dir = if (std.fs.path.isAbsolute(root_path))
+        std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch return 0
+    else
+        std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
+
+    hashFileMaybe(&hasher, &dir, "manifest.json");
+    hashFileMaybe(&hasher, &dir, "windows.json");
+    hashSubdirJsonFiles(&hasher, &dir, "tokens");
+    hashSubdirJsonFiles(&hasher, &dir, "profiles");
+    hashSubdirJsonFiles(&hasher, &dir, "styles");
+    hashSubdirJsonFiles(&hasher, &dir, "layouts");
+    return hasher.final();
+}
+
+fn updateThemePackWatch(
+    watch: *ThemePackWatch,
+    theme_eng: *theme_engine.ThemeEngine,
+    cfg: *const config.Config,
+    pack_applied_this_frame: bool,
+) void {
+    if (!cfg.ui_watch_theme_pack) {
+        watch.* = .{};
+        return;
+    }
+
+    const root = theme_engine.runtime.getThemePackRootPath() orelse return;
+    if (root.len == 0) return;
+
+    const root_hash = std.hash.Wyhash.hash(0, root);
+    if (root_hash != watch.last_root_hash or watch.last_sig == 0 or pack_applied_this_frame) {
+        watch.last_root_hash = root_hash;
+        watch.last_sig = computeThemePackJsonSignature(root);
+        watch.pending_sig = 0;
+        watch.pending_at_ms = 0;
+        watch.next_poll_ms = 0;
+        return;
+    }
+
+    const now_ms: i64 = std.time.milliTimestamp();
+    if (watch.next_poll_ms != 0 and now_ms < watch.next_poll_ms) return;
+    watch.next_poll_ms = now_ms + 500;
+
+    const sig = computeThemePackJsonSignature(root);
+    if (sig == 0 or sig == watch.last_sig) {
+        watch.pending_sig = 0;
+        watch.pending_at_ms = 0;
+        return;
+    }
+
+    // Debounce: require the signature to remain stable for >=250ms before reloading.
+    if (watch.pending_sig != sig) {
+        watch.pending_sig = sig;
+        watch.pending_at_ms = now_ms;
+        return;
+    }
+    if (now_ms - watch.pending_at_ms < 250) return;
+
+    // Only reload if the user has a configured path; signature is computed from the active root.
+    const path = cfg.ui_theme_pack orelse "";
+    if (path.len == 0) {
+        watch.last_sig = sig;
+        watch.pending_sig = 0;
+        watch.pending_at_ms = 0;
+        return;
+    }
+
+    theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch {};
+    watch.last_sig = sig;
+    watch.pending_sig = 0;
+    watch.pending_at_ms = 0;
+}
+
 fn dirHasManifest(path: []const u8) bool {
     if (path.len == 0) return false;
     var dir = if (std.fs.path.isAbsolute(path))
@@ -1195,6 +1316,7 @@ pub fn main() !void {
     theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
         logger.warn("Failed to load theme pack: {}", .{err});
     };
+    var theme_pack_watch: ThemePackWatch = .{};
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -1654,6 +1776,7 @@ pub fn main() !void {
             }
         }
 
+        var pack_applied_this_frame = false;
         if (ui_action.config_updated or ui_action.reload_theme_pack) {
             const applied_ok = if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack))
                 true
@@ -1666,6 +1789,7 @@ pub fn main() !void {
                 break :blk false;
             };
             if (applied_ok) {
+                pack_applied_this_frame = true;
                 if (cfg.ui_theme_pack) |pack_path| {
                     if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
                         ui_action.save_config = true;
@@ -1674,6 +1798,8 @@ pub fn main() !void {
             }
             // Profile/typography are resolved per-window during UI draw.
         }
+
+        updateThemePackWatch(&theme_pack_watch, &theme_eng, &cfg, pack_applied_this_frame);
 
         // Theme pack browse dialog (desktop only).
         if (ui_action.browse_theme_pack) {

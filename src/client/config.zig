@@ -11,6 +11,9 @@ pub const Config = struct {
     default_node: ?[]const u8 = null,
     ui_theme: ?[]const u8 = null,
     ui_theme_pack: ?[]const u8 = null,
+    /// When enabled, the client will periodically check the active theme pack folder for JSON changes
+    /// and auto-reload the pack (native desktop builds only).
+    ui_watch_theme_pack: bool = false,
     /// Most-recently-used theme pack paths (portable `themes/<id>` or absolute paths).
     ui_theme_pack_recent: ?[]const []const u8 = null,
     ui_profile: ?[]const u8 = null,
@@ -76,6 +79,7 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .default_node = null,
         .ui_theme = null,
         .ui_theme_pack = null,
+        .ui_watch_theme_pack = false,
         .ui_theme_pack_recent = null,
         .ui_profile = null,
     };
@@ -123,6 +127,7 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
             try allocator.dupe(u8, value)
         else
             null,
+        .ui_watch_theme_pack = parsed.value.ui_watch_theme_pack,
         .ui_theme_pack_recent = if (parsed.value.ui_theme_pack_recent) |list| blk: {
             var out = try allocator.alloc([]const u8, list.len);
             var written: usize = 0;

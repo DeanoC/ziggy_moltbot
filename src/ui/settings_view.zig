@@ -37,6 +37,7 @@ var theme_pack_editor: ?text_editor.TextEditor = null;
 var insecure_tls_value = false;
 var auto_connect_value = true;
 var theme_is_light = true;
+var watch_theme_pack_value = false;
 const ProfileChoice = enum { auto, desktop, phone, tablet, fullscreen };
 var profile_choice: ProfileChoice = .auto;
 var initialized = false;
@@ -252,6 +253,7 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     ensureEditor(&theme_pack_editor, allocator).setText(allocator, cfg.ui_theme_pack orelse "");
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
+    watch_theme_pack_value = cfg.ui_watch_theme_pack;
     theme_is_light = (if (cfg.ui_theme) |label|
         theme.modeFromLabel(label)
     else
@@ -318,8 +320,10 @@ fn drawAppearanceCard(
     const checkbox_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const input_height = widgets.text_input.defaultHeight(t, line_height);
     const button_height = widgets.button.defaultHeight(t, line_height);
+    const can_watch_pack = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) and !builtin.target.abi.isAndroid();
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
+    if (can_watch_pack) height += checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
     // Helper text + config path + status + pack details.
     height += (line_height + t.spacing.xs) * 4.0;
@@ -343,6 +347,25 @@ fn drawAppearanceCard(
     }
 
     var cursor_y = content_y + checkbox_height + t.spacing.sm;
+    if (can_watch_pack) {
+        var watch = watch_theme_pack_value;
+        const watch_rect = draw_context.Rect.fromMinSize(
+            .{ rect.min[0] + padding, cursor_y },
+            .{ width - padding * 2.0, checkbox_height },
+        );
+        if (widgets.checkbox.draw(
+            dc,
+            watch_rect,
+            "Watch pack files (auto reload JSON)",
+            &watch,
+            queue,
+            .{},
+        )) {
+            watch_theme_pack_value = watch;
+            appearance_changed = true;
+        }
+        cursor_y += checkbox_height + t.spacing.sm;
+    }
     cursor_y += drawLabeledInput(
         dc,
         queue,
@@ -1318,6 +1341,11 @@ fn applyAppearanceConfig(
     profile_label: ?[]const u8,
 ) bool {
     var changed = false;
+
+    if (cfg.ui_watch_theme_pack != watch_theme_pack_value) {
+        cfg.ui_watch_theme_pack = watch_theme_pack_value;
+        changed = true;
+    }
 
     const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
     const desired_label = theme.labelForMode(desired_mode);
