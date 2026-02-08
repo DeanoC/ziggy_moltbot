@@ -23,6 +23,8 @@ var active_styles_dark: StyleSheet = .{};
 var active_pack_root: ?[]const u8 = null;
 var active_windows: []const WindowTemplate = &[_]WindowTemplate{};
 var render_defaults: RenderDefaults = .{};
+var pack_default_mode: ?theme.Mode = null;
+var pack_default_profile: ?ProfileId = null;
 
 pub fn setProfile(p: Profile) void {
     active_profile = p;
@@ -84,6 +86,31 @@ pub fn setRenderDefaults(v: RenderDefaults) void {
 
 pub fn getRenderDefaults() RenderDefaults {
     return render_defaults;
+}
+
+pub fn setPackDefaults(variant_label: []const u8, profile_label: []const u8) void {
+    // Only accept known labels; unknown values fall back to app defaults.
+    if (std.ascii.eqlIgnoreCase(variant_label, "light")) {
+        pack_default_mode = .light;
+    } else if (std.ascii.eqlIgnoreCase(variant_label, "dark")) {
+        pack_default_mode = .dark;
+    } else {
+        pack_default_mode = null;
+    }
+    pack_default_profile = profile.profileFromLabel(profile_label);
+}
+
+pub fn clearPackDefaults() void {
+    pack_default_mode = null;
+    pack_default_profile = null;
+}
+
+pub fn getPackDefaultMode() ?theme.Mode {
+    return pack_default_mode;
+}
+
+pub fn getPackDefaultProfile() ?ProfileId {
+    return pack_default_profile;
 }
 
 pub fn resolveThemeAssetPath(buf: []u8, rel_path: []const u8) ?[]const u8 {

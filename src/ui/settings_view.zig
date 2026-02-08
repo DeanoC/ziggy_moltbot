@@ -119,7 +119,10 @@ pub fn draw(
     const token_text = editorText(token_editor);
     const update_url_text = editorText(update_url_editor);
     const theme_pack_text = editorText(theme_pack_editor);
-    const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    const theme_default_light = (if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        theme_runtime.getPackDefaultMode() orelse .light) == .light;
     const cfg_profile = cfg.ui_profile orelse "";
     const desired_profile = profileLabel(profile_choice) orelse "";
     const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
@@ -202,7 +205,10 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     ensureEditor(&theme_pack_editor, allocator).setText(allocator, cfg.ui_theme_pack orelse "");
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
-    theme_is_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    theme_is_light = (if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        theme_runtime.getPackDefaultMode() orelse .light) == .light;
     profile_choice = profileChoiceFromLabel(cfg.ui_profile);
 
     if (config_cwd) |value| allocator.free(value);
@@ -300,7 +306,7 @@ fn drawAppearanceCard(
     );
 
     const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
-        "Theme packs: not supported in web build yet."
+        "Theme pack changes apply immediately. Use Reload to re-fetch."
     else
         "Theme pack changes apply immediately. Use Reload after editing JSON.";
     dc.drawText(helper_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
@@ -1049,7 +1055,11 @@ fn applyConfig(
 
     const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
     const desired_label = theme.labelForMode(desired_mode);
-    const current_label = cfg.ui_theme orelse "light";
+    const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        theme_runtime.getPackDefaultMode() orelse .light;
+    const current_label = theme.labelForMode(current_mode);
     if (!std.mem.eql(u8, current_label, desired_label)) {
         if (cfg.ui_theme) |value| allocator.free(value);
         cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;

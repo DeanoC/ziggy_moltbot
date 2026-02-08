@@ -98,6 +98,7 @@ pub const ThemeEngine = struct {
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
         runtime.setRenderDefaults(.{});
+        runtime.clearPackDefaults();
         runtime.setProfile(profile.defaultsFor(.desktop, self.caps));
     }
 
@@ -120,6 +121,7 @@ pub const ThemeEngine = struct {
         runtime.setThemePackRootPath(null);
         runtime.setWindowTemplates(&[_]schema.WindowTemplate{});
         runtime.setRenderDefaults(.{});
+        runtime.clearPackDefaults();
     }
 
     pub fn takeWebThemeChanged(self: *ThemeEngine) bool {
@@ -227,6 +229,10 @@ pub const ThemeEngine = struct {
         }
         self.active_pack_root = try self.allocator.dupe(u8, root_for_assets);
         runtime.setThemePackRootPath(self.active_pack_root);
+
+        // Pack-wide defaults are used as runtime fallbacks when the user config doesn't
+        // explicitly override mode/profile.
+        runtime.setPackDefaults(pack.manifest.defaults.variant, pack.manifest.defaults.profile);
 
         // Pack-wide render defaults (used for "pixel" style packs).
         const defaults_sampling = if (std.ascii.eqlIgnoreCase(pack.manifest.defaults.image_sampling, "nearest"))
@@ -704,6 +710,21 @@ fn applyWebJob(job: *WebPackJob) void {
     if (eng.active_pack_root) |p| eng.allocator.free(p);
     eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
     runtime.setThemePackRootPath(eng.active_pack_root);
+
+    if (job.manifest) |m| {
+        runtime.setPackDefaults(m.defaults.variant, m.defaults.profile);
+        const defaults_sampling = if (std.ascii.eqlIgnoreCase(m.defaults.image_sampling, "nearest"))
+            ui_commands.ImageSampling.nearest
+        else
+            ui_commands.ImageSampling.linear;
+        runtime.setRenderDefaults(.{
+            .image_sampling = defaults_sampling,
+            .pixel_snap_textured = m.defaults.pixel_snap_textured,
+        });
+    } else {
+        runtime.clearPackDefaults();
+        runtime.setRenderDefaults(.{});
+    }
 
     if (eng.active_pack_path) |p| eng.allocator.free(p);
     eng.active_pack_path = eng.allocator.dupe(u8, job.root) catch null;

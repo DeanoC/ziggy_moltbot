@@ -74,7 +74,6 @@ Pseudo-types:
 pub const FocusId = u64;
 
 pub const FocusNode = struct {
-    // TODO: stable id for better persistence across frames/layout changes.
     id: FocusId,
     rect: Rect,
     enabled: bool,

@@ -1387,9 +1387,20 @@ pub fn main() !void {
                 // and keeps hit-target sizing / hover rules correct per window.
                 const w_dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w.window);
                 const w_dpi_scale: f32 = if (w_dpi_scale_raw > 0.0) w_dpi_scale_raw else 1.0;
-                const requested_profile: ?[]const u8 = if (w.profile_override) |pid| profile.labelForProfile(pid) else cfg.ui_profile;
+                const requested_profile: ?[]const u8 = if (w.profile_override) |pid|
+                    profile.labelForProfile(pid)
+                else if (cfg.ui_profile) |label|
+                    label
+                else if (theme_engine.runtime.getPackDefaultProfile()) |pid|
+                    profile.labelForProfile(pid)
+                else
+                    null;
                 theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, requested_profile);
-                theme.setMode(w.theme_mode_override orelse theme.modeFromLabel(cfg.ui_theme));
+                const cfg_mode: theme.Mode = if (cfg.ui_theme) |label|
+                    theme.modeFromLabel(label)
+                else
+                    theme_engine.runtime.getPackDefaultMode() orelse .light;
+                theme.setMode(w.theme_mode_override orelse cfg_mode);
                 theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
 
                 w.queue.clear(allocator);
