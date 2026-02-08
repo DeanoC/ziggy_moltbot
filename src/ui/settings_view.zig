@@ -22,6 +22,14 @@ pub const SettingsAction = struct {
     download_update: bool = false,
     open_download: bool = false,
     install_update: bool = false,
+
+    // Windows node runner helpers (Task Scheduler wrapper)
+    node_service_install_onlogon: bool = false,
+    node_service_start: bool = false,
+    node_service_stop: bool = false,
+    node_service_status: bool = false,
+    node_service_uninstall: bool = false,
+    open_node_logs: bool = false,
 };
 
 var server_editor: ?text_editor.TextEditor = null;
@@ -130,6 +138,11 @@ pub fn draw(
         &action,
     );
     cursor_y += t.spacing.md;
+
+    if (builtin.os.tag == .windows) {
+        cursor_y += drawWindowsNodeServiceCard(&dc, queue, allocator, cfg, card_x, cursor_y, card_width, &action);
+        cursor_y += t.spacing.md;
+    }
 
     const snapshot = update_state.snapshot();
     cursor_y += drawUpdatesCard(
@@ -341,6 +354,117 @@ fn drawConnectionCard(
         badge_size,
     );
     drawBadge(dc, badge_rect, state_label, state_variant);
+
+    return height;
+}
+
+fn drawWindowsNodeServiceCard(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    x: f32,
+    y: f32,
+    width: f32,
+    action: *SettingsAction,
+) f32 {
+    _ = allocator;
+    const t = theme.activeTheme();
+    const padding = t.spacing.md;
+    const line_height = dc.lineHeight();
+    const button_height = line_height + t.spacing.xs * 2.0;
+
+    var height: f32 = 0.0;
+    height += padding + line_height + t.spacing.sm;
+    height += line_height + t.spacing.xs;
+    height += line_height + t.spacing.sm;
+    height += button_height + t.spacing.sm;
+    height += button_height + padding;
+
+    const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
+    var cursor_y = drawCardBase(dc, rect, "Windows Node Runner");
+
+    const content_x = rect.min[0] + padding;
+
+    dc.drawText(
+        "Installs a Scheduled Task that runs node-mode at user logon (recommended for camera/screen/browser).",
+        .{ content_x, cursor_y },
+        .{ .color = t.colors.text_secondary },
+    );
+    cursor_y += line_height + t.spacing.xs;
+
+    dc.drawText(
+        "Logs: C:/ProgramData/ZiggyStarClaw/logs",
+        .{ content_x, cursor_y },
+        .{ .color = t.colors.text_secondary },
+    );
+    cursor_y += line_height + t.spacing.sm;
+
+    const has_url = cfg.server_url.len > 0;
+
+    var cursor_x = content_x;
+    const install_label = "Install (Start on login)";
+    const install_w = buttonWidth(dc, install_label, t);
+    if (widgets.button.draw(
+        dc,
+        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ install_w, button_height }),
+        install_label,
+        queue,
+        .{ .variant = .primary, .disabled = !has_url },
+    )) {
+        action.node_service_install_onlogon = true;
+    }
+    cursor_x += install_w + t.spacing.sm;
+
+    const open_logs_label = "Open logs";
+    const open_logs_w = buttonWidth(dc, open_logs_label, t);
+    if (widgets.button.draw(
+        dc,
+        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ open_logs_w, button_height }),
+        open_logs_label,
+        queue,
+        .{ .variant = .secondary },
+    )) {
+        action.open_node_logs = true;
+    }
+    cursor_y += button_height + t.spacing.sm;
+
+    cursor_x = content_x;
+    const start_label = "Start";
+    const start_w = buttonWidth(dc, start_label, t);
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ start_w, button_height }), start_label, queue, .{ .variant = .secondary })) {
+        action.node_service_start = true;
+    }
+    cursor_x += start_w + t.spacing.sm;
+
+    const stop_label = "Stop";
+    const stop_w = buttonWidth(dc, stop_label, t);
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ stop_w, button_height }), stop_label, queue, .{ .variant = .secondary })) {
+        action.node_service_stop = true;
+    }
+    cursor_x += stop_w + t.spacing.sm;
+
+    const status_label = "Status";
+    const status_w = buttonWidth(dc, status_label, t);
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ status_w, button_height }), status_label, queue, .{ .variant = .ghost })) {
+        action.node_service_status = true;
+    }
+    cursor_x += status_w + t.spacing.sm;
+
+    const uninstall_label = "Uninstall";
+    const uninstall_w = buttonWidth(dc, uninstall_label, t);
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ uninstall_w, button_height }), uninstall_label, queue, .{ .variant = .ghost })) {
+        action.node_service_uninstall = true;
+    }
+
+    if (!has_url) {
+        // Tiny hint; keep it subtle.
+        dc.drawText(
+            "(Set Server URL above before installing)",
+            .{ content_x, cursor_y + button_height + t.spacing.xs },
+            .{ .color = t.colors.text_secondary },
+        );
+    }
 
     return height;
 }

@@ -60,6 +60,15 @@ pub const UiAction = struct {
     download_update: bool = false,
     open_download: bool = false,
     install_update: bool = false,
+
+    // Windows node runner helpers (Task Scheduler wrapper)
+    node_service_install_onlogon: bool = false,
+    node_service_start: bool = false,
+    node_service_stop: bool = false,
+    node_service_status: bool = false,
+    node_service_uninstall: bool = false,
+    open_node_logs: bool = false,
+
     refresh_nodes: bool = false,
     select_node: ?[]u8 = null,
     invoke_node: ?@import("operator_view.zig").NodeInvokeAction = null,
@@ -641,6 +650,14 @@ fn drawPanelContents(
             action.download_update = control_action.download_update;
             action.open_download = control_action.open_download;
             action.install_update = control_action.install_update;
+
+            action.node_service_install_onlogon = control_action.node_service_install_onlogon;
+            action.node_service_start = control_action.node_service_start;
+            action.node_service_stop = control_action.node_service_stop;
+            action.node_service_status = control_action.node_service_status;
+            action.node_service_uninstall = control_action.node_service_uninstall;
+            action.open_node_logs = control_action.open_node_logs;
+
             action.refresh_nodes = control_action.refresh_nodes;
             action.select_node = control_action.select_node;
             action.invoke_node = control_action.invoke_node;
