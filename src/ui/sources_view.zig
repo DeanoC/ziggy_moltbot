@@ -476,6 +476,13 @@ fn drawFilesList(
 
     if (sections.len > 0) {
         for (sections, 0..) |section, section_idx| {
+            // Scope section header + its file rows, so nav IDs are stable and don't collide between sections.
+            var section_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.section");
+            section_scope = std.hash.Wyhash.hash(section_scope, section.name);
+            section_scope = std.hash.Wyhash.hash(section_scope, std.mem.asBytes(&section.start_index));
+            nav_router.pushScope(section_scope);
+            defer nav_router.popScope();
+
             const header_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], section_height });
             const header_label = if (section.expanded.*) "v" else ">";
             const label = std.fmt.allocPrint(allocator, "{s} {s}", .{ header_label, section.name }) catch section.name;
@@ -488,9 +495,16 @@ fn drawFilesList(
 
             if (section.expanded.*) {
                 for (section.files, 0..) |file, idx| {
+                    const global_index = section.start_index + idx;
+                    // Scope each file row so repeated labels across sections don't share nav IDs.
+                    var file_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.file");
+                    file_scope = std.hash.Wyhash.hash(file_scope, file.name);
+                    file_scope = std.hash.Wyhash.hash(file_scope, std.mem.asBytes(&global_index));
+                    nav_router.pushScope(file_scope);
+                    defer nav_router.popScope();
+
                     const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
                     if (row_rect.max[1] >= rect.min[1] and row_rect.min[1] <= rect.max[1]) {
-                        const global_index = section.start_index + idx;
                         const selected = selected_file_index != null and selected_file_index.? == global_index;
                         if (drawFileRow(dc, row_rect, file, selected, queue)) {
                             selected_file_index = global_index;
@@ -509,6 +523,13 @@ fn drawFilesList(
         dc.drawText("No files in this source.", .{ rect.min[0], y }, .{ .color = t.colors.text_secondary });
     } else {
         for (files, 0..) |file, idx| {
+            // Scope each file row so repeated names don't collide.
+            var file_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.file");
+            file_scope = std.hash.Wyhash.hash(file_scope, file.name);
+            file_scope = std.hash.Wyhash.hash(file_scope, std.mem.asBytes(&idx));
+            nav_router.pushScope(file_scope);
+            defer nav_router.popScope();
+
             const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
             if (row_rect.max[1] >= rect.min[1] and row_rect.min[1] <= rect.max[1]) {
                 const selected = selected_file_index != null and selected_file_index.? == idx;
@@ -533,7 +554,14 @@ fn drawSectionHeader(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.section_header", "toggle") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -541,6 +569,9 @@ fn drawSectionHeader(
                 if (mu.button == .left and rect.contains(mu.pos)) {
                     clicked = true;
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -564,7 +595,14 @@ fn drawFileRow(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.file_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -572,6 +610,9 @@ fn drawFileRow(
                 if (mu.button == .left and rect.contains(mu.pos)) {
                     clicked = true;
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
