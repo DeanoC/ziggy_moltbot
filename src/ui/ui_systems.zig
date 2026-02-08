@@ -4,8 +4,21 @@ const input_router = @import("input/input_router.zig");
 const draw_context = @import("draw_context.zig");
 
 var global_systems: ?systems.Systems = null;
+var frame_now_ns: i128 = 0;
+var last_frame_ns: i128 = 0;
+var frame_dt_s: f32 = 1.0 / 60.0;
 
 pub fn beginFrame() *systems.Systems {
+    // Use a monotonic clock so time changes (NTP/manual adjustments) don't break inertial animations.
+    frame_now_ns = std.time.nanoTimestamp();
+    if (last_frame_ns != 0) {
+        const delta_ns: i128 = frame_now_ns - last_frame_ns;
+        const raw_dt: f32 = @as(f32, @floatFromInt(delta_ns)) / 1_000_000_000.0;
+        // Clamp to keep physics stable across hitches and also avoid divide-by-zero.
+        frame_dt_s = std.math.clamp(raw_dt, 1.0 / 240.0, 0.2);
+    }
+    last_frame_ns = frame_now_ns;
+
     const sys = get();
     sys.beginFrame();
     sys.keyboard.clear();
@@ -31,6 +44,14 @@ pub fn endFrame(dc: *draw_context.DrawContext) void {
             }
         }
     }
+}
+
+pub fn frameNowMs() i64 {
+    return @intCast(@divTrunc(frame_now_ns, 1_000_000));
+}
+
+pub fn frameDtSeconds() f32 {
+    return frame_dt_s;
 }
 
 pub fn get() *systems.Systems {

@@ -6,6 +6,7 @@ const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
+const widgets = @import("widgets/widgets.zig");
 
 const AgentStatus = struct {
     label: []const u8,
@@ -250,22 +251,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging and queue.state.mouse_down_left) {
-        scroll_y.* -= queue.state.pointer_drag_delta[1];
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn statusForNode(node: types.Node) AgentStatus {

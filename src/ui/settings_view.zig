@@ -916,21 +916,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            scroll.* -= evt.mouse_wheel.delta[1] * step;
-        }
-    }
-    if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging and queue.state.mouse_down_left) {
-        scroll.* -= queue.state.pointer_drag_delta[1];
-    }
-    if (scroll.* < 0.0) scroll.* = 0.0;
-    if (scroll.* > max_scroll) scroll.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll, max_scroll, step);
 }
 
 fn drawDownloadOverlay(
