@@ -39,6 +39,8 @@ pub const WindowTemplate = struct {
     width: u32 = 960,
     height: u32 = 720,
     profile: ?[]const u8 = null,
+    /// Optional theme variant ("light"/"dark") applied to this window only.
+    variant: ?[]const u8 = null,
     image_sampling: ?[]const u8 = null,
     pixel_snap_textured: ?bool = null,
     panels: ?[]const []const u8 = null,

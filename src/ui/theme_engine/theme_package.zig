@@ -73,6 +73,7 @@ pub fn freeWindowTemplates(allocator: std.mem.Allocator, templates: []schema.Win
         allocator.free(tpl.id);
         allocator.free(tpl.title);
         if (tpl.profile) |p| allocator.free(p);
+        if (tpl.variant) |p| allocator.free(p);
         if (tpl.image_sampling) |p| allocator.free(p);
         if (tpl.focused_panel) |p| allocator.free(p);
         if (tpl.panels) |list| {
@@ -115,6 +116,8 @@ fn loadOptionalWindows(
         errdefer allocator.free(title_copy);
         const profile_copy = if (tpl.profile) |p| try allocator.dupe(u8, p) else null;
         errdefer if (profile_copy) |p| allocator.free(p);
+        const variant_copy = if (tpl.variant) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (variant_copy) |p| allocator.free(p);
         const sampling_copy = if (tpl.image_sampling) |p| try allocator.dupe(u8, p) else null;
         errdefer if (sampling_copy) |p| allocator.free(p);
         const focused_copy = if (tpl.focused_panel) |p| try allocator.dupe(u8, p) else null;
@@ -144,6 +147,7 @@ fn loadOptionalWindows(
             .width = tpl.width,
             .height = tpl.height,
             .profile = profile_copy,
+            .variant = variant_copy,
             .image_sampling = sampling_copy,
             .pixel_snap_textured = tpl.pixel_snap_textured,
             .panels = panels_copy,

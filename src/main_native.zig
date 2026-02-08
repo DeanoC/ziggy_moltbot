@@ -54,6 +54,7 @@ const UiWindow = struct {
     manager: panel_manager.PanelManager,
     ui_state: ui.WindowUiState = .{},
     profile_override: ?theme_engine.ProfileId = null,
+    theme_mode_override: ?theme.Mode = null,
     image_sampling_override: ?ui_commands.ImageSampling = null,
     pixel_snap_textured_override: ?bool = null,
 };
@@ -138,6 +139,7 @@ fn createUiWindow(
     flags: sdl.SDL_WindowFlags,
     initial_workspace: workspace.Workspace,
     profile_override: ?theme_engine.ProfileId,
+    theme_mode_override: ?theme.Mode,
     image_sampling_override: ?ui_commands.ImageSampling,
     pixel_snap_textured_override: ?bool,
 ) !*UiWindow {
@@ -166,6 +168,7 @@ fn createUiWindow(
         .manager = panel_manager.PanelManager.init(allocator, ws),
         .ui_state = .{},
         .profile_override = profile_override,
+        .theme_mode_override = theme_mode_override,
         .image_sampling_override = image_sampling_override,
         .pixel_snap_textured_override = pixel_snap_textured_override,
     };
@@ -1143,6 +1146,7 @@ pub fn main() !void {
         .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
         .ui_state = .{},
         .profile_override = null,
+        .theme_mode_override = null,
         .image_sampling_override = null,
         .pixel_snap_textured_override = null,
     };
@@ -1385,6 +1389,7 @@ pub fn main() !void {
                 const w_dpi_scale: f32 = if (w_dpi_scale_raw > 0.0) w_dpi_scale_raw else 1.0;
                 const requested_profile: ?[]const u8 = if (w.profile_override) |pid| profile.labelForProfile(pid) else cfg.ui_profile;
                 theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, requested_profile);
+                theme.setMode(w.theme_mode_override orelse theme.modeFromLabel(cfg.ui_theme));
                 theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
 
                 w.queue.clear(allocator);
@@ -1839,6 +1844,7 @@ pub fn main() !void {
             var title_buf: [96]u8 = undefined;
             var title_z: [:0]const u8 = "ZiggyStarClaw";
             var profile_override: ?theme_engine.ProfileId = active_window.profile_override;
+            var mode_override: ?theme.Mode = active_window.theme_mode_override;
             var sampling_override: ?ui_commands.ImageSampling = active_window.image_sampling_override;
             var pixel_override: ?bool = active_window.pixel_snap_textured_override;
 
@@ -1857,6 +1863,9 @@ pub fn main() !void {
                     title_z = std.fmt.bufPrintZ(&title_buf, "{s} ({d})", .{ base_title, index }) catch "ZiggyStarClaw";
                     if (profile.profileFromLabel(tpl.profile)) |pid| {
                         profile_override = pid;
+                    }
+                    if (tpl.variant) |variant| {
+                        mode_override = theme.modeFromLabel(variant);
                     }
                     if (tpl.image_sampling) |label| {
                         sampling_override = parseImageSamplingLabel(label);
@@ -1889,6 +1898,7 @@ pub fn main() !void {
                     window_flags,
                     ws_for_new,
                     profile_override,
+                    mode_override,
                     sampling_override,
                     pixel_override,
                 ) catch |err| blk: {
