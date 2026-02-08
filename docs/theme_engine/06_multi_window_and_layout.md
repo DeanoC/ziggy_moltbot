@@ -7,18 +7,17 @@ The requested theme engine needs to support:
 
 ## Current State
 
-- One SDL window is created per app entrypoint:
-  - `src/main_native.zig`
-  - `src/main_wasm.zig`
-  - `src/main_android_wgpu.zig`
+Desktop multi-window is implemented on the `feature/theme_engine` branch:
 
-- UI renders into a single host rect with safe insets:
-  - `src/ui/main_window.zig`
+- Native desktop (`src/main_native.zig`) can spawn multiple SDL windows.
+- Each window has its own:
+  - swapchain/surface
+  - input queue
+  - panel manager + workspace state
+  - controller nav state
+- Theme templates come from `windows.json` in the active theme pack (optional).
 
-- UI draw recording is global per frame:
-  - `src/ui/render/command_queue.zig` sets a global command list via `draw_context.setGlobalCommandList()`.
-
-Multi-window will require de-globalizing at least the command list (and likely input routing) so each window can render independently.
+WASM/Android remain single-window.
 
 ## Desktop Strategy
 
@@ -66,6 +65,8 @@ A theme package may optionally provide `windows.json` describing:
 - which root view each window hosts
 - whether a window uses pixel-snapping (Winamp-like) or smooth vector UI
 
+In addition, templates may specify a per-window theme `variant` (`"light"`/`"dark"`).
+
 The theme engine should not create windows directly. It should:
 - provide templates
 - and the app decides whether to apply them.
@@ -103,4 +104,3 @@ A clean desktop theme can allow:
 - Focus is exclusive.
 - UI is card-based with overlays.
 - The theme can provide motion + transitions.
-

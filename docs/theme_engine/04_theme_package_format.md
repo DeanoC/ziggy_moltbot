@@ -231,3 +231,34 @@ The theme engine should use a single abstraction for reading assets:
 - WASM: fetch over HTTP (and optionally cache in IndexedDB); local filesystem is not portable.
 
 The docs assume “file loading can be added on most platforms”, but the loader must still be capability-gated.
+
+## `windows.json` (Multi-Window Templates)
+
+Theme packs can optionally include `windows.json` to define desktop window templates (Winamp-style multiple windows, detachable layouts, etc.).
+
+Schema (see `src/ui/theme_engine/schema.zig`):
+
+```json
+{
+  "schema_version": 1,
+  "windows": [
+    {
+      "id": "workspace",
+      "title": "Workspace",
+      "width": 960,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "dark",
+      "image_sampling": "linear",
+      "pixel_snap_textured": false,
+      "panels": ["workspace", "chat", "showcase"],
+      "focused_panel": "workspace"
+    }
+  ]
+}
+```
+
+Notes:
+- `profile` is optional; if omitted, the app uses config/auto profile resolution.
+- `variant` is optional (`"light"` or `"dark"`). If set, it applies to that window only.
+- `image_sampling` and `pixel_snap_textured` let pixel-art packs opt into nearest sampling and pixel snapping.

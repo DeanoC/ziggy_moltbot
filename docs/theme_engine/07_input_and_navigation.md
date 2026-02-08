@@ -60,12 +60,13 @@ Minimum for phone/tablet:
 Fullscreen requires a navigation system that does not depend on pointer hover.
 
 Current design:
-- Focusables are registered by rect (no stable IDs yet).
+- Focusables are registered by rect and a stable 64-bit focus id.
 - Navigation chooses the nearest focusable in the requested direction.
-- Activation is implemented via synthetic pointer clicks for compatibility with existing widgets.
+- Activation is implemented via a `nav_activate` event (preferred over synthetic clicks).
 
-Future improvement:
-- Add stable focus IDs so focus survives layout changes and scrolling more robustly.
+Touch/pen (SDL3) are also supported:
+- touch and pen are mapped onto the existing mouse-driven widgets for broad compatibility
+- drag-to-scroll is enabled in scroll views (after a small drag threshold, so taps still click)
 
 Pseudo-types:
 
