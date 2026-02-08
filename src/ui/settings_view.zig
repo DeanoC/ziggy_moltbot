@@ -45,6 +45,12 @@ var scroll_max: f32 = 0.0;
 var config_cwd: ?[]u8 = null;
 var appearance_changed: bool = false;
 
+const ThemePackEntry = struct {
+    name: []u8,
+};
+var theme_pack_entries: std.ArrayListUnmanaged(ThemePackEntry) = .{};
+var theme_pack_entries_loaded: bool = false;
+
 const BadgeVariant = enum {
     primary,
     success,
@@ -60,6 +66,7 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     if (update_url_editor) |*editor| editor.deinit(allocator);
     if (theme_pack_editor) |*editor| editor.deinit(allocator);
     if (config_cwd) |value| allocator.free(value);
+    clearThemePackEntries(allocator);
     server_editor = null;
     token_editor = null;
     connect_host_editor = null;
@@ -111,7 +118,7 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, allocator, card_x, cursor_y, card_width, &action);
+    cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, card_x, cursor_y, card_width, &action);
     cursor_y += t.spacing.md;
 
     const server_text = editorText(server_editor);
@@ -139,19 +146,10 @@ pub fn draw(
     // If they changed, apply + request save immediately.
     if (appearance_changed) {
         appearance_changed = false;
-        if (applyConfig(
-            allocator,
-            cfg,
-            server_text,
-            connect_host_text,
-            token_text,
-            update_url_text,
-            theme_pack_text,
-            profileLabel(profile_choice),
-        )) {
+        if (applyAppearanceConfig(allocator, cfg, theme_pack_text, profileLabel(profile_choice))) {
             action.config_updated = true;
+            action.save = true;
         }
-        action.save = true;
     }
 
     cursor_y += drawConnectionCard(
@@ -194,6 +192,51 @@ pub fn draw(
 
 pub fn syncFromConfig(cfg: config.Config) void {
     syncBuffers(std.heap.page_allocator, cfg);
+}
+
+fn clearThemePackEntries(allocator: std.mem.Allocator) void {
+    for (theme_pack_entries.items) |entry| {
+        allocator.free(entry.name);
+    }
+    theme_pack_entries.deinit(allocator);
+    theme_pack_entries = .{};
+    theme_pack_entries_loaded = false;
+}
+
+fn refreshThemePackEntries(allocator: std.mem.Allocator) void {
+    clearThemePackEntries(allocator);
+    theme_pack_entries_loaded = true;
+
+    var themes_dir = std.fs.cwd().openDir("themes", .{ .iterate = true }) catch return;
+    defer themes_dir.close();
+
+    var it = themes_dir.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (entry.name.len == 0) continue;
+
+        var pack_dir = themes_dir.openDir(entry.name, .{}) catch continue;
+        defer pack_dir.close();
+
+        // "manifest.json" is our minimal marker for a theme pack folder.
+        var f = pack_dir.openFile("manifest.json", .{}) catch continue;
+        f.close();
+
+        const name = allocator.dupe(u8, entry.name) catch continue;
+        theme_pack_entries.append(allocator, .{ .name = name }) catch {
+            allocator.free(name);
+            break;
+        };
+    }
+
+    if (theme_pack_entries.items.len > 1) {
+        const Ctx = struct {};
+        std.sort.pdq(ThemePackEntry, theme_pack_entries.items, Ctx{}, struct {
+            fn lessThan(_: Ctx, a: ThemePackEntry, b: ThemePackEntry) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.lessThan);
+    }
 }
 
 fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
@@ -259,6 +302,7 @@ fn drawAppearanceCard(
     dc: *draw_context.DrawContext,
     queue: *input_state.InputQueue,
     allocator: std.mem.Allocator,
+    cfg: *const config.Config,
     x: f32,
     y: f32,
     width: f32,
@@ -276,6 +320,9 @@ fn drawAppearanceCard(
     // Helper text + config path.
     height += (line_height + t.spacing.xs) * 2.0;
     height += button_height + t.spacing.sm; // pack buttons row
+    if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
+        height += button_height + t.spacing.sm; // pack picker row
+    }
     height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
@@ -306,9 +353,9 @@ fn drawAppearanceCard(
     );
 
     const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
-        "Theme pack changes apply immediately. Use Reload to re-fetch."
+        "Edit path then press Apply or Reload (Reload re-fetches)."
     else
-        "Theme pack changes apply immediately. Use Reload after editing JSON.";
+        "Edit path then press Apply or Reload (Reload re-reads JSON).";
     dc.drawText(helper_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     cursor_y += line_height + t.spacing.xs;
 
@@ -329,27 +376,27 @@ fn drawAppearanceCard(
     const button_y = cursor_y;
     var button_x = rect.min[0] + padding;
 
-    const clean_w = buttonWidth(dc, "Use clean pack", t);
+    const clean_w = buttonWidth(dc, "Clean", t);
     const clean_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ clean_w, button_height });
-    if (widgets.button.draw(dc, clean_rect, "Use clean pack", queue, .{ .variant = .secondary })) {
+    if (widgets.button.draw(dc, clean_rect, "Clean", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_clean");
         profile_choice = .desktop;
         appearance_changed = true;
     }
     button_x += clean_w + t.spacing.xs;
 
-    const showcase_w = buttonWidth(dc, "Use showcase pack", t);
+    const showcase_w = buttonWidth(dc, "Showcase", t);
     const showcase_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ showcase_w, button_height });
-    if (widgets.button.draw(dc, showcase_rect, "Use showcase pack", queue, .{ .variant = .secondary })) {
+    if (widgets.button.draw(dc, showcase_rect, "Showcase", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_showcase");
         profile_choice = .desktop;
         appearance_changed = true;
     }
     button_x += showcase_w + t.spacing.xs;
 
-    const winamp_w = buttonWidth(dc, "Use winamp pack", t);
+    const winamp_w = buttonWidth(dc, "Winamp", t);
     const winamp_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_w, button_height });
-    if (widgets.button.draw(dc, winamp_rect, "Use winamp pack", queue, .{ .variant = .secondary })) {
+    if (widgets.button.draw(dc, winamp_rect, "Winamp", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
         profile_choice = .desktop;
         // The winamp-ish pack is authored with intentionally dark fills in the style sheet.
@@ -362,9 +409,9 @@ fn drawAppearanceCard(
     }
     button_x += winamp_w + t.spacing.xs;
 
-    const winamp_px_w = buttonWidth(dc, "Use winamp pixel pack", t);
+    const winamp_px_w = buttonWidth(dc, "Winamp px", t);
     const winamp_px_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_px_w, button_height });
-    if (widgets.button.draw(dc, winamp_px_rect, "Use winamp pixel pack", queue, .{ .variant = .secondary })) {
+    if (widgets.button.draw(dc, winamp_px_rect, "Winamp px", queue, .{ .variant = .secondary })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp_pixel");
         profile_choice = .desktop;
         theme_is_light = false;
@@ -375,10 +422,21 @@ fn drawAppearanceCard(
     button_x += winamp_px_w + t.spacing.xs;
 
     const theme_pack_text = editorText(theme_pack_editor);
+    const current_pack = cfg.ui_theme_pack orelse "";
+    const pack_dirty = !std.mem.eql(u8, current_pack, theme_pack_text);
+
+    const apply_w = buttonWidth(dc, "Apply", t);
+    const apply_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ apply_w, button_height });
+    if (widgets.button.draw(dc, apply_rect, "Apply", queue, .{ .variant = .primary, .disabled = !pack_dirty })) {
+        appearance_changed = true;
+    }
+    button_x += apply_w + t.spacing.xs;
+
     const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
     const reload_w = buttonWidth(dc, "Reload pack", t);
     const reload_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ reload_w, button_height });
     if (widgets.button.draw(dc, reload_rect, "Reload pack", queue, .{ .variant = .ghost, .disabled = !can_reload })) {
+        appearance_changed = true;
         action.reload_theme_pack = true;
     }
     button_x += reload_w + t.spacing.xs;
@@ -390,6 +448,49 @@ fn drawAppearanceCard(
         appearance_changed = true;
     }
     cursor_y += button_height + t.spacing.sm;
+
+    // Simple "picker" row: lists packs detected in ./themes (no OS file dialog required).
+    if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
+        if (!theme_pack_entries_loaded) refreshThemePackEntries(allocator);
+
+        const picker_label = "Installed packs:";
+        const picker_x = rect.min[0] + padding;
+        dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        var px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+
+        const refresh_w = buttonWidth(dc, "Refresh", t);
+        const refresh_rect = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ refresh_w, button_height });
+        if (widgets.button.draw(dc, refresh_rect, "Refresh", queue, .{ .variant = .ghost })) {
+            refreshThemePackEntries(allocator);
+        }
+        px += refresh_w + t.spacing.sm;
+
+        if (theme_pack_entries.items.len == 0) {
+            dc.drawText("(none found)", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        } else {
+            const max_x = rect.max[0] - padding;
+            var shown: usize = 0;
+            for (theme_pack_entries.items) |entry| {
+                var buf: [256]u8 = undefined;
+                const full_path = std.fmt.bufPrint(&buf, "themes/{s}", .{entry.name}) catch entry.name;
+                const is_selected = std.mem.eql(u8, full_path, theme_pack_text);
+                const w = buttonWidth(dc, entry.name, t);
+                if (px + w > max_x) break;
+                const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
+                if (widgets.button.draw(dc, r, entry.name, queue, .{ .variant = if (is_selected) .primary else .secondary })) {
+                    ensureEditor(&theme_pack_editor, allocator).setText(allocator, full_path);
+                    appearance_changed = true;
+                }
+                px += w + t.spacing.xs;
+                shown += 1;
+            }
+
+            if (shown < theme_pack_entries.items.len and px + dc.measureText("...", 0.0)[0] < max_x) {
+                dc.drawText("...", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+            }
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
 
     // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
     const picker_label = "Profile:";
@@ -1061,6 +1162,55 @@ fn applyConfig(
         if (update_url_text.len > 0) {
             cfg.update_manifest_url = allocator.dupe(u8, update_url_text) catch return changed;
         }
+        changed = true;
+    }
+
+    const current_theme_pack = cfg.ui_theme_pack orelse "";
+    if (!std.mem.eql(u8, current_theme_pack, theme_pack_text)) {
+        if (cfg.ui_theme_pack) |value| {
+            allocator.free(value);
+            cfg.ui_theme_pack = null;
+        }
+        if (theme_pack_text.len > 0) {
+            cfg.ui_theme_pack = allocator.dupe(u8, theme_pack_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const desired_profile = profile_label orelse "";
+    const current_profile = cfg.ui_profile orelse "";
+    if (!std.mem.eql(u8, current_profile, desired_profile)) {
+        if (cfg.ui_profile) |value| {
+            allocator.free(value);
+            cfg.ui_profile = null;
+        }
+        if (profile_label) |label| {
+            cfg.ui_profile = allocator.dupe(u8, label) catch return changed;
+        }
+        changed = true;
+    }
+
+    return changed;
+}
+
+fn applyAppearanceConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    theme_pack_text: []const u8,
+    profile_label: ?[]const u8,
+) bool {
+    var changed = false;
+
+    const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+    const desired_label = theme.labelForMode(desired_mode);
+    const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        theme_runtime.getPackDefaultMode() orelse .light;
+    const current_label = theme.labelForMode(current_mode);
+    if (!std.mem.eql(u8, current_label, desired_label)) {
+        if (cfg.ui_theme) |value| allocator.free(value);
+        cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
         changed = true;
     }
 
