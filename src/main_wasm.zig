@@ -1256,6 +1256,13 @@ fn frame() callconv(.c) void {
             eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
                 logger.warn("Failed to apply theme pack: {}", .{err});
             };
+            if (cfg.ui_theme_pack) |pack_path| {
+                if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
+                    if (!ui_action.config_updated and !ui_action.save_config) {
+                        saveConfigToStorage();
+                    }
+                }
+            }
 
             if (window) |w| {
                 const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);

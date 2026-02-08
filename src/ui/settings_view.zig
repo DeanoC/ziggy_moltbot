@@ -324,6 +324,7 @@ fn drawAppearanceCard(
     // Helper text + config path + status line.
     height += (line_height + t.spacing.xs) * 3.0;
     height += button_height + t.spacing.sm; // pack buttons row
+    height += button_height + t.spacing.sm; // recent row
     height += button_height + t.spacing.sm; // pack picker row
     height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
@@ -467,6 +468,44 @@ fn drawAppearanceCard(
     if (widgets.button.draw(dc, disable_rect, "Disable pack", queue, .{ .variant = .ghost, .disabled = theme_pack_text.len == 0 })) {
         ensureEditor(&theme_pack_editor, allocator).setText(allocator, "");
         appearance_changed = true;
+    }
+    cursor_y += button_height + t.spacing.sm;
+
+    // Recent pack shortcuts (persisted in config).
+    {
+        const recent_label = "Recent:";
+        const rx0 = rect.min[0] + padding;
+        dc.drawText(recent_label, .{ rx0, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        var rx = rx0 + dc.measureText(recent_label, 0.0)[0] + t.spacing.sm;
+        const max_x = rect.max[0] - padding;
+
+        const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+        if (recent.len == 0) {
+            dc.drawText("(none)", .{ rx, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        } else {
+            var shown: usize = 0;
+            for (recent) |item| {
+                const label = blk: {
+                    const themes_prefix = "themes/";
+                    if (std.mem.startsWith(u8, item, themes_prefix)) break :blk item[themes_prefix.len..];
+                    const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                    if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                    break :blk item;
+                };
+                const w = buttonWidth(dc, label, t);
+                if (rx + w > max_x) break;
+                const r = draw_context.Rect.fromMinSize(.{ rx, cursor_y }, .{ w, button_height });
+                if (widgets.button.draw(dc, r, label, queue, .{ .variant = .ghost })) {
+                    ensureEditor(&theme_pack_editor, allocator).setText(allocator, item);
+                    appearance_changed = true;
+                }
+                rx += w + t.spacing.xs;
+                shown += 1;
+            }
+            if (shown < recent.len and rx + dc.measureText("...", 0.0)[0] < max_x) {
+                dc.drawText("...", .{ rx, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+            }
+        }
     }
     cursor_y += button_height + t.spacing.sm;
 

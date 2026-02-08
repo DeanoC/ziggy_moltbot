@@ -11,6 +11,8 @@ pub const Config = struct {
     default_node: ?[]const u8 = null,
     ui_theme: ?[]const u8 = null,
     ui_theme_pack: ?[]const u8 = null,
+    /// Most-recently-used theme pack paths (portable `themes/<id>` or absolute paths).
+    ui_theme_pack_recent: ?[]const []const u8 = null,
     ui_profile: ?[]const u8 = null,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
@@ -33,6 +35,10 @@ pub const Config = struct {
         }
         if (self.ui_theme_pack) |value| {
             allocator.free(value);
+        }
+        if (self.ui_theme_pack_recent) |list| {
+            for (list) |item| allocator.free(item);
+            allocator.free(list);
         }
         if (self.ui_profile) |value| {
             allocator.free(value);
@@ -70,6 +76,7 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .default_node = null,
         .ui_theme = null,
         .ui_theme_pack = null,
+        .ui_theme_pack_recent = null,
         .ui_profile = null,
     };
 }
@@ -116,11 +123,71 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
             try allocator.dupe(u8, value)
         else
             null,
+        .ui_theme_pack_recent = if (parsed.value.ui_theme_pack_recent) |list| blk: {
+            var out = try allocator.alloc([]const u8, list.len);
+            var written: usize = 0;
+            errdefer {
+                var i: usize = 0;
+                while (i < written) : (i += 1) allocator.free(out[i]);
+                allocator.free(out);
+            }
+            for (list, 0..) |item, i| {
+                out[i] = try allocator.dupe(u8, item);
+                written += 1;
+            }
+            break :blk out;
+        } else null,
         .ui_profile = if (parsed.value.ui_profile) |value|
             try allocator.dupe(u8, value)
         else
             null,
     };
+}
+
+pub fn pushRecentThemePack(allocator: std.mem.Allocator, cfg: *Config, pack_path: []const u8) bool {
+    if (pack_path.len == 0) return false;
+
+    const max_items: usize = 8;
+    const current = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+
+    // Fast path: already top.
+    if (current.len > 0 and std.mem.eql(u8, current[0], pack_path)) return false;
+
+    var new_len: usize = 1;
+    for (current) |item| {
+        if (new_len >= max_items) break;
+        if (std.mem.eql(u8, item, pack_path)) continue;
+        new_len += 1;
+    }
+
+    var out = allocator.alloc([]const u8, new_len) catch return false;
+    var written: usize = 0;
+
+    out[written] = allocator.dupe(u8, pack_path) catch {
+        allocator.free(out);
+        return false;
+    };
+    written += 1;
+
+    for (current) |item| {
+        if (written >= new_len) break;
+        if (std.mem.eql(u8, item, pack_path)) continue;
+        out[written] = allocator.dupe(u8, item) catch {
+            var i: usize = 0;
+            while (i < written) : (i += 1) allocator.free(out[i]);
+            allocator.free(out);
+            return false;
+        };
+        written += 1;
+    }
+
+    // Free previous list.
+    if (cfg.ui_theme_pack_recent) |list| {
+        for (list) |item| allocator.free(item);
+        allocator.free(list);
+    }
+    cfg.ui_theme_pack_recent = out;
+    return true;
 }
 
 pub fn save(allocator: std.mem.Allocator, path: []const u8, cfg: Config) !void {

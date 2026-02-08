@@ -1655,13 +1655,23 @@ pub fn main() !void {
         }
 
         if (ui_action.config_updated or ui_action.reload_theme_pack) {
-            theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
+            const applied_ok = if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack))
+                true
+            else |err| blk: {
                 if (cfg.ui_theme_pack) |pack_path| {
                     logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
                 } else {
                     logger.warn("Failed to apply theme pack: {}", .{err});
                 }
+                break :blk false;
             };
+            if (applied_ok) {
+                if (cfg.ui_theme_pack) |pack_path| {
+                    if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
+                        ui_action.save_config = true;
+                    }
+                }
+            }
             // Profile/typography are resolved per-window during UI draw.
         }
 
@@ -1740,6 +1750,9 @@ pub fn main() !void {
 
                     // Apply immediately; only persist if apply succeeded.
                     if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true)) |_| {
+                        if (cfg.ui_theme_pack) |pack_path| {
+                            _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
+                        }
                         config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                             logger.err("Failed to save config: {}", .{err});
                         };
