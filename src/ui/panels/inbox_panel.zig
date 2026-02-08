@@ -31,7 +31,11 @@ var selected_index: usize = 0;
 
 // Since items are placeholder/mock and returned as const, keep a tiny local override
 // for interactive toggling (read/unread) until the real data/store lands.
-var mock_status_overrides: [3]?Status = .{ null, null, null };
+var mock_status_overrides: [16]?Status = [_]?Status{null} ** 16;
+
+// Minimal placeholder for actions like Archive/Delete. Hidden items are removed from
+// the list until the underlying store exists.
+var mock_hidden_overrides: [16]bool = [_]bool{false} ** 16;
 
 var search_editor: ?widgets.text_editor.TextEditor = null;
 
@@ -116,6 +120,7 @@ pub fn draw(
     var visible = std.ArrayList(usize).empty;
     defer visible.deinit(allocator);
     for (items, 0..) |it, idx| {
+        if (isHidden(idx)) continue;
         if (!matchesQuery(it, query)) continue;
         if (!matchesFilter(idx, it)) continue;
         _ = visible.append(allocator, idx) catch {};
@@ -135,6 +140,10 @@ pub fn draw(
             }
         }
         if (!is_visible) selected_index = visible.items[0];
+    } else {
+        // No visible items: clear selection so the detail view doesn't keep rendering
+        // a now-hidden item (e.g. after Archive/Delete).
+        selected_index = items.len;
     }
 
     handleListKeys(queue, visible.items);
@@ -158,13 +167,12 @@ pub fn draw(
     );
 
     drawList(&dc, list_body, queue, items, visible.items);
-    drawDetail(allocator, &dc, detail_rect, items);
+    drawDetail(allocator, &dc, detail_rect, queue, items);
 
     return action;
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) f32 {
-    _ = queue;
     const t = theme.activeTheme();
     const top = rect.min[1] + t.spacing.md;
     const left = rect.min[0] + t.spacing.md;
@@ -174,8 +182,19 @@ fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *in
     dc.drawText("Inbox (mock)", .{ left, top }, .{ .color = t.colors.text_primary });
     theme.pop();
 
+    const btn_h = dc.lineHeight() + t.spacing.xs * 2.0;
+    const btn_label = "Reset";
+    const btn_w = dc.measureText(btn_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const btn_rect = draw_context.Rect.fromMinSize(
+        .{ rect.max[0] - t.spacing.md - btn_w, top },
+        .{ btn_w, btn_h },
+    );
+    if (widgets.button.draw(dc, btn_rect, btn_label, queue, .{ .variant = .ghost })) {
+        resetMockState();
+    }
+
     const subtitle_y = top + title_h + t.spacing.xs;
-    dc.drawText("Placeholder data + basic shell (list/search/filters/detail)", .{ left, subtitle_y }, .{ .color = t.colors.text_secondary });
+    dc.drawText("Placeholder data + basic shell (list/search/filters/detail/actions)", .{ left, subtitle_y }, .{ .color = t.colors.text_secondary });
 
     return t.spacing.md + title_h + t.spacing.xs + dc.lineHeight() + t.spacing.sm;
 }
@@ -189,6 +208,7 @@ const Counts = struct {
 fn computeCounts(items: []const Item, query: []const u8) Counts {
     var c: Counts = .{ .total = 0, .unread = 0, .read = 0 };
     for (items, 0..) |it, idx| {
+        if (isHidden(idx)) continue;
         if (!matchesQuery(it, query)) continue;
         c.total += 1;
         switch (effectiveStatus(idx, it.status)) {
@@ -342,7 +362,7 @@ fn drawList(
     }
 
     const card_gap = t.spacing.sm;
-    const card_h = dc.lineHeight() * 2.0 + t.spacing.sm * 2.0;
+    const card_h = dc.lineHeight() * 3.0 + t.spacing.sm * 2.0;
     const total_h = (@as(f32, @floatFromInt(visible_indices.len)) * (card_h + card_gap)) - card_gap;
 
     list_scroll_max = @max(0.0, total_h - rect.size()[1]);
@@ -369,7 +389,13 @@ fn drawList(
     if (list_scroll_y < 0.0) list_scroll_y = 0.0;
 }
 
-fn drawDetail(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, rect: draw_context.Rect, items: []const Item) void {
+fn drawDetail(
+    allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    items: []const Item,
+) void {
     const t = theme.activeTheme();
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -377,7 +403,7 @@ fn drawDetail(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, rect:
     const pad = t.spacing.md;
     var cursor_y = rect.min[1] + pad;
 
-    if (items.len == 0 or selected_index >= items.len) {
+    if (items.len == 0 or selected_index >= items.len or isHidden(selected_index)) {
         dc.drawText("Select an item", .{ rect.min[0] + pad, cursor_y }, .{ .color = t.colors.text_secondary });
         return;
     }
@@ -400,7 +426,69 @@ fn drawDetail(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, rect:
     dc.drawText(meta, .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
-    dc.drawText("Tip: Press Enter (or a) to toggle read/unread (mock only).", .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
+    const btn_h = dc.lineHeight() + t.spacing.xs * 2.0;
+    const btn_gap = t.spacing.xs;
+    const mark_label = if (st == .unread) "Mark read" else "Mark unread";
+    const archive_label = "Archive";
+    const delete_label = "Delete";
+
+    const max_row_w = rect.max[0] - (rect.min[0] + pad);
+    const mark_w = dc.measureText(mark_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const archive_w = dc.measureText(archive_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const delete_w = dc.measureText(delete_label, 0.0)[0] + t.spacing.sm * 2.0;
+
+    var row_y = cursor_y;
+    var x = rect.min[0] + pad;
+
+    const single_row = (mark_w + btn_gap + archive_w + btn_gap + delete_w) <= max_row_w;
+
+    const mark_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ mark_w, btn_h });
+    if (widgets.button.draw(dc, mark_rect, mark_label, queue, .{ .variant = .secondary })) {
+        toggleMockRead(selected_index, it.status);
+    }
+
+    if (single_row) {
+        x += mark_w + btn_gap;
+        const archive_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ archive_w, btn_h });
+        if (widgets.button.draw(dc, archive_rect, archive_label, queue, .{ .variant = .ghost })) {
+            hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
+        }
+
+        x += archive_w + btn_gap;
+        const delete_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ delete_w, btn_h });
+        if (widgets.button.draw(dc, delete_rect, delete_label, queue, .{ .variant = .ghost })) {
+            hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
+        }
+
+        cursor_y += btn_h + t.spacing.sm;
+    } else {
+        cursor_y += btn_h + btn_gap;
+        row_y = cursor_y;
+        x = rect.min[0] + pad;
+
+        const archive_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ archive_w, btn_h });
+        if (widgets.button.draw(dc, archive_rect, archive_label, queue, .{ .variant = .ghost })) {
+            hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
+        }
+
+        x += archive_w + btn_gap;
+        const delete_rect = draw_context.Rect.fromMinSize(.{ x, row_y }, .{ delete_w, btn_h });
+        if (widgets.button.draw(dc, delete_rect, delete_label, queue, .{ .variant = .ghost })) {
+            hideMockItem(selected_index);
+            selected_index = items.len;
+            return;
+        }
+
+        cursor_y += btn_h + t.spacing.sm;
+    }
+
+    dc.drawText("Tip: Enter/a toggles read/unread. Archive/Delete are mock (hide from list).", .{ rect.min[0] + pad, cursor_y }, .{ .color = meta_color });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
     const body_w = rect.size()[0] - pad * 2.0;
@@ -445,6 +533,11 @@ fn drawItemCard(
     dc.drawText(it.title, .{ x, y }, .{ .color = title_color });
     y += dc.lineHeight() + t.spacing.xs;
 
+    var preview_buf: [96]u8 = undefined;
+    const preview = previewSnippet(it.body, &preview_buf);
+    dc.drawText(preview, .{ x, y }, .{ .color = t.colors.text_secondary });
+    y += dc.lineHeight() + t.spacing.xs;
+
     var meta_buf: [96]u8 = undefined;
     var time_buf: [32]u8 = undefined;
     const when = formatRelativeTime(std.time.milliTimestamp(), it.created_at_ms, &time_buf);
@@ -472,6 +565,31 @@ fn toggleMockRead(index: usize, base: Status) void {
         .unread => .read,
         .read => .unread,
     };
+}
+
+fn isHidden(index: usize) bool {
+    if (index < mock_hidden_overrides.len) return mock_hidden_overrides[index];
+    return false;
+}
+
+fn hideMockItem(index: usize) void {
+    if (index >= mock_hidden_overrides.len) return;
+    mock_hidden_overrides[index] = true;
+    // Keep status override coherent if we're "deleting" the mock item.
+    if (index < mock_status_overrides.len) mock_status_overrides[index] = null;
+}
+
+fn resetMockState() void {
+    active_filter = .all;
+    list_scroll_y = 0.0;
+    list_scroll_max = 0.0;
+    selected_index = 0;
+    mock_status_overrides = [_]?Status{null} ** mock_status_overrides.len;
+    mock_hidden_overrides = [_]bool{false} ** mock_hidden_overrides.len;
+
+    if (search_editor) |*ed| {
+        ed.clear();
+    }
 }
 
 fn ensureEditor(slot: *?widgets.text_editor.TextEditor, allocator: std.mem.Allocator) *widgets.text_editor.TextEditor {
@@ -683,12 +801,41 @@ fn handleWheelScroll(
     if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
 }
 
+fn previewSnippet(text: []const u8, buf: []u8) []const u8 {
+    if (text.len == 0 or buf.len == 0) return "";
+
+    const first_line_end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+    const line = std.mem.trim(u8, text[0..first_line_end], " \t\r");
+
+    if (line.len <= buf.len) {
+        std.mem.copyForwards(u8, buf[0..line.len], line);
+        return buf[0..line.len];
+    }
+
+    if (buf.len <= 3) {
+        std.mem.copyForwards(u8, buf, line[0..buf.len]);
+        return buf;
+    }
+
+    const head_len: usize = buf.len - 3;
+    std.mem.copyForwards(u8, buf[0..head_len], line[0..head_len]);
+    buf[head_len] = '.';
+    buf[head_len + 1] = '.';
+    buf[head_len + 2] = '.';
+    return buf[0 .. head_len + 3];
+}
+
 fn mockItems() []const Item {
     const now = std.time.milliTimestamp();
     return &[_]Item{
         .{ .id = "evt_001", .title = "Gateway restarted", .body = "The OpenClaw gateway restarted successfully.\n\nThis is placeholder content for the Inbox MVP shell.", .severity = .info, .status = .read, .created_at_ms = now - 1000 * 60 * 25 },
         .{ .id = "evt_002", .title = "Node offline: living-room", .body = "Last heartbeat exceeded threshold.\n\nIn the real inbox, this would include actions (e.g. retry/wake/ping).", .severity = .warning, .status = .unread, .created_at_ms = now - 1000 * 60 * 5 },
         .{ .id = "evt_003", .title = "Supermemory 401 (auth)", .body = "Plugin returned HTTP 401 for request /search.\n\nIn production, this should dedupe and surface remediation hints.", .severity = .danger, .status = .unread, .created_at_ms = now - 1000 * 60 * 2 },
+        .{ .id = "evt_004", .title = "New release available", .body = "A newer ZiggyStarClaw build is available for download.\n\nIn a real inbox, this would link to release notes.", .severity = .info, .status = .unread, .created_at_ms = now - 1000 * 60 * 52 },
+        .{ .id = "evt_005", .title = "Disk space low: /safe", .body = "Storage usage is above 90%.\n\nSuggested next step: prune caches / old artifacts (mock).", .severity = .warning, .status = .unread, .created_at_ms = now - 1000 * 60 * 80 },
+        .{ .id = "evt_006", .title = "Agent crash: worker-7", .body = "An agent session terminated unexpectedly.\n\nIn production, this should include a crash log attachment.", .severity = .danger, .status = .read, .created_at_ms = now - 1000 * 60 * 60 * 3 },
+        .{ .id = "evt_007", .title = "Node battery low: kitchen-tablet", .body = "Battery reported at 12%.\n\nIn a real inbox, this could offer a 'snooze' action.", .severity = .warning, .status = .read, .created_at_ms = now - 1000 * 60 * 12 },
+        .{ .id = "evt_008", .title = "Config saved", .body = "Configuration changes were written successfully.", .severity = .info, .status = .read, .created_at_ms = now - 1000 * 60 * 60 * 26 },
     };
 }
 
