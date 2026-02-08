@@ -45,6 +45,12 @@ pub const NavState = struct {
     last_axis_ms: i64 = 0,
     axis_held_dir: ?MoveDir = null,
 
+    // Trigger-based fast scroll (mapped to synthetic mouse wheel events).
+    left_trigger: i16 = 0,
+    right_trigger: i16 = 0,
+    trigger_scroll_accum: f32 = 0.0,
+    last_frame_ms: i64 = 0,
+
     // Items are collected during drawing (curr) and used next frame (prev).
     prev_items: std.ArrayList(NavItem) = .empty,
     curr_items: std.ArrayList(NavItem) = .empty,
@@ -63,6 +69,14 @@ pub const NavState = struct {
     }
 
     pub fn beginFrame(self: *NavState, allocator: std.mem.Allocator, viewport: draw_context.Rect, queue: *input_state.InputQueue) void {
+        const now_ms = std.time.milliTimestamp();
+        const dt_s: f32 = blk: {
+            if (self.last_frame_ms == 0) break :blk 1.0 / 60.0;
+            const raw: f32 = @as(f32, @floatFromInt(now_ms - self.last_frame_ms)) / 1000.0;
+            break :blk std.math.clamp(raw, 1.0 / 240.0, 0.2);
+        };
+        self.last_frame_ms = now_ms;
+
         // Default: keep the previous state, but always enable in controller-first profiles.
         const p = theme_runtime.getProfile();
         if (p.modality == .controller) self.active = true;
@@ -114,6 +128,39 @@ pub const NavState = struct {
             if (self.actions.activate) {
                 if (self.focused_id) |id| {
                     queue.push(allocator, .{ .nav_activate = id });
+                }
+            }
+
+            // Fast scroll using triggers (LT/RT). This is implemented as synthetic mouse wheel
+            // events so existing scroll handlers (hover-only) work with the nav cursor.
+            //
+            // We only enable this in controller-first profiles to avoid surprising desktop users.
+            if (p.modality == .controller and self.prev_items.items.len != 0 and self.focused_id != null) {
+                const dead: i16 = 6000;
+                const lt: i16 = if (self.left_trigger > dead) self.left_trigger else 0;
+                const rt: i16 = if (self.right_trigger > dead) self.right_trigger else 0;
+                var dir: i32 = 0;
+                if (rt != 0 and lt == 0) dir = 1; // page/scroll down
+                if (lt != 0 and rt == 0) dir = -1; // page/scroll up
+
+                if (dir != 0) {
+                    const mag: f32 = if (dir > 0) @as(f32, @floatFromInt(rt)) else @as(f32, @floatFromInt(lt));
+                    const maxv: f32 = 32767.0;
+                    const intensity = std.math.clamp((mag - @as(f32, @floatFromInt(dead))) / (maxv - @as(f32, @floatFromInt(dead))), 0.0, 1.0);
+                    const notches_per_s: f32 = 26.0 + 22.0 * intensity; // ~26..48 wheel notches/sec
+                    self.trigger_scroll_accum += @as(f32, @floatFromInt(dir)) * notches_per_s * dt_s;
+
+                    // Convert accumulated notches into wheel events.
+                    while (self.trigger_scroll_accum >= 1.0) : (self.trigger_scroll_accum -= 1.0) {
+                        // Down scroll increases scroll_y, so wheel delta must be negative.
+                        queue.push(allocator, .{ .mouse_wheel = .{ .delta = .{ 0.0, -1.0 } } });
+                    }
+                    while (self.trigger_scroll_accum <= -1.0) : (self.trigger_scroll_accum += 1.0) {
+                        queue.push(allocator, .{ .mouse_wheel = .{ .delta = .{ 0.0, 1.0 } } });
+                    }
+                } else {
+                    // Reset accumulator so swapping directions doesn't cause a jump.
+                    self.trigger_scroll_accum = 0.0;
                 }
             }
         }
@@ -185,8 +232,11 @@ pub const NavState = struct {
                 },
                 .gamepad_axis => |ga| {
                     // Light stick support: if the axis is held, emit repeat moves.
-                    if (ga.axis == .left_x or ga.axis == .left_y) {
-                        self.handleLeftStick(ga, now_ms);
+                    switch (ga.axis) {
+                        .left_x, .left_y => self.handleLeftStick(ga, now_ms),
+                        .left_trigger => self.left_trigger = ga.value,
+                        .right_trigger => self.right_trigger = ga.value,
+                        else => {},
                     }
                 },
                 else => {},

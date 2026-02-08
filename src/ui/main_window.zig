@@ -882,6 +882,8 @@ fn drawControllerHints(dc: *draw_context.DrawContext, rect: draw_context.Rect, s
         cursor_x += gap;
     }
     _ = drawHintPill(dc, .{ cursor_x, y }, pill_h, "LB/RB Tabs");
+    cursor_x += gap;
+    _ = drawHintPill(dc, .{ cursor_x, y }, pill_h, "LT/RT Scroll");
 }
 
 fn drawHintPill(dc: *draw_context.DrawContext, pos: [2]f32, h: f32, label: []const u8) f32 {
