@@ -321,8 +321,8 @@ fn drawAppearanceCard(
 
     var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t);
-    // Helper text + config path + status line.
-    height += (line_height + t.spacing.xs) * 3.0;
+    // Helper text + config path + status + pack details.
+    height += (line_height + t.spacing.xs) * 4.0;
     height += button_height + t.spacing.sm; // pack buttons row
     height += button_height + t.spacing.sm; // recent row
     height += button_height + t.spacing.sm; // pack picker row
@@ -400,6 +400,37 @@ fn drawAppearanceCard(
             .{ badge_rect.max[0] + t.spacing.sm, cursor_y + t.spacing.xs * 0.5 },
             .{ .color = t.colors.text_secondary },
         );
+    }
+    cursor_y += line_height + t.spacing.xs;
+
+    // Pack metadata (from manifest.json of the currently loaded pack).
+    {
+        const meta = theme_runtime.getPackMeta();
+        if (meta) |m| {
+            var buf: [512]u8 = undefined;
+            const name = if (m.name.len > 0) m.name else m.id;
+            const author = m.author;
+            const variant = if (m.defaults_variant.len > 0) m.defaults_variant else "?";
+            const prof = if (m.defaults_profile.len > 0) m.defaults_profile else "?";
+            const cap_multi: []const u8 = if (m.requires_multi_window) " multi-window" else "";
+            const cap_shaders: []const u8 = if (m.requires_custom_shaders) " shaders" else "";
+            const caps_sep: []const u8 = if (cap_multi.len > 0 or cap_shaders.len > 0) " | caps:" else "";
+            const by: []const u8 = if (author.len > 0) " by " else "";
+            const msg = std.fmt.bufPrint(&buf, "Pack: {s} (id: {s}){s}{s} | defaults: {s}/{s}{s}{s}{s}", .{
+                name,
+                m.id,
+                by,
+                author,
+                variant,
+                prof,
+                caps_sep,
+                cap_multi,
+                cap_shaders,
+            }) catch "Pack: (metadata unavailable)";
+            dc.drawText(msg, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        } else {
+            dc.drawText("Pack: (built-in)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        }
     }
     cursor_y += line_height + t.spacing.xs;
 

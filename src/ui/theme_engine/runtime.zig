@@ -55,6 +55,77 @@ var pack_status_kind: PackStatusKind = .none;
 var pack_status_buf: [512]u8 = undefined;
 var pack_status_len: usize = 0;
 
+pub const PackMeta = struct {
+    id: []const u8,
+    name: []const u8,
+    author: []const u8,
+    license: []const u8,
+    defaults_variant: []const u8,
+    defaults_profile: []const u8,
+    requires_multi_window: bool,
+    requires_custom_shaders: bool,
+};
+
+var pack_meta_set: bool = false;
+var pack_meta_id_buf: [64]u8 = undefined;
+var pack_meta_id_len: usize = 0;
+var pack_meta_name_buf: [128]u8 = undefined;
+var pack_meta_name_len: usize = 0;
+var pack_meta_author_buf: [96]u8 = undefined;
+var pack_meta_author_len: usize = 0;
+var pack_meta_license_buf: [64]u8 = undefined;
+var pack_meta_license_len: usize = 0;
+var pack_meta_variant_buf: [16]u8 = undefined;
+var pack_meta_variant_len: usize = 0;
+var pack_meta_profile_buf: [16]u8 = undefined;
+var pack_meta_profile_len: usize = 0;
+var pack_meta_requires_multi_window: bool = false;
+var pack_meta_requires_custom_shaders: bool = false;
+
+fn copyTrunc(dst: []u8, src: []const u8) usize {
+    const n = @min(dst.len, src.len);
+    if (n > 0) @memcpy(dst[0..n], src[0..n]);
+    return n;
+}
+
+pub fn clearPackMeta() void {
+    pack_meta_set = false;
+    pack_meta_id_len = 0;
+    pack_meta_name_len = 0;
+    pack_meta_author_len = 0;
+    pack_meta_license_len = 0;
+    pack_meta_variant_len = 0;
+    pack_meta_profile_len = 0;
+    pack_meta_requires_multi_window = false;
+    pack_meta_requires_custom_shaders = false;
+}
+
+pub fn setPackMeta(m: schema.Manifest) void {
+    pack_meta_set = true;
+    pack_meta_id_len = copyTrunc(pack_meta_id_buf[0..], m.id);
+    pack_meta_name_len = copyTrunc(pack_meta_name_buf[0..], m.name);
+    pack_meta_author_len = copyTrunc(pack_meta_author_buf[0..], m.author);
+    pack_meta_license_len = copyTrunc(pack_meta_license_buf[0..], m.license);
+    pack_meta_variant_len = copyTrunc(pack_meta_variant_buf[0..], m.defaults.variant);
+    pack_meta_profile_len = copyTrunc(pack_meta_profile_buf[0..], m.defaults.profile);
+    pack_meta_requires_multi_window = m.capabilities.requires_multi_window;
+    pack_meta_requires_custom_shaders = m.capabilities.requires_custom_shaders;
+}
+
+pub fn getPackMeta() ?PackMeta {
+    if (!pack_meta_set) return null;
+    return .{
+        .id = pack_meta_id_buf[0..pack_meta_id_len],
+        .name = pack_meta_name_buf[0..pack_meta_name_len],
+        .author = pack_meta_author_buf[0..pack_meta_author_len],
+        .license = pack_meta_license_buf[0..pack_meta_license_len],
+        .defaults_variant = pack_meta_variant_buf[0..pack_meta_variant_len],
+        .defaults_profile = pack_meta_profile_buf[0..pack_meta_profile_len],
+        .requires_multi_window = pack_meta_requires_multi_window,
+        .requires_custom_shaders = pack_meta_requires_custom_shaders,
+    };
+}
+
 pub fn setPackStatus(kind: PackStatusKind, msg: []const u8) void {
     pack_status_kind = kind;
     const n = @min(msg.len, pack_status_buf.len);

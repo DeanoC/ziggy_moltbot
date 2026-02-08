@@ -184,6 +184,7 @@ pub const ThemeEngine = struct {
         runtime.clearWorkspaceLayouts();
         runtime.setRenderDefaults(.{});
         runtime.clearPackDefaults();
+        runtime.clearPackMeta();
         runtime.setPackStatus(.ok, "Theme pack disabled");
     }
 
@@ -310,6 +311,7 @@ pub const ThemeEngine = struct {
         // Pack-wide defaults are used as runtime fallbacks when the user config doesn't
         // explicitly override mode/profile.
         runtime.setPackDefaults(pack.manifest.defaults.variant, pack.manifest.defaults.profile);
+        runtime.setPackMeta(pack.manifest);
 
         // Pack-wide render defaults (used for "pixel" style packs).
         const defaults_sampling = if (std.ascii.eqlIgnoreCase(pack.manifest.defaults.image_sampling, "nearest"))
@@ -1140,6 +1142,7 @@ fn applyWebJob(job: *WebPackJob) void {
 
     if (job.manifest) |m| {
         runtime.setPackDefaults(m.defaults.variant, m.defaults.profile);
+        runtime.setPackMeta(m);
         const defaults_sampling = if (std.ascii.eqlIgnoreCase(m.defaults.image_sampling, "nearest"))
             ui_commands.ImageSampling.nearest
         else
@@ -1150,6 +1153,7 @@ fn applyWebJob(job: *WebPackJob) void {
         });
     } else {
         runtime.clearPackDefaults();
+        runtime.clearPackMeta();
         runtime.setRenderDefaults(.{});
     }
 
