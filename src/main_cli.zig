@@ -637,12 +637,9 @@ pub fn main() !void {
                     allocator,
                     "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
                         "Set env=sh.Environment(\"Process\")\r\n" ++
-                        "Set fso=CreateObject(\"Scripting.FileSystemObject\")\r\n" ++
                         "Sub LogLine(s)\r\n" ++
-                        "  On Error Resume Next\r\n" ++
-                        "  Set lf=fso.OpenTextFile(\"{s}\", 8, True)\r\n" ++
-                        "  lf.WriteLine Now & \" [wrapper] \" & s\r\n" ++
-                        "  lf.Close\r\n" ++
+                        "  ' Avoid FileSystemObject: some environments/policies break it under Task Scheduler.\r\n" ++
+                        "  sh.Run \"cmd /c echo \" & Now & \" [wrapper] \" & s & \" >> \"\"\"{s}\"\"\"\"\", 0, True\r\n" ++
                         "End Sub\r\n" ++
                         "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
                         "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
