@@ -15,6 +15,7 @@ const cursor = @import("../input/cursor.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
+const nav_router = @import("../input/nav_router.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -626,6 +627,15 @@ fn drawAttachmentPreviewCard(
     }
 
     const preview_value = preview.?;
+
+    // Scope interactive actions to the selected attachment so repeating labels like "Open URL"
+    // remain distinct as the user changes selection.
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(preview_value.url);
+    hasher.update(std.mem.asBytes(&preview_value.timestamp));
+    nav_router.pushScope(hasher.final());
+    defer nav_router.popScope();
+
     const meta_lines: usize = 5;
     const meta_height = @as(f32, @floatFromInt(meta_lines)) * line_height + t.spacing.xs * @as(f32, @floatFromInt(meta_lines - 1));
     const preview_box_height: f32 = if (isImageAttachment(preview_value)) 220.0 else 180.0;
