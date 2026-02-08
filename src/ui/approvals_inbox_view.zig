@@ -35,6 +35,9 @@ var active_filter: Filter = .all;
 var list_scroll_y: f32 = 0.0;
 var list_scroll_max: f32 = 0.0;
 
+var selected_approval_hash: u64 = 0;
+var has_selected_approval: bool = false;
+
 const max_payload_scrolls = 64;
 var payload_scroll_ids: [max_payload_scrolls]u64 = [_]u64{0} ** max_payload_scrolls;
 var payload_scroll_vals: [max_payload_scrolls]f32 = [_]f32{0.0} ** max_payload_scrolls;
@@ -70,16 +73,37 @@ pub fn draw(
 
     const counts = Counts{
         .pending = ctx.approvals.items.len,
-        .resolved = 0,
+        .resolved = ctx.approvals_resolved.items.len,
     };
     const filters_height = drawFilters(&dc, panel_rect, content_top, queue, counts);
 
     const list_top = content_top + filters_height + t.spacing.sm;
-    const list_rect = draw_context.Rect.fromMinSize(
-        .{ panel_rect.min[0], list_top },
-        .{ panel_rect.size()[0], panel_rect.max[1] - list_top },
+    const padding = t.spacing.md;
+    const host_rect = draw_context.Rect.fromMinSize(
+        .{ panel_rect.min[0] + padding, list_top },
+        .{ panel_rect.size()[0] - padding * 2.0, panel_rect.max[1] - padding - list_top },
     );
-    drawApprovalsList(allocator, ctx, &dc, list_rect, queue, &action, counts);
+    if (host_rect.size()[0] <= 0.0 or host_rect.size()[1] <= 0.0) return action;
+
+    const gap = t.spacing.md;
+    const min_list_w: f32 = 240.0;
+    const max_list_w: f32 = 420.0;
+    const min_detail_w: f32 = 260.0;
+    const list_w = std.math.clamp(host_rect.size()[0] * 0.38, min_list_w, @min(max_list_w, host_rect.size()[0] - min_detail_w - gap));
+    const detail_w = @max(0.0, host_rect.size()[0] - list_w - gap);
+
+    const list_rect = draw_context.Rect.fromMinSize(host_rect.min, .{ list_w, host_rect.size()[1] });
+    const detail_rect = draw_context.Rect.fromMinSize(.{ list_rect.max[0] + gap, host_rect.min[1] }, .{ detail_w, host_rect.size()[1] });
+
+    const selection = drawApprovalsListPane(allocator, ctx, &dc, list_rect, queue, counts);
+    if (selection) |hash| {
+        selected_approval_hash = hash;
+        has_selected_approval = true;
+    }
+
+    if (detail_w > 1.0) {
+        drawApprovalDetailPane(allocator, ctx, &dc, detail_rect, queue, &action, counts);
+    }
 
     return action;
 }
@@ -169,7 +193,139 @@ fn drawFilters(
     return t.spacing.sm + pill_height;
 }
 
-fn drawApprovalsList(
+fn drawApprovalsListPane(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    counts: Counts,
+) ?u64 {
+    _ = allocator;
+    const t = theme.activeTheme();
+    if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return null;
+
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    const padding = t.spacing.sm;
+    const inner = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, rect.min[1] + padding },
+        .{ rect.size()[0] - padding * 2.0, rect.size()[1] - padding * 2.0 },
+    );
+    if (inner.size()[0] <= 0.0 or inner.size()[1] <= 0.0) return null;
+
+    const list_len: usize = switch (active_filter) {
+        .all => counts.pending + counts.resolved,
+        .pending => counts.pending,
+        .resolved => counts.resolved,
+    };
+
+    if (list_len == 0) {
+        const msg = switch (active_filter) {
+            .resolved => "No resolved approvals yet.",
+            else => "No pending approvals.",
+        };
+        dc.drawText(msg, inner.min, .{ .color = t.colors.text_secondary });
+        list_scroll_y = 0.0;
+        list_scroll_max = 0.0;
+        return null;
+    }
+
+    const row_height = dc.lineHeight() * 2.0 + t.spacing.xs * 3.0;
+    const row_gap = t.spacing.xs;
+    const total_height = @as(f32, @floatFromInt(list_len)) * (row_height + row_gap) - row_gap;
+
+    list_scroll_max = @max(0.0, total_height - inner.size()[1]);
+    handleWheelScroll(queue, inner, &list_scroll_y, list_scroll_max, 36.0);
+
+    dc.pushClip(inner);
+    var y = inner.min[1] - list_scroll_y;
+    var clicked: ?u64 = null;
+
+    if (active_filter == .all or active_filter == .pending) {
+        for (ctx.approvals.items) |approval| {
+            const row_rect = draw_context.Rect.fromMinSize(.{ inner.min[0], y }, .{ inner.size()[0], row_height });
+            if (row_rect.max[1] >= inner.min[1] and row_rect.min[1] <= inner.max[1]) {
+                const hash = std.hash.Wyhash.hash(0, approval.id);
+                const selected = has_selected_approval and selected_approval_hash == hash;
+                if (drawApprovalRow(dc, row_rect, queue, approval, selected, true)) {
+                    clicked = hash;
+                }
+            }
+            y += row_height + row_gap;
+        }
+    }
+
+    if (active_filter == .all or active_filter == .resolved) {
+        for (ctx.approvals_resolved.items) |approval| {
+            const row_rect = draw_context.Rect.fromMinSize(.{ inner.min[0], y }, .{ inner.size()[0], row_height });
+            if (row_rect.max[1] >= inner.min[1] and row_rect.min[1] <= inner.max[1]) {
+                const hash = std.hash.Wyhash.hash(0, approval.id);
+                const selected = has_selected_approval and selected_approval_hash == hash;
+                if (drawApprovalRow(dc, row_rect, queue, approval, selected, false)) {
+                    clicked = hash;
+                }
+            }
+            y += row_height + row_gap;
+        }
+    }
+
+    dc.popClip();
+    return clicked;
+}
+
+const SelectedApproval = struct {
+    approval: *const types.ExecApproval,
+    is_pending: bool,
+};
+
+fn findSelectedApproval(ctx: *state.ClientContext, hash: u64) ?SelectedApproval {
+    for (ctx.approvals.items) |*approval| {
+        if (std.hash.Wyhash.hash(0, approval.id) == hash) {
+            return .{ .approval = approval, .is_pending = true };
+        }
+    }
+    for (ctx.approvals_resolved.items) |*approval| {
+        if (std.hash.Wyhash.hash(0, approval.id) == hash) {
+            return .{ .approval = approval, .is_pending = false };
+        }
+    }
+    return null;
+}
+
+fn resolveSelectedApproval(ctx: *state.ClientContext, counts: Counts) ?SelectedApproval {
+    if (has_selected_approval) {
+        if (findSelectedApproval(ctx, selected_approval_hash)) |found| {
+            if (active_filter == .pending and !found.is_pending) {
+                // fallthrough
+            } else if (active_filter == .resolved and found.is_pending) {
+                // fallthrough
+            } else {
+                return found;
+            }
+        }
+    }
+
+    const pick_pending = active_filter == .pending or active_filter == .all;
+    const pick_resolved = active_filter == .resolved or active_filter == .all;
+
+    if (pick_pending and counts.pending > 0) {
+        const first = &ctx.approvals.items[0];
+        selected_approval_hash = std.hash.Wyhash.hash(0, first.id);
+        has_selected_approval = true;
+        return .{ .approval = first, .is_pending = true };
+    }
+    if (pick_resolved and counts.resolved > 0) {
+        const first = &ctx.approvals_resolved.items[0];
+        selected_approval_hash = std.hash.Wyhash.hash(0, first.id);
+        has_selected_approval = true;
+        return .{ .approval = first, .is_pending = false };
+    }
+
+    return null;
+}
+
+fn drawApprovalDetailPane(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
     dc: *draw_context.DrawContext,
@@ -181,54 +337,35 @@ fn drawApprovalsList(
     const t = theme.activeTheme();
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
-    if (active_filter == .resolved) {
-        dc.drawText("No resolved approvals yet.", rect.min, .{ .color = t.colors.text_secondary });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+
+    const padding = t.spacing.md;
+    const inner = draw_context.Rect.fromMinSize(
+        .{ rect.min[0] + padding, rect.min[1] + padding },
+        .{ rect.size()[0] - padding * 2.0, rect.size()[1] - padding * 2.0 },
+    );
+    if (inner.size()[0] <= 0.0 or inner.size()[1] <= 0.0) return;
+
+    const selected = resolveSelectedApproval(ctx, counts) orelse {
+        dc.drawText("Select an approval.", inner.min, .{ .color = t.colors.text_secondary });
         return;
-    }
+    };
 
-    if (counts.pending == 0) {
-        dc.drawText("No pending approvals.", rect.min, .{ .color = t.colors.text_secondary });
-        return;
-    }
-
-    const card_gap = t.spacing.md;
-    var total_height: f32 = 0.0;
-    for (ctx.approvals.items) |approval| {
-        total_height += approvalCardHeight(allocator, dc, rect.size()[0], approval.summary, approval.payload_json, approval.can_resolve) + card_gap;
-    }
-
-    list_scroll_max = @max(0.0, total_height - rect.size()[1]);
-    handleWheelScroll(queue, rect, &list_scroll_y, list_scroll_max, 36.0);
-
-    dc.pushClip(rect);
-    var cursor_y = rect.min[1] - list_scroll_y;
-    for (ctx.approvals.items, 0..) |approval, idx| {
-        const height = approvalCardHeight(allocator, dc, rect.size()[0], approval.summary, approval.payload_json, approval.can_resolve);
-        const card_rect = draw_context.Rect.fromMinSize(
-            .{ rect.min[0], cursor_y },
-            .{ rect.size()[0], height },
-        );
-        if (card_rect.max[1] >= rect.min[1] and card_rect.min[1] <= rect.max[1]) {
-            const decision = drawApprovalCard(allocator, dc, card_rect, queue, approval);
-            if (decision != .none) {
-                const id_copy = allocator.dupe(u8, approval.id) catch null;
-                if (id_copy) |value| {
-                    action.resolve_approval = operator_view.ExecApprovalResolveAction{
-                        .request_id = value,
-                        .decision = switch (decision) {
-                            .allow_once => .allow_once,
-                            .allow_always => .allow_always,
-                            .deny => .deny,
-                            .none => unreachable,
-                        },
-                    };
-                }
-            }
+    const decision = drawApprovalCard(allocator, dc, inner, queue, ctx, selected.approval.*, selected.is_pending);
+    if (decision != .none) {
+        const id_copy = allocator.dupe(u8, selected.approval.id) catch null;
+        if (id_copy) |value| {
+            action.resolve_approval = operator_view.ExecApprovalResolveAction{
+                .request_id = value,
+                .decision = switch (decision) {
+                    .allow_once => .allow_once,
+                    .allow_always => .allow_always,
+                    .deny => .deny,
+                    .none => unreachable,
+                },
+            };
         }
-        cursor_y += height + card_gap;
-        _ = idx;
     }
-    dc.popClip();
 }
 
 const ApprovalDecision = enum {
@@ -238,51 +375,190 @@ const ApprovalDecision = enum {
     deny,
 };
 
+fn drawApprovalRow(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    approval: types.ExecApproval,
+    selected: bool,
+    is_pending: bool,
+) bool {
+    const t = theme.activeTheme();
+    const hovered = rect.contains(queue.state.mouse_pos);
+
+    const bg = if (selected)
+        colors.withAlpha(t.colors.primary, 0.12)
+    else if (hovered)
+        colors.withAlpha(t.colors.primary, 0.06)
+    else
+        colors.withAlpha(t.colors.surface, 0.0);
+
+    if (selected or hovered) {
+        dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = bg });
+    }
+
+    const padding = t.spacing.xs;
+    const text_x = rect.min[0] + padding;
+    var cursor_y = rect.min[1] + padding;
+
+    const title = approval.summary orelse approval.id;
+    dc.drawText(title, .{ text_x, cursor_y }, .{ .color = t.colors.text_primary });
+    cursor_y += dc.lineHeight();
+
+    var meta_buf: [256]u8 = undefined;
+    const who = approval.requested_by orelse "unknown";
+    const ts = if (is_pending) approval.requested_at_ms else approval.resolved_at_ms orelse approval.requested_at_ms;
+    const rel = if (ts) |val| blk: {
+        var time_buf: [32]u8 = undefined;
+        break :blk formatRelativeTime(std.time.milliTimestamp(), val, &time_buf);
+    } else "";
+
+    const meta = if (!is_pending) blk: {
+        const decision = if (approval.decision) |d| decisionLabel(d) else "resolved";
+        break :blk std.fmt.bufPrint(&meta_buf, "{s} · {s}", .{ decision, rel }) catch decision;
+    } else blk: {
+        break :blk std.fmt.bufPrint(&meta_buf, "{s} · {s}", .{ who, rel }) catch who;
+    };
+    dc.drawText(meta, .{ text_x, cursor_y }, .{ .color = t.colors.text_secondary });
+
+    const badge_label = if (is_pending) "pending" else if (approval.decision) |d| decisionBadgeLabel(d) else "resolved";
+    const badge_variant: BadgeVariant = if (is_pending) .warning else if (approval.decision) |d| decisionBadgeVariant(d) else .neutral;
+
+    const badge_size = badgeSize(dc, badge_label, t);
+    const badge_rect = draw_context.Rect.fromMinSize(
+        .{ rect.max[0] - badge_size[0] - padding, rect.min[1] + padding },
+        badge_size,
+    );
+    drawBadge(dc, badge_rect, badge_label, badge_variant);
+
+    var clicked = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_up => |mu| {
+                if (mu.button == .left and rect.contains(mu.pos)) {
+                    clicked = true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    return clicked;
+}
+
 fn drawApprovalCard(
     allocator: std.mem.Allocator,
     dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
+    ctx: *state.ClientContext,
     approval: types.ExecApproval,
+    is_pending: bool,
 ) ApprovalDecision {
     const t = theme.activeTheme();
     const padding = t.spacing.md;
 
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
+
+    // Header + status badge
     theme.push(.heading);
-    dc.drawText("Approval Needed", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    const title = "Execution Approval";
+    dc.drawText(title, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
+
+    const status_label = if (is_pending)
+        "pending"
+    else if (approval.decision) |d|
+        decisionBadgeLabel(d)
+    else
+        "resolved";
+    const status_variant: BadgeVariant = if (is_pending)
+        .warning
+    else if (approval.decision) |d|
+        decisionBadgeVariant(d)
+    else
+        .neutral;
+
+    const status_size = badgeSize(dc, status_label, t);
+    const status_rect = draw_context.Rect.fromMinSize(
+        .{ rect.max[0] - padding - status_size[0], cursor_y },
+        status_size,
+    );
+    drawBadge(dc, status_rect, status_label, status_variant);
+
     cursor_y += dc.lineHeight();
 
+    // Summary
     if (approval.summary) |summary| {
         cursor_y += t.spacing.xs;
-        _ = drawWrappedText(allocator, dc, summary, .{ rect.min[0] + padding, cursor_y }, rect.size()[0] - padding * 2.0, t.colors.text_primary);
+        _ = drawWrappedText(
+            allocator,
+            dc,
+            summary,
+            .{ rect.min[0] + padding, cursor_y },
+            rect.size()[0] - padding * 2.0,
+            t.colors.text_primary,
+        );
         cursor_y += measureWrappedTextHeight(allocator, dc, summary, rect.size()[0] - padding * 2.0);
     }
 
-    if (approval.requested_at_ms) |ts| {
+    // Audit trail
+    cursor_y += t.spacing.xs;
+    var audit_buf: [256]u8 = undefined;
+    const who = approval.requested_by orelse "unknown";
+    const requested_rel = if (approval.requested_at_ms) |ts| blk: {
         var time_buf: [32]u8 = undefined;
-        const label = formatRelativeTime(std.time.milliTimestamp(), ts, &time_buf);
-        cursor_y += t.spacing.xs;
-        dc.drawText(label, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        break :blk formatRelativeTime(std.time.milliTimestamp(), ts, &time_buf);
+    } else "";
+    const requested_line = std.fmt.bufPrint(&audit_buf, "Requested: {s} · {s}", .{ who, requested_rel }) catch who;
+    dc.drawText(requested_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += dc.lineHeight();
+
+    if (!is_pending) {
+        const decision_label = if (approval.decision) |d| decisionLabel(d) else "resolved";
+        const resolver = approval.resolved_by orelse "unknown";
+        const resolved_rel = if (approval.resolved_at_ms) |ts| blk: {
+            var time_buf: [32]u8 = undefined;
+            break :blk formatRelativeTime(std.time.milliTimestamp(), ts, &time_buf);
+        } else "";
+
+        var resolved_buf: [256]u8 = undefined;
+        const resolved_line = std.fmt.bufPrint(&resolved_buf, "Resolved: {s} by {s} · {s}", .{ decision_label, resolver, resolved_rel }) catch decision_label;
+        dc.drawText(resolved_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += dc.lineHeight();
+    } else if (ctx.pending_approval_target_id != null and std.mem.eql(u8, ctx.pending_approval_target_id.?, approval.id)) {
+        dc.drawText("Resolving...", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         cursor_y += dc.lineHeight();
     }
 
     cursor_y += t.spacing.xs;
-    dc.drawRect(draw_context.Rect.fromMinSize(.{ rect.min[0] + padding, cursor_y }, .{ rect.size()[0] - padding * 2.0, 1.0 }), .{ .fill = t.colors.divider });
+    dc.drawRect(
+        draw_context.Rect.fromMinSize(
+            .{ rect.min[0] + padding, cursor_y },
+            .{ rect.size()[0] - padding * 2.0, 1.0 },
+        ),
+        .{ .fill = t.colors.divider },
+    );
     cursor_y += t.spacing.xs;
 
     const payload_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, cursor_y },
-        .{ rect.size()[0] - padding * 2.0, 120.0 },
+        .{ rect.size()[0] - padding * 2.0, 160.0 },
     );
     drawPayloadBox(allocator, dc, payload_rect, queue, approval.id, approval.payload_json);
     cursor_y = payload_rect.max[1] + t.spacing.sm;
 
+    // Resolve actions
     var decision: ApprovalDecision = .none;
+    if (!is_pending) {
+        dc.drawText("This approval is already resolved.", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        return decision;
+    }
+
     if (approval.can_resolve) {
+        const disabled = ctx.pending_approval_resolve_request_id != null;
         const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
         const approve_w = buttonWidth(dc, "Approve", t);
         const decline_w = buttonWidth(dc, "Decline", t);
@@ -290,19 +566,19 @@ fn drawApprovalCard(
         var cursor_x = rect.min[0] + padding;
 
         const approve_rect = draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ approve_w, button_height });
-        if (widgets.button.draw(dc, approve_rect, "Approve", queue, .{ .variant = .primary })) {
+        if (widgets.button.draw(dc, approve_rect, "Approve", queue, .{ .variant = .primary, .disabled = disabled })) {
             decision = .allow_once;
         }
         cursor_x += approve_w + t.spacing.sm;
 
         const decline_rect = draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ decline_w, button_height });
-        if (widgets.button.draw(dc, decline_rect, "Decline", queue, .{ .variant = .secondary })) {
+        if (widgets.button.draw(dc, decline_rect, "Decline", queue, .{ .variant = .secondary, .disabled = disabled })) {
             decision = .deny;
         }
         cursor_x += decline_w + t.spacing.sm;
 
         const allow_rect = draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ allow_w, button_height });
-        if (widgets.button.draw(dc, allow_rect, "Allow Always", queue, .{ .variant = .secondary })) {
+        if (widgets.button.draw(dc, allow_rect, "Allow Always", queue, .{ .variant = .secondary, .disabled = disabled })) {
             decision = .allow_always;
         }
     } else {
@@ -310,6 +586,25 @@ fn drawApprovalCard(
     }
 
     return decision;
+}
+
+fn decisionLabel(decision: []const u8) []const u8 {
+    if (std.mem.eql(u8, decision, "allow-once")) return "allowed once";
+    if (std.mem.eql(u8, decision, "allow-always")) return "allowed always";
+    if (std.mem.eql(u8, decision, "deny")) return "denied";
+    return decision;
+}
+
+fn decisionBadgeLabel(decision: []const u8) []const u8 {
+    if (std.mem.eql(u8, decision, "allow-once")) return "allowed";
+    if (std.mem.eql(u8, decision, "allow-always")) return "allowed";
+    if (std.mem.eql(u8, decision, "deny")) return "denied";
+    return decision;
+}
+
+fn decisionBadgeVariant(decision: []const u8) BadgeVariant {
+    if (std.mem.eql(u8, decision, "deny")) return .warning;
+    return .success;
 }
 
 fn drawPayloadBox(

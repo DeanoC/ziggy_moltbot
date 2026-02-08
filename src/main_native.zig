@@ -660,14 +660,23 @@ fn sendExecApprovalResolveRequest(
         allocator.free(request.id);
         return;
     };
-    errdefer allocator.free(target_copy);
+    const decision_copy = allocator.dupe(u8, decision) catch {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        return;
+    };
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send exec.approval.resolve: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        allocator.free(decision_copy);
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingApprovalResolveRequest(request.id, target_copy);
+    ctx.setPendingApprovalResolveRequest(request.id, target_copy, decision_copy);
     ctx.clearOperatorNotice();
 }
 

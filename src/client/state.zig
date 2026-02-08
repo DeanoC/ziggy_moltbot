@@ -46,6 +46,7 @@ pub const ClientContext = struct {
     node_describes: std.ArrayList(NodeDescribe),
     node_health: std.ArrayList(NodeHealthEntry),
     approvals: std.ArrayList(types.ExecApproval),
+    approvals_resolved: std.ArrayList(types.ExecApproval),
     users: std.ArrayList(types.User),
     sessions_loading: bool = false,
     nodes_loading: bool = false,
@@ -56,6 +57,7 @@ pub const ClientContext = struct {
     pending_node_describe_request_id: ?[]const u8 = null,
     pending_approval_resolve_request_id: ?[]const u8 = null,
     pending_approval_target_id: ?[]const u8 = null,
+    pending_approval_decision: ?[]const u8 = null,
     last_error: ?[]const u8 = null,
     operator_notice: ?[]const u8 = null,
     node_result: ?[]const u8 = null,
@@ -74,6 +76,7 @@ pub const ClientContext = struct {
             .node_describes = std.ArrayList(NodeDescribe).empty,
             .node_health = std.ArrayList(NodeHealthEntry).empty,
             .approvals = std.ArrayList(types.ExecApproval).empty,
+            .approvals_resolved = std.ArrayList(types.ExecApproval).empty,
             .users = std.ArrayList(types.User).empty,
             .sessions_loading = false,
             .nodes_loading = false,
@@ -84,6 +87,7 @@ pub const ClientContext = struct {
             .pending_node_describe_request_id = null,
             .pending_approval_resolve_request_id = null,
             .pending_approval_target_id = null,
+            .pending_approval_decision = null,
             .last_error = null,
             .operator_notice = null,
             .node_result = null,
@@ -122,6 +126,7 @@ pub const ClientContext = struct {
         self.node_describes.deinit(self.allocator);
         self.node_health.deinit(self.allocator);
         self.approvals.deinit(self.allocator);
+        self.approvals_resolved.deinit(self.allocator);
         self.users.deinit(self.allocator);
     }
 
@@ -358,6 +363,66 @@ pub const ClientContext = struct {
         return false;
     }
 
+    pub fn takeApprovalById(self: *ClientContext, id: []const u8) ?types.ExecApproval {
+        var index: usize = 0;
+        while (index < self.approvals.items.len) : (index += 1) {
+            if (std.mem.eql(u8, self.approvals.items[index].id, id)) {
+                return self.approvals.orderedRemove(index);
+            }
+        }
+        return null;
+    }
+
+    pub fn upsertResolvedApprovalOwned(self: *ClientContext, approval: types.ExecApproval) !void {
+        for (self.approvals_resolved.items, 0..) |*existing, index| {
+            if (std.mem.eql(u8, existing.id, approval.id)) {
+                freeApproval(self.allocator, existing);
+                self.approvals_resolved.items[index] = approval;
+                return;
+            }
+        }
+        try self.approvals_resolved.append(self.allocator, approval);
+    }
+
+    pub fn markApprovalResolvedOwned(
+        self: *ClientContext,
+        id: []const u8,
+        decision: ?[]const u8,
+        resolved_by: ?[]const u8,
+        resolved_at_ms: ?i64,
+    ) !void {
+        const allocator = self.allocator;
+        var resolved = self.takeApprovalById(id) orelse types.ExecApproval{
+            .id = try allocator.dupe(u8, id),
+            .payload_json = try allocator.dupe(u8, "{}"),
+            .summary = null,
+            .requested_at_ms = null,
+            .requested_by = null,
+            .resolved_at_ms = null,
+            .resolved_by = null,
+            .decision = null,
+            .can_resolve = false,
+        };
+        errdefer freeApproval(allocator, &resolved);
+
+        resolved.can_resolve = false;
+        resolved.resolved_at_ms = resolved_at_ms orelse std.time.milliTimestamp();
+
+        if (resolved.resolved_by) |existing| allocator.free(existing);
+        resolved.resolved_by = if (resolved_by) |who|
+            try allocator.dupe(u8, who)
+        else
+            null;
+
+        if (resolved.decision) |existing| allocator.free(existing);
+        resolved.decision = if (decision) |value|
+            try allocator.dupe(u8, value)
+        else
+            null;
+
+        try self.upsertResolvedApprovalOwned(resolved);
+    }
+
     pub fn clearMessages(self: *ClientContext) void {
         self.clearAllSessionStates();
     }
@@ -417,6 +482,11 @@ pub const ClientContext = struct {
             freeApproval(self.allocator, approval);
         }
         self.approvals.clearRetainingCapacity();
+
+        for (self.approvals_resolved.items) |*approval| {
+            freeApproval(self.allocator, approval);
+        }
+        self.approvals_resolved.clearRetainingCapacity();
     }
 
     pub fn setCurrentSession(self: *ClientContext, key: []const u8) !void {
@@ -532,15 +602,24 @@ pub const ClientContext = struct {
         self.pending_node_describe_request_id = null;
     }
 
-    pub fn setPendingApprovalResolveRequest(self: *ClientContext, id: []const u8, target_id: []const u8) void {
+    pub fn setPendingApprovalResolveRequest(
+        self: *ClientContext,
+        id: []const u8,
+        target_id: []const u8,
+        decision: ?[]const u8,
+    ) void {
         if (self.pending_approval_resolve_request_id) |pending| {
             self.allocator.free(pending);
         }
         if (self.pending_approval_target_id) |pending| {
             self.allocator.free(pending);
         }
+        if (self.pending_approval_decision) |pending| {
+            self.allocator.free(pending);
+        }
         self.pending_approval_resolve_request_id = id;
         self.pending_approval_target_id = target_id;
+        self.pending_approval_decision = decision;
     }
 
     pub fn clearPendingApprovalResolveRequest(self: *ClientContext) void {
@@ -550,8 +629,12 @@ pub const ClientContext = struct {
         if (self.pending_approval_target_id) |pending| {
             self.allocator.free(pending);
         }
+        if (self.pending_approval_decision) |pending| {
+            self.allocator.free(pending);
+        }
         self.pending_approval_resolve_request_id = null;
         self.pending_approval_target_id = null;
+        self.pending_approval_decision = null;
     }
 
     pub fn clearPendingRequests(self: *ClientContext) void {
@@ -797,6 +880,15 @@ fn freeApproval(allocator: std.mem.Allocator, approval: *types.ExecApproval) voi
     allocator.free(approval.payload_json);
     if (approval.summary) |summary| {
         allocator.free(summary);
+    }
+    if (approval.requested_by) |who| {
+        allocator.free(who);
+    }
+    if (approval.resolved_by) |who| {
+        allocator.free(who);
+    }
+    if (approval.decision) |decision| {
+        allocator.free(decision);
     }
 }
 

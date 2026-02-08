@@ -6,6 +6,7 @@ const agents_panel = @import("agents_panel.zig");
 const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const operator_view = @import("../operator_view.zig");
+const approvals_inbox_view = @import("../approvals_inbox_view.zig");
 const inbox_panel = @import("inbox_panel.zig");
 const workspace = @import("../workspace.zig");
 const draw_context = @import("../draw_context.zig");
@@ -55,6 +56,7 @@ const Tab = struct {
 const tabs = [_]Tab{
     .{ .label = "Agents", .kind = .Agents },
     .{ .label = "Operator", .kind = .Operator },
+    .{ .label = "Approvals", .kind = .ApprovalsInbox },
     .{ .label = "Inbox", .kind = .Inbox },
     .{ .label = "Settings", .kind = .Settings },
 };
@@ -81,7 +83,7 @@ pub fn draw(
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
 
     const queue = input_router.getQueue();
-    if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .Inbox and panel.active_tab != .Settings) {
+    if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .ApprovalsInbox and panel.active_tab != .Inbox and panel.active_tab != .Settings) {
         panel.active_tab = .Agents;
     }
     const tab_height = drawTabs(&dc, panel_rect, queue, &panel.active_tab);
@@ -115,6 +117,10 @@ pub fn draw(
             action.clear_node_describe = op_action.clear_node_describe;
             action.clear_node_result = op_action.clear_node_result;
             action.clear_operator_notice = op_action.clear_operator_notice;
+        },
+        .ApprovalsInbox => {
+            const approvals_action = approvals_inbox_view.draw(allocator, ctx, content_rect);
+            action.resolve_approval = approvals_action.resolve_approval;
         },
         .Inbox => {
             _ = inbox_panel.draw(allocator, ctx, panel, content_rect);

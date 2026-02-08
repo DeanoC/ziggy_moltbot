@@ -48,8 +48,19 @@ pub const Node = struct {
 pub const ExecApproval = struct {
     id: []const u8,
     payload_json: []const u8,
+
+    // Human-facing summary derived from payload.
     summary: ?[]const u8 = null,
+
+    // Audit trail (best-effort extraction from gateway payloads).
     requested_at_ms: ?i64 = null,
+    requested_by: ?[]const u8 = null,
+
+    resolved_at_ms: ?i64 = null,
+    resolved_by: ?[]const u8 = null,
+    decision: ?[]const u8 = null,
+
+    // Whether this client can resolve automatically (requires a stable id).
     can_resolve: bool = false,
 };
 
