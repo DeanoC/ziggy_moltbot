@@ -227,6 +227,29 @@ pub fn build(b: *std.Build) void {
 
         b.installArtifact(cli_exe);
 
+        // Windows-only tray app (MVP): status + start/stop/restart + open logs.
+        if (target.result.os.tag == .windows) {
+            const tray_module = b.createModule(.{
+                .root_source_file = b.path("src/main_tray.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const tray_exe = b.addExecutable(.{
+                .name = "ziggystarclaw-tray",
+                .root_module = tray_module,
+            });
+            tray_exe.linkLibC();
+            tray_exe.subsystem = .Windows;
+            tray_exe.root_module.addOptions("build_options", build_options);
+            tray_exe.root_module.linkSystemLibrary("user32", .{});
+            tray_exe.root_module.linkSystemLibrary("shell32", .{});
+            tray_exe.root_module.linkSystemLibrary("gdi32", .{});
+            tray_exe.root_module.addWin32ResourceFile(.{
+                .file = b.path("assets/icons/ziggystarclaw.rc"),
+            });
+            b.installArtifact(tray_exe);
+        }
+
         const run_cli_step = b.step("run-cli", "Run the CLI client");
         const run_cli_cmd = b.addRunArtifact(cli_exe);
         run_cli_step.dependOn(&run_cli_cmd.step);
