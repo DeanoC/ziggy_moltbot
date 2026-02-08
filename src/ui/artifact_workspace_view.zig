@@ -5,8 +5,11 @@ const draw_context = @import("draw_context.zig");
 const clipboard = @import("clipboard.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
+const nav_router = @import("input/nav_router.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const focus_ring = @import("widgets/focus_ring.zig");
 const ui_systems = @import("ui_systems.zig");
 const undo_redo = @import("systems/undo_redo.zig");
 const systems = @import("systems/systems.zig");
@@ -57,6 +60,10 @@ pub fn draw(rect_override: ?draw_context.Rect) void {
     const panel_rect = rect_override orelse return;
     var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
+
+    // Scope this view so nav IDs for local helpers don't collide with other panels.
+    nav_router.pushScope(std.hash.Wyhash.hash(0, "artifact_workspace_view"));
+    defer nav_router.popScope();
 
     dc.drawRect(panel_rect, .{ .fill = t.colors.background });
 
@@ -394,7 +401,14 @@ fn drawTab(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "artifact_workspace.tab", label) else 0;
+    if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -406,6 +420,9 @@ fn drawTab(
             else => {},
         }
     }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
+    }
 
     const base = if (active) t.colors.primary else t.colors.surface;
     const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
@@ -414,6 +431,10 @@ fn drawTab(
     const text_color = if (active) t.colors.primary else t.colors.text_secondary;
     const text_size = dc.measureText(label, 0.0);
     dc.drawText(label, .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 }, .{ .color = text_color });
+
+    if (focused) {
+        focus_ring.draw(dc, rect, t.radius.lg);
+    }
 
     return clicked;
 }
@@ -427,7 +448,22 @@ fn drawToolbarIcon(
 ) bool {
     const t = dc.theme;
     const rect = draw_context.Rect.fromMinSize(pos, .{ size, size });
-    const hovered = rect.contains(queue.state.mouse_pos);
+
+    const icon_label: []const u8 = switch (icon) {
+        .copy => "copy",
+        .undo => "undo",
+        .redo => "redo",
+        .expand => "expand",
+    };
+
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "artifact_workspace.toolbar_icon", icon_label) else 0;
+    if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -438,6 +474,9 @@ fn drawToolbarIcon(
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     const bg = if (hovered) colors.withAlpha(t.colors.primary, 0.12) else t.colors.surface;
@@ -478,6 +517,10 @@ fn drawToolbarIcon(
             dc.drawLine(.{ center[0] + offset, center[1] + offset }, .{ center[0] + offset, center[1] + size * 0.3 }, 2.0, icon_color);
             dc.drawLine(.{ center[0] + offset, center[1] + offset }, .{ center[0] + size * 0.3, center[1] + offset }, 2.0, icon_color);
         },
+    }
+
+    if (focused) {
+        focus_ring.draw(dc, rect, t.radius.sm);
     }
 
     return clicked;
