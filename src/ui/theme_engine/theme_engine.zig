@@ -182,7 +182,7 @@ pub const ThemeEngine = struct {
     }
 
     pub fn loadAndApplyThemePackDir(self: *ThemeEngine, root_path: []const u8) !void {
-        var pack = try theme_package.loadFromDirectory(self.allocator, root_path);
+        var pack = try theme_package.loadFromPath(self.allocator, root_path);
         defer pack.deinit();
 
         const base_theme = try buildRuntimeTheme(self.allocator, pack.tokens_base);

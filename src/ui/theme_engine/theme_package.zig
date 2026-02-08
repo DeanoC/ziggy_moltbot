@@ -28,6 +28,11 @@ pub const ThemePackage = struct {
     }
 };
 
+fn endsWithIgnoreCase(haystack: []const u8, suffix: []const u8) bool {
+    if (haystack.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(haystack[haystack.len - suffix.len ..], suffix);
+}
+
 fn readFileAlloc(allocator: std.mem.Allocator, dir: std.fs.Dir, path: []const u8, limit: usize) ![]u8 {
     const f = dir.openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return error.MissingFile,
@@ -66,6 +71,88 @@ fn loadOptionalTokens(
     var parsed_override = try schema.parseJson(schema.TokensOverrideFile, allocator, data);
     defer parsed_override.deinit();
     return try schema.mergeTokens(allocator, base_tokens, parsed_override.value);
+}
+
+pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !ThemePackage {
+    // Theme packs are supported on native/android; web builds use the async fetch pipeline.
+    if (builtin.cpu.arch == .wasm32) return error.UnsupportedPlatform;
+
+    if (endsWithIgnoreCase(path, ".zip")) {
+        return loadFromZipFile(allocator, path);
+    }
+    return loadFromDirectory(allocator, path);
+}
+
+fn detectExtractedRootDirAlloc(allocator: std.mem.Allocator, extracted_dir_path: []const u8) ![]u8 {
+    var dir = try std.fs.cwd().openDir(extracted_dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    // Case 1: manifest.json at the root.
+    if (dir.access("manifest.json", .{})) |_| {
+        return try std.fs.cwd().realpathAlloc(allocator, extracted_dir_path);
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    // Case 2: a single top-level directory containing manifest.json.
+    var it = dir.iterate();
+    var top_dir_name: ?[]u8 = null;
+    defer if (top_dir_name) |buf| allocator.free(buf);
+
+    while (try it.next()) |entry| {
+        if (entry.kind != .directory) continue;
+        if (std.mem.eql(u8, entry.name, ".") or std.mem.eql(u8, entry.name, "..")) continue;
+
+        if (top_dir_name != null) {
+            // More than one directory: ambiguous.
+            return error.InvalidThemePack;
+        }
+        top_dir_name = try allocator.dupe(u8, entry.name);
+    }
+
+    const name = top_dir_name orelse return error.MissingFile;
+    const candidate = try std.fs.path.join(allocator, &.{ extracted_dir_path, name });
+    defer allocator.free(candidate);
+    return try std.fs.cwd().realpathAlloc(allocator, candidate);
+}
+
+pub fn loadFromZipFile(allocator: std.mem.Allocator, zip_path: []const u8) !ThemePackage {
+    if (builtin.cpu.arch == .wasm32) return error.UnsupportedPlatform;
+
+    // Extract next to the zip file into a stable cache dir:
+    //   <zip_dir>/.zsc_theme_cache/<zip_basename_without_ext>/
+    const zip_dir = std.fs.path.dirname(zip_path) orelse ".";
+    const base = std.fs.path.basename(zip_path);
+    const stem = if (base.len > 4) base[0 .. base.len - 4] else base; // strip ".zip"
+    const cache_rel = try std.fs.path.join(allocator, &.{ zip_dir, ".zsc_theme_cache", stem });
+    defer allocator.free(cache_rel);
+
+    // Clear any previous extraction.
+    if (std.fs.cwd().access(cache_rel, .{})) |_| {
+        std.fs.cwd().deleteTree(cache_rel) catch |err| return err;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+
+    try std.fs.cwd().makePath(cache_rel);
+    var dest_dir = try std.fs.cwd().openDir(cache_rel, .{});
+    defer dest_dir.close();
+
+    var f = std.fs.cwd().openFile(zip_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return error.MissingFile,
+        else => return err,
+    };
+    defer f.close();
+
+    var read_buf: [16 * 1024]u8 = undefined;
+    var reader = f.reader(&read_buf);
+    try std.zip.extract(dest_dir, &reader, .{ .allow_backslashes = true });
+
+    const root_abs = try detectExtractedRootDirAlloc(allocator, cache_rel);
+    defer allocator.free(root_abs);
+    return loadFromDirectory(allocator, root_abs);
 }
 
 pub fn freeWindowTemplates(allocator: std.mem.Allocator, templates: []schema.WindowTemplate) void {

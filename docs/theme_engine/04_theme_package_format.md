@@ -66,6 +66,18 @@ Notes:
 - `schema_version` must be bumped when breaking changes occur.
 - `capabilities` enables early rejection/fallback.
 
+## Packaging (Directory vs Zip)
+
+Theme packs can be loaded from either:
+- a directory path (containing `manifest.json`, `tokens/`, `styles/`, optional `assets/`, optional `windows.json`)
+- a `.zip` file path
+
+For `.zip` packs, ZiggyStarClaw extracts the archive into a sibling cache directory and then loads it as a normal directory pack.
+
+Zip layout rules:
+- Preferred: `manifest.json` at the archive root.
+- Also accepted: a single top-level directory containing `manifest.json`.
+
 ## Token Files
 
 The existing repo token model is a good base (colors/typography/spacing/radius/shadows).
