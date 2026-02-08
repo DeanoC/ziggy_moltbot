@@ -639,7 +639,8 @@ pub fn main() !void {
                         "Set env=sh.Environment(\"Process\")\r\n" ++
                         "Sub LogLine(s)\r\n" ++
                         "  ' Avoid FileSystemObject: some environments/policies break it under Task Scheduler.\r\n" ++
-                        "  sh.Run \"cmd /c echo \" & Now & \" [wrapper] \" & s & \" >> \"\"\"{s}\"\"\"\"\", 0, True\r\n" ++
+                        "  ' Also avoid tricky quoting: ProgramData path has no spaces.\r\n" ++
+                        "  sh.Run \"cmd /c echo \" & Now & \" [wrapper] \" & s & \" >> {s}\", 0, True\r\n" ++
                         "End Sub\r\n" ++
                         "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
                         "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
