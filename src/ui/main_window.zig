@@ -256,7 +256,14 @@ fn drawMenuItem(
     selected: bool,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "main_window.menu_item", label) else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.getProfile().allow_hover_states;
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     if (hovered) {
         dc.drawRect(rect, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
     }
@@ -308,6 +315,9 @@ fn drawMenuItem(
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
     return clicked;
 }
