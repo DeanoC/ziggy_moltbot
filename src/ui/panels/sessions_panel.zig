@@ -167,6 +167,11 @@ fn drawSessionList(
     dc.pushClip(list_rect);
     var row_y = list_rect.min[1] - list_scroll_y;
     for (ctx.sessions.items) |session| {
+        var row_scope: u64 = std.hash.Wyhash.hash(0, "sessions_panel.session_row");
+        row_scope = std.hash.Wyhash.hash(row_scope, session.key);
+        nav_router.pushScope(row_scope);
+        defer nav_router.popScope();
+
         const row_rect = draw_context.Rect.fromMinSize(.{ list_rect.min[0], row_y }, .{ list_rect.size()[0], row_height });
         if (row_rect.max[1] >= list_rect.min[1] and row_rect.min[1] <= list_rect.max[1]) {
             const selected = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
@@ -189,7 +194,14 @@ fn drawSessionRow(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sessions_panel.session_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -197,6 +209,9 @@ fn drawSessionRow(
                 if (mu.button == .left and rect.contains(mu.pos)) {
                     clicked = true;
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
