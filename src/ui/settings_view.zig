@@ -9,6 +9,7 @@ const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
+const nav_router = @import("input/nav_router.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 const panel_chrome = @import("panel_chrome.zig");
@@ -836,7 +837,9 @@ fn drawLabeledInput(
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
     const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
+    nav_router.pushScope(std.hash.Wyhash.hash(0, label));
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
+    nav_router.popScope();
     return labeledInputHeight(input_height, line_height, t);
 }
 

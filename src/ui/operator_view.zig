@@ -1079,7 +1079,9 @@ fn drawLabeledInput(
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
     const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
+    nav_router.pushScope(std.hash.Wyhash.hash(0, label));
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
+    nav_router.popScope();
     return labeledInputHeight(input_height, line_height, t);
 }
 
