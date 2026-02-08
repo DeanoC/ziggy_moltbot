@@ -230,6 +230,13 @@ fn drawBackground(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *c
             });
             ctx.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
         },
+        .image => |_| {
+            ctx.drawRoundedRect(rect, radius, .{
+                .fill = t.colors.surface,
+                .stroke = border,
+                .thickness = 1.0,
+            });
+        },
     }
 }
 

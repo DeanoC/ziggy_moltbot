@@ -15,6 +15,7 @@ fn blendPaint(paint: anytype, over: colors.Color, factor: f32) @TypeOf(paint) {
             .bl = colors.blend(g.bl, over, factor),
             .br = colors.blend(g.br, over, factor),
         } },
+        .image => paint,
     };
 }
 
@@ -27,6 +28,7 @@ fn withAlphaPaint(paint: anytype, a: f32) @TypeOf(paint) {
             .bl = colors.withAlpha(g.bl, a),
             .br = colors.withAlpha(g.br, a),
         } },
+        .image => paint,
     };
 }
 
@@ -127,6 +129,13 @@ pub fn draw(
                 .br = g.br,
             });
             ctx.drawRoundedRect(box_rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+        .image => |_| {
+            ctx.drawRoundedRect(box_rect, radius, .{
+                .fill = t.colors.surface,
+                .stroke = border,
+                .thickness = 1.0,
+            });
         },
     }
     if (value.*) {

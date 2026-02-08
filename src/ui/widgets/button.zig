@@ -16,6 +16,7 @@ fn blendPaint(paint: anytype, over: colors.Color, factor: f32) @TypeOf(paint) {
             .bl = colors.blend(g.bl, over, factor),
             .br = colors.blend(g.br, over, factor),
         } },
+        .image => paint,
     };
 }
 
@@ -28,6 +29,7 @@ fn withAlphaPaint(paint: anytype, a: f32) @TypeOf(paint) {
             .bl = colors.withAlpha(g.bl, a),
             .br = colors.withAlpha(g.br, a),
         } },
+        .image => paint,
     };
 }
 
@@ -166,6 +168,14 @@ pub fn draw(
                 .br = g.br,
             });
             ctx.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+        .image => |_| {
+            // Image paints are primarily for panel chrome; buttons fall back to a solid fill.
+            ctx.drawRoundedRect(rect, radius, .{
+                .fill = t.colors.surface,
+                .stroke = border,
+                .thickness = 1.0,
+            });
         },
     }
 

@@ -49,6 +49,7 @@ pub const RenderBackend = struct {
     drawText: *const fn (ctx: *DrawContext, text: []const u8, pos: Vec2, style: TextStyle) void,
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
     drawImage: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect) void,
+    drawImageUv: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect, uv0: Vec2, uv1: Vec2, tint: Color, repeat: bool) void,
     drawNineSlice: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void,
     pushClip: *const fn (ctx: *DrawContext, rect: Rect) void,
     popClip: *const fn (ctx: *DrawContext) void,
@@ -217,6 +218,10 @@ pub const DrawContext = struct {
         self.render.drawImage(self, texture, rect);
     }
 
+    pub fn drawImageUv(self: *DrawContext, texture: Texture, rect: Rect, uv0: Vec2, uv1: Vec2, tint: Color, repeat: bool) void {
+        self.render.drawImageUv(self, texture, rect, uv0, uv1, tint, repeat);
+    }
+
     pub fn drawNineSlice(self: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void {
         self.render.drawNineSlice(self, texture, rect, slices_px, tint);
     }
@@ -284,6 +289,7 @@ fn nullDrawSoftRoundedRect(_: *DrawContext, _: Rect, _: Rect, _: f32, _: SoftFxK
 fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
+fn nullDrawImageUv(_: *DrawContext, _: Texture, _: Rect, _: Vec2, _: Vec2, _: Color, _: bool) void {}
 fn nullDrawNineSlice(_: *DrawContext, _: Texture, _: Rect, _: [4]f32, _: Color) void {}
 fn nullPushClip(_: *DrawContext, _: Rect) void {}
 fn nullPopClip(_: *DrawContext) void {}
@@ -297,6 +303,7 @@ const null_render_backend = RenderBackend{
     .drawText = nullDrawText,
     .drawLine = nullDrawLine,
     .drawImage = nullDrawImage,
+    .drawImageUv = nullDrawImageUv,
     .drawNineSlice = nullDrawNineSlice,
     .pushClip = nullPushClip,
     .popClip = nullPopClip,
@@ -399,6 +406,11 @@ fn recordDrawImage(ctx: *DrawContext, texture: Texture, rect: Rect) void {
     list.pushImage(texture, .{ .min = rect.min, .max = rect.max });
 }
 
+fn recordDrawImageUv(ctx: *DrawContext, texture: Texture, rect: Rect, uv0: Vec2, uv1: Vec2, tint: Color, repeat: bool) void {
+    const list = ctx.command_list orelse return;
+    list.pushImageUv(texture, .{ .min = rect.min, .max = rect.max }, uv0, uv1, tint, repeat);
+}
+
 fn recordDrawNineSlice(ctx: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void {
     const list = ctx.command_list orelse return;
     list.pushNineSlice(texture, .{ .min = rect.min, .max = rect.max }, slices_px, tint);
@@ -423,6 +435,7 @@ const record_render_backend = RenderBackend{
     .drawText = recordDrawText,
     .drawLine = recordDrawLine,
     .drawImage = recordDrawImage,
+    .drawImageUv = recordDrawImageUv,
     .drawNineSlice = recordDrawNineSlice,
     .pushClip = recordPushClip,
     .popClip = recordPopClip,

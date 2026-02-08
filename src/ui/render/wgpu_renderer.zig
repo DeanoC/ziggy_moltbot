@@ -142,6 +142,10 @@ const ImageTexture = struct {
     bind_group_linear: zgpu.wgpu.BindGroup,
     sampler_nearest: zgpu.wgpu.Sampler,
     bind_group_nearest: zgpu.wgpu.BindGroup,
+    sampler_repeat_linear: zgpu.wgpu.Sampler,
+    bind_group_repeat_linear: zgpu.wgpu.BindGroup,
+    sampler_repeat_nearest: zgpu.wgpu.Sampler,
+    bind_group_repeat_nearest: zgpu.wgpu.BindGroup,
     width: u32,
     height: u32,
 };
@@ -1181,11 +1185,17 @@ pub const Renderer = struct {
             .{ rect.max[0], rect.min[1] },
             rect.max,
             .{ rect.min[0], rect.max[1] },
-            .{ 0.0, 0.0 },
-            .{ 1.0, 1.0 },
-            .{ 1.0, 1.0, 1.0, 1.0 },
+            image_cmd.uv0,
+            image_cmd.uv1,
+            image_cmd.tint,
         );
-        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture));
+        self.pushRenderItem(
+            .textured,
+            start,
+            self.textured_vertices.items.len - start,
+            scissor,
+            textureBindGroup(self, texture, image_cmd.repeat),
+        );
     }
 
     fn pushNineSlice(self: *Renderer, cmd: command_list.NineSliceCmd, scissor: Scissor) void {
@@ -1258,7 +1268,7 @@ pub const Renderer = struct {
         self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
         self.appendTexturedQuad(.{ x2, y2 }, .{ x3, y2 }, .{ x3, y3 }, .{ x2, y3 }, .{ u_right, v_bottom }, .{ u_max, v_max }, tint);
 
-        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture));
+        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture, false));
     }
 
     fn snapRect(r: Rect) Rect {
@@ -1268,7 +1278,13 @@ pub const Renderer = struct {
         };
     }
 
-    fn textureBindGroup(self: *Renderer, tex: *ImageTexture) zgpu.wgpu.BindGroup {
+    fn textureBindGroup(self: *Renderer, tex: *ImageTexture, repeat: bool) zgpu.wgpu.BindGroup {
+        if (repeat) {
+            return switch (self.image_sampling) {
+                .linear => tex.bind_group_repeat_linear,
+                .nearest => tex.bind_group_repeat_nearest,
+            };
+        }
         return switch (self.image_sampling) {
             .linear => tex.bind_group_linear,
             .nearest => tex.bind_group_nearest,
@@ -1945,6 +1961,10 @@ pub const Renderer = struct {
                 removed.value.sampler_linear.release();
                 removed.value.bind_group_nearest.release();
                 removed.value.sampler_nearest.release();
+                removed.value.bind_group_repeat_linear.release();
+                removed.value.sampler_repeat_linear.release();
+                removed.value.bind_group_repeat_nearest.release();
+                removed.value.sampler_repeat_nearest.release();
                 removed.value.view.release();
                 removed.value.texture.release();
             }
@@ -1983,6 +2003,24 @@ pub const Renderer = struct {
             .address_mode_u = .clamp_to_edge,
             .address_mode_v = .clamp_to_edge,
             .address_mode_w = .clamp_to_edge,
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
+        });
+        const sampler_repeat_linear = self.device.createSampler(.{
+            .label = "ui.image.sampler.repeat",
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .mipmap_filter = .linear,
+        });
+        const sampler_repeat_nearest = self.device.createSampler(.{
+            .label = "ui.image.sampler.repeat.nearest",
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
             .mag_filter = .nearest,
             .min_filter = .nearest,
             .mipmap_filter = .nearest,
@@ -2051,6 +2089,55 @@ pub const Renderer = struct {
             .entries = &entries_nearest,
         });
 
+        const entries_repeat_linear = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_repeat_linear,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_repeat_linear = self.device.createBindGroup(.{
+            .label = "ui.image.bg.repeat",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_repeat_linear.len,
+            .entries = &entries_repeat_linear,
+        });
+        const entries_repeat_nearest = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_repeat_nearest,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_repeat_nearest = self.device.createBindGroup(.{
+            .label = "ui.image.bg.repeat.nearest",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_repeat_nearest.len,
+            .entries = &entries_repeat_nearest,
+        });
+
         image_cache.releasePixels(id);
         self.image_textures.put(id, .{
             .texture = texture,
@@ -2059,6 +2146,10 @@ pub const Renderer = struct {
             .bind_group_linear = bind_group_linear,
             .sampler_nearest = sampler_nearest,
             .bind_group_nearest = bind_group_nearest,
+            .sampler_repeat_linear = sampler_repeat_linear,
+            .bind_group_repeat_linear = bind_group_repeat_linear,
+            .sampler_repeat_nearest = sampler_repeat_nearest,
+            .bind_group_repeat_nearest = bind_group_repeat_nearest,
             .width = entry.width,
             .height = entry.height,
         }) catch {
@@ -2066,6 +2157,10 @@ pub const Renderer = struct {
             sampler_linear.release();
             bind_group_nearest.release();
             sampler_nearest.release();
+            bind_group_repeat_linear.release();
+            sampler_repeat_linear.release();
+            bind_group_repeat_nearest.release();
+            sampler_repeat_nearest.release();
             view.release();
             texture.release();
             return null;

@@ -106,6 +106,11 @@ pub const LineCmd = struct {
 pub const ImageCmd = struct {
     texture: Texture,
     rect: Rect,
+    // Texture coordinates. Values outside 0..1 only work when the sampler is set to repeat.
+    uv0: Vec2 = .{ 0.0, 0.0 },
+    uv1: Vec2 = .{ 1.0, 1.0 },
+    tint: Color = .{ 1.0, 1.0, 1.0, 1.0 },
+    repeat: bool = false,
 };
 
 pub const NineSliceCmd = struct {
@@ -252,6 +257,27 @@ pub const CommandList = struct {
 
     pub fn pushImage(self: *CommandList, texture: Texture, rect: Rect) void {
         _ = self.commands.append(self.allocator, .{ .image = .{ .texture = texture, .rect = rect } }) catch {};
+    }
+
+    pub fn pushImageUv(
+        self: *CommandList,
+        texture: Texture,
+        rect: Rect,
+        uv0: Vec2,
+        uv1: Vec2,
+        tint: Color,
+        repeat: bool,
+    ) void {
+        _ = self.commands.append(self.allocator, .{
+            .image = .{
+                .texture = texture,
+                .rect = rect,
+                .uv0 = uv0,
+                .uv1 = uv1,
+                .tint = tint,
+                .repeat = repeat,
+            },
+        }) catch {};
     }
 
     pub fn pushNineSlice(self: *CommandList, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void {

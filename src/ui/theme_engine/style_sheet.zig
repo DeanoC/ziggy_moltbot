@@ -16,9 +16,27 @@ pub const Gradient4 = struct {
     br: Color,
 };
 
+pub const ImagePaintMode = enum {
+    stretch,
+    tile,
+};
+
+pub const ImagePaint = struct {
+    path: AssetPath = .{},
+    mode: ImagePaintMode = .stretch,
+    // For tiling: how many source pixels map to 1 destination pixel.
+    // 1.0 = 1:1. Smaller => denser tiling.
+    scale: ?f32 = null,
+    // Optional tint multiply (defaults to white).
+    tint: ?Color = null,
+    // Optional pixel offset for tiling origin.
+    offset_px: ?[2]f32 = null,
+};
+
 pub const Paint = union(enum) {
     solid: Color,
     gradient4: Gradient4,
+    image: ImagePaint,
 };
 
 pub const AssetPath = struct {
@@ -378,22 +396,64 @@ fn parsePaint(v: std.json.Value, theme: *const theme_tokens.Theme) ?Paint {
     // Back-compat: allow a color directly.
     if (parseColor(v, theme)) |c| return .{ .solid = c };
 
-    // New: gradient object.
+    // New: gradient/image object.
     if (v != .object) return null;
     const obj = v.object;
-    const grad_val = obj.get("gradient4") orelse return null;
-    if (grad_val != .object) return null;
-    const g = grad_val.object;
-    const tl = g.get("tl") orelse return null;
-    const tr = g.get("tr") orelse return null;
-    const bl = g.get("bl") orelse return null;
-    const br = g.get("br") orelse return null;
-    return .{ .gradient4 = .{
-        .tl = parseColor(tl, theme) orelse return null,
-        .tr = parseColor(tr, theme) orelse return null,
-        .bl = parseColor(bl, theme) orelse return null,
-        .br = parseColor(br, theme) orelse return null,
-    } };
+    if (obj.get("gradient4")) |grad_val| {
+        if (grad_val != .object) return null;
+        const g = grad_val.object;
+        const tl = g.get("tl") orelse return null;
+        const tr = g.get("tr") orelse return null;
+        const bl = g.get("bl") orelse return null;
+        const br = g.get("br") orelse return null;
+        return .{ .gradient4 = .{
+            .tl = parseColor(tl, theme) orelse return null,
+            .tr = parseColor(tr, theme) orelse return null,
+            .bl = parseColor(bl, theme) orelse return null,
+            .br = parseColor(br, theme) orelse return null,
+        } };
+    }
+    if (obj.get("image")) |img_val| {
+        const paint = parseImagePaint(img_val, theme) orelse return null;
+        return .{ .image = paint };
+    }
+    return null;
+}
+
+fn parseImagePaint(v: std.json.Value, theme: *const theme_tokens.Theme) ?ImagePaint {
+    var out: ImagePaint = .{};
+    switch (v) {
+        .string => {
+            out.path.set(v.string);
+            return if (out.path.isSet()) out else null;
+        },
+        .object => {
+            const obj = v.object;
+            if (obj.get("path")) |pv| {
+                if (pv == .string) out.path.set(pv.string);
+            } else if (obj.get("image")) |iv| {
+                // Allow `{ "image": { "image": "..." } }` for authoring convenience.
+                if (iv == .string) out.path.set(iv.string);
+            }
+            if (obj.get("mode")) |mv| {
+                if (mv == .string) {
+                    if (std.ascii.eqlIgnoreCase(mv.string, "tile")) out.mode = .tile;
+                    if (std.ascii.eqlIgnoreCase(mv.string, "stretch")) out.mode = .stretch;
+                }
+            }
+            if (obj.get("scale")) |sv| {
+                out.scale = parseFloat(sv) orelse out.scale;
+            }
+            if (obj.get("tint")) |tv| {
+                out.tint = parseColor(tv, theme) orelse out.tint;
+            }
+            if (obj.get("offset_px")) |ov| {
+                out.offset_px = parseVec2(ov) orelse out.offset_px;
+            }
+            return if (out.path.isSet()) out else null;
+        },
+        else => return null,
+    }
 }
 
 fn resolveColorToken(token: []const u8, theme: *const theme_tokens.Theme) ?Color {
