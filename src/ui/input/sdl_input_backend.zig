@@ -15,6 +15,8 @@ const PrimaryTouch = struct {
     touch_id: sdl.SDL_TouchID,
     finger_id: sdl.SDL_FingerID,
     pos_px: [2]f32,
+    down_pos_px: [2]f32,
+    dragging: bool,
     down: bool,
 };
 
@@ -22,6 +24,8 @@ const PrimaryPen = struct {
     window_id: u32,
     which: sdl.SDL_PenID,
     pos_px: [2]f32,
+    down_pos_px: [2]f32,
+    dragging: bool,
     down: bool,
 };
 
@@ -74,6 +78,7 @@ pub fn collect(allocator: std.mem.Allocator, queue: *input_state.InputQueue) voi
 
     queue.state.pointer_kind = .mouse;
     queue.state.pointer_drag_delta = .{ 0.0, 0.0 };
+    queue.state.pointer_dragging = false;
 
     const scale = if (collect_window) |w|
         windowToFramebufferScale(w)
@@ -121,12 +126,14 @@ pub fn collect(allocator: std.mem.Allocator, queue: *input_state.InputQueue) voi
             queue.state.mouse_pos = touch.pos_px;
             queue.state.mouse_down_left = true;
             queue.state.pointer_kind = .touch;
+            queue.state.pointer_dragging = touch.dragging;
         }
     } else if (primary_pen) |pen| {
         if (pen.down and (collect_window_id == 0 or pen.window_id == collect_window_id)) {
             queue.state.mouse_pos = pen.pos_px;
             queue.state.mouse_down_left = true;
             queue.state.pointer_kind = .pen;
+            queue.state.pointer_dragging = pen.dragging;
         }
     }
 
@@ -263,6 +270,8 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
                 .touch_id = event.tfinger.touchID,
                 .finger_id = event.tfinger.fingerID,
                 .pos_px = pos,
+                .down_pos_px = pos,
+                .dragging = false,
                 .down = true,
             };
             queue.state.mouse_pos = pos;
@@ -277,6 +286,13 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
                 if (touch.touch_id == event.tfinger.touchID and touch.finger_id == event.tfinger.fingerID) {
                     touch.pos_px = pos;
                     touch.down = true;
+
+                    if (!touch.dragging) {
+                        const dx = pos[0] - touch.down_pos_px[0];
+                        const dy = pos[1] - touch.down_pos_px[1];
+                        const dist2 = dx * dx + dy * dy;
+                        if (dist2 >= 64.0) touch.dragging = true; // ~8px threshold
+                    }
                 }
             }
             queue.state.mouse_pos = pos;
@@ -303,6 +319,8 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
                 .window_id = @intCast(event.ptouch.windowID),
                 .which = event.ptouch.which,
                 .pos_px = pos,
+                .down_pos_px = pos,
+                .dragging = false,
                 .down = true,
             };
             queue.state.mouse_pos = pos;
@@ -324,6 +342,12 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
             const pos = .{ event.pmotion.x * scale[0], event.pmotion.y * scale[1] };
             if (primary_pen) |*pen| {
                 if (pen.which == event.pmotion.which) {
+                    if (!pen.dragging) {
+                        const dx = pos[0] - pen.down_pos_px[0];
+                        const dy = pos[1] - pen.down_pos_px[1];
+                        const dist2 = dx * dx + dy * dy;
+                        if (dist2 >= 64.0) pen.dragging = true; // ~8px threshold
+                    }
                     queue.state.pointer_drag_delta[0] += pos[0] - pen.pos_px[0];
                     queue.state.pointer_drag_delta[1] += pos[1] - pen.pos_px[1];
                     pen.pos_px = pos;
@@ -333,6 +357,8 @@ fn handleEvent(allocator: std.mem.Allocator, queue: *input_state.InputQueue, eve
                     .window_id = @intCast(event.pmotion.windowID),
                     .which = event.pmotion.which,
                     .pos_px = pos,
+                    .down_pos_px = pos,
+                    .dragging = false,
                     .down = (event.pmotion.pen_state & sdl.SDL_PEN_INPUT_DOWN) != 0,
                 };
             }

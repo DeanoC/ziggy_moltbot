@@ -393,7 +393,9 @@ fn drawSourceRow(
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             .nav_activate => |id| {
@@ -587,7 +589,9 @@ fn drawSectionHeader(
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             .nav_activate => |id| {
@@ -628,7 +632,9 @@ fn drawFileRow(
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             .nav_activate => |id| {
@@ -856,7 +862,7 @@ fn handleWheelScroll(
             scroll_y.* -= delta * step;
         }
     }
-    if (queue.state.pointer_kind != .mouse and queue.state.mouse_down_left) {
+    if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging and queue.state.mouse_down_left) {
         scroll_y.* -= queue.state.pointer_drag_delta[1];
     }
     if (scroll_y.* < 0.0) scroll_y.* = 0.0;

@@ -920,7 +920,7 @@ fn handleWheelScroll(
             scroll.* -= evt.mouse_wheel.delta[1] * step;
         }
     }
-    if (queue.state.pointer_kind != .mouse and queue.state.mouse_down_left) {
+    if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging and queue.state.mouse_down_left) {
         scroll.* -= queue.state.pointer_drag_delta[1];
     }
     if (scroll.* < 0.0) scroll.* = 0.0;

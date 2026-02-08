@@ -18,6 +18,7 @@ pub const InputState = struct {
     // Used for touch/pen drag scrolling (and potential future gestures).
     pointer_kind: PointerKind = .mouse,
     pointer_drag_delta: [2]f32 = .{ 0.0, 0.0 },
+    pointer_dragging: bool = false,
 };
 
 pub const InputQueue = struct {

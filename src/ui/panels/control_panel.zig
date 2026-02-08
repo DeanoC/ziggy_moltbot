@@ -262,7 +262,9 @@ fn drawTab(
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},

@@ -345,6 +345,12 @@ fn handleMouse(
     }
 
     if (editor.dragging) {
+        if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging) {
+            // If the user started a scroll gesture on touch/pen, don't keep selecting text.
+            editor.dragging = false;
+            editor.selection_anchor = null;
+            return;
+        }
         if (inside) {
             const local = .{ mouse[0] - text_rect.min[0] + editor.scroll_x, mouse[1] - text_rect.min[1] };
             editor.cursor = cursorFromPosition(ctx, editor.buffer.items, lines, local, editor.scroll_y, editor.scroll_x, line_height, mask);
