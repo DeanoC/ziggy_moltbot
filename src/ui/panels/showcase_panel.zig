@@ -165,6 +165,16 @@ fn themePackInspectorCard(
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = widgets.button.defaultHeight(t, line_height);
+    const max_w = width - padding * 2.0;
+    const open_label = "Open pack root";
+    const reload_label = "Reload effective pack";
+    const open_w = buttonWidth(dc, open_label, t);
+    const reload_w = buttonWidth(dc, reload_label, t);
+    const stacked_actions = (open_w + t.spacing.sm + reload_w) > max_w;
+    const action_buttons_h: f32 = if (stacked_actions)
+        (button_height * 2.0 + t.spacing.xs + t.spacing.sm)
+    else
+        (button_height + t.spacing.sm);
 
     // Rough layout: a handful of fixed lines plus a few lists.
     const templates = theme_runtime.getWindowTemplates();
@@ -175,7 +185,7 @@ fn themePackInspectorCard(
 
     const height = padding + line_height + t.spacing.xs +
         (base_lines + template_lines + layout_profiles) * (line_height + t.spacing.xs) +
-        (button_height + t.spacing.sm) + // inspector actions
+        action_buttons_h + // inspector actions
         button_height + padding; // scroll-to-top
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
 
@@ -207,14 +217,8 @@ fn themePackInspectorCard(
 
     // Actions (for rapid iteration when editing theme packs).
     {
-        const open_label = "Open pack root";
-        const reload_label = "Reload effective pack";
-        const open_w = buttonWidth(dc, open_label, t);
-        const reload_w = buttonWidth(dc, reload_label, t);
-        const total = open_w + t.spacing.sm + reload_w;
-        const max_w = rect.size()[0] - padding * 2.0;
         var x = left;
-        if (total > max_w) {
+        if (stacked_actions) {
             // If the card is narrow, stack buttons.
             const b0 = draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ max_w, button_height });
             if (widgets.button.draw(dc, b0, open_label, queue, .{ .variant = .secondary })) {
