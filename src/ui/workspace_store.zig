@@ -1,6 +1,52 @@
 const std = @import("std");
 const workspace = @import("workspace.zig");
 
+pub const DetachedWindow = struct {
+    title: []u8,
+    width: u32,
+    height: u32,
+    profile: ?[]u8 = null,
+    variant: ?[]u8 = null,
+    image_sampling: ?[]u8 = null,
+    pixel_snap_textured: ?bool = null,
+    ws: workspace.Workspace,
+
+    pub fn deinit(self: *DetachedWindow, allocator: std.mem.Allocator) void {
+        allocator.free(self.title);
+        if (self.profile) |p| allocator.free(p);
+        if (self.variant) |p| allocator.free(p);
+        if (self.image_sampling) |p| allocator.free(p);
+        self.ws.deinit(allocator);
+        self.* = undefined;
+    }
+};
+
+pub const DetachedWindowView = struct {
+    title: []const u8,
+    width: u32,
+    height: u32,
+    profile: ?[]const u8 = null,
+    variant: ?[]const u8 = null,
+    image_sampling: ?[]const u8 = null,
+    pixel_snap_textured: ?bool = null,
+    ws: *const workspace.Workspace,
+};
+
+pub const MultiWorkspace = struct {
+    main: workspace.Workspace,
+    windows: []DetachedWindow,
+    next_panel_id: workspace.PanelId,
+
+    pub fn deinit(self: *MultiWorkspace, allocator: std.mem.Allocator) void {
+        self.main.deinit(allocator);
+        for (self.windows) |*w| {
+            w.deinit(allocator);
+        }
+        allocator.free(self.windows);
+        self.* = undefined;
+    }
+};
+
 pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.Workspace {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return workspace.Workspace.initDefault(allocator),
@@ -20,6 +66,83 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.
     return ws;
 }
 
+pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !MultiWorkspace {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return .{
+            .main = try workspace.Workspace.initDefault(allocator),
+            .windows = try allocator.alloc(DetachedWindow, 0),
+            .next_panel_id = 1,
+        },
+        else => return err,
+    };
+    defer file.close();
+
+    const data = try file.readToEndAlloc(allocator, 8 * 1024 * 1024);
+    defer allocator.free(data);
+
+    var parsed = std.json.parseFromSlice(workspace.WorkspaceSnapshot, allocator, data, .{ .ignore_unknown_fields = true }) catch {
+        return .{
+            .main = try workspace.Workspace.initDefault(allocator),
+            .windows = try allocator.alloc(DetachedWindow, 0),
+            .next_panel_id = 1,
+        };
+    };
+    defer parsed.deinit();
+
+    const snap = parsed.value;
+    var main_ws = try workspace.Workspace.fromSnapshot(allocator, snap);
+    errdefer main_ws.deinit(allocator);
+
+    const windows_src = snap.detached_windows orelse &[_]workspace.DetachedWindowSnapshot{};
+    var windows = try allocator.alloc(DetachedWindow, windows_src.len);
+    var filled: usize = 0;
+    errdefer {
+        for (windows[0..filled]) |*w| w.deinit(allocator);
+        allocator.free(windows);
+    }
+
+    for (windows_src, 0..) |wsrc, idx| {
+        _ = idx;
+        const title_copy = try allocator.dupe(u8, wsrc.title);
+        errdefer allocator.free(title_copy);
+        const profile_copy = if (wsrc.profile) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (profile_copy) |p| allocator.free(p);
+        const variant_copy = if (wsrc.variant) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (variant_copy) |p| allocator.free(p);
+        const sampling_copy = if (wsrc.image_sampling) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (sampling_copy) |p| allocator.free(p);
+
+        const tmp_snap = workspace.WorkspaceSnapshot{
+            .active_project = wsrc.active_project,
+            .focused_panel_id = wsrc.focused_panel_id,
+            .next_panel_id = snap.next_panel_id,
+            .custom_layout = wsrc.custom_layout,
+            .panels = wsrc.panels,
+            .detached_windows = null,
+        };
+        var ws = try workspace.Workspace.fromSnapshot(allocator, tmp_snap);
+        errdefer ws.deinit(allocator);
+
+        windows[filled] = .{
+            .title = title_copy,
+            .width = wsrc.width,
+            .height = wsrc.height,
+            .profile = profile_copy,
+            .variant = variant_copy,
+            .image_sampling = sampling_copy,
+            .pixel_snap_textured = wsrc.pixel_snap_textured,
+            .ws = ws,
+        };
+        filled += 1;
+    }
+
+    return .{
+        .main = main_ws,
+        .windows = windows,
+        .next_panel_id = snap.next_panel_id,
+    };
+}
+
 pub fn save(allocator: std.mem.Allocator, path: []const u8, ws: *const workspace.Workspace) !void {
     var snapshot = try ws.toSnapshot(allocator);
     defer snapshot.deinit(allocator);
@@ -30,5 +153,72 @@ pub fn save(allocator: std.mem.Allocator, path: []const u8, ws: *const workspace
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();
 
+    try file.writeAll(json);
+}
+
+pub fn saveMulti(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    main_ws: *const workspace.Workspace,
+    windows: []const DetachedWindowView,
+    next_panel_id: workspace.PanelId,
+) !void {
+    var snapshot = try main_ws.toSnapshot(allocator);
+    snapshot.next_panel_id = next_panel_id;
+    errdefer snapshot.deinit(allocator);
+
+    if (windows.len > 0) {
+        var win_snaps = try allocator.alloc(workspace.DetachedWindowSnapshot, windows.len);
+        var filled: usize = 0;
+        errdefer {
+            for (win_snaps[0..filled]) |*win| {
+                win.deinit(allocator);
+            }
+            allocator.free(win_snaps);
+        }
+
+        for (windows, 0..) |w, idx| {
+            _ = idx;
+            var ws_snap = try w.ws.toSnapshot(allocator);
+            errdefer ws_snap.deinit(allocator);
+
+            const title_copy = try allocator.dupe(u8, w.title);
+            errdefer allocator.free(title_copy);
+            const profile_copy = if (w.profile) |p| try allocator.dupe(u8, p) else null;
+            errdefer if (profile_copy) |p| allocator.free(p);
+            const variant_copy = if (w.variant) |p| try allocator.dupe(u8, p) else null;
+            errdefer if (variant_copy) |p| allocator.free(p);
+            const sampling_copy = if (w.image_sampling) |p| try allocator.dupe(u8, p) else null;
+            errdefer if (sampling_copy) |p| allocator.free(p);
+
+            win_snaps[filled] = .{
+                .title = title_copy,
+                .width = w.width,
+                .height = w.height,
+                .profile = profile_copy,
+                .variant = variant_copy,
+                .image_sampling = sampling_copy,
+                .pixel_snap_textured = w.pixel_snap_textured,
+                .active_project = ws_snap.active_project,
+                .focused_panel_id = ws_snap.focused_panel_id,
+                .custom_layout = ws_snap.custom_layout,
+                .panels = ws_snap.panels,
+            };
+            // Transfer ownership of `panels` to the window snapshot.
+            ws_snap.panels = null;
+            ws_snap.deinit(allocator);
+
+            filled += 1;
+        }
+
+        snapshot.detached_windows = win_snaps;
+    }
+
+    const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
+    defer allocator.free(json);
+    defer snapshot.deinit(allocator);
+
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
+    defer file.close();
     try file.writeAll(json);
 }

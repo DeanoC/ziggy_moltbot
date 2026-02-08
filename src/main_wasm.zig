@@ -62,6 +62,7 @@ var manager: panel_manager.PanelManager = undefined;
 var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
 var theme_eng: ?theme_engine.ThemeEngine = null;
 var message_queue = MessageQueue{};
+var next_panel_id_global: workspace.PanelId = 1;
 var ws_connected = false;
 var ws_connecting = false;
 var connect_sent = false;
@@ -161,7 +162,7 @@ fn initApp() !void {
     app_state_state = loadAppStateFromStorage();
     auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();
-    manager = panel_manager.PanelManager.init(allocator, ws);
+    manager = panel_manager.PanelManager.init(allocator, ws, &next_panel_id_global);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     window = win;
     message_queue = MessageQueue{};

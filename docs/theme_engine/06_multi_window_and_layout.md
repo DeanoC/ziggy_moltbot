@@ -16,6 +16,9 @@ Desktop multi-window is implemented on the `feature/theme_engine` branch:
   - panel manager + workspace state
   - controller nav state
 - Theme templates come from `windows.json` in the active theme pack (optional).
+- Panels can be "torn off" into a new window via the `[]` button in a panel header (desktop only).
+  - Tear-off windows are persisted into `ziggystarclaw_workspace.json` and restored on next launch.
+  - Closing a tear-off window docks its panels back into the main window.
 
 WASM/Android remain single-window.
 

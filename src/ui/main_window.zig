@@ -98,6 +98,7 @@ pub const UiAction = struct {
     clear_node_result: bool = false,
     clear_operator_notice: bool = false,
     save_workspace: bool = false,
+    detach_panel_id: ?workspace.PanelId = null,
     open_url: ?[]u8 = null,
 };
 
@@ -109,6 +110,7 @@ const PanelDrawResult = struct {
 const PanelFrameResult = struct {
     content_rect: draw_context.Rect,
     close_clicked: bool,
+    detach_clicked: bool,
     clicked: bool,
 };
 
@@ -619,6 +621,9 @@ fn drawWorkspaceHost(
             }
             if (frame.close_clicked) {
                 close_panel_id = panel.id;
+            }
+            if (frame.detach_clicked) {
+                action.detach_panel_id = panel.id;
             }
             const draw_result = drawPanelContents(
                 allocator,
@@ -1143,6 +1148,7 @@ fn drawPanelFrame(
         return .{
             .content_rect = rect,
             .close_clicked = false,
+            .detach_clicked = false,
             .clicked = false,
         };
     }
@@ -1161,6 +1167,21 @@ fn drawPanelFrame(
         .{ rect.max[0] - t.spacing.xs - close_size, rect.min[1] + (header_height - close_size) * 0.5 },
         .{ close_size, close_size },
     );
+
+    // Optional detach button (multi-window desktop only).
+    var detach_clicked = false;
+    const p = theme_runtime.getProfile();
+    if (p.allow_multi_window) {
+        const detach_rect = draw_context.Rect.fromMinSize(
+            .{ close_rect.min[0] - t.spacing.xs - close_size, close_rect.min[1] },
+            .{ close_size, close_size },
+        );
+        detach_clicked = widgets.button.draw(dc, detach_rect, "[]", queue, .{
+            .variant = .ghost,
+            .radius = t.radius.sm,
+        });
+    }
+
     const close_clicked = widgets.button.draw(dc, close_rect, "x", queue, .{
         .variant = .ghost,
         .radius = t.radius.sm,
@@ -1198,6 +1219,7 @@ fn drawPanelFrame(
     return .{
         .content_rect = content_rect,
         .close_clicked = close_clicked,
+        .detach_clicked = detach_clicked,
         .clicked = clicked,
     };
 }

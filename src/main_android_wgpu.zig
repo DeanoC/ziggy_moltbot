@@ -931,7 +931,8 @@ fn run() !void {
             return init_err;
         };
     };
-    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
+    var next_panel_id_global: workspace.PanelId = 1;
+    var manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
     defer manager.deinit();
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);

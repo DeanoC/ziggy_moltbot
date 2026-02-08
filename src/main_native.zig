@@ -53,6 +53,8 @@ const UiWindow = struct {
     swapchain: multi_renderer.WindowSwapchain,
     manager: panel_manager.PanelManager,
     ui_state: ui.WindowUiState = .{},
+    title: []u8,
+    persist_in_workspace: bool = false,
     profile_override: ?theme_engine.ProfileId = null,
     theme_mode_override: ?theme.Mode = null,
     image_sampling_override: ?ui_commands.ImageSampling = null,
@@ -64,6 +66,7 @@ fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
     w.ui_state.deinit(allocator);
     w.swapchain.deinit();
     w.manager.deinit();
+    allocator.free(w.title);
     sdl.SDL_DestroyWindow(w.window);
     allocator.destroy(w);
 }
@@ -72,6 +75,38 @@ fn cloneWorkspace(allocator: std.mem.Allocator, src: *const workspace.Workspace)
     var snap = try src.toSnapshot(allocator);
     defer snap.deinit(allocator);
     return try workspace.Workspace.fromSnapshot(allocator, snap);
+}
+
+fn remapWorkspacePanelIds(
+    allocator: std.mem.Allocator,
+    ws: *workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+) !void {
+    var map = std.AutoHashMap(workspace.PanelId, workspace.PanelId).init(allocator);
+    defer map.deinit();
+
+    for (ws.panels.items) |*panel| {
+        const old = panel.id;
+        const new_id = next_panel_id.*;
+        next_panel_id.* += 1;
+        panel.id = new_id;
+        try map.put(old, new_id);
+    }
+
+    if (ws.focused_panel_id) |old_focus| {
+        ws.focused_panel_id = map.get(old_focus);
+    }
+}
+
+fn cloneWorkspaceRemap(
+    allocator: std.mem.Allocator,
+    src: *const workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+) !workspace.Workspace {
+    var ws = try cloneWorkspace(allocator, src);
+    errdefer ws.deinit(allocator);
+    try remapWorkspacePanelIds(allocator, &ws, next_panel_id);
+    return ws;
 }
 
 fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
@@ -89,6 +124,23 @@ fn parseImageSamplingLabel(label: ?[]const u8) ui_commands.ImageSampling {
     return .linear;
 }
 
+fn labelForImageSampling(s: ui_commands.ImageSampling) []const u8 {
+    return switch (s) {
+        .linear => "linear",
+        .nearest => "nearest",
+    };
+}
+
+fn defaultWindowSizeForPanelKind(kind: workspace.PanelKind) struct { w: c_int, h: c_int } {
+    return switch (kind) {
+        .Chat => .{ .w = 560, .h = 720 },
+        .Control => .{ .w = 960, .h = 720 },
+        .Showcase => .{ .w = 900, .h = 720 },
+        .CodeEditor => .{ .w = 960, .h = 720 },
+        .ToolOutput => .{ .w = 720, .h = 520 },
+    };
+}
+
 fn takeWorkspaceFromManager(allocator: std.mem.Allocator, manager: *panel_manager.PanelManager) workspace.Workspace {
     const ws = manager.workspace;
     manager.workspace = workspace.Workspace.initEmpty(allocator);
@@ -98,8 +150,9 @@ fn takeWorkspaceFromManager(allocator: std.mem.Allocator, manager: *panel_manage
 fn buildWorkspaceFromTemplate(
     allocator: std.mem.Allocator,
     tpl: theme_engine.runtime.WindowTemplate,
+    next_panel_id: *workspace.PanelId,
 ) !workspace.Workspace {
-    var manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator));
+    var manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator), next_panel_id);
     errdefer manager.deinit();
 
     var opened_any = false;
@@ -138,6 +191,8 @@ fn createUiWindow(
     height: c_int,
     flags: sdl.SDL_WindowFlags,
     initial_workspace: workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+    persist_in_workspace: bool,
     profile_override: ?theme_engine.ProfileId,
     theme_mode_override: ?theme.Mode,
     image_sampling_override: ?ui_commands.ImageSampling,
@@ -158,6 +213,9 @@ fn createUiWindow(
     var swapchain = try multi_renderer.WindowSwapchain.initOwned(shared, win);
     errdefer swapchain.deinit();
 
+    const title_copy = try allocator.dupe(u8, std.mem.sliceTo(title, 0));
+    errdefer allocator.free(title_copy);
+
     const out = try allocator.create(UiWindow);
     errdefer allocator.destroy(out);
     out.* = .{
@@ -165,8 +223,10 @@ fn createUiWindow(
         .id = sdl.SDL_GetWindowID(win),
         .queue = input_state.InputQueue.init(allocator),
         .swapchain = swapchain,
-        .manager = panel_manager.PanelManager.init(allocator, ws),
+        .manager = panel_manager.PanelManager.init(allocator, ws, next_panel_id),
         .ui_state = .{},
+        .title = title_copy,
+        .persist_in_workspace = persist_in_workspace,
         .profile_override = profile_override,
         .theme_mode_override = theme_mode_override,
         .image_sampling_override = image_sampling_override,
@@ -1116,7 +1176,8 @@ pub fn main() !void {
         logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
         return error.SdlWindowCreateFailed;
     };
-    errdefer sdl.SDL_DestroyWindow(window);
+    var main_window_owned_by_ui: bool = false;
+    errdefer if (!main_window_owned_by_ui) sdl.SDL_DestroyWindow(window);
     text_input_backend.init(@ptrCast(window));
     defer text_input_backend.deinit();
     setWindowIcon(window);
@@ -1135,23 +1196,27 @@ pub fn main() !void {
     var gpu = try multi_renderer.Shared.init(allocator, window);
     defer gpu.deinit();
 
+    // Global unique panel id allocator shared across all windows.
+    var next_panel_id_global: workspace.PanelId = 1;
+
     const main_win = try allocator.create(UiWindow);
-    errdefer allocator.destroy(main_win);
     main_win.* = .{
         .window = window,
         .id = sdl.SDL_GetWindowID(window),
         .queue = input_state.InputQueue.init(allocator),
         .swapchain = multi_renderer.WindowSwapchain.initMain(&gpu, window),
         // Initialize immediately so early errors don't trip `destroyUiWindow`.
-        .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator)),
+        .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator), &next_panel_id_global),
         .ui_state = .{},
+        .title = try allocator.dupe(u8, "ZiggyStarClaw"),
+        .persist_in_workspace = false,
         .profile_override = null,
         .theme_mode_override = null,
         .image_sampling_override = null,
         .pixel_snap_textured_override = null,
     };
-    errdefer main_win.queue.deinit(allocator);
-    errdefer main_win.swapchain.deinit();
+    errdefer destroyUiWindow(allocator, main_win);
+    main_window_owned_by_ui = true;
 
     var ui_windows: std.ArrayList(*UiWindow) = .empty;
     try ui_windows.append(allocator, main_win);
@@ -1181,15 +1246,81 @@ pub fn main() !void {
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
-    const workspace_state = workspace_store.loadOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
+    var loaded = workspace_store.loadMultiOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
         logger.warn("Failed to load workspace: {}", .{err});
-        break :blk workspace.Workspace.initDefault(allocator) catch |init_err| {
-            logger.err("Failed to init default workspace: {}", .{init_err});
-            return init_err;
+        const fallback = workspace_store.MultiWorkspace{
+            .main = workspace.Workspace.initDefault(allocator) catch |init_err| {
+                logger.err("Failed to init default workspace: {}", .{init_err});
+                return init_err;
+            },
+            .windows = allocator.alloc(workspace_store.DetachedWindow, 0) catch return err,
+            .next_panel_id = 1,
         };
+        break :blk fallback;
     };
+    defer {
+        // We transfer window workspaces into actual UiWindows below; this cleanup only runs
+        // for any remaining (emptied) workspaces/metadata.
+        for (loaded.windows) |*w| w.deinit(allocator);
+        allocator.free(loaded.windows);
+        loaded.main.deinit(allocator);
+    }
+
+    // Restore the global panel id allocator from disk (and then bump it based on loaded panels).
+    next_panel_id_global = loaded.next_panel_id;
+
+    const workspace_state = loaded.main;
+    loaded.main = workspace.Workspace.initEmpty(allocator);
+
     main_win.manager.deinit();
-    main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state);
+    main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
+
+    // Spawn any persisted secondary windows.
+    if (theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
+        for (loaded.windows) |*w| {
+            var title_buf: [192]u8 = undefined;
+            const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{w.title}) catch "ZiggyStarClaw";
+
+            const profile_override: ?theme_engine.ProfileId = profile.profileFromLabel(w.profile);
+            const mode_override: ?theme.Mode = if (w.variant) |v| theme.modeFromLabel(v) else null;
+            const sampling_override: ?ui_commands.ImageSampling = if (w.image_sampling) |v| parseImageSamplingLabel(v) else null;
+            const pixel_override: ?bool = w.pixel_snap_textured;
+
+            const max_cint_u32: u32 = @intCast(std.math.maxInt(c_int));
+            const width_u32: u32 = std.math.clamp(w.width, @as(u32, 320), max_cint_u32);
+            const height_u32: u32 = std.math.clamp(w.height, @as(u32, 240), max_cint_u32);
+            const width: c_int = @intCast(width_u32);
+            const height: c_int = @intCast(height_u32);
+
+            const ws_for_new = w.ws;
+            w.ws = workspace.Workspace.initEmpty(allocator);
+
+            const new_win = createUiWindow(
+                allocator,
+                &gpu,
+                title_z,
+                width,
+                height,
+                window_flags,
+                ws_for_new,
+                &next_panel_id_global,
+                true,
+                profile_override,
+                mode_override,
+                sampling_override,
+                pixel_override,
+            ) catch |create_err| blk2: {
+                logger.warn("Failed to restore window '{s}': {}", .{ w.title, create_err });
+                break :blk2 null;
+            };
+            if (new_win) |uw| {
+                ui_windows.append(allocator, uw) catch {
+                    destroyUiWindow(allocator, uw);
+                };
+            }
+        }
+    }
+
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
@@ -1360,6 +1491,8 @@ pub fn main() !void {
 
         var ui_action: ui.UiAction = .{};
         var active_window: *UiWindow = main_win;
+        var any_save_workspace: bool = false;
+        var detach_req: ?struct { wid: u32, panel_id: workspace.PanelId } = null;
         {
             const zone = profiler.zone("frame.ui");
             defer zone.end();
@@ -1423,6 +1556,10 @@ pub fn main() !void {
                     &w.queue,
                     &w.ui_state,
                 );
+                if (action.save_workspace) any_save_workspace = true;
+                if (action.detach_panel_id) |pid| {
+                    detach_req = .{ .wid = w.id, .panel_id = pid };
+                }
                 if (w.id == focused_id) {
                     ui_action = action;
                     active_window = w;
@@ -1439,6 +1576,7 @@ pub fn main() !void {
             sdl_input_backend.setCollectWindow(null);
             ui.frameEnd();
         }
+        if (any_save_workspace) ui_action.save_workspace = true;
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
@@ -1470,15 +1608,134 @@ pub fn main() !void {
             };
         }
 
-        if (ui_action.save_workspace) {
-            if (active_window.id == main_win.id) {
-                workspace_store.save(allocator, "ziggystarclaw_workspace.json", &active_window.manager.workspace) catch |err| {
-                    logger.err("Failed to save workspace: {}", .{err});
-                };
+        if (detach_req) |req| {
+            // Detach: move the panel from the source window into a new window.
+            detach_block: {
+            var source_window: ?*UiWindow = null;
+            for (ui_windows.items) |w| {
+                if (w.id == req.wid) {
+                    source_window = w;
+                    break;
+                }
             }
-            // Secondary windows are currently ephemeral (not persisted); still mark clean
-            // to avoid requesting a save every frame.
-            active_window.manager.workspace.markClean();
+            if (source_window) |src_w| {
+                if (src_w.manager.takePanel(req.panel_id)) |panel| {
+                    var ws_new = workspace.Workspace.initEmpty(allocator);
+                    // Transfer the panel into the new window workspace.
+                    if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
+                        logger.warn("Failed to allocate detached window workspace: {}", .{err});
+                        // Put the panel back to avoid losing it.
+                        _ = src_w.manager.putPanel(panel) catch {};
+                        ws_new.deinit(allocator);
+                        break :detach_block;
+                    }
+                    ws_new.focused_panel_id = panel.id;
+
+                    var title_buf: [192]u8 = undefined;
+                    const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
+                    const size = defaultWindowSizeForPanelKind(panel.kind);
+
+                    const new_win = createUiWindow(
+                        allocator,
+                        &gpu,
+                        title_z,
+                        size.w,
+                        size.h,
+                        window_flags,
+                        ws_new,
+                        &next_panel_id_global,
+                        true,
+                        src_w.profile_override,
+                        src_w.theme_mode_override,
+                        src_w.image_sampling_override,
+                        src_w.pixel_snap_textured_override,
+                    ) catch |err| blk: {
+                        logger.warn("Failed to detach panel into new window: {}", .{err});
+                        // Reattach: pull the panel back out of ws_new before freeing.
+                        const restored = ws_new.panels.pop();
+                        ws_new.deinit(allocator);
+                        if (restored) |p| {
+                            _ = src_w.manager.putPanel(p) catch {};
+                        }
+                        break :blk null;
+                    };
+                    if (new_win) |wnew| {
+                        var pos_x: c_int = 0;
+                        var pos_y: c_int = 0;
+                        _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
+                        _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
+                        ui_windows.append(allocator, wnew) catch {
+                            destroyUiWindow(allocator, wnew);
+                        };
+                    }
+                }
+            }
+            }
+        }
+
+        if (ui_action.save_workspace) save_ws: {
+            // Persist the main workspace plus any secondary windows.
+            var count: usize = 0;
+            for (ui_windows.items) |w| {
+                if (w.id == main_win.id) continue;
+                if (!w.persist_in_workspace) continue;
+                count += 1;
+            }
+            const views = allocator.alloc(workspace_store.DetachedWindowView, count) catch |err| {
+                logger.err("Failed to allocate workspace save list: {}", .{err});
+                workspace_store.saveMulti(
+                    allocator,
+                    "ziggystarclaw_workspace.json",
+                    &main_win.manager.workspace,
+                    &[_]workspace_store.DetachedWindowView{},
+                    next_panel_id_global,
+                ) catch |save_err| {
+                    logger.err("Failed to save workspace: {}", .{save_err});
+                };
+                for (ui_windows.items) |w| {
+                    w.manager.workspace.markClean();
+                }
+                // Can't include window list this frame.
+                break :save_ws;
+            };
+            defer allocator.free(views);
+
+            var filled: usize = 0;
+            for (ui_windows.items) |w| {
+                if (w.id == main_win.id) continue;
+                if (!w.persist_in_workspace) continue;
+                var size_w: c_int = 0;
+                var size_h: c_int = 0;
+                _ = sdl.SDL_GetWindowSize(w.window, &size_w, &size_h);
+                const w_u32: u32 = @intCast(if (size_w > 0) size_w else 1);
+                const h_u32: u32 = @intCast(if (size_h > 0) size_h else 1);
+
+                views[filled] = .{
+                    .title = w.title,
+                    .width = w_u32,
+                    .height = h_u32,
+                    .profile = if (w.profile_override) |pid| profile.labelForProfile(pid) else null,
+                    .variant = if (w.theme_mode_override) |m| theme.labelForMode(m) else null,
+                    .image_sampling = if (w.image_sampling_override) |s| labelForImageSampling(s) else null,
+                    .pixel_snap_textured = w.pixel_snap_textured_override,
+                    .ws = &w.manager.workspace,
+                };
+                filled += 1;
+            }
+
+            workspace_store.saveMulti(
+                allocator,
+                "ziggystarclaw_workspace.json",
+                &main_win.manager.workspace,
+                views[0..filled],
+                next_panel_id_global,
+            ) catch |err| {
+                logger.err("Failed to save workspace: {}", .{err});
+            };
+
+            for (ui_windows.items) |w| {
+                w.manager.workspace.markClean();
+            }
         }
 
         if (ui_action.check_updates) {
@@ -1884,7 +2141,7 @@ pub fn main() !void {
                     if (tpl.pixel_snap_textured) |snap| {
                         pixel_override = snap;
                     }
-                    if (buildWorkspaceFromTemplate(allocator, tpl)) |ws_val| {
+                    if (buildWorkspaceFromTemplate(allocator, tpl, &next_panel_id_global)) |ws_val| {
                         ws_for_new = ws_val;
                         ws_owned = true;
                     } else |_| {}
@@ -1893,7 +2150,7 @@ pub fn main() !void {
 
             if (!ws_owned) {
                 title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";
-                if (cloneWorkspace(allocator, &active_window.manager.workspace)) |ws_val| {
+                if (cloneWorkspaceRemap(allocator, &active_window.manager.workspace, &next_panel_id_global)) |ws_val| {
                     ws_for_new = ws_val;
                     ws_owned = true;
                 } else |_| {}
@@ -1908,6 +2165,8 @@ pub fn main() !void {
                     cur_h,
                     window_flags,
                     ws_for_new,
+                    &next_panel_id_global,
+                    false,
                     profile_override,
                     mode_override,
                     sampling_override,
@@ -1941,6 +2200,23 @@ pub fn main() !void {
                     const w = ui_windows.items[i];
                     if (w.id == wid and w.id != main_win.id) {
                         _ = ui_windows.swapRemove(i);
+                        if (w.persist_in_workspace) {
+                            // Dock panels back into the main window before closing (tear-off window behavior).
+                            var taken = takeWorkspaceFromManager(allocator, &w.manager);
+                            defer taken.deinit(allocator);
+                            while (taken.panels.items.len > 0) {
+                                const moved_panel_opt = taken.panels.pop();
+                                if (moved_panel_opt) |moved_panel| {
+                                    main_win.manager.putPanel(moved_panel) catch {
+                                        // If we can't reattach, drop the panel safely.
+                                        var tmp = moved_panel;
+                                        tmp.deinit(allocator);
+                                    };
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
                         destroyUiWindow(allocator, w);
                         break;
                     }
