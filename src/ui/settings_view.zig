@@ -19,7 +19,7 @@ pub const SettingsAction = struct {
     disconnect: bool = false,
     save: bool = false,
     reload_theme_pack: bool = false,
-    open_themes_dir: bool = false,
+    browse_theme_pack: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
@@ -442,32 +442,26 @@ fn drawAppearanceCard(
     }
     cursor_y += button_height + t.spacing.sm;
 
-    // Simple "picker" row: lists packs detected in ./themes (no OS file dialog required).
+    // Theme pack picker row.
     if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
         if (!theme_pack_entries_loaded) refreshThemePackEntries(allocator);
     }
 
-    const can_open_folder = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
     const can_refresh = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
+    const can_browse = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
 
     const row_min_x = rect.min[0] + padding;
     const row_max_x = rect.max[0] - padding;
 
     // Right-side controls, anchored so they don't get pushed off-screen.
     var right_x = row_max_x;
-    if (can_open_folder) {
-        const browse_w = buttonWidth(dc, "Open themes", t);
+    {
+        const browse_w = buttonWidth(dc, "Browse...", t);
         right_x -= browse_w;
         const browse_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ browse_w, button_height });
-        if (widgets.button.draw(dc, browse_rect, "Open themes", queue, .{ .variant = .secondary })) {
-            action.open_themes_dir = true;
+        if (widgets.button.draw(dc, browse_rect, "Browse...", queue, .{ .variant = .secondary, .disabled = !can_browse })) {
+            action.browse_theme_pack = true;
         }
-        right_x -= t.spacing.xs;
-    } else {
-        const browse_w = buttonWidth(dc, "Open themes", t);
-        right_x -= browse_w;
-        const browse_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ browse_w, button_height });
-        _ = widgets.button.draw(dc, browse_rect, "Open themes", queue, .{ .variant = .secondary, .disabled = true });
         right_x -= t.spacing.xs;
     }
 

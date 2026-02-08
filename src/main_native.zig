@@ -61,6 +61,47 @@ const UiWindow = struct {
     pixel_snap_textured_override: ?bool = null,
 };
 
+const ThemePackBrowse = struct {
+    mutex: std.Thread.Mutex = .{},
+    in_flight: bool = false,
+    // Allocated with std.heap.c_allocator by the SDL callback, then consumed on the main thread.
+    pending_path: ?[]u8 = null,
+    pending_error: bool = false,
+};
+
+var theme_pack_browse: ThemePackBrowse = .{};
+
+fn sdlDialogPickThemePack(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
+    _ = userdata;
+    _ = filter;
+
+    // NOTE: callback may run on another thread.
+    theme_pack_browse.mutex.lock();
+    defer theme_pack_browse.mutex.unlock();
+    theme_pack_browse.in_flight = false;
+
+    if (theme_pack_browse.pending_path) |buf| {
+        std.heap.c_allocator.free(buf);
+        theme_pack_browse.pending_path = null;
+    }
+    theme_pack_browse.pending_error = false;
+
+    if (filelist == null) {
+        theme_pack_browse.pending_error = true;
+        return;
+    }
+    const first = filelist[0];
+    if (first == null) {
+        // canceled
+        return;
+    }
+    const picked = std.mem.span(@as([*:0]const u8, @ptrCast(first)));
+    if (picked.len == 0) return;
+
+    const copy = std.heap.c_allocator.dupe(u8, picked) catch return;
+    theme_pack_browse.pending_path = copy;
+}
+
 fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
     w.queue.deinit(allocator);
     w.ui_state.deinit(allocator);
@@ -1599,6 +1640,93 @@ pub fn main() !void {
             // Profile/typography are resolved per-window during UI draw.
         }
 
+        // Theme pack browse dialog (desktop only).
+        if (ui_action.browse_theme_pack) {
+            if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
+                theme_pack_browse.mutex.lock();
+                const can_launch = !theme_pack_browse.in_flight;
+                if (can_launch) theme_pack_browse.in_flight = true;
+                theme_pack_browse.mutex.unlock();
+                if (can_launch) {
+                    const themes_dir_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+                    defer if (themes_dir_abs) |v| allocator.free(v);
+
+                    // SDL copies/consumes the path as needed; safe to pass a temporary null-terminated buffer.
+                    if (themes_dir_abs) |abs_path| {
+                        const z = allocator.alloc(u8, abs_path.len + 1) catch null;
+                        if (z) |buf| {
+                            defer allocator.free(buf);
+                            @memcpy(buf[0..abs_path.len], abs_path);
+                            buf[abs_path.len] = 0;
+                            sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, @ptrCast(buf.ptr), false);
+                        } else {
+                            sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, null, false);
+                        }
+                    } else {
+                        sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, null, false);
+                    }
+                }
+            }
+        }
+
+        // Consume browse dialog result.
+        var picked_c: ?[]u8 = null;
+        var had_error: bool = false;
+        {
+            theme_pack_browse.mutex.lock();
+            picked_c = theme_pack_browse.pending_path;
+            theme_pack_browse.pending_path = null;
+            had_error = theme_pack_browse.pending_error;
+            theme_pack_browse.pending_error = false;
+            theme_pack_browse.mutex.unlock();
+        }
+        if (picked_c) |picked| {
+            defer std.heap.c_allocator.free(picked);
+
+            const chosen = picked;
+            // Prefer storing a portable relative path when the chosen folder is under ./themes.
+            const themes_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+            defer if (themes_abs) |v| allocator.free(v);
+
+            var stored: ?[]u8 = null;
+            if (themes_abs) |themes_root| {
+                if (std.mem.startsWith(u8, chosen, themes_root)) {
+                    // Accept both "/themes/<name>" and "/themes/<name>/..."
+                    var rel = chosen[themes_root.len..];
+                    if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
+                    const first_sep = std.mem.indexOfAny(u8, rel, "/\\") orelse rel.len;
+                    if (first_sep > 0) {
+                        stored = std.fmt.allocPrint(allocator, "themes/{s}", .{rel[0..first_sep]}) catch null;
+                    }
+                }
+            }
+            if (stored == null) {
+                stored = allocator.dupe(u8, chosen) catch null;
+            }
+
+            if (stored) |path| {
+                defer allocator.free(path);
+
+                const new_value = allocator.dupe(u8, path) catch null;
+                if (new_value) |owned| {
+                    if (cfg.ui_theme_pack) |v| allocator.free(v);
+                    cfg.ui_theme_pack = owned;
+                    ui.syncSettings(cfg);
+
+                    // Apply immediately; only persist if apply succeeded.
+                    if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true)) |_| {
+                        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+                            logger.err("Failed to save config: {}", .{err});
+                        };
+                    } else |err| {
+                        logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
+                    }
+                }
+            }
+        } else if (had_error) {
+            logger.warn("Theme pack browse failed: {s}", .{sdl.SDL_GetError()});
+        }
+
         if (ui_action.save_config) {
             const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
             defer if (cfg_path) |v| allocator.free(v);
@@ -1770,11 +1898,6 @@ pub fn main() !void {
             if (snapshot.download_path) |path| {
                 openPath(allocator, path);
             }
-        }
-        if (ui_action.open_themes_dir) {
-            const themes_path = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
-            defer if (themes_path) |v| allocator.free(v);
-            openPath(allocator, themes_path orelse "themes");
         }
         if (ui_action.install_update) {
             const snapshot = ctx.update_state.snapshot();
