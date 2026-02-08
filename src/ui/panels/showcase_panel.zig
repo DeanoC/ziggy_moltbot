@@ -15,9 +15,20 @@ var input_debug_enabled = false;
 var scroll_y: f32 = 0.0;
 var scroll_max: f32 = 0.0;
 
-pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) void {
+pub const Action = struct {
+    open_pack_root: bool = false,
+    reload_effective_pack: bool = false,
+};
+
+var preview_disabled: bool = false;
+var preview_checked: bool = true;
+var preview_focus_ring: bool = true;
+var preview_text_editor: ?widgets.text_editor.TextEditor = null;
+
+pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) Action {
+    var action: Action = .{};
     const t = theme.activeTheme();
-    const panel_rect = rect_override orelse return;
+    const panel_rect = rect_override orelse return action;
     var dc = draw_context.DrawContext.init(
         allocator,
         .{ .direct = .{} },
@@ -34,7 +45,7 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
         .{ panel_rect.size()[0] - padding * 2.0, panel_rect.size()[1] - padding * 2.0 },
     );
     if (content_rect.size()[0] <= 0.0 or content_rect.size()[1] <= 0.0) {
-        return;
+        return action;
     }
 
     handleWheelScroll(queue, panel_rect, &scroll_y, scroll_max, 36.0);
@@ -121,8 +132,11 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
     const demo_height = drawContextDemoCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
     cursor_y += demo_height + t.spacing.md;
 
-    const inspect_height = themePackInspectorCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
+    const inspect_height = themePackInspectorCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t, &action);
     cursor_y += inspect_height + t.spacing.md;
+
+    const preview_height = themePreviewCard(allocator, &dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
+    cursor_y += preview_height + t.spacing.md;
 
     const sdf_height = sdfDebugCard(&dc, queue, .{ content_rect.min[0], cursor_y }, project_width, t);
     cursor_y += sdf_height + t.spacing.md;
@@ -136,6 +150,8 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) voi
     scroll_max = @max(0.0, content_height - content_rect.size()[1]);
     if (scroll_y > scroll_max) scroll_y = scroll_max;
     if (scroll_y < 0.0) scroll_y = 0.0;
+
+    return action;
 }
 
 fn themePackInspectorCard(
@@ -144,8 +160,8 @@ fn themePackInspectorCard(
     pos: [2]f32,
     width: f32,
     t: *const theme.Theme,
+    action: *Action,
 ) f32 {
-    _ = queue;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = widgets.button.defaultHeight(t, line_height);
@@ -159,7 +175,8 @@ fn themePackInspectorCard(
 
     const height = padding + line_height + t.spacing.xs +
         (base_lines + template_lines + layout_profiles) * (line_height + t.spacing.xs) +
-        button_height + padding;
+        (button_height + t.spacing.sm) + // inspector actions
+        button_height + padding; // scroll-to-top
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
 
     var cursor_y = drawCardBase(dc, rect, "Theme Pack Inspector");
@@ -186,6 +203,41 @@ fn themePackInspectorCard(
             "Root: (built-in)";
         dc.drawText(line, .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
         cursor_y += line_height + t.spacing.xs;
+    }
+
+    // Actions (for rapid iteration when editing theme packs).
+    {
+        const open_label = "Open pack root";
+        const reload_label = "Reload effective pack";
+        const open_w = buttonWidth(dc, open_label, t);
+        const reload_w = buttonWidth(dc, reload_label, t);
+        const total = open_w + t.spacing.sm + reload_w;
+        const max_w = rect.size()[0] - padding * 2.0;
+        var x = left;
+        if (total > max_w) {
+            // If the card is narrow, stack buttons.
+            const b0 = draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ max_w, button_height });
+            if (widgets.button.draw(dc, b0, open_label, queue, .{ .variant = .secondary })) {
+                action.open_pack_root = true;
+            }
+            cursor_y += button_height + t.spacing.xs;
+            const b1 = draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ max_w, button_height });
+            if (widgets.button.draw(dc, b1, reload_label, queue, .{ .variant = .secondary })) {
+                action.reload_effective_pack = true;
+            }
+            cursor_y += button_height + t.spacing.sm;
+        } else {
+            const b0 = draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ open_w, button_height });
+            if (widgets.button.draw(dc, b0, open_label, queue, .{ .variant = .secondary })) {
+                action.open_pack_root = true;
+            }
+            x += open_w + t.spacing.sm;
+            const b1 = draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ reload_w, button_height });
+            if (widgets.button.draw(dc, b1, reload_label, queue, .{ .variant = .secondary })) {
+                action.reload_effective_pack = true;
+            }
+            cursor_y += button_height + t.spacing.sm;
+        }
     }
 
     // Manifest meta.
@@ -323,6 +375,151 @@ fn themePackInspectorCard(
     const brect = draw_context.Rect.fromMinSize(.{ left, rect.max[1] - padding - button_height }, .{ bw, button_height });
     if (widgets.button.draw(dc, brect, btn_label, input_router.getQueue(), .{ .variant = .ghost })) {
         scroll_y = 0.0;
+    }
+
+    return height;
+}
+
+fn ensureEditor(slot: *?widgets.text_editor.TextEditor, allocator: std.mem.Allocator) *widgets.text_editor.TextEditor {
+    if (slot.* == null) {
+        slot.* = widgets.text_editor.TextEditor.init(allocator) catch unreachable;
+    }
+    return &slot.*.?;
+}
+
+fn themePreviewCard(
+    allocator: std.mem.Allocator,
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    pos: [2]f32,
+    width: f32,
+    t: *const theme.Theme,
+) f32 {
+    const padding = t.spacing.md;
+    const line_height = dc.lineHeight();
+    const button_height = widgets.button.defaultHeight(t, line_height);
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
+
+    const chrome_h: f32 = 148.0;
+    const height =
+        padding + line_height + t.spacing.xs +
+        row_height + t.spacing.xs + // disabled toggle
+        button_height + t.spacing.sm + // buttons row
+        row_height + t.spacing.xs + // checkbox row
+        (line_height + t.spacing.xs + input_height) + t.spacing.sm + // text input
+        (if (preview_focus_ring) (line_height + t.spacing.xs + 42.0 + t.spacing.sm) else (line_height + t.spacing.xs + 42.0 + t.spacing.sm)) +
+        chrome_h +
+        padding;
+
+    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
+    var cursor_y = drawCardBase(dc, rect, "Theme Preview");
+    const left = rect.min[0] + padding;
+    const content_w = rect.size()[0] - padding * 2.0;
+
+    // Isolate widget ids inside this card.
+    nav_router.pushScope(std.hash.Wyhash.hash(0, "showcase_theme_preview"));
+    defer nav_router.popScope();
+
+    // Disabled toggle.
+    {
+        var disabled = preview_disabled;
+        _ = widgets.checkbox.draw(
+            dc,
+            draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_w, row_height }),
+            "Disable controls (preview)",
+            &disabled,
+            queue,
+            .{},
+        );
+        preview_disabled = disabled;
+        cursor_y += row_height + t.spacing.xs;
+    }
+
+    // Buttons row (primary/secondary/ghost).
+    {
+        const labels = [_][]const u8{ "Primary", "Secondary", "Ghost" };
+        const variants = [_]widgets.button.Variant{ .primary, .secondary, .ghost };
+        var x = left;
+        const max_x = rect.max[0] - padding;
+        var i: usize = 0;
+        while (i < labels.len) : (i += 1) {
+            const w = buttonWidth(dc, labels[i], t);
+            if (x + w > max_x and x != left) break;
+            _ = widgets.button.draw(
+                dc,
+                draw_context.Rect.fromMinSize(.{ x, cursor_y }, .{ w, button_height }),
+                labels[i],
+                queue,
+                .{ .variant = variants[i], .disabled = preview_disabled },
+            );
+            x += w + t.spacing.sm;
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
+
+    // Checkbox preview.
+    {
+        var checked = preview_checked;
+        _ = widgets.checkbox.draw(
+            dc,
+            draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_w, row_height }),
+            "Checkbox (preview)",
+            &checked,
+            queue,
+            .{ .disabled = preview_disabled },
+        );
+        preview_checked = checked;
+        cursor_y += row_height + t.spacing.xs;
+    }
+
+    // Text input preview.
+    {
+        dc.drawText("Text input (preview)", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
+        const input_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y + line_height + t.spacing.xs }, .{ content_w, input_height });
+        const ed = ensureEditor(&preview_text_editor, allocator);
+        _ = widgets.text_input.draw(ed, allocator, dc, input_rect, queue, .{
+            .placeholder = "Type to test cursor, selection, focus ring, etc.",
+            .read_only = preview_disabled,
+        });
+        cursor_y += line_height + t.spacing.xs + input_height + t.spacing.sm;
+    }
+
+    // Focus ring preview (forced-on).
+    {
+        var focus_on = preview_focus_ring;
+        _ = widgets.checkbox.draw(
+            dc,
+            draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_w, row_height }),
+            "Show focus ring (preview)",
+            &focus_on,
+            queue,
+            .{ .disabled = preview_disabled },
+        );
+        preview_focus_ring = focus_on;
+        cursor_y += row_height + t.spacing.xs;
+
+        const ring_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ @min(260.0, content_w), 42.0 });
+        panel_chrome.draw(dc, ring_rect, .{ .radius = t.radius.sm, .draw_shadow = false, .draw_frame = false });
+        dc.drawText("focus target", .{ ring_rect.min[0] + t.spacing.sm, ring_rect.min[1] + (ring_rect.size()[1] - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        if (preview_focus_ring and !preview_disabled) {
+            widgets.focus_ring.draw(dc, ring_rect, t.radius.sm);
+        }
+        cursor_y += ring_rect.size()[1] + t.spacing.sm;
+    }
+
+    // Panel chrome preview (shadow/frame/9-slice).
+    {
+        const chrome_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_w, chrome_h });
+        const ss = theme_runtime.getStyleSheet();
+        const radius = ss.panel.radius orelse t.radius.md;
+        panel_chrome.draw(dc, chrome_rect, .{
+            .radius = radius,
+            .draw_shadow = true,
+            .draw_frame = true,
+            .draw_border = true,
+        });
+        dc.drawText("Panel chrome (shadow + optional 9-slice frame image)", .{ chrome_rect.min[0] + t.spacing.sm, chrome_rect.min[1] + t.spacing.sm }, .{ .color = t.colors.text_primary });
     }
 
     return height;

@@ -1278,7 +1278,19 @@ fn drawPanelContents(
             replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
         },
         .Showcase => {
-            showcase_panel.draw(allocator, panel_rect);
+            const showcase_action = showcase_panel.draw(allocator, panel_rect);
+            if (showcase_action.reload_effective_pack) {
+                if (win_state.theme_pack_override != null) {
+                    action.reload_theme_pack_override = true;
+                } else {
+                    action.reload_theme_pack = true;
+                }
+            }
+            if (showcase_action.open_pack_root) {
+                const root = theme_runtime.getThemePackRootPath() orelse "themes";
+                const owned = allocator.dupe(u8, root) catch null;
+                replaceOwnedSlice(allocator, &action.open_url, owned);
+            }
         },
     }
 
