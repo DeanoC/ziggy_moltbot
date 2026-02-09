@@ -1,6 +1,8 @@
-# Windows node service (MVP)
+# Windows node service
 
-This repo’s “node service” on Windows is implemented as a **Windows Task Scheduler** task that keeps the node running in the background.
+On Windows, ZiggyStarClaw’s “node service” is implemented as a **real Windows Service Control Manager (SCM) service**.
+
+This replaces the earlier Task Scheduler wrapper approach.
 
 ## Commands
 
@@ -16,10 +18,31 @@ All of these are available on Windows:
 
 ### Mode
 
-- `--node-service-mode onstart` (default on Windows): run at boot (Task Scheduler `ONSTART`, runs as `SYSTEM`).
-- `--node-service-mode onlogon`: run when the user logs on.
+- `--node-service-mode onstart` (default on Windows):
+  - Installs an **Auto Start** SCM service (runs as `LocalSystem`)
+  - Starts at boot
 
-### Config path
+- `--node-service-mode onlogon`:
+  - Installs a **Manual Start** SCM service
+  - Intended for user-controlled start (e.g. tray app at logon)
+
+> Note: both modes run the service as `LocalSystem` (Session 0). Some interactive capabilities (camera/screen capture) may not work from a service.
+
+### Service name
+
+Default service name:
+
+- `ZiggyStarClaw Node`
+
+Override with:
+
+- `--node-service-name "My Service Name"`
+
+## Config path
+
+You can override with `--config <path>`.
+
+Defaults:
 
 - `onstart` default config path:
   - `%ProgramData%\ZiggyStarClaw\config.json`
@@ -27,21 +50,41 @@ All of these are available on Windows:
 - `onlogon` default config path:
   - `%APPDATA%\ZiggyStarClaw\config.json`
 
-You can override with `--config <path>`.
-
 ## Logging
 
-Node logs are written to:
+Logs are written next to the config file:
 
-- `%ProgramData%\ZiggyStarClaw\logs\node.log`
+- `<config dir>\logs\node.log`
 
-## Crash recovery
+Common defaults:
 
-Because this is a Task Scheduler wrapper (not a Windows SCM service yet), **SCM recovery options do not apply**.
+- System (onstart): `%ProgramData%\ZiggyStarClaw\logs\node.log`
+- User (onlogon): `%APPDATA%\ZiggyStarClaw\logs\node.log`
 
-Instead, the installed wrapper script runs the node in a loop and restarts it after a short delay if it exits.
+The Windows tray app also writes its own troubleshooting log:
+
+- `%APPDATA%\ZiggyStarClaw\tray.log`
+
+## Crash recovery (SCM)
+
+The installer configures SCM recovery actions:
+
+- restart the service automatically on failure
+
+You can inspect/change recovery in:
+
+- Services → **ZiggyStarClaw Node** → Properties → **Recovery**
+
+Or via PowerShell / `sc.exe` (advanced).
+
+## Permissions (tray control without admin)
+
+During install, the service’s security descriptor is set to allow **Authenticated Users** to query/start/stop the service.
+
+This allows `ziggystarclaw-tray.exe` to control the node without requiring elevation.
 
 ## Install notes
 
-Creating an `onstart` task (runs as `SYSTEM`) typically requires an elevated (Administrator) shell.
-If install fails with access denied, re-run the command from an elevated PowerShell.
+Creating or modifying an SCM service typically requires an elevated (Administrator) shell.
+
+If install fails with access denied, re-run from an elevated PowerShell.

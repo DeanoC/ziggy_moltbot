@@ -1,12 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
+const scm_service = @import("windows/scm_service.zig");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
 // NOTE: This is intentionally minimal and Windows-only.
-// - Uses Task Scheduler helper task "ZiggyStarClaw Node" (same default as ziggystarclaw-cli node service ...)
-// - Spawns ziggystarclaw-cli where available; falls back to schtasks.
+// - Controls the ZiggyStarClaw node **Windows service** (SCM) "ZiggyStarClaw Node".
+// - Spawns ziggystarclaw-cli where available; falls back to SCM APIs.
 // - Logs basic tray actions to %APPDATA%\\ZiggyStarClaw\\tray.log for troubleshooting.
 
 pub fn main() !void {
@@ -328,53 +329,44 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
         if (ok) return;
     }
 
-    // Fallback to schtasks.
-    const task_name = "ZiggyStarClaw Node";
+    // Fallback: talk to SCM directly.
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
 
-    const res = switch (action) {
-        .start => try runCapture(allocator, &.{ "schtasks", "/Run", "/TN", task_name }),
-        .stop => try runCapture(allocator, &.{ "schtasks", "/End", "/TN", task_name }),
-        .status => try runCapture(allocator, &.{ "schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST" }),
-    };
-    defer res.deinit(allocator);
-
-    if (res.exit_code != 0) {
-        if (isAccessDenied(res.stdout) or isAccessDenied(res.stderr)) return error.AccessDenied;
-        return error.CommandFailed;
+    switch (action) {
+        .start => scm_service.startService(allocator, svc_name) catch |err| switch (err) {
+            scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+            scm_service.ServiceError.NotInstalled => return error.NotInstalled,
+            else => return error.CommandFailed,
+        },
+        .stop => scm_service.stopService(allocator, svc_name) catch |err| switch (err) {
+            scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+            scm_service.ServiceError.NotInstalled => return error.NotInstalled,
+            else => return error.CommandFailed,
+        },
+        .status => {
+            _ = scm_service.queryService(allocator, svc_name) catch |err| switch (err) {
+                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                else => return error.CommandFailed,
+            };
+        },
     }
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
-    // Prefer the supervisor control pipe if available (works without Task Scheduler permissions).
+    // Prefer the supervisor control pipe if available.
     if (try queryServiceStatePipe(allocator)) |st| return st;
 
-    // NOTE: Avoid parsing `schtasks /Query` stdout for status.
-    // That output is localized (non-English Windows), which would keep the tray
-    // state stuck at `.unknown` and disable Start/Stop/Restart.
-    if (try queryServiceStatePowerShell(allocator)) |st| return st;
+    // Query SCM directly (not localized).
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const q = scm_service.queryService(allocator, svc_name) catch return .unknown;
 
-    // Fallback: schtasks (best-effort; may be localized).
-    const task_name = "ZiggyStarClaw Node";
-    const argv = &.{ "schtasks", "/Query", "/TN", task_name, "/FO", "LIST" };
-    const res = try runCapture(allocator, argv);
-    defer res.deinit(allocator);
-
-    if (res.exit_code != 0) {
-        if (looksLikeNotInstalled(res.stdout) or looksLikeNotInstalled(res.stderr)) return .not_installed;
-        return .unknown;
-    }
-
-    if (res.stdout.len != 0) {
-        // Best-effort parse (English-only).
-        if (std.mem.indexOf(u8, res.stdout, "Status:") != null) {
-            if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
-            return .stopped;
-        }
-        if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
-        if (std.mem.indexOf(u8, res.stdout, "Ready") != null) return .stopped;
-    }
-
-    return .unknown;
+    return switch (q.state) {
+        .not_installed => .not_installed,
+        .running => .running,
+        .stopped => .stopped,
+        // Pending states: show unknown so the menu stays permissive.
+        else => .unknown,
+    };
 }
 
 fn queryServiceStatePowerShell(allocator: std.mem.Allocator) !?ServiceState {

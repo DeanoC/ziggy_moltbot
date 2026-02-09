@@ -16,6 +16,8 @@ const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
+const win_scm = if (builtin.os.tag == .windows) @import("windows/scm_service.zig") else struct {};
+const win_scm_host = if (builtin.os.tag == .windows) @import("windows/scm_host.zig") else struct {};
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
@@ -293,7 +295,7 @@ const usage =
     \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
-    \\Node service helpers (Windows Task Scheduler / Linux systemd)
+    \\Node service helpers (Windows SCM service / Linux systemd)
     \\  node service <action>      Convenience: install|uninstall|start|stop|status
     \\  --node-service-install    Install and enable node-mode background service
     \\  --node-service-uninstall  Uninstall the background service
@@ -384,7 +386,7 @@ pub fn main() !void {
     var node_register_mode = false;
     var node_register_wait = false;
 
-    // Windows task-scheduler "service" helpers
+    // Node service helpers
     var node_service_install = false;
     var node_service_uninstall = false;
     var node_service_start = false;
@@ -392,6 +394,9 @@ pub fn main() !void {
     var node_service_status = false;
     var node_service_mode: win_service.InstallMode = if (builtin.os.tag == .windows) .onstart else .onlogon;
     var node_service_name: ?[]const u8 = null;
+
+    // Internal: when invoked by Windows Service Control Manager (SCM).
+    var windows_service_run = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
     var operator_mode = false;
@@ -400,6 +405,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
         if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
         if (std.mem.eql(u8, a, "--wait-for-approval")) node_register_wait = true;
+        if (std.mem.eql(u8, a, "--windows-service")) windows_service_run = true;
     }
     var save_config = false;
 
@@ -609,6 +615,8 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_service_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--windows-service")) {
+            // handled by pre-scan; keep parsing so we accept --config/--log-level/etc.
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
@@ -625,7 +633,7 @@ pub fn main() !void {
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
-            if (!(node_mode or operator_mode or node_register_mode)) {
+            if (!(node_mode or operator_mode or node_register_mode or windows_service_run)) {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
@@ -636,7 +644,7 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
+        check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -644,7 +652,22 @@ pub fn main() !void {
         return;
     }
 
-    // Node service helpers (Windows Task Scheduler, Linux systemd)
+    // Internal: Windows SCM invokes the service executable with --windows-service.
+    if (windows_service_run) {
+        if (builtin.os.tag != .windows) {
+            logger.err("--windows-service is only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+        const svc_name = node_service_name orelse win_scm.defaultServiceName();
+        // Note: this call blocks until the service stops.
+        win_scm_host.runWindowsService(allocator, svc_name, args[1..]) catch |err| {
+            logger.err("Failed to start Windows service dispatcher: {s}", .{@errorName(err)});
+            return;
+        };
+        return;
+    }
+
+    // Node service helpers (Windows SCM service, Linux systemd)
     if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
         // For node services, prefer the explicit --config path if provided; otherwise
         // use the unified node config default path.
@@ -764,23 +787,14 @@ pub fn main() !void {
             }
         }
 
-        if (builtin.os.tag != .windows) {
-            logger.err("node service helpers are only supported on Windows and Linux", .{});
-            return error.InvalidArguments;
-        }
-
-        if (node_service_install) {
+        if (builtin.os.tag == .windows) {
+            if (node_service_install) {
             // Ensure the node is registered/persisted in the SAME config.json the service will use.
-            // This keeps manual runs and the scheduled task deterministic.
+            // This keeps manual runs and the installed service deterministic.
             //
             // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
             // can approve without re-running commands.
             try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
-
-            // Install a scheduled task that runs the built-in supervisor (no VBS/PS1/CMD wrappers).
-            // This keeps stop/status sane and avoids quoting/escaping issues.
-            const exe_path = try std.fs.selfExePathAlloc(allocator);
-            defer allocator.free(exe_path);
 
             // Put logs next to the config (system-scope config => ProgramData; user-scope config => AppData).
             const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
@@ -791,74 +805,82 @@ pub fn main() !void {
             const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
             defer allocator.free(log_path);
 
-            const wrapper_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "wrapper.log" });
-            defer allocator.free(wrapper_log_path);
-
-            const stdio_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node-stdio.log" });
-            defer allocator.free(stdio_log_path);
-
-            // Create log files up-front so users have concrete places to look even if
+            // Create log file up-front so users have a concrete place to look even if
             // the node fails early.
             _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
                 logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
             };
-            _ = std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false }) catch |err| {
-                logger.warn("Failed to create wrapper log {s}: {}", .{ wrapper_log_path, err });
-            };
-            _ = std.fs.cwd().createFile(stdio_log_path, .{ .truncate = false }) catch |err| {
-                logger.warn("Failed to create stdio log {s}: {}", .{ stdio_log_path, err });
-            };
 
-            const task_run = try std.fmt.allocPrint(
-                allocator,
-                "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level info",
-                .{ exe_path, node_cfg_path },
-            );
-            defer allocator.free(task_run);
-
-            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
-                if (err == win_service.ServiceError.AccessDenied) {
-                    logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+            win_scm.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+                if (err == win_scm.ServiceError.AccessDenied) {
+                    logger.err("Windows service install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
                     return;
                 }
                 return err;
             };
 
-            logger.info("Installed scheduled task for node-mode (built-in supervisor).", .{});
-            _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
+            const svc_name = node_service_name orelse win_scm.defaultServiceName();
+
+            logger.info("Installed Windows SCM service for node-mode.", .{});
+            _ = std.fs.File.stdout().write("Installed Windows service for node-mode.\n") catch {};
+            _ = std.fs.File.stdout().write("Service name: ") catch {};
+            _ = std.fs.File.stdout().write(svc_name) catch {};
+            _ = std.fs.File.stdout().write("\n") catch {};
             _ = std.fs.File.stdout().write("Node logs: ") catch {};
             _ = std.fs.File.stdout().write(log_path) catch {};
             _ = std.fs.File.stdout().write("\n") catch {};
-            _ = std.fs.File.stdout().write("Wrapper logs: ") catch {};
-            _ = std.fs.File.stdout().write(wrapper_log_path) catch {};
-            _ = std.fs.File.stdout().write("\n") catch {};
-            _ = std.fs.File.stdout().write("Node stdio: ") catch {};
-            _ = std.fs.File.stdout().write(stdio_log_path) catch {};
-            _ = std.fs.File.stdout().write("\n") catch {};
+            _ = std.fs.File.stdout().write("Recovery: configured to restart automatically on failure (via SCM).\n") catch {};
             return;
         }
         if (node_service_uninstall) {
-            try win_service.uninstallTask(allocator, node_service_name);
-            logger.info("Uninstalled scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Uninstalled scheduled task.\n") catch {};
+            win_scm.uninstallService(allocator, node_service_name) catch |err| {
+                if (err == win_scm.ServiceError.AccessDenied) {
+                    logger.err("Windows service uninstall failed: access denied. Re-run from an elevated (Administrator) PowerShell.", .{});
+                    return;
+                }
+                return err;
+            };
+            logger.info("Uninstalled Windows service.", .{});
+            _ = std.fs.File.stdout().write("Uninstalled Windows service.\n") catch {};
             return;
         }
         if (node_service_start) {
-            try win_service.startTask(allocator, node_service_name);
-            logger.info("Started scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Started scheduled task.\n") catch {};
+            win_scm.startService(allocator, node_service_name) catch |err| {
+                if (err == win_scm.ServiceError.AccessDenied) {
+                    logger.err("Windows service start failed: access denied. If you installed the service without the tray-control permissions, re-install it from an elevated shell.", .{});
+                    return;
+                }
+                return err;
+            };
+            logger.info("Started Windows service.", .{});
+            _ = std.fs.File.stdout().write("Started Windows service.\n") catch {};
             return;
         }
         if (node_service_stop) {
-            try win_service.stopTask(allocator, node_service_name);
-            logger.info("Stopped scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Stopped scheduled task.\n") catch {};
+            win_scm.stopService(allocator, node_service_name) catch |err| {
+                if (err == win_scm.ServiceError.AccessDenied) {
+                    logger.err("Windows service stop failed: access denied.\n", .{});
+                    return;
+                }
+                return err;
+            };
+            logger.info("Stopped Windows service.", .{});
+            _ = std.fs.File.stdout().write("Stopped Windows service.\n") catch {};
             return;
         }
         if (node_service_status) {
-            try win_service.queryTask(allocator, node_service_name);
+            const q = try win_scm.queryService(allocator, node_service_name);
+            var out = std.fs.File.stdout().deprecatedWriter();
+            try out.print("Service: {s}", .{win_scm.stateLabel(q.state)});
+            if (q.pid != 0) try out.print(" pid={d}", .{q.pid});
+            if (q.win32_exit_code != 0) try out.print(" win32Exit={d}", .{q.win32_exit_code});
+            try out.writeByte('\n');
             return;
         }
+        }
+
+        logger.err("node service helpers are only supported on Windows and Linux", .{});
+        return error.InvalidArguments;
     }
 
     // Handle node register (interactive helper)

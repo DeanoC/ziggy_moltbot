@@ -49,6 +49,24 @@ pub fn sleepMs(ms: u64) void {
 }
 
 // -----------------------------------------------------------------------------
+// Process lifecycle / shutdown
+// -----------------------------------------------------------------------------
+
+// NOTE: node-mode runs as a long-lived loop. Some hosts (Windows SCM service)
+// need a cooperative shutdown signal.
+var g_stop_requested = std.atomic.Value(bool).init(false);
+
+/// Request a cooperative stop for node-mode (best-effort).
+pub fn requestStop() void {
+    g_stop_requested.store(true, .seq_cst);
+}
+
+/// Returns true if a cooperative stop has been requested.
+pub fn stopRequested() bool {
+    return g_stop_requested.load(.seq_cst);
+}
+
+// -----------------------------------------------------------------------------
 // Storage paths (defaults / templates)
 // -----------------------------------------------------------------------------
 

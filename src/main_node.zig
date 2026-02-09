@@ -490,7 +490,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     defer reporter.stop();
 
     // Main event loop
-    while (true) {
+    while (!node_platform.stopRequested()) {
         conn.step();
 
         if (!conn.is_connected) {

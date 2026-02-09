@@ -1,6 +1,6 @@
 # Windows tray app MVP (ziggystarclaw-tray)
 
-This is a minimal Windows 10/11 tray icon app that controls the ZiggyStarClaw **node scheduled task** ("service"):
+This is a minimal Windows 10/11 tray icon app that controls the ZiggyStarClaw **node Windows service** (SCM):
 
 - Show current node service status (Running / Stopped / Not installed)
 - Start / Stop / Restart
@@ -20,13 +20,13 @@ If you don’t see it, check the hidden icons (the ^ tray overflow).
 
 ## Requirements
 
-The tray app controls the default scheduled task created by:
+The tray app controls the default Windows service installed by:
 
 ```
 ziggystarclaw-cli node service install
 ```
 
-The default task name is:
+The default service name is:
 
 - `ZiggyStarClaw Node`
 
@@ -36,9 +36,8 @@ The default task name is:
 
 The tray app tries to open the first existing log file from these common locations:
 
-- `%APPDATA%\ZiggyStarClaw\node-service.log` (written by `ziggystarclaw-cli node service install`)
-- `%APPDATA%\ZiggyStarClaw\logs\node.log` (future)
-- `%LOCALAPPDATA%\ZiggyStarClaw\logs\node.log` (future)
+- `%ProgramData%\ZiggyStarClaw\logs\node.log` (system service / onstart)
+- `%APPDATA%\ZiggyStarClaw\logs\node.log` (user config / onlogon)
 
 The tray app’s own troubleshooting log is:
 
@@ -52,12 +51,12 @@ The tray app’s own troubleshooting log is:
   - Run: `ziggystarclaw-cli node service install`
 
 - **Start/Stop fails with Access Denied**
-  - Try running the installer / CLI from an elevated (Administrator) PowerShell.
-  - Some task configurations may require higher privileges to control.
+  - Re-run `ziggystarclaw-cli node service install` from an elevated (Administrator) PowerShell.
+  - The installer sets service permissions so the tray can control it without elevation.
 
 - **Open Logs does nothing**
   - The log file may not exist yet (service never started).
-  - Use **Open Config Folder** from the tray menu and look for `node-service.log`.
+  - Use **Open Config Folder** from the tray menu and look for a `logs` folder.
 
 ---
 

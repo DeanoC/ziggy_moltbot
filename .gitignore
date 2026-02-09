@@ -11,6 +11,10 @@ moltbot_device.json
 __pycache__/
 profiles/
 
+# local git worktrees / helper scripts
+worktrees/
+workflow/
+
 # local debug / identity artifacts
 ziggystarclaw_agents.json
 ziggystarclaw_config.json
