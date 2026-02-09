@@ -11,6 +11,10 @@ pub const Shared = struct {
     pid: u32 = 0,
 
     // Pipe diagnostics (best-effort)
+    pipe_creates: u32 = 0,
+    pipe_create_fails: u32 = 0,
+    pipe_last_create_err: u32 = 0,
+    pipe_last_connect_err: u32 = 0,
     pipe_accepts: u32 = 0,
     pipe_timeouts: u32 = 0,
     pipe_requests: u32 = 0,
@@ -86,7 +90,9 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
 
     var sa: win.SECURITY_ATTRIBUTES = std.mem.zeroes(win.SECURITY_ATTRIBUTES);
     sa.nLength = @sizeOf(win.SECURITY_ATTRIBUTES);
-    sa.bInheritHandle = win.TRUE;
+    // Do NOT make pipe handles inheritable; child processes should not keep pipe
+    // instances alive (it can make the pipe appear present but unconnectable).
+    sa.bInheritHandle = win.FALSE;
     sa.lpSecurityDescriptor = sd;
 
     while (true) {
@@ -94,21 +100,33 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
             wpipe.ptr,
             win.PIPE_ACCESS_DUPLEX,
             win.PIPE_TYPE_MESSAGE | win.PIPE_READMODE_MESSAGE | win.PIPE_WAIT,
-            4,
+            win.PIPE_UNLIMITED_INSTANCES,
             4096,
             4096,
             0,
             if (sd != null) &sa else null,
         );
         if (hpipe == win.INVALID_HANDLE_VALUE) {
+            const err = win.GetLastError();
+            shared.mutex.lock();
+            shared.pipe_create_fails += 1;
+            shared.pipe_last_create_err = @intCast(err);
+            shared.mutex.unlock();
             std.Thread.sleep(1 * std.time.ns_per_s);
             continue;
         }
+
+        shared.mutex.lock();
+        shared.pipe_creates += 1;
+        shared.mutex.unlock();
 
         const connected = win.ConnectNamedPipe(hpipe, null);
         if (connected == 0) {
             const err = win.GetLastError();
             if (err != win.ERROR_PIPE_CONNECTED) {
+                shared.mutex.lock();
+                shared.pipe_last_connect_err = @intCast(err);
+                shared.mutex.unlock();
                 _ = win.CloseHandle(hpipe);
                 continue;
             }

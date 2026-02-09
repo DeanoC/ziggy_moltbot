@@ -201,13 +201,17 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
         const now_ms = std.time.milliTimestamp();
         if (now_ms - last_diag_ms > 10_000) {
             shared.mutex.lock();
+            const creates = shared.pipe_creates;
+            const create_fails = shared.pipe_create_fails;
+            const last_create_err = shared.pipe_last_create_err;
+            const last_connect_err = shared.pipe_last_connect_err;
             const accepts = shared.pipe_accepts;
             const timeouts = shared.pipe_timeouts;
             const reqs = shared.pipe_requests;
             shared.mutex.unlock();
             wrap.print(
-                "{d} [wrapper] pipe stats: accepts={d} reqs={d} timeouts={d}\n",
-                .{ std.time.timestamp(), accepts, reqs, timeouts },
+                "{d} [wrapper] pipe stats: creates={d} create_fails={d} last_create_err={d} last_connect_err={d} accepts={d} reqs={d} timeouts={d}\n",
+                .{ std.time.timestamp(), creates, create_fails, last_create_err, last_connect_err, accepts, reqs, timeouts },
             ) catch {};
             last_diag_ms = now_ms;
         }
