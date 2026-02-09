@@ -162,7 +162,7 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
             wrap.print("{d} [wrapper] launching node-mode child\n", .{std.time.timestamp()}) catch {};
             c.spawn() catch |err| {
                 wrap.print("{d} [wrapper] spawn failed: {s}\n", .{ std.time.timestamp(), @errorName(err) }) catch {};
-                std.time.sleep(2 * std.time.ns_per_s);
+                std.Thread.sleep(2 * std.time.ns_per_s);
                 continue;
             };
             child = c;
@@ -195,7 +195,7 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
             shared.mutex.unlock();
         }
 
-        std.time.sleep(200 * std.time.ns_per_ms);
+        std.Thread.sleep(200 * std.time.ns_per_ms);
     }
 }
 
