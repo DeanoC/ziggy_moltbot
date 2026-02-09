@@ -127,7 +127,9 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
         .{ std.time.timestamp(), cfg_path, node_log_path, supervisor_pipe.pipe_name_utf8 },
     ) catch {};
 
-    // Periodically report pipe diagnostics.
+    const diag_enabled = (opts.log_level == .debug);
+
+    // Periodically report pipe diagnostics (debug only).
     var last_diag_ms: i64 = 0;
 
     var child: ?std.process.Child = null;
@@ -220,7 +222,7 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
         }
 
         const now_ms = std.time.milliTimestamp();
-        if (now_ms - last_diag_ms > 10_000) {
+        if (diag_enabled and now_ms - last_diag_ms > 10_000) {
             shared.mutex.lock();
             const creates = shared.pipe_creates;
             const create_fails = shared.pipe_create_fails;
@@ -809,7 +811,7 @@ pub fn main() !void {
 
             const task_run = try std.fmt.allocPrint(
                 allocator,
-                "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level debug",
+                "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level info",
                 .{ exe_path, node_cfg_path },
             );
             defer allocator.free(task_run);
