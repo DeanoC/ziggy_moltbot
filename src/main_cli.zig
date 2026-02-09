@@ -223,7 +223,7 @@ pub fn main() !void {
             return;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.print("ziggystarclaw-cli {s}\n", .{build_options.app_version});
+            try stdout.print("ziggystarclaw-cli {s}+{s}\n", .{ build_options.app_version, build_options.git_rev });
             return;
         } else if (i == 1 and std.mem.eql(u8, arg, "node")) {
             // Minimal verb-noun style convenience wrapper:

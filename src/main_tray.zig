@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const build_options = @import("build_options");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
@@ -32,6 +33,7 @@ const win = @cImport({
 const WM_TRAYICON: u32 = win.WM_APP + 1;
 const TIMER_STATUS: usize = 1;
 
+const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
 const IDM_START: u16 = 1001;
 const IDM_STOP: u16 = 1002;
@@ -148,10 +150,10 @@ fn refreshStatus() void {
 
 fn updateTipText(state: ServiceState) void {
     const txt = switch (state) {
-        .unknown => "ZiggyStarClaw: Node status unknown",
-        .not_installed => "ZiggyStarClaw: Node service not installed",
-        .running => "ZiggyStarClaw: Node service running",
-        .stopped => "ZiggyStarClaw: Node service stopped",
+        .unknown => std.fmt.comptimePrint("ZSC {s}+{s}: status unknown", .{ build_options.app_version, build_options.git_rev }),
+        .not_installed => std.fmt.comptimePrint("ZSC {s}+{s}: not installed", .{ build_options.app_version, build_options.git_rev }),
+        .running => std.fmt.comptimePrint("ZSC {s}+{s}: running", .{ build_options.app_version, build_options.git_rev }),
+        .stopped => std.fmt.comptimePrint("ZSC {s}+{s}: stopped", .{ build_options.app_version, build_options.git_rev }),
     };
     // Clear buffer
     @memset(&g_tip_buf, 0);
@@ -174,6 +176,8 @@ fn showContextMenu() void {
         .unknown => "Status: Unknown",
     };
 
+    const version_label = std.fmt.comptimePrint("ZSC Tray {s}+{s}", .{ build_options.app_version, build_options.git_rev });
+    appendMenuItem(hMenu, IDM_VERSION, version_label, true);
     appendMenuItem(hMenu, IDM_STATUS, status_label, true);
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
 
