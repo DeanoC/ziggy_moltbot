@@ -54,6 +54,77 @@ fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8
     return error.FileNotFound;
 }
 
+fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    // Headless supervisor: keep node-mode running and restart on exit.
+    // Intended for Windows Task Scheduler ONSTART tasks (runs as SYSTEM, Session 0).
+
+    var opts = try main_node.parseNodeOptions(allocator, args);
+
+    // Mirror the service defaults: node enabled, operator disabled.
+    if (opts.as_node == null) opts.as_node = true;
+    if (opts.as_operator == null) opts.as_operator = false;
+
+    // Determine config path so we can place logs next to it.
+    var cfg_path_owned: ?[]u8 = null;
+    const cfg_path: []const u8 = if (opts.config_path) |p| p else blk: {
+        const p = try unified_config.defaultConfigPath(allocator);
+        cfg_path_owned = @constCast(p);
+        break :blk p;
+    };
+    defer if (cfg_path_owned) |p| allocator.free(p);
+
+    const cfg_dir = std.fs.path.dirname(cfg_path) orelse ".";
+    const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
+    defer allocator.free(logs_dir);
+    std.fs.cwd().makePath(logs_dir) catch {};
+
+    const node_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
+    defer allocator.free(node_log_path);
+    const wrapper_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "wrapper.log" });
+    defer allocator.free(wrapper_log_path);
+    const stdio_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node-stdio.log" });
+    defer allocator.free(stdio_log_path);
+
+    // Ensure files exist.
+    _ = std.fs.cwd().createFile(node_log_path, .{ .truncate = false }) catch {};
+    _ = std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false }) catch {};
+    _ = std.fs.cwd().createFile(stdio_log_path, .{ .truncate = false }) catch {};
+
+    // Reconfigure the logger so node-mode logs actually go to disk.
+    logger.deinit();
+    logger.setLevel(opts.log_level);
+    cli_log_level = toStdLogLevel(opts.log_level);
+    logger.initFile(node_log_path) catch |err| {
+        // If we can't open the log file, at least keep going (Task Scheduler may still capture output).
+        logger.warn("Failed to open node log file {s}: {}", .{ node_log_path, err });
+    };
+    logger.initAsync(allocator) catch |err| {
+        logger.warn("Failed to start async logger: {}", .{err});
+    };
+
+    // Wrapper diagnostics.
+    var wrapper_file = try std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false });
+    defer wrapper_file.close();
+    try wrapper_file.seekFromEnd(0);
+    var w = wrapper_file.deprecatedWriter();
+
+    w.print("{d} [wrapper] supervisor starting; config={s}; node_log={s}; stdio_log={s}\n", .{ std.time.timestamp(), cfg_path, node_log_path, stdio_log_path }) catch {};
+
+    // Keep restarting node-mode if it exits.
+    while (true) {
+        w.print("{d} [wrapper] launching node-mode\n", .{std.time.timestamp()}) catch {};
+
+        main_node.runNodeMode(allocator, opts) catch |err| {
+            w.print("{d} [wrapper] node-mode exited with error: {s}\n", .{ std.time.timestamp(), @errorName(err) }) catch {};
+            std.Thread.sleep(5 * std.time.ns_per_s);
+            continue;
+        };
+
+        w.print("{d} [wrapper] node-mode exited normally; restarting in 5s\n", .{std.time.timestamp()}) catch {};
+        std.Thread.sleep(5 * std.time.ns_per_s);
+    }
+}
+
 var cli_log_level: std.log.Level = .warn;
 
 const usage =
@@ -230,6 +301,15 @@ pub fn main() !void {
             //   ziggystarclaw-cli node service install|uninstall|start|stop|status
             if (i + 1 >= args.len) return error.InvalidArguments;
             const noun = args[i + 1];
+
+            if (std.mem.eql(u8, noun, "supervise")) {
+                // Headless supervisor for running node-mode under Task Scheduler (ONSTART).
+                // Usage:
+                //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
+                try runNodeSupervisor(allocator, args[(i + 2)..]);
+                return;
+            }
+
             if (!std.mem.eql(u8, noun, "service")) {
                 logger.err("Unknown subcommand: node {s}", .{noun});
                 return error.InvalidArguments;
@@ -578,27 +658,14 @@ pub fn main() !void {
             // can approve without re-running commands.
             try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
-            // Install a small wrapper script so we can:
-            // - avoid schtasks /TR length limits
-            // - run hidden (no console window) even for ONLOGON tasks
-            // - ensure predictable logging to %ProgramData%\ZiggyStarClaw\logs\node.log
-            // - keep the task process alive so stop/status behave sensibly
-            // - automatically restart the node if it exits/crashes
+            // Install a scheduled task that runs the built-in supervisor (no VBS/PS1/CMD wrappers).
+            // This keeps stop/status sane and avoids quoting/escaping issues.
             const exe_path = try std.fs.selfExePathAlloc(allocator);
             defer allocator.free(exe_path);
 
-            // Place wrapper alongside the config.
+            // Put logs next to the config (system-scope config => ProgramData; user-scope config => AppData).
             const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
-            std.fs.cwd().makePath(cfg_dir) catch {};
-
-            // Predictable log location.
-            const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
-            defer if (programdata) |v| allocator.free(v);
-            const programdata_root: []const u8 = programdata orelse "C:\\ProgramData";
-
-            const zsc_dir = try std.fs.path.join(allocator, &.{ programdata_root, "ZiggyStarClaw" });
-            defer allocator.free(zsc_dir);
-            const logs_dir = try std.fs.path.join(allocator, &.{ zsc_dir, "logs" });
+            const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
             defer allocator.free(logs_dir);
             std.fs.cwd().makePath(logs_dir) catch {};
 
@@ -612,8 +679,7 @@ pub fn main() !void {
             defer allocator.free(stdio_log_path);
 
             // Create log files up-front so users have concrete places to look even if
-            // the node fails early or can't initialize file logging.
-            // (We avoid truncating to preserve any prior logs.)
+            // the node fails early.
             _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
                 logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
             };
@@ -624,195 +690,14 @@ pub fn main() !void {
                 logger.warn("Failed to create stdio log {s}: {}", .{ stdio_log_path, err });
             };
 
-            // Prefer a VBScript launcher (no console window). If Windows Script Host is disabled,
-            // fall back to PowerShell; as a last resort, use a cmd script (may show a window).
-            const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
-            defer if (windir) |v| allocator.free(v);
-
-            const wscript_path = if (windir) |v|
-                try std.fs.path.join(allocator, &.{ v, "System32", "wscript.exe" })
-            else
-                try allocator.dupe(u8, "wscript.exe");
-            defer allocator.free(wscript_path);
-
-            const powershell_path = if (windir) |v|
-                try std.fs.path.join(allocator, &.{ v, "System32", "WindowsPowerShell", "v1.0", "powershell.exe" })
-            else
-                try allocator.dupe(u8, "powershell");
-            defer allocator.free(powershell_path);
-
-            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) != null;
-
-            if (wscript_ok) {
-                const vbs_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.vbs" });
-                defer allocator.free(vbs_path);
-
-                // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
-                // We also keep the wrapper process alive (bWaitOnReturn=True) so Task Scheduler stop/status work.
-                // IMPORTANT: Task Scheduler can report "Running" even if the child process is crashing.
-                // We keep wrapper diagnostics separate from node logs to avoid encoding/format confusion.
-                const windir_root: []const u8 = windir orelse "C:\\Windows";
-
-                const vbs = try std.fmt.allocPrint(
-                    allocator,
-                    "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
-                        "Set env=sh.Environment(\"Process\")\r\n" ++
-                        "Sub LogLine(s)\r\n" ++
-                        "  On Error Resume Next\r\n" ++
-                        "  ' Prefer direct file append when available (fast + no child process).\r\n" ++
-                        "  Dim fso, f\r\n" ++
-                        "  Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n" ++
-                        "  If Err.Number = 0 Then\r\n" ++
-                        "    Set f = fso.OpenTextFile(\"{s}\", 8, True)\r\n" ++
-                        "    If Err.Number = 0 Then\r\n" ++
-                        "      f.WriteLine Now & \" [wrapper] \" & s\r\n" ++
-                        "      f.Close\r\n" ++
-                        "      Exit Sub\r\n" ++
-                        "    End If\r\n" ++
-                        "  End If\r\n" ++
-                        "  Err.Clear\r\n" ++
-                        "  ' Fallback: cmd.exe redirection. Use absolute cmd.exe path (PATH can be surprising under Task Scheduler/SYSTEM).\r\n" ++
-                        "  sh.Run \"\"\"{s}\\System32\\cmd.exe\"\" /c echo \" & Now & \" [wrapper] \" & s & \" >> \"\"\"{s}\"\"\"\", 0, True\r\n" ++
-                        "End Sub\r\n" ++
-                        "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
-                        "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
-                        "LogLine \"starting\"\r\n" ++
-                        "Do\r\n" ++
-                        "  LogLine \"launching node\"\r\n" ++
-                        "  rc = sh.Run(\"\"\"\"{s}\"\"\"\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"\"& '{s}' --node-mode --config '{s}' --as-node --no-operator --log-level debug 2>&1 | Out-File -Append -FilePath '{s}' -Encoding utf8; exit $LASTEXITCODE\"\", 0, True)\r\n" ++
-                        "  LogLine \"node exited rc=\" & rc\r\n" ++
-                        "  WScript.Sleep 5000\r\n" ++
-                        "Loop\r\n",
-                    .{ wrapper_log_path, windir_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
-                );
-                defer allocator.free(vbs);
-
-                {
-                    const f = try std.fs.cwd().createFile(vbs_path, .{ .truncate = true });
-                    defer f.close();
-                    try f.writeAll(vbs);
-                }
-
-                // Task scheduler runs wscript.exe "...\run-node.vbs"
-                const task_run = try std.fmt.allocPrint(allocator, "\"{s}\" \"{s}\"", .{ wscript_path, vbs_path });
-                defer allocator.free(task_run);
-
-                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
-                    if (err == win_service.ServiceError.AccessDenied) {
-                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                        return;
-                    }
-                    return err;
-                };
-
-                logger.info("Installed scheduled task for node-mode (hidden via wscript).", .{});
-                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-                _ = std.fs.File.stdout().write("Node logs: ") catch {};
-                _ = std.fs.File.stdout().write(log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                _ = std.fs.File.stdout().write("Wrapper logs: ") catch {};
-                _ = std.fs.File.stdout().write(wrapper_log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                _ = std.fs.File.stdout().write("Node stdio: ") catch {};
-                _ = std.fs.File.stdout().write(stdio_log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                return;
-            }
-
-            // PowerShell fallback (hidden)
-            const ps1_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.ps1" });
-            defer allocator.free(ps1_path);
-
-            const ps1 = try std.fmt.allocPrint(
-                allocator,
-                "$ErrorActionPreference = 'Continue'\r\n" ++
-                    "$env:MOLT_LOG_FILE = '{s}'\r\n" ++
-                    "$env:MOLT_LOG_LEVEL = 'debug'\r\n" ++
-                    "$wrapperLog = '{s}'\r\n" ++
-                    "$stdioLog = '{s}'\r\n" ++
-                    "while ($true) {{\r\n" ++
-                    "  $ts = Get-Date -Format o\r\n" ++
-                    "  \"$ts [wrapper] launching node\" | Out-File -Append -FilePath $wrapperLog -Encoding utf8\r\n" ++
-                    "  & '{s}' --node-mode --config '{s}' --as-node --no-operator --log-level debug 2>&1 | Out-File -Append -FilePath $stdioLog -Encoding utf8\r\n" ++
-                    "  $rc = $LASTEXITCODE\r\n" ++
-                    "  $ts = Get-Date -Format o\r\n" ++
-                    "  \"$ts [wrapper] node exited rc=$rc\" | Out-File -Append -FilePath $wrapperLog -Encoding utf8\r\n" ++
-                    "  Start-Sleep -Seconds 5\r\n" ++
-                    "}}\r\n",
-                .{ log_path, wrapper_log_path, stdio_log_path, exe_path, node_cfg_path },
-            );
-            defer allocator.free(ps1);
-
-            {
-                const f = try std.fs.cwd().createFile(ps1_path, .{ .truncate = true });
-                defer f.close();
-                try f.writeAll(ps1);
-            }
-
             const task_run = try std.fmt.allocPrint(
                 allocator,
-                "\"{s}\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"{s}\"",
-                .{ powershell_path, ps1_path },
+                "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level debug",
+                .{ exe_path, node_cfg_path },
             );
             defer allocator.free(task_run);
 
-            const installed = blk: {
-                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
-                    if (err == win_service.ServiceError.AccessDenied) {
-                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                        return;
-                    }
-                    logger.warn("PowerShell wrapper install failed: {s}; falling back to cmd wrapper.", .{@errorName(err)});
-                    break :blk false;
-                };
-                break :blk true;
-            };
-
-            if (installed) {
-                logger.info("Installed scheduled task for node-mode (PowerShell wrapper).", .{});
-                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-                _ = std.fs.File.stdout().write("Node logs: ") catch {};
-                _ = std.fs.File.stdout().write(log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                _ = std.fs.File.stdout().write("Wrapper logs: ") catch {};
-                _ = std.fs.File.stdout().write(wrapper_log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                _ = std.fs.File.stdout().write("Node stdio: ") catch {};
-                _ = std.fs.File.stdout().write(stdio_log_path) catch {};
-                _ = std.fs.File.stdout().write("\n") catch {};
-                return;
-            }
-
-            // Last resort: cmd wrapper (may open a console window on ONLOGON tasks)
-            const cmd_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
-            defer allocator.free(cmd_path);
-
-            const cmd = try std.fmt.allocPrint(
-                allocator,
-                "@echo off\r\n" ++
-                    "setlocal\r\n" ++
-                    "set \"MOLT_LOG_FILE={s}\"\r\n" ++
-                    "set \"MOLT_LOG_LEVEL=debug\"\r\n" ++
-                    ":loop\r\n" ++
-                    "echo %DATE% %TIME% [wrapper] launching node >> \"{s}\"\r\n" ++
-                    "\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug 1>>\"{s}\" 2>>&1\r\n" ++
-                    "echo %DATE% %TIME% [wrapper] node exited rc=%ERRORLEVEL% >> \"{s}\"\r\n" ++
-                    "timeout /t 5 /nobreak >nul\r\n" ++
-                    "goto loop\r\n",
-                .{ log_path, wrapper_log_path, exe_path, node_cfg_path, stdio_log_path, wrapper_log_path },
-            );
-            defer allocator.free(cmd);
-
-            {
-                const f = try std.fs.cwd().createFile(cmd_path, .{ .truncate = true });
-                defer f.close();
-                try f.writeAll(cmd);
-            }
-
-            const cmd_task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
-            defer allocator.free(cmd_task_run);
-
-            win_service.installTaskCommand(allocator, cmd_task_run, node_service_mode, node_service_name) catch |err| {
+            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
                 if (err == win_service.ServiceError.AccessDenied) {
                     logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
                     return;
@@ -820,7 +705,7 @@ pub fn main() !void {
                 return err;
             };
 
-            logger.info("Installed scheduled task for node-mode (cmd wrapper).", .{});
+            logger.info("Installed scheduled task for node-mode (built-in supervisor).", .{});
             _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
             _ = std.fs.File.stdout().write("Node logs: ") catch {};
             _ = std.fs.File.stdout().write(log_path) catch {};
