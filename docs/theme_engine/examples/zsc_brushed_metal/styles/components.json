@@ -25,7 +25,8 @@
       "slices_px": [96, 96, 96, 96],
       "tint": "#FFFFFFFF",
       "draw_center": true,
-      "center_mode": "tile"
+      "center_mode": "tile",
+      "center_anchor": "end"
     }
   },
   "button": {

@@ -172,7 +172,8 @@ Example (sketch):
       "slices_px": [8, 8, 8, 8],
       "tint": "#FFFFFFCC",
       "draw_center": true,
-      "center_mode": "stretch"
+      "center_mode": "stretch",
+      "center_anchor": "start"
     }
   }
 }
@@ -180,6 +181,14 @@ Example (sketch):
 
 Pragmatic recommendation:
 - allow both direct values and “token references” like `colors.primary`.
+
+`panel.frame` fields (implemented):
+- `image`: string (asset path, relative to pack root)
+- `slices_px`: `[left, top, right, bottom]` (source pixels)
+- `tint`: color (optional)
+- `draw_center`: bool (default true)
+- `center_mode`: `"stretch"` or `"tile"` (default `"stretch"`)
+- `center_anchor`: `"start"` or `"end"` (default `"start"`, only applies to `center_mode: "tile"`)
 
 ### Paint Values (Implemented)
 

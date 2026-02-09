@@ -50,7 +50,16 @@ pub const RenderBackend = struct {
     drawLine: *const fn (ctx: *DrawContext, from: Vec2, to: Vec2, width: f32, color: Color) void,
     drawImage: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect) void,
     drawImageUv: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect, uv0: Vec2, uv1: Vec2, tint: Color, repeat: bool) void,
-    drawNineSlice: *const fn (ctx: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color, draw_center: bool, tile_center: bool) void,
+    drawNineSlice: *const fn (
+        ctx: *DrawContext,
+        texture: Texture,
+        rect: Rect,
+        slices_px: [4]f32,
+        tint: Color,
+        draw_center: bool,
+        tile_center: bool,
+        tile_anchor_end: bool,
+    ) void,
     pushClip: *const fn (ctx: *DrawContext, rect: Rect) void,
     popClip: *const fn (ctx: *DrawContext) void,
 };
@@ -222,8 +231,17 @@ pub const DrawContext = struct {
         self.render.drawImageUv(self, texture, rect, uv0, uv1, tint, repeat);
     }
 
-    pub fn drawNineSlice(self: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color, draw_center: bool, tile_center: bool) void {
-        self.render.drawNineSlice(self, texture, rect, slices_px, tint, draw_center, tile_center);
+    pub fn drawNineSlice(
+        self: *DrawContext,
+        texture: Texture,
+        rect: Rect,
+        slices_px: [4]f32,
+        tint: Color,
+        draw_center: bool,
+        tile_center: bool,
+        tile_anchor_end: bool,
+    ) void {
+        self.render.drawNineSlice(self, texture, rect, slices_px, tint, draw_center, tile_center, tile_anchor_end);
     }
 
     pub fn textureFromId(id: u64) Texture {
@@ -290,7 +308,7 @@ fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
 fn nullDrawImageUv(_: *DrawContext, _: Texture, _: Rect, _: Vec2, _: Vec2, _: Color, _: bool) void {}
-fn nullDrawNineSlice(_: *DrawContext, _: Texture, _: Rect, _: [4]f32, _: Color, _: bool, _: bool) void {}
+fn nullDrawNineSlice(_: *DrawContext, _: Texture, _: Rect, _: [4]f32, _: Color, _: bool, _: bool, _: bool) void {}
 fn nullPushClip(_: *DrawContext, _: Rect) void {}
 fn nullPopClip(_: *DrawContext) void {}
 
@@ -411,9 +429,18 @@ fn recordDrawImageUv(ctx: *DrawContext, texture: Texture, rect: Rect, uv0: Vec2,
     list.pushImageUv(texture, .{ .min = rect.min, .max = rect.max }, uv0, uv1, tint, repeat);
 }
 
-fn recordDrawNineSlice(ctx: *DrawContext, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color, draw_center: bool, tile_center: bool) void {
+fn recordDrawNineSlice(
+    ctx: *DrawContext,
+    texture: Texture,
+    rect: Rect,
+    slices_px: [4]f32,
+    tint: Color,
+    draw_center: bool,
+    tile_center: bool,
+    tile_anchor_end: bool,
+) void {
     const list = ctx.command_list orelse return;
-    list.pushNineSliceEx(texture, .{ .min = rect.min, .max = rect.max }, slices_px, tint, draw_center, tile_center);
+    list.pushNineSliceEx(texture, .{ .min = rect.min, .max = rect.max }, slices_px, tint, draw_center, tile_center, tile_anchor_end);
 }
 
 fn recordPushClip(ctx: *DrawContext, rect: Rect) void {

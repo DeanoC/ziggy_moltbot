@@ -1299,31 +1299,64 @@ pub const Renderer = struct {
                     const u_span = u_right - u_left;
                     const v_span = v_bottom - v_top;
 
-                    var yy: f32 = y1;
-                    while (yy < y2 - 0.0001) {
-                        const rem_h = y2 - yy;
-                        const draw_h = @min(tile_h, rem_h);
-                        const v0 = v_top;
-                        const v1 = v_top + (draw_h / tile_h) * v_span;
+                    if (cmd.tile_anchor_end) {
+                        // End-anchored: place any partial remainder on the left/top so the right/bottom
+                        // edges land on full-tile boundaries. This avoids the "half tile" look on the
+                        // right edge for non-tileable interiors.
+                        var yy: f32 = y2;
+                        while (yy > y1 + 0.0001) {
+                            const rem_h = yy - y1;
+                            const draw_h = @min(tile_h, rem_h);
+                            const v1 = v_bottom;
+                            const v0 = v_bottom - (draw_h / tile_h) * v_span;
 
-                        var xx: f32 = x1;
-                        while (xx < x2 - 0.0001) {
-                            const rem_w = x2 - xx;
-                            const draw_w = @min(tile_w, rem_w);
-                            const uv0_x = u_left;
-                            const uv1_x = u_left + (draw_w / tile_w) * u_span;
-                            self.appendTexturedQuad(
-                                .{ xx, yy },
-                                .{ xx + draw_w, yy },
-                                .{ xx + draw_w, yy + draw_h },
-                                .{ xx, yy + draw_h },
-                                .{ uv0_x, v0 },
-                                .{ uv1_x, v1 },
-                                tint,
-                            );
-                            xx += draw_w;
+                            var xx: f32 = x2;
+                            while (xx > x1 + 0.0001) {
+                                const rem_w = xx - x1;
+                                const draw_w = @min(tile_w, rem_w);
+                                const uv1_x = u_right;
+                                const uv0_x = u_right - (draw_w / tile_w) * u_span;
+                                self.appendTexturedQuad(
+                                    .{ xx - draw_w, yy - draw_h },
+                                    .{ xx, yy - draw_h },
+                                    .{ xx, yy },
+                                    .{ xx - draw_w, yy },
+                                    .{ uv0_x, v0 },
+                                    .{ uv1_x, v1 },
+                                    tint,
+                                );
+                                xx -= draw_w;
+                            }
+                            yy -= draw_h;
                         }
-                        yy += draw_h;
+                    } else {
+                        // Start-anchored (default): partial remainder ends up on the right/bottom.
+                        var yy: f32 = y1;
+                        while (yy < y2 - 0.0001) {
+                            const rem_h = y2 - yy;
+                            const draw_h = @min(tile_h, rem_h);
+                            const v0 = v_top;
+                            const v1 = v_top + (draw_h / tile_h) * v_span;
+
+                            var xx: f32 = x1;
+                            while (xx < x2 - 0.0001) {
+                                const rem_w = x2 - xx;
+                                const draw_w = @min(tile_w, rem_w);
+                                const uv0_x = u_left;
+                                const uv1_x = u_left + (draw_w / tile_w) * u_span;
+                                self.appendTexturedQuad(
+                                    .{ xx, yy },
+                                    .{ xx + draw_w, yy },
+                                    .{ xx + draw_w, yy + draw_h },
+                                    .{ xx, yy + draw_h },
+                                    .{ uv0_x, v0 },
+                                    .{ uv1_x, v1 },
+                                    tint,
+                                );
+                                xx += draw_w;
+                            }
+                            yy += draw_h;
+                        }
                     }
                 } else {
                     self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);

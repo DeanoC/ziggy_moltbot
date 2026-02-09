@@ -108,6 +108,9 @@ pub const PanelStyle = struct {
     frame_draw_center: bool = true,
     // If true, the 9-slice center cell is tiled (pixel-perfect) instead of stretched.
     frame_tile_center: bool = false,
+    // If true and frame_tile_center is enabled, anchor tiling to the end so any partial remainder
+    // lands on the left/top instead of the right/bottom.
+    frame_tile_anchor_end: bool = false,
 };
 
 pub const FocusRingStyle = struct {
@@ -293,6 +296,12 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
         if (mv == .string) {
             if (std.ascii.eqlIgnoreCase(mv.string, "tile")) out.frame_tile_center = true;
             if (std.ascii.eqlIgnoreCase(mv.string, "stretch")) out.frame_tile_center = false;
+        }
+    }
+    if (obj.get("center_anchor")) |av| {
+        if (av == .string) {
+            if (std.ascii.eqlIgnoreCase(av.string, "end")) out.frame_tile_anchor_end = true;
+            if (std.ascii.eqlIgnoreCase(av.string, "start")) out.frame_tile_anchor_end = false;
         }
     }
 }
