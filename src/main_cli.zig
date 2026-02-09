@@ -448,7 +448,7 @@ pub fn main() !void {
             const noun = args[i + 1];
 
             if (std.mem.eql(u8, noun, "supervise")) {
-                // Headless supervisor wrapper (used for user-session runners on Windows).
+                // Legacy headless supervisor (used by the older Task Scheduler runner MVP).
                 // Usage:
                 //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
                 try runNodeSupervisor(allocator, args[(i + 2)..]);
