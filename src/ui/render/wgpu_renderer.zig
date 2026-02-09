@@ -1231,6 +1231,23 @@ pub const Renderer = struct {
             top *= s;
             bottom *= s;
         }
+        // For tiled centers, keep the inner edges on integer pixel boundaries so repeated
+        // texels stay aligned and don't shimmer when resizing.
+        if (cmd.tile_center and cmd.draw_center) {
+            left = @round(left);
+            right = @round(right);
+            top = @round(top);
+            bottom = @round(bottom);
+            if (left + right > dst_w) {
+                const overflow = (left + right) - dst_w;
+                // Prefer keeping the left edge stable.
+                right = @max(0.0, right - overflow);
+            }
+            if (top + bottom > dst_h) {
+                const overflow = (top + bottom) - dst_h;
+                bottom = @max(0.0, bottom - overflow);
+            }
+        }
 
         const x0 = rect.min[0];
         const x1 = x0 + left;
@@ -1261,7 +1278,49 @@ pub const Renderer = struct {
         // Middle row
         self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
         if (cmd.draw_center) {
-            self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+            if (cmd.tile_center) {
+                const src_center_w = (w_tex - left_src - right_src);
+                const src_center_h = (h_tex - top_src - bottom_src);
+                const tile_w = @max(1.0, @round(src_center_w));
+                const tile_h = @max(1.0, @round(src_center_h));
+                const dst_center_w = x2 - x1;
+                const dst_center_h = y2 - y1;
+                if (dst_center_w > 0.001 and dst_center_h > 0.001 and tile_w > 0.5 and tile_h > 0.5) {
+                    const u_span = u_right - u_left;
+                    const v_span = v_bottom - v_top;
+
+                    var yy: f32 = y1;
+                    while (yy < y2 - 0.0001) {
+                        const rem_h = y2 - yy;
+                        const draw_h = @min(tile_h, rem_h);
+                        const v0 = v_top;
+                        const v1 = v_top + (draw_h / tile_h) * v_span;
+
+                        var xx: f32 = x1;
+                        while (xx < x2 - 0.0001) {
+                            const rem_w = x2 - xx;
+                            const draw_w = @min(tile_w, rem_w);
+                            const uv0_x = u_left;
+                            const uv1_x = u_left + (draw_w / tile_w) * u_span;
+                            self.appendTexturedQuad(
+                                .{ xx, yy },
+                                .{ xx + draw_w, yy },
+                                .{ xx + draw_w, yy + draw_h },
+                                .{ xx, yy + draw_h },
+                                .{ uv0_x, v0 },
+                                .{ uv1_x, v1 },
+                                tint,
+                            );
+                            xx += draw_w;
+                        }
+                        yy += draw_h;
+                    }
+                } else {
+                    self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+                }
+            } else {
+                self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+            }
         }
         self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
 

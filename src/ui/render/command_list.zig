@@ -120,6 +120,7 @@ pub const NineSliceCmd = struct {
     slices_px: [4]f32,
     tint: Color,
     draw_center: bool = true,
+    tile_center: bool = false,
 };
 
 pub const ClipCmd = struct {
@@ -283,7 +284,14 @@ pub const CommandList = struct {
 
     pub fn pushNineSlice(self: *CommandList, texture: Texture, rect: Rect, slices_px: [4]f32, tint: Color) void {
         _ = self.commands.append(self.allocator, .{
-            .nine_slice = .{ .texture = texture, .rect = rect, .slices_px = slices_px, .tint = tint, .draw_center = true },
+            .nine_slice = .{
+                .texture = texture,
+                .rect = rect,
+                .slices_px = slices_px,
+                .tint = tint,
+                .draw_center = true,
+                .tile_center = false,
+            },
         }) catch {};
     }
 
@@ -294,6 +302,7 @@ pub const CommandList = struct {
         slices_px: [4]f32,
         tint: Color,
         draw_center: bool,
+        tile_center: bool,
     ) void {
         _ = self.commands.append(self.allocator, .{
             .nine_slice = .{
@@ -302,6 +311,7 @@ pub const CommandList = struct {
                 .slices_px = slices_px,
                 .tint = tint,
                 .draw_center = draw_center,
+                .tile_center = tile_center,
             },
         }) catch {};
     }

@@ -106,6 +106,8 @@ pub const PanelStyle = struct {
     // If false, the 9-slice center cell is not drawn (useful when the source image has
     // an opaque center but you want it to behave like a border/frame).
     frame_draw_center: bool = true,
+    // If true, the 9-slice center cell is tiled (pixel-perfect) instead of stretched.
+    frame_tile_center: bool = false,
 };
 
 pub const FocusRingStyle = struct {
@@ -283,6 +285,15 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
     }
     if (obj.get("draw_center")) |bv| {
         if (bv == .bool) out.frame_draw_center = bv.bool;
+    }
+    if (obj.get("tile_center")) |bv| {
+        if (bv == .bool) out.frame_tile_center = bv.bool;
+    }
+    if (obj.get("center_mode")) |mv| {
+        if (mv == .string) {
+            if (std.ascii.eqlIgnoreCase(mv.string, "tile")) out.frame_tile_center = true;
+            if (std.ascii.eqlIgnoreCase(mv.string, "stretch")) out.frame_tile_center = false;
+        }
     }
 }
 

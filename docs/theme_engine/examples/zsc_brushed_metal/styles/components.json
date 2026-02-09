@@ -24,7 +24,8 @@
       "image": "assets/images/brushed_metal_panel_frame.png",
       "slices_px": [96, 96, 96, 96],
       "tint": "#FFFFFFFF",
-      "draw_center": false
+      "draw_center": true,
+      "center_mode": "tile"
     }
   },
   "button": {

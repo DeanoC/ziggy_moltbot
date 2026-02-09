@@ -171,7 +171,8 @@ Example (sketch):
       "image": "assets/images/panel_frame.png",
       "slices_px": [8, 8, 8, 8],
       "tint": "#FFFFFFCC",
-      "draw_center": true
+      "draw_center": true,
+      "center_mode": "stretch"
     }
   }
 }
