@@ -1267,68 +1267,117 @@ pub const Renderer = struct {
         const v_max: f32 = 1.0;
         const v_bottom: f32 = (h_tex - bottom_src) / h_tex;
 
+        const want_tile = cmd.tile_center and cmd.draw_center;
+        const want_tile_x = want_tile and cmd.tile_center_x;
+        const want_tile_y = want_tile and cmd.tile_center_y;
+
+        // Precompute fit-tiling parameters so center and matching edge strips (top/bottom/left/right)
+        // use the same tile distribution. This avoids the edges looking "scaled differently" from the
+        // center pattern.
+        var have_fit: bool = false;
+        var dst_w_i: i32 = 0;
+        var dst_h_i: i32 = 0;
+        var nx: i32 = 1;
+        var ny: i32 = 1;
+        var base_w: i32 = 0;
+        var rem_w: i32 = 0;
+        var base_h: i32 = 0;
+        var rem_h: i32 = 0;
+        const rem_at_start = cmd.tile_anchor_end;
+
+        if (want_tile) {
+            const src_center_w = (w_tex - left_src - right_src);
+            const src_center_h = (h_tex - top_src - bottom_src);
+            const dst_center_w = x2 - x1;
+            const dst_center_h = y2 - y1;
+
+            dst_w_i = @intFromFloat(@round(dst_center_w));
+            dst_h_i = @intFromFloat(@round(dst_center_h));
+            if (dst_w_i > 0 and dst_h_i > 0) {
+                const src_w_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_w)))));
+                const src_h_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_h)))));
+
+                nx = if (want_tile_x)
+                    @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))))
+                else
+                    1;
+                ny = if (want_tile_y)
+                    @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))))
+                else
+                    1;
+                nx = std.math.clamp(nx, 1, dst_w_i);
+                ny = std.math.clamp(ny, 1, dst_h_i);
+
+                base_w = @divTrunc(dst_w_i, nx);
+                rem_w = dst_w_i - base_w * nx;
+                base_h = @divTrunc(dst_h_i, ny);
+                rem_h = dst_h_i - base_h * ny;
+                have_fit = true;
+            }
+        }
+
         const start = self.textured_vertices.items.len;
         const tint = cmd.tint;
 
         // Top row
         self.appendTexturedQuad(.{ x0, y0 }, .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 }, .{ u_min, v_min }, .{ u_left, v_top }, tint);
-        self.appendTexturedQuad(.{ x1, y0 }, .{ x2, y0 }, .{ x2, y1 }, .{ x1, y1 }, .{ u_left, v_min }, .{ u_right, v_top }, tint);
+        if (want_tile_x and have_fit) {
+            var xx_i: i32 = 0;
+            var x_cursor: f32 = x1;
+            while (xx_i < nx) : (xx_i += 1) {
+                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                const w_i: i32 = base_w + extra_w;
+                const w_f: f32 = @floatFromInt(w_i);
+                self.appendTexturedQuad(
+                    .{ x_cursor, y0 },
+                    .{ x_cursor + w_f, y0 },
+                    .{ x_cursor + w_f, y1 },
+                    .{ x_cursor, y1 },
+                    .{ u_left, v_min },
+                    .{ u_right, v_top },
+                    tint,
+                );
+                x_cursor += w_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x1, y0 }, .{ x2, y0 }, .{ x2, y1 }, .{ x1, y1 }, .{ u_left, v_min }, .{ u_right, v_top }, tint);
+        }
         self.appendTexturedQuad(.{ x2, y0 }, .{ x3, y0 }, .{ x3, y1 }, .{ x2, y1 }, .{ u_right, v_min }, .{ u_max, v_top }, tint);
 
         // Middle row
-        self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
+        if (want_tile_y and have_fit) {
+            var yy_i: i32 = 0;
+            var y_cursor: f32 = y1;
+            while (yy_i < ny) : (yy_i += 1) {
+                const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                const h_i: i32 = base_h + extra_h;
+                const h_f: f32 = @floatFromInt(h_i);
+                self.appendTexturedQuad(
+                    .{ x0, y_cursor },
+                    .{ x1, y_cursor },
+                    .{ x1, y_cursor + h_f },
+                    .{ x0, y_cursor + h_f },
+                    .{ u_min, v_top },
+                    .{ u_left, v_bottom },
+                    tint,
+                );
+                y_cursor += h_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
+        }
         if (cmd.draw_center) {
             if (cmd.tile_center) {
-                const src_center_w = (w_tex - left_src - right_src);
-                const src_center_h = (h_tex - top_src - bottom_src);
                 const dst_center_w = x2 - x1;
                 const dst_center_h = y2 - y1;
 
                 // If the source center region is larger than the destination center, tiling would
                 // otherwise "crop" the interior (you'd only see the top-left of the center). In
                 // that case, fall back to a single stretched draw so the full interior fits.
-                var tile_w = @max(1.0, @round(src_center_w));
-                var tile_h = @max(1.0, @round(src_center_h));
-                // Important: don't round the destination sizes here. If we do, we can end up with a tiny
-                // fractional remainder tile at the right/bottom that re-samples from the start of the
-                // source interior, producing a visible seam/stripe.
-                if (dst_center_w > 0.0 and tile_w > dst_center_w) tile_w = dst_center_w;
-                if (dst_center_h > 0.0 and tile_h > dst_center_h) tile_h = dst_center_h;
-
-                if (dst_center_w > 0.001 and dst_center_h > 0.001 and tile_w > 0.5 and tile_h > 0.5) {
-                    // Fit-tiling: choose an integer tile count and slightly scale tile sizes so the
-                    // destination center is covered by full tiles (no partial tile at the edges).
-                    //
-                    // This ensures the left/right (and top/bottom) edges always sample the correct
-                    // interior edge texels, avoiding the common "half tile" edge artifact.
-                    const dst_w_i: i32 = @intFromFloat(@round(dst_center_w));
-                    const dst_h_i: i32 = @intFromFloat(@round(dst_center_h));
+                if (dst_center_w > 0.001 and dst_center_h > 0.001 and have_fit) {
                     if (dst_w_i <= 0 or dst_h_i <= 0) {
                         self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
                     } else {
-                        const src_w_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_w)))));
-                        const src_h_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_h)))));
-
-                        var nx: i32 = if (cmd.tile_center_x)
-                            @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))))
-                        else
-                            1;
-                        var ny: i32 = if (cmd.tile_center_y)
-                            @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))))
-                        else
-                            1;
-                        nx = std.math.clamp(nx, 1, dst_w_i);
-                        ny = std.math.clamp(ny, 1, dst_h_i);
-
-                        const base_w: i32 = @divTrunc(dst_w_i, nx);
-                        const rem_w: i32 = dst_w_i - base_w * nx;
-                        const base_h: i32 = @divTrunc(dst_h_i, ny);
-                        const rem_h: i32 = dst_h_i - base_h * ny;
-
-                        // Distribute remainder pixels either towards the start or end so the "phase"
-                        // of tile boundaries is stable for a given anchor preference.
-                        const rem_at_start = cmd.tile_anchor_end;
-
                         var yy_i: i32 = 0;
                         var y_cursor: f32 = y1;
                         while (yy_i < ny) : (yy_i += 1) {
@@ -1366,11 +1415,51 @@ pub const Renderer = struct {
                 self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
             }
         }
-        self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
+        if (want_tile_y and have_fit) {
+            var yy_i: i32 = 0;
+            var y_cursor: f32 = y1;
+            while (yy_i < ny) : (yy_i += 1) {
+                const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                const h_i: i32 = base_h + extra_h;
+                const h_f: f32 = @floatFromInt(h_i);
+                self.appendTexturedQuad(
+                    .{ x2, y_cursor },
+                    .{ x3, y_cursor },
+                    .{ x3, y_cursor + h_f },
+                    .{ x2, y_cursor + h_f },
+                    .{ u_right, v_top },
+                    .{ u_max, v_bottom },
+                    tint,
+                );
+                y_cursor += h_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
+        }
 
         // Bottom row
         self.appendTexturedQuad(.{ x0, y2 }, .{ x1, y2 }, .{ x1, y3 }, .{ x0, y3 }, .{ u_min, v_bottom }, .{ u_left, v_max }, tint);
-        self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
+        if (want_tile_x and have_fit) {
+            var xx_i: i32 = 0;
+            var x_cursor: f32 = x1;
+            while (xx_i < nx) : (xx_i += 1) {
+                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                const w_i: i32 = base_w + extra_w;
+                const w_f: f32 = @floatFromInt(w_i);
+                self.appendTexturedQuad(
+                    .{ x_cursor, y2 },
+                    .{ x_cursor + w_f, y2 },
+                    .{ x_cursor + w_f, y3 },
+                    .{ x_cursor, y3 },
+                    .{ u_left, v_bottom },
+                    .{ u_right, v_max },
+                    tint,
+                );
+                x_cursor += w_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
+        }
         self.appendTexturedQuad(.{ x2, y2 }, .{ x3, y2 }, .{ x3, y3 }, .{ x2, y3 }, .{ u_right, v_bottom }, .{ u_max, v_max }, tint);
 
         self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture, false));
