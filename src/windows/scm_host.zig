@@ -18,13 +18,13 @@ const win = @cImport({
 pub const ServiceHostError = error{
     Unsupported,
     StartDispatcherFailed,
-};
+} || std.mem.Allocator.Error || error{InvalidUtf8};
 
 const Context = struct {
     allocator: std.mem.Allocator,
     service_name_utf8: []const u8,
     node_args: []const []const u8,
-    service_name_w: []u16,
+    service_name_w: [:0]u16,
     stop_event: ?win.HANDLE = null,
     status_handle: ?win.SERVICE_STATUS_HANDLE = null,
     status: win.SERVICE_STATUS = std.mem.zeroes(win.SERVICE_STATUS),
@@ -32,13 +32,8 @@ const Context = struct {
 
 var g_ctx: ?*Context = null;
 
-fn utf16Z(allocator: std.mem.Allocator, s: []const u8) ![]u16 {
-    const tmp = try std.unicode.utf8ToUtf16LeAlloc(allocator, s);
-    defer allocator.free(tmp);
-    var out = try allocator.alloc(u16, tmp.len + 1);
-    @memcpy(out[0..tmp.len], tmp);
-    out[tmp.len] = 0;
-    return out;
+fn utf16Z(allocator: std.mem.Allocator, s: []const u8) ![:0]u16 {
+    return std.unicode.utf8ToUtf16LeAllocZ(allocator, s);
 }
 
 fn setState(ctx: *Context, state: u32, win32_exit_code: u32) void {
@@ -145,7 +140,7 @@ pub fn runWindowsService(
 ) ServiceHostError!void {
     if (builtin.os.tag != .windows) return ServiceHostError.Unsupported;
 
-    var ctx = try allocator.create(Context);
+    const ctx = try allocator.create(Context);
     errdefer allocator.destroy(ctx);
 
     ctx.* = .{

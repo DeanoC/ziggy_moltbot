@@ -11,7 +11,7 @@ pub const ServiceError = error{
     NotInstalled,
     AlreadyExists,
     ExecFailed,
-};
+} || std.mem.Allocator.Error || error{InvalidUtf8};
 
 pub const State = enum {
     unknown,
@@ -44,13 +44,8 @@ pub fn defaultServiceName() []const u8 {
     return "ZiggyStarClaw Node";
 }
 
-fn utf16Z(allocator: std.mem.Allocator, s: []const u8) ![]u16 {
-    const tmp = try std.unicode.utf8ToUtf16LeAlloc(allocator, s);
-    defer allocator.free(tmp);
-    var out = try allocator.alloc(u16, tmp.len + 1);
-    @memcpy(out[0..tmp.len], tmp);
-    out[tmp.len] = 0;
-    return out;
+fn utf16Z(allocator: std.mem.Allocator, s: []const u8) ![:0]u16 {
+    return std.unicode.utf8ToUtf16LeAllocZ(allocator, s);
 }
 
 fn mapWinErr(err: u32) ServiceError {
