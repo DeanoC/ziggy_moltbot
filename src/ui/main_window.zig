@@ -37,6 +37,7 @@ const text_input_backend = @import("input/text_input_backend.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 const profiler = @import("../utils/profiler.zig");
 const panel_chrome = @import("panel_chrome.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const SendMessageAction = struct {
     session_key: []u8,
@@ -625,7 +626,7 @@ fn drawWorkspaceHost(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, host_rect);
     defer dc.deinit();
 
-    dc.drawRect(host_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, host_rect);
 
     if (theme_runtime.getProfile().id == .fullscreen) {
         drawFullscreenHost(
@@ -979,7 +980,8 @@ fn drawFullscreenHost(
         draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_rect.max[1] - hints_h }, .{ content_rect.size()[0], hints_h });
 
     // Header chrome.
-    dc.drawRect(header_rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    surface_chrome.drawSurface(dc, header_rect);
+    dc.drawRect(header_rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
     dc.drawText("ZiggyStarClaw", .{ header_rect.min[0] + t.spacing.lg, header_rect.min[1] + t.spacing.md }, .{ .color = t.colors.text_primary });
 
     if (win_state.fullscreen_page != .home) {

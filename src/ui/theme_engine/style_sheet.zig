@@ -95,6 +95,13 @@ pub const TextInputStyle = struct {
     caret: ?Color = null,
 };
 
+pub const SurfacesStyle = struct {
+    // Paint overrides for the common "background" and "surface" rectangular fills used across views.
+    // If unset, the engine falls back to theme tokens (colors.background/colors.surface).
+    background: ?Paint = null,
+    surface: ?Paint = null,
+};
+
 pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
@@ -137,6 +144,7 @@ pub const EffectStyle = struct {
 
 /// Resolved style sheet (no allocations).
 pub const StyleSheet = struct {
+    surfaces: SurfacesStyle = .{},
     button: ButtonStyles = .{},
     checkbox: CheckboxStyle = .{},
     text_input: TextInputStyle = .{},
@@ -202,6 +210,9 @@ pub fn parseResolved(
     if (parsed.value != .object) return out;
     const root = parsed.value.object;
 
+    if (root.get("surfaces")) |sv| {
+        parseSurfaces(&out.surfaces, sv, theme);
+    }
     if (root.get("button")) |btn_val| {
         parseButtons(&out.button, btn_val, theme);
     }
@@ -218,6 +229,13 @@ pub fn parseResolved(
         parseFocusRing(&out.focus_ring, focus_val, theme);
     }
     return out;
+}
+
+fn parseSurfaces(out: *SurfacesStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("background")) |bv| out.background = parsePaint(bv, theme) orelse out.background;
+    if (obj.get("surface")) |sv| out.surface = parsePaint(sv, theme) orelse out.surface;
 }
 
 fn parseButtons(out: *ButtonStyles, v: std.json.Value, theme: *const theme_tokens.Theme) void {

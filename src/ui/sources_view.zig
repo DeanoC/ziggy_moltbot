@@ -12,6 +12,7 @@ const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 const nav_router = @import("input/nav_router.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const source_browser = components.composite.source_browser;
 
@@ -45,7 +46,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect, queue);

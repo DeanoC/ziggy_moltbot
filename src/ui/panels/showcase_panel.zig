@@ -8,6 +8,7 @@ const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const nav_router = @import("../input/nav_router.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 var draw_ctx_toggle = false;
 var sdf_debug_enabled = false;
@@ -36,7 +37,7 @@ pub fn draw(allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) Act
         panel_rect,
     );
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
     const padding = t.spacing.md;

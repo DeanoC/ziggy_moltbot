@@ -8,6 +8,7 @@ const draw_context = @import("draw_context.zig");
 const clipboard = @import("clipboard.zig");
 const input_state = @import("input/input_state.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const surface_chrome = @import("surface_chrome.zig");
 const profiler = @import("../utils/profiler.zig");
 
 pub const ChatViewOptions = struct {
@@ -230,11 +231,8 @@ pub fn drawCustom(
     const zone = profiler.zone("chat.draw");
     defer zone.end();
     const t = ctx.theme;
-    ctx.drawRect(rect, .{
-        .fill = t.colors.surface,
-        .stroke = t.colors.border,
-        .thickness = 1.0,
-    });
+    surface_chrome.drawSurface(ctx, rect);
+    ctx.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
     ctx.pushClip(rect);
     defer ctx.popClip();
 

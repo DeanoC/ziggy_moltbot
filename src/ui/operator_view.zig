@@ -11,6 +11,7 @@ const text_editor = @import("widgets/text_editor.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 const nav_router = @import("input/nav_router.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const NodeInvokeAction = struct {
     node_id: []u8,
@@ -115,7 +116,7 @@ pub fn draw(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect);
@@ -196,7 +197,8 @@ fn drawSidebar(
     is_connected: bool,
 ) void {
     const t = dc.theme;
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
+    surface_chrome.drawSurface(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();

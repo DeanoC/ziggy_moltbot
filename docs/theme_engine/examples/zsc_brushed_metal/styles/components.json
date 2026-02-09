@@ -1,4 +1,24 @@
 {
+  "surfaces": {
+    "background": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "surface": {
+      "image": {
+        "path": "assets/images/toolbar_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    }
+  },
   "panel": {
     "radius": 0,
     "fill": {

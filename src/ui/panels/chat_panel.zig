@@ -10,6 +10,7 @@ const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const widgets = @import("../widgets/widgets.zig");
 const workspace = @import("../workspace.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
@@ -56,7 +57,7 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var panel_ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer panel_ctx.deinit();
-    panel_ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&panel_ctx, panel_rect);
 
     const queue = input_router.getQueue();
 

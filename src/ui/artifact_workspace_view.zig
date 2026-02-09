@@ -13,6 +13,7 @@ const focus_ring = @import("widgets/focus_ring.zig");
 const ui_systems = @import("ui_systems.zig");
 const undo_redo = @import("systems/undo_redo.zig");
 const systems = @import("systems/systems.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const ArtifactTab = enum {
     preview,
@@ -65,7 +66,7 @@ pub fn draw(rect_override: ?draw_context.Rect) void {
     nav_router.pushScope(std.hash.Wyhash.hash(0, "artifact_workspace_view"));
     defer nav_router.popScope();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect);
@@ -231,7 +232,7 @@ fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
     const padding = t.spacing.md;
     const icon_size = toolbarIconSize(t);
 
-    dc.drawRect(rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, rect);
     dc.drawRect(draw_context.Rect.fromMinSize(.{ rect.min[0], rect.min[1] }, .{ rect.size()[0], 1.0 }), .{ .fill = t.colors.divider });
 
     var cursor_x = rect.min[0] + padding;

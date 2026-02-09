@@ -8,6 +8,7 @@ const text_editor = @import("../widgets/text_editor.zig");
 const ui_systems = @import("../ui_systems.zig");
 const undo_redo = @import("../systems/undo_redo.zig");
 const systems = @import("../systems/systems.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 const TextSnapshot = struct {
     text: []u8,
@@ -31,7 +32,7 @@ pub fn draw(panel: *workspace.Panel, allocator: std.mem.Allocator, rect_override
     const panel_rect = rect_override orelse return false;
     var ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer ctx.deinit();
-    ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&ctx, panel_rect);
 
     const header_height = drawHeader(&ctx, panel_rect, editor, panel.state.is_dirty);
     const footer_height = drawFooter(&ctx, panel_rect, editor);

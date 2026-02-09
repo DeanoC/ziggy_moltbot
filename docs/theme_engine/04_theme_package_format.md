@@ -123,6 +123,7 @@ The style sheet should prevent widgets from doing ad-hoc token math everywhere.
 
 The following keys are currently implemented in ZiggyStarClaw (as of the `feature/theme_engine` branch):
 
+- `surfaces`: `background`, `surface`
 - `button.primary|secondary|ghost`: `radius`, `fill`, `text`, `border`
 - `checkbox`: `radius`, `fill`, `border`, `fill_checked`, `border_checked`, `check`
 - `text_input`: `radius`, `fill`, `border`, `text`, `placeholder`, `selection`, `caret`
@@ -133,10 +134,18 @@ Notes:
 - Any missing field falls back to the theme tokens (or existing widget defaults).
 - Unknown fields are ignored (so packs can be forward-compatible).
 
+`surfaces` is used by views/panels when they need to paint large rectangular backgrounds:
+- `surfaces.background`: replaces common `colors.background` fills
+- `surfaces.surface`: replaces common `colors.surface` fills
+
 Example (sketch):
 
 ```json
 {
+  "surfaces": {
+    "background": { "image": { "path": "assets/images/bg_tile.png", "mode": "tile" } },
+    "surface": { "image": { "path": "assets/images/surface_tile.png", "mode": "tile" } }
+  },
   "button": {
     "primary": {
       "radius": "radius.md",

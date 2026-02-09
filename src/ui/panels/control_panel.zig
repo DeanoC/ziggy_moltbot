@@ -14,6 +14,7 @@ const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
 const panel_chrome = @import("../panel_chrome.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 const nav_router = @import("../input/nav_router.zig");
 const focus_ring = @import("../widgets/focus_ring.zig");
 const widgets = @import("../widgets/widgets.zig");
@@ -85,7 +86,7 @@ pub fn draw(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
     if (panel.active_tab != .Agents and panel.active_tab != .Settings) {

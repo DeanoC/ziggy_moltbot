@@ -11,6 +11,7 @@ const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 const nav_router = @import("input/nav_router.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
@@ -64,7 +65,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
     var ctx_draw = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer ctx_draw.deinit();
 
-    ctx_draw.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(ctx_draw, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&ctx_draw, panel_rect, queue, ctx.approvals.items.len);
@@ -184,7 +185,8 @@ fn drawSidebar(
     action: *ProjectsViewAction,
 ) void {
     const t = dc.theme;
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
+    surface_chrome.drawSurface(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();

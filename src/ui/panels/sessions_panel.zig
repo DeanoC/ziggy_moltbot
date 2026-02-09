@@ -16,6 +16,7 @@ const theme_runtime = @import("../theme_engine/runtime.zig");
 const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 const nav_router = @import("../input/nav_router.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -62,7 +63,7 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const gap = t.spacing.md;
     const min_left: f32 = 220.0;
