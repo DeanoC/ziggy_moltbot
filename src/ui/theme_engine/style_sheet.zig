@@ -115,6 +115,10 @@ pub const PanelStyle = struct {
     frame_draw_center: bool = true,
     // If true, the 9-slice center cell is tiled (pixel-perfect) instead of stretched.
     frame_tile_center: bool = false,
+    // When tiling the 9-slice center, choose which axes are tiled.
+    // Defaults to true for both so `center_mode: "tile"` behaves like "tile_xy".
+    frame_tile_center_x: bool = true,
+    frame_tile_center_y: bool = true,
     // If true and frame_tile_center is enabled, anchor tiling to the end so any partial remainder
     // lands on the left/top instead of the right/bottom.
     frame_tile_anchor_end: bool = false,
@@ -308,12 +312,31 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
         if (bv == .bool) out.frame_draw_center = bv.bool;
     }
     if (obj.get("tile_center")) |bv| {
-        if (bv == .bool) out.frame_tile_center = bv.bool;
+        if (bv == .bool) {
+            out.frame_tile_center = bv.bool;
+            if (bv.bool) {
+                out.frame_tile_center_x = true;
+                out.frame_tile_center_y = true;
+            }
+        }
     }
     if (obj.get("center_mode")) |mv| {
         if (mv == .string) {
-            if (std.ascii.eqlIgnoreCase(mv.string, "tile")) out.frame_tile_center = true;
-            if (std.ascii.eqlIgnoreCase(mv.string, "stretch")) out.frame_tile_center = false;
+            if (std.ascii.eqlIgnoreCase(mv.string, "stretch")) {
+                out.frame_tile_center = false;
+            } else if (std.ascii.eqlIgnoreCase(mv.string, "tile") or std.ascii.eqlIgnoreCase(mv.string, "tile_xy")) {
+                out.frame_tile_center = true;
+                out.frame_tile_center_x = true;
+                out.frame_tile_center_y = true;
+            } else if (std.ascii.eqlIgnoreCase(mv.string, "tile_x")) {
+                out.frame_tile_center = true;
+                out.frame_tile_center_x = true;
+                out.frame_tile_center_y = false;
+            } else if (std.ascii.eqlIgnoreCase(mv.string, "tile_y")) {
+                out.frame_tile_center = true;
+                out.frame_tile_center_x = false;
+                out.frame_tile_center_y = true;
+            }
         }
     }
     if (obj.get("center_anchor")) |av| {

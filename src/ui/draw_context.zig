@@ -58,6 +58,8 @@ pub const RenderBackend = struct {
         tint: Color,
         draw_center: bool,
         tile_center: bool,
+        tile_center_x: bool,
+        tile_center_y: bool,
         tile_anchor_end: bool,
     ) void,
     pushClip: *const fn (ctx: *DrawContext, rect: Rect) void,
@@ -239,9 +241,11 @@ pub const DrawContext = struct {
         tint: Color,
         draw_center: bool,
         tile_center: bool,
+        tile_center_x: bool,
+        tile_center_y: bool,
         tile_anchor_end: bool,
     ) void {
-        self.render.drawNineSlice(self, texture, rect, slices_px, tint, draw_center, tile_center, tile_anchor_end);
+        self.render.drawNineSlice(self, texture, rect, slices_px, tint, draw_center, tile_center, tile_center_x, tile_center_y, tile_anchor_end);
     }
 
     pub fn textureFromId(id: u64) Texture {
@@ -308,7 +312,7 @@ fn nullDrawText(_: *DrawContext, _: []const u8, _: Vec2, _: TextStyle) void {}
 fn nullDrawLine(_: *DrawContext, _: Vec2, _: Vec2, _: f32, _: Color) void {}
 fn nullDrawImage(_: *DrawContext, _: Texture, _: Rect) void {}
 fn nullDrawImageUv(_: *DrawContext, _: Texture, _: Rect, _: Vec2, _: Vec2, _: Color, _: bool) void {}
-fn nullDrawNineSlice(_: *DrawContext, _: Texture, _: Rect, _: [4]f32, _: Color, _: bool, _: bool, _: bool) void {}
+fn nullDrawNineSlice(_: *DrawContext, _: Texture, _: Rect, _: [4]f32, _: Color, _: bool, _: bool, _: bool, _: bool, _: bool) void {}
 fn nullPushClip(_: *DrawContext, _: Rect) void {}
 fn nullPopClip(_: *DrawContext) void {}
 
@@ -437,10 +441,12 @@ fn recordDrawNineSlice(
     tint: Color,
     draw_center: bool,
     tile_center: bool,
+    tile_center_x: bool,
+    tile_center_y: bool,
     tile_anchor_end: bool,
 ) void {
     const list = ctx.command_list orelse return;
-    list.pushNineSliceEx(texture, .{ .min = rect.min, .max = rect.max }, slices_px, tint, draw_center, tile_center, tile_anchor_end);
+    list.pushNineSliceEx(texture, .{ .min = rect.min, .max = rect.max }, slices_px, tint, draw_center, tile_center, tile_center_x, tile_center_y, tile_anchor_end);
 }
 
 fn recordPushClip(ctx: *DrawContext, rect: Rect) void {

@@ -1309,8 +1309,14 @@ pub const Renderer = struct {
                         const src_w_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_w)))));
                         const src_h_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_h)))));
 
-                        var nx: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))));
-                        var ny: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))));
+                        var nx: i32 = if (cmd.tile_center_x)
+                            @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))))
+                        else
+                            1;
+                        var ny: i32 = if (cmd.tile_center_y)
+                            @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))))
+                        else
+                            1;
                         nx = std.math.clamp(nx, 1, dst_w_i);
                         ny = std.math.clamp(ny, 1, dst_h_i);
 

@@ -196,8 +196,8 @@ Pragmatic recommendation:
 - `slices_px`: `[left, top, right, bottom]` (source pixels)
 - `tint`: color (optional)
 - `draw_center`: bool (default true)
-- `center_mode`: `"stretch"` or `"tile"` (default `"stretch"`)
-- `center_anchor`: `"start"` or `"end"` (default `"start"`, only applies to `center_mode: "tile"`)
+- `center_mode`: `"stretch"`, `"tile"`, `"tile_x"`, `"tile_y"` (default `"stretch"`)
+- `center_anchor`: `"start"` or `"end"` (default `"start"`, only applies to `center_mode: "tile"`/`"tile_x"`/`"tile_y"`)
 
 ### Paint Values (Implemented)
 

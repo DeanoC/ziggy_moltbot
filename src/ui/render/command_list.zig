@@ -121,6 +121,8 @@ pub const NineSliceCmd = struct {
     tint: Color,
     draw_center: bool = true,
     tile_center: bool = false,
+    tile_center_x: bool = true,
+    tile_center_y: bool = true,
     // When tiling the center, controls where any partial tile remainder lands:
     // false = remainder on right/bottom (start-anchored), true = remainder on left/top (end-anchored).
     tile_anchor_end: bool = false,
@@ -294,6 +296,8 @@ pub const CommandList = struct {
                 .tint = tint,
                 .draw_center = true,
                 .tile_center = false,
+                .tile_center_x = true,
+                .tile_center_y = true,
                 .tile_anchor_end = false,
             },
         }) catch {};
@@ -307,6 +311,8 @@ pub const CommandList = struct {
         tint: Color,
         draw_center: bool,
         tile_center: bool,
+        tile_center_x: bool,
+        tile_center_y: bool,
         tile_anchor_end: bool,
     ) void {
         _ = self.commands.append(self.allocator, .{
@@ -317,6 +323,8 @@ pub const CommandList = struct {
                 .tint = tint,
                 .draw_center = draw_center,
                 .tile_center = tile_center,
+                .tile_center_x = tile_center_x,
+                .tile_center_y = tile_center_y,
                 .tile_anchor_end = tile_anchor_end,
             },
         }) catch {};

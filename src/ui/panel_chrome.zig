@@ -131,6 +131,8 @@ fn drawPanelFrame(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
 
     const tint = ss.panel.frame_tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
     const tile_center = ss.panel.frame_tile_center;
+    const tile_center_x = ss.panel.frame_tile_center_x;
+    const tile_center_y = ss.panel.frame_tile_center_y;
     const draw_center = ss.panel.frame_draw_center;
     const tile_anchor_end = ss.panel.frame_tile_anchor_end;
     dc.drawNineSlice(
@@ -140,6 +142,8 @@ fn drawPanelFrame(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
         tint,
         draw_center,
         tile_center,
+        tile_center_x,
+        tile_center_y,
         tile_anchor_end,
     );
 }
