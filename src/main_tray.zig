@@ -33,6 +33,7 @@ const win = @cImport({
 const WM_TRAYICON: u32 = win.WM_APP + 1;
 const TIMER_STATUS: usize = 1;
 
+const IDM_COPY_VERSION: u16 = 998;
 const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
 const IDM_START: u16 = 1001;
@@ -178,6 +179,7 @@ fn showContextMenu() void {
 
     const version_label = std.fmt.comptimePrint("ZSC Tray {s}+{s}", .{ build_options.app_version, build_options.git_rev });
     appendMenuItem(hMenu, IDM_VERSION, version_label, true);
+    appendMenuItem(hMenu, IDM_COPY_VERSION, "Copy Version", false);
     appendMenuItem(hMenu, IDM_STATUS, status_label, true);
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
 
@@ -285,6 +287,15 @@ fn handleCommand(cmd_id: u16) void {
             openLogs(g_allocator) catch |err| {
                 showError(g_allocator, "Open logs failed", err);
             };
+        },
+        IDM_COPY_VERSION => {
+            logLine("copy version requested");
+            const v = std.fmt.comptimePrint("{s}+{s}", .{ build_options.app_version, build_options.git_rev });
+            copyUtf8ToClipboard(g_allocator, v) catch |err| {
+                showError(g_allocator, "Copy version failed", err);
+                return;
+            };
+            showInfoBalloon(g_allocator, "ZiggyStarClaw", "Copied version to clipboard");
         },
         IDM_OPEN_CONFIG => {
             logLine("open config folder requested");
@@ -618,6 +629,65 @@ fn shellOpenPath(allocator: std.mem.Allocator, path: []const u8) !void {
 
     const r = win.ShellExecuteW(null, op.ptr, wpath.ptr, null, null, win.SW_SHOWNORMAL);
     if (@intFromPtr(r) <= 32) return error.ShellExecuteFailed;
+}
+
+fn showInfoBalloon(allocator: std.mem.Allocator, title_utf8: []const u8, msg_utf8: []const u8) void {
+    // Best-effort. If it fails, silently ignore (clipboard already did the job).
+    var nid = g_nid;
+    nid.uFlags = win.NIF_INFO;
+    nid.dwInfoFlags = win.NIIF_INFO;
+
+    @memset(&nid.szInfoTitle, 0);
+    @memset(&nid.szInfo, 0);
+
+    const title16 = std.unicode.utf8ToUtf16LeAlloc(allocator, title_utf8) catch return;
+    defer allocator.free(title16);
+    const msg16 = std.unicode.utf8ToUtf16LeAlloc(allocator, msg_utf8) catch return;
+    defer allocator.free(msg16);
+
+    const ntitle = @min(nid.szInfoTitle.len - 1, title16.len);
+    std.mem.copyForwards(u16, nid.szInfoTitle[0..ntitle], title16[0..ntitle]);
+    nid.szInfoTitle[ntitle] = 0;
+
+    const nmsg = @min(nid.szInfo.len - 1, msg16.len);
+    std.mem.copyForwards(u16, nid.szInfo[0..nmsg], msg16[0..nmsg]);
+    nid.szInfo[nmsg] = 0;
+
+    _ = win.Shell_NotifyIconW(win.NIM_MODIFY, &nid);
+}
+
+fn copyUtf8ToClipboard(allocator: std.mem.Allocator, text_utf8: []const u8) !void {
+    const w = try std.unicode.utf8ToUtf16LeAlloc(allocator, text_utf8);
+    defer allocator.free(w);
+
+    // Open clipboard for our (hidden) window.
+    if (win.OpenClipboard(g_hwnd) == 0) return error.OpenClipboardFailed;
+    defer _ = win.CloseClipboard();
+
+    if (win.EmptyClipboard() == 0) return error.EmptyClipboardFailed;
+
+    // CF_UNICODETEXT expects a NUL-terminated UTF-16LE buffer.
+    const bytes: usize = (w.len + 1) * @sizeOf(u16);
+    const hmem = win.GlobalAlloc(win.GMEM_MOVEABLE, bytes);
+    if (hmem == null) return error.GlobalAllocFailed;
+
+    const ptr = win.GlobalLock(hmem);
+    if (ptr == null) {
+        _ = win.GlobalFree(hmem);
+        return error.GlobalLockFailed;
+    }
+
+    const buf: [*]u16 = @ptrCast(@alignCast(ptr));
+    @memcpy(buf[0..w.len], w);
+    buf[w.len] = 0;
+
+    _ = win.GlobalUnlock(hmem);
+
+    if (win.SetClipboardData(win.CF_UNICODETEXT, hmem) == null) {
+        _ = win.GlobalFree(hmem);
+        return error.SetClipboardDataFailed;
+    }
+    // On success, clipboard owns hmem; do not free.
 }
 
 fn isAccessDenied(buf: []const u8) bool {
