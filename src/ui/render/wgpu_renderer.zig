@@ -1289,8 +1289,11 @@ pub const Renderer = struct {
                 // that case, fall back to a single stretched draw so the full interior fits.
                 var tile_w = @max(1.0, @round(src_center_w));
                 var tile_h = @max(1.0, @round(src_center_h));
-                if (dst_center_w > 0.0) tile_w = @min(tile_w, @max(1.0, @round(dst_center_w)));
-                if (dst_center_h > 0.0) tile_h = @min(tile_h, @max(1.0, @round(dst_center_h)));
+                // Important: don't round the destination sizes here. If we do, we can end up with a tiny
+                // fractional remainder tile at the right/bottom that re-samples from the start of the
+                // source interior, producing a visible seam/stripe.
+                if (dst_center_w > 0.0 and tile_w > dst_center_w) tile_w = dst_center_w;
+                if (dst_center_h > 0.0 and tile_h > dst_center_h) tile_h = dst_center_h;
 
                 if (dst_center_w > 0.001 and dst_center_h > 0.001 and tile_w > 0.5 and tile_h > 0.5) {
                     const u_span = u_right - u_left;
