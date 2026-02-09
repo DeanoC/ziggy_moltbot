@@ -33,6 +33,8 @@ const win = @cImport({
 const WM_TRAYICON: u32 = win.WM_APP + 1;
 const TIMER_STATUS: usize = 1;
 
+const NODE_CONTROL_PIPE: []const u8 = "\\\\.\\pipe\\ZiggyStarClaw.NodeControl";
+
 const IDM_COPY_VERSION: u16 = 998;
 const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
@@ -316,7 +318,12 @@ fn handleCommand(cmd_id: u16) void {
 const Action = enum { start, stop, status };
 
 fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
-    // Prefer invoking ziggystarclaw-cli if present.
+    // Prefer the supervisor control pipe if available.
+    if (try tryRunPipeServiceAction(allocator, action)) |ok| {
+        if (ok) return;
+    }
+
+    // Next: invoke ziggystarclaw-cli if present.
     if (try tryRunCliServiceAction(allocator, action)) |ok| {
         if (ok) return;
     }
@@ -338,6 +345,9 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
+    // Prefer the supervisor control pipe if available (works without Task Scheduler permissions).
+    if (try queryServiceStatePipe(allocator)) |st| return st;
+
     // NOTE: Avoid parsing `schtasks /Query` stdout for status.
     // That output is localized (non-English Windows), which would keep the tray
     // state stuck at `.unknown` and disable Start/Stop/Restart.
@@ -399,6 +409,63 @@ fn queryServiceStatePowerShell(allocator: std.mem.Allocator) !?ServiceState {
 
     // PowerShell not available (or missing Get-ScheduledTask).
     return null;
+}
+
+fn pipeRequest(allocator: std.mem.Allocator, cmd: []const u8) !?[]u8 {
+    // Returns null when the supervisor pipe isn't available.
+    const wpipe = utf16Z(allocator, NODE_CONTROL_PIPE) catch return null;
+    defer allocator.free(wpipe);
+
+    const h = win.CreateFileW(
+        wpipe.ptr,
+        win.GENERIC_READ | win.GENERIC_WRITE,
+        0,
+        null,
+        win.OPEN_EXISTING,
+        0,
+        null,
+    );
+    if (h == win.INVALID_HANDLE_VALUE) return null;
+    defer _ = win.CloseHandle(h);
+
+    // Write command line.
+    var buf: [64]u8 = undefined;
+    const line = try std.fmt.bufPrint(&buf, "{s}\n", .{cmd});
+    var written: u32 = 0;
+    if (win.WriteFile(h, line.ptr, @intCast(line.len), &written, null) == 0) return error.PipeWriteFailed;
+
+    // Read response.
+    var out_buf: [256]u8 = undefined;
+    var read_n: u32 = 0;
+    if (win.ReadFile(h, &out_buf, out_buf.len, &read_n, null) == 0) return error.PipeReadFailed;
+    if (read_n == 0) return error.PipeReadFailed;
+
+    return allocator.dupe(u8, out_buf[0..read_n]);
+}
+
+fn queryServiceStatePipe(allocator: std.mem.Allocator) !?ServiceState {
+    const resp = (try pipeRequest(allocator, "status")) orelse return null;
+    defer allocator.free(resp);
+
+    const s = std.mem.trim(u8, resp, " \t\r\n");
+    if (!std.mem.startsWith(u8, s, "ok")) return null;
+    if (std.mem.indexOf(u8, s, "status=running") != null) return .running;
+    if (std.mem.indexOf(u8, s, "status=stopped") != null) return .stopped;
+    return .unknown;
+}
+
+fn tryRunPipeServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {
+    const cmd = switch (action) {
+        .start => "start",
+        .stop => "stop",
+        // Query is not an action here.
+        .status => "status",
+    };
+
+    const resp = (try pipeRequest(allocator, cmd)) orelse return null;
+    defer allocator.free(resp);
+    const s = std.mem.trim(u8, resp, " \t\r\n");
+    return std.mem.startsWith(u8, s, "ok");
 }
 
 fn tryRunCliServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {

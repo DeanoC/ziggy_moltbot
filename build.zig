@@ -111,6 +111,10 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
         if (enable_ztracy) {
             cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
         }
@@ -222,6 +226,10 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
         if (enable_ztracy) {
             cli_module.addImport("ztracy", ztracy_pkg.?.module("root"));
             cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));

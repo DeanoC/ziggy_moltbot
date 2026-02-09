@@ -25,6 +25,11 @@ pub const std_options = std.Options{
     .log_level = .debug,
 };
 
+const supervisor_pipe = if (builtin.os.tag == .windows)
+    @import("windows/supervisor_pipe.zig")
+else
+    struct {};
+
 fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8 {
     // Minimal /etc/passwd parser to find a user's home directory.
     // Format: name:passwd:uid:gid:gecos:home:shell
@@ -55,12 +60,16 @@ fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8
 }
 
 fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Headless supervisor: keep node-mode running and restart on exit.
-    // Intended for Windows Task Scheduler ONSTART tasks (runs as SYSTEM, Session 0).
+    // Windows-only: headless supervisor that runs as a SYSTEM scheduled task (ONSTART).
+    // Provides a named-pipe control channel so the per-user tray app can query status and
+    // request start/stop/restart without needing Task Scheduler permissions.
+    if (builtin.os.tag != .windows) return error.Unsupported;
 
+    var shared = supervisor_pipe.Shared{};
+    supervisor_pipe.spawnServerThread(allocator, &shared) catch {};
+
+    // Parse node options for the child process.
     var opts = try main_node.parseNodeOptions(allocator, args);
-
-    // Mirror the service defaults: node enabled, operator disabled.
     if (opts.as_node == null) opts.as_node = true;
     if (opts.as_operator == null) opts.as_operator = false;
 
@@ -82,50 +91,111 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
     defer allocator.free(node_log_path);
     const wrapper_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "wrapper.log" });
     defer allocator.free(wrapper_log_path);
-    const stdio_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node-stdio.log" });
-    defer allocator.free(stdio_log_path);
 
-    // Ensure files exist.
     _ = std.fs.cwd().createFile(node_log_path, .{ .truncate = false }) catch {};
-    _ = std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false }) catch {};
-    _ = std.fs.cwd().createFile(stdio_log_path, .{ .truncate = false }) catch {};
-
-    // Reconfigure the logger so node-mode logs actually go to disk.
-    logger.deinit();
-    logger.setLevel(opts.log_level);
-    cli_log_level = toStdLogLevel(opts.log_level);
-    logger.initFile(node_log_path) catch |err| {
-        // If we can't open the log file, at least keep going (Task Scheduler may still capture output).
-        logger.warn("Failed to open node log file {s}: {}", .{ node_log_path, err });
-    };
-
-    // IMPORTANT: don't enable async logging here.
-    // The async logger uses the allocator from multiple threads; the CLI's GPA allocator
-    // is not guaranteed thread-safe. Synchronous file logging is safer for a long-running
-    // Task Scheduler supervisor.
-    //
-    // (Node-mode still has its own threads; logger.zig uses a mutex for file writes.)
-
-    // Wrapper diagnostics.
     var wrapper_file = try std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false });
     defer wrapper_file.close();
     try wrapper_file.seekFromEnd(0);
-    var w = wrapper_file.deprecatedWriter();
+    var wrap = wrapper_file.deprecatedWriter();
 
-    w.print("{d} [wrapper] supervisor starting; config={s}; node_log={s}; stdio_log={s}\n", .{ std.time.timestamp(), cfg_path, node_log_path, stdio_log_path }) catch {};
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
 
-    // Keep restarting node-mode if it exits.
+    wrap.print(
+        "{d} [wrapper] supervisor starting; config={s}; node_log={s}; pipe={s}\n",
+        .{ std.time.timestamp(), cfg_path, node_log_path, supervisor_pipe.pipe_name_utf8 },
+    ) catch {};
+
+    var child: ?std.process.Child = null;
+    defer if (child) |*c| {
+        _ = c.kill() catch {};
+        _ = c.wait() catch {};
+    };
+
     while (true) {
-        w.print("{d} [wrapper] launching node-mode\n", .{std.time.timestamp()}) catch {};
+        // Snapshot desired state.
+        shared.mutex.lock();
+        const want = shared.desired_running;
+        const do_restart = shared.restart_requested;
+        shared.restart_requested = false;
+        shared.mutex.unlock();
 
-        main_node.runNodeMode(allocator, opts) catch |err| {
-            w.print("{d} [wrapper] node-mode exited with error: {s}\n", .{ std.time.timestamp(), @errorName(err) }) catch {};
-            std.Thread.sleep(5 * std.time.ns_per_s);
-            continue;
-        };
+        if (do_restart and child != null) {
+            wrap.print("{d} [wrapper] restart requested\n", .{std.time.timestamp()}) catch {};
+            child.?.kill() catch {};
+            _ = child.?.wait() catch {};
+            child = null;
+        }
 
-        w.print("{d} [wrapper] node-mode exited normally; restarting in 5s\n", .{std.time.timestamp()}) catch {};
-        std.Thread.sleep(5 * std.time.ns_per_s);
+        if (!want and child != null) {
+            wrap.print("{d} [wrapper] stop requested\n", .{std.time.timestamp()}) catch {};
+            child.?.kill() catch {};
+            _ = child.?.wait() catch {};
+            child = null;
+        }
+
+        if (want and child == null) {
+            // Spawn node-mode as a child process so the supervisor can remain responsive.
+            var argv = std.ArrayList([]const u8).empty;
+            defer argv.deinit(allocator);
+            try argv.append(allocator, self_exe);
+            try argv.append(allocator, "--node-mode");
+            try argv.append(allocator, "--config");
+            try argv.append(allocator, cfg_path);
+            try argv.append(allocator, "--as-node");
+            try argv.append(allocator, "--no-operator");
+            try argv.append(allocator, "--log-level");
+            try argv.append(allocator, @tagName(opts.log_level));
+
+            var c = std.process.Child.init(argv.items, allocator);
+            c.stdin_behavior = .Ignore;
+            c.stdout_behavior = .Ignore;
+            c.stderr_behavior = .Ignore;
+            c.create_no_window = true;
+
+            var env = std.process.getEnvMap(allocator) catch std.process.EnvMap.init(allocator);
+            defer env.deinit();
+            env.put("MOLT_LOG_FILE", node_log_path) catch {};
+            env.put("MOLT_LOG_LEVEL", @tagName(opts.log_level)) catch {};
+            c.env_map = &env;
+
+            wrap.print("{d} [wrapper] launching node-mode child\n", .{std.time.timestamp()}) catch {};
+            c.spawn() catch |err| {
+                wrap.print("{d} [wrapper] spawn failed: {s}\n", .{ std.time.timestamp(), @errorName(err) }) catch {};
+                std.time.sleep(2 * std.time.ns_per_s);
+                continue;
+            };
+            child = c;
+        }
+
+        // Update running state.
+        if (child) |*c| {
+            const code_opt = supervisor_pipe.getExitCode(c.id);
+            if (code_opt) |code| {
+                if (supervisor_pipe.isStillActive(code)) {
+                    const pid = supervisor_pipe.getPid(c.id);
+                    shared.mutex.lock();
+                    shared.is_running = true;
+                    shared.pid = pid;
+                    shared.mutex.unlock();
+                } else {
+                    shared.mutex.lock();
+                    shared.is_running = false;
+                    shared.pid = 0;
+                    shared.mutex.unlock();
+                    wrap.print("{d} [wrapper] child exited code={d}\n", .{ std.time.timestamp(), code }) catch {};
+                    _ = c.wait() catch {};
+                    child = null;
+                }
+            }
+        } else {
+            shared.mutex.lock();
+            shared.is_running = false;
+            shared.pid = 0;
+            shared.mutex.unlock();
+        }
+
+        std.time.sleep(200 * std.time.ns_per_ms);
     }
 }
 
@@ -303,6 +373,7 @@ pub fn main() !void {
         } else if (i == 1 and std.mem.eql(u8, arg, "node")) {
             // Minimal verb-noun style convenience wrapper:
             //   ziggystarclaw-cli node service install|uninstall|start|stop|status
+            //   ziggystarclaw-cli node supervise [--config <path>] [--log-level <level>]
             if (i + 1 >= args.len) return error.InvalidArguments;
             const noun = args[i + 1];
 
