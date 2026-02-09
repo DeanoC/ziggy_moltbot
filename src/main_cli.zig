@@ -658,8 +658,20 @@ pub fn main() !void {
                     "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
                         "Set env=sh.Environment(\"Process\")\r\n" ++
                         "Sub LogLine(s)\r\n" ++
-                        "  ' Avoid FileSystemObject: some environments/policies break it under Task Scheduler.\r\n" ++
-                        "  ' Use an absolute cmd.exe path (PATH can be surprising under Task Scheduler/SYSTEM).\r\n" ++
+                        "  On Error Resume Next\r\n" ++
+                        "  ' Prefer direct file append when available (fast + no child process).\r\n" ++
+                        "  Dim fso, f\r\n" ++
+                        "  Set fso = CreateObject(\"Scripting.FileSystemObject\")\r\n" ++
+                        "  If Err.Number = 0 Then\r\n" ++
+                        "    Set f = fso.OpenTextFile(\"{s}\", 8, True)\r\n" ++
+                        "    If Err.Number = 0 Then\r\n" ++
+                        "      f.WriteLine Now & \" [wrapper] \" & s\r\n" ++
+                        "      f.Close\r\n" ++
+                        "      Exit Sub\r\n" ++
+                        "    End If\r\n" ++
+                        "  End If\r\n" ++
+                        "  Err.Clear\r\n" ++
+                        "  ' Fallback: cmd.exe redirection. Use absolute cmd.exe path (PATH can be surprising under Task Scheduler/SYSTEM).\r\n" ++
                         "  sh.Run \"\"\"{s}\\System32\\cmd.exe\"\" /c echo \" & Now & \" [wrapper] \" & s & \" >> \"\"\"{s}\"\"\"\", 0, True\r\n" ++
                         "End Sub\r\n" ++
                         "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
@@ -671,7 +683,7 @@ pub fn main() !void {
                         "  LogLine \"node exited rc=\" & rc\r\n" ++
                         "  WScript.Sleep 5000\r\n" ++
                         "Loop\r\n",
-                    .{ windir_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
+                    .{ wrapper_log_path, windir_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
                 );
                 defer allocator.free(vbs);
 
