@@ -113,6 +113,9 @@ pub const PanelStyle = struct {
     // If false, the 9-slice center cell is not drawn (useful when the source image has
     // an opaque center but you want it to behave like a border/frame).
     frame_draw_center: bool = true,
+    // Optional paint drawn into the 9-slice interior rect (x1..x2, y1..y2) after the frame.
+    // Intended for "lighting" overlays (eg brushed-metal spotlight) layered over a tileable base.
+    frame_center_overlay: ?Paint = null,
     // If true, the 9-slice center cell is tiled (pixel-perfect) instead of stretched.
     frame_tile_center: bool = false,
     // When tiling the 9-slice center, choose which axes are tiled.
@@ -310,6 +313,9 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
     }
     if (obj.get("draw_center")) |bv| {
         if (bv == .bool) out.frame_draw_center = bv.bool;
+    }
+    if (obj.get("center_overlay")) |ov| {
+        out.frame_center_overlay = parsePaint(ov, theme) orelse out.frame_center_overlay;
     }
     if (obj.get("tile_center")) |bv| {
         if (bv == .bool) {

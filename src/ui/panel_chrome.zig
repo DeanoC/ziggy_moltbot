@@ -86,6 +86,57 @@ pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Option
     }
 }
 
+fn drawPaintRect(dc: *draw_context.DrawContext, rect: draw_context.Rect, paint: style_sheet.Paint) void {
+    switch (paint) {
+        .solid => |c| dc.drawRect(rect, .{ .fill = c }),
+        .gradient4 => |g| dc.drawRectGradient(rect, .{
+            .tl = g.tl,
+            .tr = g.tr,
+            .bl = g.bl,
+            .br = g.br,
+        }),
+        .image => |img| {
+            if (!img.path.isSet()) return;
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const abs_path = theme_runtime.resolveThemeAssetPath(path_buf[0..], img.path.slice()) orelse return;
+            image_cache.request(abs_path);
+            const entry = image_cache.get(abs_path) orelse return;
+            if (entry.state != .ready) return;
+
+            const w: f32 = @floatFromInt(@max(entry.width, 1));
+            const h: f32 = @floatFromInt(@max(entry.height, 1));
+            const scale = img.scale orelse 1.0;
+            const tint = img.tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
+            const offset = img.offset_px orelse .{ 0.0, 0.0 };
+            const size = rect.size();
+
+            if (img.mode == .tile) {
+                const uv0_x = offset[0] / (w * scale);
+                const uv0_y = offset[1] / (h * scale);
+                const uv1_x = uv0_x + (size[0] / (w * scale));
+                const uv1_y = uv0_y + (size[1] / (h * scale));
+                dc.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ uv0_x, uv0_y },
+                    .{ uv1_x, uv1_y },
+                    tint,
+                    true,
+                );
+            } else {
+                dc.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ 0.0, 0.0 },
+                    .{ 1.0, 1.0 },
+                    tint,
+                    false,
+                );
+            }
+        },
+    }
+}
+
 fn drawPanelShadow(dc: *draw_context.DrawContext, rect: draw_context.Rect, radius: f32) void {
     const ss = theme_runtime.getStyleSheet();
     if (ss.panel.shadow.color) |shadow_color| {
@@ -146,4 +197,55 @@ fn drawPanelFrame(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
         tile_center_y,
         tile_anchor_end,
     );
+
+    // Optional overlay drawn only in the 9-slice interior rect.
+    if (ss.panel.frame_center_overlay) |overlay| {
+        const w_tex: f32 = @floatFromInt(@max(entry.width, 1));
+        const h_tex: f32 = @floatFromInt(@max(entry.height, 1));
+        const left_src = std.math.clamp(slices[0], 0.0, w_tex);
+        const top_src = std.math.clamp(slices[1], 0.0, h_tex);
+        const right_src = std.math.clamp(slices[2], 0.0, w_tex);
+        const bottom_src = std.math.clamp(slices[3], 0.0, h_tex);
+
+        const dst_w = rect.max[0] - rect.min[0];
+        const dst_h = rect.max[1] - rect.min[1];
+        if (dst_w <= 0.0 or dst_h <= 0.0) return;
+
+        var left = left_src;
+        var right = right_src;
+        var top = top_src;
+        var bottom = bottom_src;
+        if (left + right > dst_w and (left + right) > 0.0001) {
+            const s = dst_w / (left + right);
+            left *= s;
+            right *= s;
+        }
+        if (top + bottom > dst_h and (top + bottom) > 0.0001) {
+            const s = dst_h / (top + bottom);
+            top *= s;
+            bottom *= s;
+        }
+        if (tile_center and draw_center) {
+            left = @round(left);
+            right = @round(right);
+            top = @round(top);
+            bottom = @round(bottom);
+            if (left + right > dst_w) {
+                const overflow = (left + right) - dst_w;
+                right = @max(0.0, right - overflow);
+            }
+            if (top + bottom > dst_h) {
+                const overflow = (top + bottom) - dst_h;
+                bottom = @max(0.0, bottom - overflow);
+            }
+        }
+
+        const x1 = rect.min[0] + left;
+        const x2 = rect.max[0] - right;
+        const y1 = rect.min[1] + top;
+        const y2 = rect.max[1] - bottom;
+        if (x2 - x1 <= 0.5 or y2 - y1 <= 0.5) return;
+
+        drawPaintRect(dc, .{ .min = .{ x1, y1 }, .max = .{ x2, y2 } }, overlay);
+    }
 }

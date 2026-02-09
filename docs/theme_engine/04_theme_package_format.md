@@ -196,6 +196,7 @@ Pragmatic recommendation:
 - `slices_px`: `[left, top, right, bottom]` (source pixels)
 - `tint`: color (optional)
 - `draw_center`: bool (default true)
+- `center_overlay`: paint (optional, drawn into the 9-slice interior after the frame; useful for lighting/highlight layers)
 - `center_mode`: `"stretch"`, `"tile"`, `"tile_x"`, `"tile_y"` (default `"stretch"`)
 - `center_anchor`: `"start"` or `"end"` (default `"start"`, only applies to `center_mode: "tile"`/`"tile_x"`/`"tile_y"`)
 

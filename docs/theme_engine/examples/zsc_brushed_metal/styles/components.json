@@ -44,9 +44,16 @@
       "image": "assets/images/brushed_metal_panel_frame.png",
       "slices_px": [96, 96, 96, 96],
       "tint": "#FFFFFFFF",
-      "draw_center": true,
-      "center_mode": "tile_x",
-      "center_anchor": "start"
+      "draw_center": false,
+      "center_overlay": {
+        "image": {
+          "path": "assets/images/panel_center_highlight.png",
+          "mode": "stretch",
+          "scale": 1.0,
+          "tint": "#FFFFFFFF",
+          "offset_px": [0, 0]
+        }
+      }
     }
   },
   "button": {
