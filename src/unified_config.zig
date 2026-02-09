@@ -26,7 +26,7 @@ pub const UnifiedConfig = struct {
         /// Optional display name (falls back to "ZiggyStarClaw Node").
         displayName: ?[]const u8 = null,
 
-        /// Health reporter interval (node.heartbeat) in milliseconds.
+        /// Health reporter interval (node.event: node.health.frame) in milliseconds.
         /// Keep this reasonably frequent so the gateway doesn't mark the node as stale.
         healthReporterIntervalMs: i64 = 10000,
 

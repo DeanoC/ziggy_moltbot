@@ -54,9 +54,11 @@ pub fn build(b: *std.Build) void {
     const tracy_callstack = b.option(u32, "tracy_callstack", "Tracy callstack depth (0=off)") orelse 0;
     const enable_wasm_perf_markers = b.option(bool, "enable_wasm_perf_markers", "On WASM, emit JS performance marks/measures for profiler zones") orelse false;
     const app_version = readAppVersion(b);
+    const git_rev = readGitRev(b);
     const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
+    build_options.addOption([]const u8, "git_rev", git_rev);
     build_options.addOption(bool, "enable_ztracy", enable_ztracy);
     build_options.addOption(bool, "enable_ztracy_android", enable_ztracy_android);
     build_options.addOption(bool, "enable_wasm_perf_markers", enable_wasm_perf_markers);
@@ -109,6 +111,10 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
         if (enable_ztracy) {
             cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
         }
@@ -220,12 +226,39 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
         if (enable_ztracy) {
             cli_module.addImport("ztracy", ztracy_pkg.?.module("root"));
             cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
         }
 
         b.installArtifact(cli_exe);
+
+        // Windows-only tray app (MVP): status + start/stop/restart + open logs.
+        if (target.result.os.tag == .windows) {
+            const tray_module = b.createModule(.{
+                .root_source_file = b.path("src/main_tray.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const tray_exe = b.addExecutable(.{
+                .name = "ziggystarclaw-tray",
+                .root_module = tray_module,
+            });
+            tray_exe.linkLibC();
+            tray_exe.subsystem = .Windows;
+            tray_exe.root_module.addOptions("build_options", build_options);
+            tray_exe.root_module.linkSystemLibrary("user32", .{});
+            tray_exe.root_module.linkSystemLibrary("shell32", .{});
+            tray_exe.root_module.linkSystemLibrary("gdi32", .{});
+            tray_exe.root_module.addWin32ResourceFile(.{
+                .file = b.path("assets/icons/ziggystarclaw.rc"),
+            });
+            b.installArtifact(tray_exe);
+        }
 
         const run_cli_step = b.step("run-cli", "Run the CLI client");
         const run_cli_cmd = b.addRunArtifact(cli_exe);
@@ -656,4 +689,31 @@ fn readAppVersion(b: *std.Build) []const u8 {
     const after_start = slice[quote_start + 1 ..];
     const quote_end = std.mem.indexOfScalar(u8, after_start, '"') orelse return "0.0.0";
     return after_start[0..quote_end];
+}
+
+fn readGitRev(b: *std.Build) []const u8 {
+    const res = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "git", "rev-parse", "--short", "HEAD" },
+    }) catch return "unknown";
+    defer b.allocator.free(res.stdout);
+    defer b.allocator.free(res.stderr);
+
+    const rev_trim = std.mem.trim(u8, res.stdout, " \t\r\n");
+    if (rev_trim.len == 0) return "unknown";
+
+    const base = b.allocator.dupe(u8, rev_trim) catch return "unknown";
+
+    // Mark dirty working tree (best effort). This helps avoid “wait, am I running the latest exe?”
+    const res2 = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "git", "status", "--porcelain" },
+    }) catch return base;
+    defer b.allocator.free(res2.stdout);
+    defer b.allocator.free(res2.stderr);
+
+    const dirty = std.mem.trim(u8, res2.stdout, " \t\r\n");
+    if (dirty.len == 0) return base;
+
+    return std.fmt.allocPrint(b.allocator, "{s}-dirty", .{base}) catch base;
 }

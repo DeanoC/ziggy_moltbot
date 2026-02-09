@@ -1,0 +1,89 @@
+const std = @import("std");
+const builtin = @import("builtin");
+
+const win = @cImport({
+    @cDefine("WIN32_LEAN_AND_MEAN", "1");
+    @cDefine("NOMINMAX", "1");
+    @cDefine("UNICODE", "1");
+    @cDefine("_UNICODE", "1");
+    @cInclude("windows.h");
+    @cInclude("sddl.h");
+});
+
+pub const AcquireResult = struct {
+    handle: std.os.windows.HANDLE,
+    already_running: bool,
+    name_used_utf8: []const u8,
+};
+
+fn utf16Z(a: std.mem.Allocator, s: []const u8) ![]u16 {
+    const tmp = try std.unicode.utf8ToUtf16LeAlloc(a, s);
+    defer a.free(tmp);
+    var out = try a.alloc(u16, tmp.len + 1);
+    @memcpy(out[0..tmp.len], tmp);
+    out[tmp.len] = 0;
+    return out;
+}
+
+fn createMutexWithSddl(a: std.mem.Allocator, name_utf8: []const u8, sddl_utf8: []const u8) !std.os.windows.HANDLE {
+    const wname = try utf16Z(a, name_utf8);
+    defer a.free(wname);
+
+    const wsddl = try utf16Z(a, sddl_utf8);
+    defer a.free(wsddl);
+
+    var sd: ?*anyopaque = null;
+    if (win.ConvertStringSecurityDescriptorToSecurityDescriptorW(wsddl.ptr, win.SDDL_REVISION_1, @ptrCast(&sd), null) == 0) {
+        return error.AccessDenied;
+    }
+    defer if (sd) |p| {
+        _ = win.LocalFree(@ptrCast(p));
+    };
+
+    var sa: win.SECURITY_ATTRIBUTES = std.mem.zeroes(win.SECURITY_ATTRIBUTES);
+    sa.nLength = @sizeOf(win.SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = win.FALSE;
+    sa.lpSecurityDescriptor = sd;
+
+    const h = win.CreateMutexW(&sa, win.TRUE, wname.ptr);
+    if (h == null) {
+        const err = win.GetLastError();
+        // Map common errors.
+        switch (err) {
+            win.ERROR_ACCESS_DENIED => return error.AccessDenied,
+            win.ERROR_INVALID_NAME => return error.InvalidName,
+            else => return error.Unexpected,
+        }
+    }
+
+    return @ptrCast(h);
+}
+
+/// Acquire a cross-process single-instance mutex for the Windows node supervisor.
+///
+/// Tries Global\ first (cross-session), then falls back to Local\.
+///
+/// NOTE: We intentionally grant Everyone GENERIC_ALL so non-admin processes can
+/// detect that the SYSTEM supervisor is already running.
+pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+
+    // SYSTEM+Admins full; Everyone full (only used as a guard).
+    const sddl_utf8 = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;WD)";
+
+    const global_name = "Global\\ZiggyStarClaw.NodeSupervisor";
+    const local_name = "Local\\ZiggyStarClaw.NodeSupervisor";
+
+    var name_used: []const u8 = global_name;
+    const h = createMutexWithSddl(allocator, global_name, sddl_utf8) catch |err| blk: {
+        // If we can't create/open a global mutex (common for non-admin), fall back.
+        if (err == error.AccessDenied or err == error.InvalidName) {
+            name_used = local_name;
+            break :blk try createMutexWithSddl(allocator, local_name, sddl_utf8);
+        }
+        return err;
+    };
+
+    const already = (win.GetLastError() == win.ERROR_ALREADY_EXISTS);
+    return .{ .handle = h, .already_running = already, .name_used_utf8 = name_used };
+}
