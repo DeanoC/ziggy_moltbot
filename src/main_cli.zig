@@ -657,7 +657,8 @@ pub fn main() !void {
                         "Set env=sh.Environment(\"Process\")\r\n" ++
                         "Sub LogLine(s)\r\n" ++
                         "  ' Avoid FileSystemObject: some environments/policies break it under Task Scheduler.\r\n" ++
-                        "  sh.Run \"cmd /c echo \" & Now & \" [wrapper] \" & s & \" >> {s}\", 0, True\r\n" ++
+                        "  ' Use an absolute cmd.exe path (PATH can be surprising under Task Scheduler/SYSTEM).\r\n" ++
+                        "  sh.Run \"\"\"{s}\\System32\\cmd.exe\"\" /c echo \" & Now & \" [wrapper] \" & s & \" >> \"\"\"{s}\"\"\"\", 0, True\r\n" ++
                         "End Sub\r\n" ++
                         "env(\"MOLT_LOG_FILE\")=\"{s}\"\r\n" ++
                         "env(\"MOLT_LOG_LEVEL\")=\"debug\"\r\n" ++
@@ -668,7 +669,7 @@ pub fn main() !void {
                         "  LogLine \"node exited rc=\" & rc\r\n" ++
                         "  WScript.Sleep 5000\r\n" ++
                         "Loop\r\n",
-                    .{ wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
+                    .{ programdata_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
                 );
                 defer allocator.free(vbs);
 
