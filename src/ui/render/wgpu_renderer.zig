@@ -1296,66 +1296,61 @@ pub const Renderer = struct {
                 if (dst_center_h > 0.0 and tile_h > dst_center_h) tile_h = dst_center_h;
 
                 if (dst_center_w > 0.001 and dst_center_h > 0.001 and tile_w > 0.5 and tile_h > 0.5) {
-                    const u_span = u_right - u_left;
-                    const v_span = v_bottom - v_top;
-
-                    if (cmd.tile_anchor_end) {
-                        // End-anchored: place any partial remainder on the left/top so the right/bottom
-                        // edges land on full-tile boundaries. This avoids the "half tile" look on the
-                        // right edge for non-tileable interiors.
-                        var yy: f32 = y2;
-                        while (yy > y1 + 0.0001) {
-                            const rem_h = yy - y1;
-                            const draw_h = @min(tile_h, rem_h);
-                            const v1 = v_bottom;
-                            const v0 = v_bottom - (draw_h / tile_h) * v_span;
-
-                            var xx: f32 = x2;
-                            while (xx > x1 + 0.0001) {
-                                const rem_w = xx - x1;
-                                const draw_w = @min(tile_w, rem_w);
-                                const uv1_x = u_right;
-                                const uv0_x = u_right - (draw_w / tile_w) * u_span;
-                                self.appendTexturedQuad(
-                                    .{ xx - draw_w, yy - draw_h },
-                                    .{ xx, yy - draw_h },
-                                    .{ xx, yy },
-                                    .{ xx - draw_w, yy },
-                                    .{ uv0_x, v0 },
-                                    .{ uv1_x, v1 },
-                                    tint,
-                                );
-                                xx -= draw_w;
-                            }
-                            yy -= draw_h;
-                        }
+                    // Fit-tiling: choose an integer tile count and slightly scale tile sizes so the
+                    // destination center is covered by full tiles (no partial tile at the edges).
+                    //
+                    // This ensures the left/right (and top/bottom) edges always sample the correct
+                    // interior edge texels, avoiding the common "half tile" edge artifact.
+                    const dst_w_i: i32 = @intFromFloat(@round(dst_center_w));
+                    const dst_h_i: i32 = @intFromFloat(@round(dst_center_h));
+                    if (dst_w_i <= 0 or dst_h_i <= 0) {
+                        self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
                     } else {
-                        // Start-anchored (default): partial remainder ends up on the right/bottom.
-                        var yy: f32 = y1;
-                        while (yy < y2 - 0.0001) {
-                            const rem_h = y2 - yy;
-                            const draw_h = @min(tile_h, rem_h);
-                            const v0 = v_top;
-                            const v1 = v_top + (draw_h / tile_h) * v_span;
+                        const src_w_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_w)))));
+                        const src_h_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_h)))));
 
-                            var xx: f32 = x1;
-                            while (xx < x2 - 0.0001) {
-                                const rem_w = x2 - xx;
-                                const draw_w = @min(tile_w, rem_w);
-                                const uv0_x = u_left;
-                                const uv1_x = u_left + (draw_w / tile_w) * u_span;
+                        var nx: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))));
+                        var ny: i32 = @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))));
+                        nx = std.math.clamp(nx, 1, dst_w_i);
+                        ny = std.math.clamp(ny, 1, dst_h_i);
+
+                        const base_w: i32 = @divTrunc(dst_w_i, nx);
+                        const rem_w: i32 = dst_w_i - base_w * nx;
+                        const base_h: i32 = @divTrunc(dst_h_i, ny);
+                        const rem_h: i32 = dst_h_i - base_h * ny;
+
+                        // Distribute remainder pixels either towards the start or end so the "phase"
+                        // of tile boundaries is stable for a given anchor preference.
+                        const rem_at_start = cmd.tile_anchor_end;
+
+                        var yy_i: i32 = 0;
+                        var y_cursor: f32 = y1;
+                        while (yy_i < ny) : (yy_i += 1) {
+                            const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                            const h_i: i32 = base_h + extra_h;
+                            const h_f: f32 = @floatFromInt(h_i);
+
+                            var xx_i: i32 = 0;
+                            var x_cursor: f32 = x1;
+                            while (xx_i < nx) : (xx_i += 1) {
+                                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                                const w_i: i32 = base_w + extra_w;
+                                const w_f: f32 = @floatFromInt(w_i);
+
                                 self.appendTexturedQuad(
-                                    .{ xx, yy },
-                                    .{ xx + draw_w, yy },
-                                    .{ xx + draw_w, yy + draw_h },
-                                    .{ xx, yy + draw_h },
-                                    .{ uv0_x, v0 },
-                                    .{ uv1_x, v1 },
+                                    .{ x_cursor, y_cursor },
+                                    .{ x_cursor + w_f, y_cursor },
+                                    .{ x_cursor + w_f, y_cursor + h_f },
+                                    .{ x_cursor, y_cursor + h_f },
+                                    .{ u_left, v_top },
+                                    .{ u_right, v_bottom },
                                     tint,
                                 );
-                                xx += draw_w;
+
+                                x_cursor += w_f;
                             }
-                            yy += draw_h;
+
+                            y_cursor += h_f;
                         }
                     }
                 } else {
