@@ -651,6 +651,8 @@ pub fn main() !void {
                 // We also keep the wrapper process alive (bWaitOnReturn=True) so Task Scheduler stop/status work.
                 // IMPORTANT: Task Scheduler can report "Running" even if the child process is crashing.
                 // We keep wrapper diagnostics separate from node logs to avoid encoding/format confusion.
+                const windir_root: []const u8 = windir orelse "C:\\Windows";
+
                 const vbs = try std.fmt.allocPrint(
                     allocator,
                     "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
@@ -669,7 +671,7 @@ pub fn main() !void {
                         "  LogLine \"node exited rc=\" & rc\r\n" ++
                         "  WScript.Sleep 5000\r\n" ++
                         "Loop\r\n",
-                    .{ programdata_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
+                    .{ windir_root, wrapper_log_path, log_path, powershell_path, exe_path, node_cfg_path, stdio_log_path },
                 );
                 defer allocator.free(vbs);
 
