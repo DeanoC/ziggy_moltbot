@@ -99,6 +99,22 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
             }
         }
 
+        // If a client connects but never sends data, don't block forever: it would
+        // make subsequent clients time out (we only service one connection at a time).
+        var available: u32 = 0;
+        var waited_ms: u32 = 0;
+        while (waited_ms < 1000) : (waited_ms += 50) {
+            if (win.PeekNamedPipe(hpipe, null, 0, null, &available, null) != 0 and available > 0) break;
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+        }
+
+        if (available == 0) {
+            _ = win.FlushFileBuffers(hpipe);
+            _ = win.DisconnectNamedPipe(hpipe);
+            _ = win.CloseHandle(hpipe);
+            continue;
+        }
+
         var buf: [512]u8 = undefined;
         var read_n: u32 = 0;
         const ok_read = win.ReadFile(hpipe, &buf, buf.len, &read_n, null);
