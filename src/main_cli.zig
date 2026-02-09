@@ -30,6 +30,11 @@ const supervisor_pipe = if (builtin.os.tag == .windows)
 else
     struct {};
 
+const win_single_instance = if (builtin.os.tag == .windows)
+    @import("windows/single_instance.zig")
+else
+    struct {};
+
 fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8 {
     // Minimal /etc/passwd parser to find a user's home directory.
     // Format: name:passwd:uid:gid:gecos:home:shell
@@ -100,6 +105,22 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
     const self_exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_exe);
+
+    // Guard against multiple supervisors fighting over the pipe / child process.
+    const mutex = win_single_instance.acquireNodeSupervisorMutex(allocator) catch |err| {
+        wrap.print("{d} [wrapper] supervisor mutex error: {}\n", .{ std.time.timestamp(), err }) catch {};
+        return err;
+    };
+    // Keep handle open for lifetime of supervisor.
+    defer std.os.windows.CloseHandle(mutex.handle);
+
+    if (mutex.already_running) {
+        wrap.print(
+            "{d} [wrapper] supervisor already running (mutex {s}); exiting\n",
+            .{ std.time.timestamp(), mutex.name_used_utf8 },
+        ) catch {};
+        return;
+    }
 
     wrap.print(
         "{d} [wrapper] supervisor starting; config={s}; node_log={s}; pipe={s}\n",
