@@ -440,7 +440,8 @@ fn pipeRequest(allocator: std.mem.Allocator, cmd: []const u8) !?[]u8 {
     if (win.ReadFile(h, &out_buf, out_buf.len, &read_n, null) == 0) return error.PipeReadFailed;
     if (read_n == 0) return error.PipeReadFailed;
 
-    return allocator.dupe(u8, out_buf[0..read_n]);
+    const dup = try allocator.dupe(u8, out_buf[0..read_n]);
+    return @as(?[]u8, dup);
 }
 
 fn queryServiceStatePipe(allocator: std.mem.Allocator) !?ServiceState {

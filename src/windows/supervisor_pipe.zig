@@ -65,7 +65,9 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
     if (win.ConvertStringSecurityDescriptorToSecurityDescriptorW(wsddl.ptr, win.SDDL_REVISION_1, @ptrCast(&sd), null) == 0) {
         sd = null;
     }
-    defer if (sd != null) _ = win.LocalFree(sd);
+    defer if (sd) |p| {
+        _ = win.LocalFree(@ptrCast(p));
+    };
 
     var sa: win.SECURITY_ATTRIBUTES = std.mem.zeroes(win.SECURITY_ATTRIBUTES);
     sa.nLength = @sizeOf(win.SECURITY_ATTRIBUTES);
