@@ -37,7 +37,7 @@ pub const ControlPanelAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
-    // Windows node runner helpers (Task Scheduler wrapper)
+    // Windows node runner helpers (SCM service)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
     node_service_stop: bool = false,

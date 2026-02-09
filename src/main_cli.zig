@@ -67,9 +67,9 @@ fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8
 }
 
 fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    // Windows-only: headless supervisor that runs as a SYSTEM scheduled task (ONSTART).
-    // Provides a named-pipe control channel so the per-user tray app can query status and
-    // request start/stop/restart without needing Task Scheduler permissions.
+    // Windows-only: legacy headless supervisor (used by the older Task Scheduler service MVP).
+    // Keeps a named-pipe control channel so the tray app can query status and request
+    // start/stop/restart even when running headless.
     if (builtin.os.tag != .windows) return error.Unsupported;
 
     var shared = supervisor_pipe.Shared{};
@@ -428,7 +428,7 @@ pub fn main() !void {
             const noun = args[i + 1];
 
             if (std.mem.eql(u8, noun, "supervise")) {
-                // Headless supervisor for running node-mode under Task Scheduler (ONSTART).
+                // Legacy headless supervisor (used by the older Task Scheduler service MVP).
                 // Usage:
                 //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
                 try runNodeSupervisor(allocator, args[(i + 2)..]);
@@ -789,94 +789,94 @@ pub fn main() !void {
 
         if (builtin.os.tag == .windows) {
             if (node_service_install) {
-            // Ensure the node is registered/persisted in the SAME config.json the service will use.
-            // This keeps manual runs and the installed service deterministic.
-            //
-            // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
-            // can approve without re-running commands.
-            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
+                // Ensure the node is registered/persisted in the SAME config.json the service will use.
+                // This keeps manual runs and the installed service deterministic.
+                //
+                // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
+                // can approve without re-running commands.
+                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
-            // Put logs next to the config (system-scope config => ProgramData; user-scope config => AppData).
-            const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
-            const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
-            defer allocator.free(logs_dir);
-            std.fs.cwd().makePath(logs_dir) catch {};
+                // Put logs next to the config (system-scope config => ProgramData; user-scope config => AppData).
+                const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
+                const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
+                defer allocator.free(logs_dir);
+                std.fs.cwd().makePath(logs_dir) catch {};
 
-            const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
-            defer allocator.free(log_path);
+                const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
+                defer allocator.free(log_path);
 
-            // Create log file up-front so users have a concrete place to look even if
-            // the node fails early.
-            _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
-                logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
-            };
+                // Create log file up-front so users have a concrete place to look even if
+                // the node fails early.
+                _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
+                    logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
+                };
 
-            win_scm.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
-                if (err == win_scm.ServiceError.AccessDenied) {
-                    logger.err("Windows service install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                    return;
-                }
-                return err;
-            };
+                win_scm.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                        return;
+                    }
+                    return err;
+                };
 
-            const svc_name = node_service_name orelse win_scm.defaultServiceName();
+                const svc_name = node_service_name orelse win_scm.defaultServiceName();
 
-            logger.info("Installed Windows SCM service for node-mode.", .{});
-            _ = std.fs.File.stdout().write("Installed Windows service for node-mode.\n") catch {};
-            _ = std.fs.File.stdout().write("Service name: ") catch {};
-            _ = std.fs.File.stdout().write(svc_name) catch {};
-            _ = std.fs.File.stdout().write("\n") catch {};
-            _ = std.fs.File.stdout().write("Node logs: ") catch {};
-            _ = std.fs.File.stdout().write(log_path) catch {};
-            _ = std.fs.File.stdout().write("\n") catch {};
-            _ = std.fs.File.stdout().write("Recovery: configured to restart automatically on failure (via SCM).\n") catch {};
-            return;
-        }
-        if (node_service_uninstall) {
-            win_scm.uninstallService(allocator, node_service_name) catch |err| {
-                if (err == win_scm.ServiceError.AccessDenied) {
-                    logger.err("Windows service uninstall failed: access denied. Re-run from an elevated (Administrator) PowerShell.", .{});
-                    return;
-                }
-                return err;
-            };
-            logger.info("Uninstalled Windows service.", .{});
-            _ = std.fs.File.stdout().write("Uninstalled Windows service.\n") catch {};
-            return;
-        }
-        if (node_service_start) {
-            win_scm.startService(allocator, node_service_name) catch |err| {
-                if (err == win_scm.ServiceError.AccessDenied) {
-                    logger.err("Windows service start failed: access denied. If you installed the service without the tray-control permissions, re-install it from an elevated shell.", .{});
-                    return;
-                }
-                return err;
-            };
-            logger.info("Started Windows service.", .{});
-            _ = std.fs.File.stdout().write("Started Windows service.\n") catch {};
-            return;
-        }
-        if (node_service_stop) {
-            win_scm.stopService(allocator, node_service_name) catch |err| {
-                if (err == win_scm.ServiceError.AccessDenied) {
-                    logger.err("Windows service stop failed: access denied.\n", .{});
-                    return;
-                }
-                return err;
-            };
-            logger.info("Stopped Windows service.", .{});
-            _ = std.fs.File.stdout().write("Stopped Windows service.\n") catch {};
-            return;
-        }
-        if (node_service_status) {
-            const q = try win_scm.queryService(allocator, node_service_name);
-            var out = std.fs.File.stdout().deprecatedWriter();
-            try out.print("Service: {s}", .{win_scm.stateLabel(q.state)});
-            if (q.pid != 0) try out.print(" pid={d}", .{q.pid});
-            if (q.win32_exit_code != 0) try out.print(" win32Exit={d}", .{q.win32_exit_code});
-            try out.writeByte('\n');
-            return;
-        }
+                logger.info("Installed Windows SCM service for node-mode.", .{});
+                _ = std.fs.File.stdout().write("Installed Windows service for node-mode.\n") catch {};
+                _ = std.fs.File.stdout().write("Service name: ") catch {};
+                _ = std.fs.File.stdout().write(svc_name) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                _ = std.fs.File.stdout().write("Node logs: ") catch {};
+                _ = std.fs.File.stdout().write(log_path) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                _ = std.fs.File.stdout().write("Recovery: configured to restart automatically on failure (via SCM).\n") catch {};
+                return;
+            }
+            if (node_service_uninstall) {
+                win_scm.uninstallService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service uninstall failed: access denied. Re-run from an elevated (Administrator) PowerShell.", .{});
+                        return;
+                    }
+                    return err;
+                };
+                logger.info("Uninstalled Windows service.", .{});
+                _ = std.fs.File.stdout().write("Uninstalled Windows service.\n") catch {};
+                return;
+            }
+            if (node_service_start) {
+                win_scm.startService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service start failed: access denied. If you installed the service without the tray-control permissions, re-install it from an elevated shell.", .{});
+                        return;
+                    }
+                    return err;
+                };
+                logger.info("Started Windows service.", .{});
+                _ = std.fs.File.stdout().write("Started Windows service.\n") catch {};
+                return;
+            }
+            if (node_service_stop) {
+                win_scm.stopService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service stop failed: access denied.\n", .{});
+                        return;
+                    }
+                    return err;
+                };
+                logger.info("Stopped Windows service.", .{});
+                _ = std.fs.File.stdout().write("Stopped Windows service.\n") catch {};
+                return;
+            }
+            if (node_service_status) {
+                const q = try win_scm.queryService(allocator, node_service_name);
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print("Service: {s}", .{win_scm.stateLabel(q.state)});
+                if (q.pid != 0) try out.print(" pid={d}", .{q.pid});
+                if (q.win32_exit_code != 0) try out.print(" win32Exit={d}", .{q.win32_exit_code});
+                try out.writeByte('\n');
+                return;
+            }
         }
 
         logger.err("node service helpers are only supported on Windows and Linux", .{});
