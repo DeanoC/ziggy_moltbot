@@ -98,9 +98,13 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
         // If we can't open the log file, at least keep going (Task Scheduler may still capture output).
         logger.warn("Failed to open node log file {s}: {}", .{ node_log_path, err });
     };
-    logger.initAsync(allocator) catch |err| {
-        logger.warn("Failed to start async logger: {}", .{err});
-    };
+
+    // IMPORTANT: don't enable async logging here.
+    // The async logger uses the allocator from multiple threads; the CLI's GPA allocator
+    // is not guaranteed thread-safe. Synchronous file logging is safer for a long-running
+    // Task Scheduler supervisor.
+    //
+    // (Node-mode still has its own threads; logger.zig uses a mutex for file writes.)
 
     // Wrapper diagnostics.
     var wrapper_file = try std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false });
