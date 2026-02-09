@@ -183,12 +183,14 @@ fn showContextMenu() void {
     appendMenuItem(hMenu, IDM_STATUS, status_label, true);
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
 
-    const can_start = g_state == .stopped;
-    const can_stop = g_state == .running;
+    // Be permissive: if status is unknown (common when task query is restricted/localized),
+    // still allow Start/Stop so the user can try the action and see any error message.
+    const can_start = g_state != .running;
+    const can_stop = g_state == .running or g_state == .unknown;
 
     appendMenuItem(hMenu, IDM_START, "Start Node", !can_start);
     appendMenuItem(hMenu, IDM_STOP, "Stop Node", !can_stop);
-    appendMenuItem(hMenu, IDM_RESTART, "Restart Node", g_state != .running and g_state != .stopped);
+    appendMenuItem(hMenu, IDM_RESTART, "Restart Node", g_state == .not_installed);
 
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
     appendMenuItem(hMenu, IDM_OPEN_LOGS, "Open Logs", false);
