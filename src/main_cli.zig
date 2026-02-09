@@ -108,7 +108,7 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
     var child: ?std.process.Child = null;
     defer if (child) |*c| {
-        _ = c.kill() catch {};
+        if (c.kill()) |_| {} else |_| {}
         _ = c.wait() catch {};
     };
 
@@ -122,14 +122,14 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
         if (do_restart and child != null) {
             wrap.print("{d} [wrapper] restart requested\n", .{std.time.timestamp()}) catch {};
-            child.?.kill() catch {};
+            if (child.?.kill()) |_| {} else |_| {}
             _ = child.?.wait() catch {};
             child = null;
         }
 
         if (!want and child != null) {
             wrap.print("{d} [wrapper] stop requested\n", .{std.time.timestamp()}) catch {};
-            child.?.kill() catch {};
+            if (child.?.kill()) |_| {} else |_| {}
             _ = child.?.wait() catch {};
             child = null;
         }

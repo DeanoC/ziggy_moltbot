@@ -86,7 +86,7 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
             if (sd != null) &sa else null,
         );
         if (hpipe == win.INVALID_HANDLE_VALUE) {
-            std.time.sleep(1 * std.time.ns_per_s);
+            std.Thread.sleep(1 * std.time.ns_per_s);
             continue;
         }
 
