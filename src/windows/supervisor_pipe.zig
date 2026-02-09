@@ -52,14 +52,19 @@ pub fn isStillActive(exit_code: u32) bool {
 }
 
 fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
+    _ = allocator;
+    // NOTE: This thread must not use the CLI's GPA allocator (not thread-safe).
+    // Use the page allocator instead; this is a tiny, long-lived allocation anyway.
+    const a = std.heap.page_allocator;
+
     // Allow any user to connect (read/write), plus SYSTEM/Administrators full.
     const sddl_utf8 = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;WD)";
 
-    const wpipe = utf16Z(allocator, pipe_name_utf8) catch return;
-    defer allocator.free(wpipe);
+    const wpipe = utf16Z(a, pipe_name_utf8) catch return;
+    // thread lives forever; no need to free wpipe
 
-    const wsddl = utf16Z(allocator, sddl_utf8) catch return;
-    defer allocator.free(wsddl);
+    const wsddl = utf16Z(a, sddl_utf8) catch return;
+    // thread lives forever; no need to free wsddl
 
     var sd: ?*anyopaque = null;
     if (win.ConvertStringSecurityDescriptorToSecurityDescriptorW(wsddl.ptr, win.SDDL_REVISION_1, @ptrCast(&sd), null) == 0) {
