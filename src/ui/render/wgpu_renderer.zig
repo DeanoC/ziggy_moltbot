@@ -1281,10 +1281,17 @@ pub const Renderer = struct {
             if (cmd.tile_center) {
                 const src_center_w = (w_tex - left_src - right_src);
                 const src_center_h = (h_tex - top_src - bottom_src);
-                const tile_w = @max(1.0, @round(src_center_w));
-                const tile_h = @max(1.0, @round(src_center_h));
                 const dst_center_w = x2 - x1;
                 const dst_center_h = y2 - y1;
+
+                // If the source center region is larger than the destination center, tiling would
+                // otherwise "crop" the interior (you'd only see the top-left of the center). In
+                // that case, fall back to a single stretched draw so the full interior fits.
+                var tile_w = @max(1.0, @round(src_center_w));
+                var tile_h = @max(1.0, @round(src_center_h));
+                if (dst_center_w > 0.0) tile_w = @min(tile_w, @max(1.0, @round(dst_center_w)));
+                if (dst_center_h > 0.0) tile_h = @min(tile_h, @max(1.0, @round(dst_center_h)));
+
                 if (dst_center_w > 0.001 and dst_center_h > 0.001 and tile_w > 0.5 and tile_h > 0.5) {
                     const u_span = u_right - u_left;
                     const v_span = v_bottom - v_top;
