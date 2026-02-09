@@ -9,6 +9,11 @@ pub const Shared = struct {
     restart_requested: bool = false,
     is_running: bool = false,
     pid: u32 = 0,
+
+    // Pipe diagnostics (best-effort)
+    pipe_accepts: u32 = 0,
+    pipe_timeouts: u32 = 0,
+    pipe_requests: u32 = 0,
 };
 
 const win = @cImport({
@@ -31,8 +36,13 @@ fn utf16Z(a: std.mem.Allocator, s: []const u8) ![]u16 {
 
 pub fn spawnServerThread(allocator: std.mem.Allocator, shared: *Shared) !void {
     if (builtin.os.tag != .windows) return;
-    const t = try std.Thread.spawn(.{}, serverThreadMain, .{ allocator, shared });
-    t.detach();
+    // Spawn a small pool of listeners so a stuck client can't starve the whole pipe.
+    // (Each listener handles one connection at a time.)
+    const listener_count: usize = 4;
+    for (0..listener_count) |_| {
+        const t = try std.Thread.spawn(.{}, serverThreadMain, .{ allocator, shared });
+        t.detach();
+    }
 }
 
 pub fn getExitCode(h_process: std.os.windows.HANDLE) ?u32 {
@@ -84,7 +94,7 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
             wpipe.ptr,
             win.PIPE_ACCESS_DUPLEX,
             win.PIPE_TYPE_MESSAGE | win.PIPE_READMODE_MESSAGE | win.PIPE_WAIT,
-            1,
+            4,
             4096,
             4096,
             0,
@@ -104,6 +114,10 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
             }
         }
 
+        shared.mutex.lock();
+        shared.pipe_accepts += 1;
+        shared.mutex.unlock();
+
         // If a client connects but never sends data, don't block forever: it would
         // make subsequent clients time out (we only service one connection at a time).
         var available: u32 = 0;
@@ -114,6 +128,10 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
         }
 
         if (available == 0) {
+            shared.mutex.lock();
+            shared.pipe_timeouts += 1;
+            shared.mutex.unlock();
+
             _ = win.FlushFileBuffers(hpipe);
             _ = win.DisconnectNamedPipe(hpipe);
             _ = win.CloseHandle(hpipe);
@@ -125,6 +143,10 @@ fn serverThreadMain(allocator: std.mem.Allocator, shared: *Shared) void {
         const ok_read = win.ReadFile(hpipe, &buf, buf.len, &read_n, null);
         if (ok_read != 0 and read_n > 0) {
             const line = std.mem.trim(u8, buf[0..read_n], " \t\r\n");
+
+            shared.mutex.lock();
+            shared.pipe_requests += 1;
+            shared.mutex.unlock();
 
             var response: [256]u8 = undefined;
             var fbs = std.io.fixedBufferStream(&response);

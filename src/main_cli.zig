@@ -106,6 +106,9 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
         .{ std.time.timestamp(), cfg_path, node_log_path, supervisor_pipe.pipe_name_utf8 },
     ) catch {};
 
+    // Periodically report pipe diagnostics.
+    var last_diag_ms: i64 = 0;
+
     var child: ?std.process.Child = null;
     defer if (child) |*c| {
         if (c.kill()) |_| {} else |_| {}
@@ -193,6 +196,20 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
             shared.is_running = false;
             shared.pid = 0;
             shared.mutex.unlock();
+        }
+
+        const now_ms = std.time.milliTimestamp();
+        if (now_ms - last_diag_ms > 10_000) {
+            shared.mutex.lock();
+            const accepts = shared.pipe_accepts;
+            const timeouts = shared.pipe_timeouts;
+            const reqs = shared.pipe_requests;
+            shared.mutex.unlock();
+            wrap.print(
+                "{d} [wrapper] pipe stats: accepts={d} reqs={d} timeouts={d}\n",
+                .{ std.time.timestamp(), accepts, reqs, timeouts },
+            ) catch {};
+            last_diag_ms = now_ms;
         }
 
         std.Thread.sleep(200 * std.time.ns_per_ms);
