@@ -677,11 +677,11 @@ fn openLogs(allocator: std.mem.Allocator) !void {
 }
 
 fn explorerSelectFile(allocator: std.mem.Allocator, path: []const u8) !void {
-    // explorer.exe /select,"C:\\path\\to\\file"
-    const arg = try std.fmt.allocPrint(allocator, "/select,\"{s}\"", .{path});
-    defer allocator.free(arg);
-
-    var child = std.process.Child.init(&.{ "explorer.exe", arg }, allocator);
+    // Avoid embedding quotes inside the /select argument. Zig will quote argv items
+    // correctly for CreateProcess, and Explorer is picky about the exact syntax.
+    // This form reliably selects the file:
+    //   explorer.exe /select, C:\path\to\file
+    var child = std.process.Child.init(&.{ "explorer.exe", "/select,", path }, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Ignore;
     child.stderr_behavior = .Ignore;
