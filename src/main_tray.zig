@@ -432,6 +432,18 @@ fn pathExists(path: []const u8) bool {
     return true;
 }
 
+fn fileExists(path: []const u8) bool {
+    const f = std.fs.cwd().openFile(path, .{}) catch return false;
+    f.close();
+    return true;
+}
+
+fn dirExists(path: []const u8) bool {
+    var d = std.fs.cwd().openDir(path, .{}) catch return false;
+    d.close();
+    return true;
+}
+
 const RunResult = struct {
     stdout: []u8,
     stderr: []u8,
@@ -472,6 +484,23 @@ fn runCapture(allocator: std.mem.Allocator, argv: []const []const u8) !RunResult
 }
 
 fn openConfigFolder(allocator: std.mem.Allocator) !void {
+    // Prefer the system-scope config when the node service is installed in onstart mode.
+    const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+    defer if (programdata) |v| allocator.free(v);
+
+    if (programdata) |pd| {
+        const sys_folder = try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw" });
+        defer allocator.free(sys_folder);
+
+        const sys_cfg = try std.fs.path.join(allocator, &.{ sys_folder, "config.json" });
+        defer allocator.free(sys_cfg);
+
+        if (fileExists(sys_cfg) or dirExists(sys_folder)) {
+            try shellOpenPath(allocator, sys_folder);
+            return;
+        }
+    }
+
     const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch null;
     defer if (appdata) |v| allocator.free(v);
 
@@ -486,8 +515,13 @@ fn openConfigFolder(allocator: std.mem.Allocator) !void {
 
 fn openLogs(allocator: std.mem.Allocator) !void {
     // Common log locations:
-    // - %APPDATA%\\ZiggyStarClaw\\node-service.log (written by CLI service installer)
-    // - %LOCALAPPDATA%\\ZiggyStarClaw\\logs\\node.log (planned)
+    // - %ProgramData%\\ZiggyStarClaw\\logs\\node.log (written by node service install wrapper)
+    // - %ProgramData%\\ZiggyStarClaw\\logs\\node-stdio.log (stdout/stderr capture)
+    // - %ProgramData%\\ZiggyStarClaw\\logs\\wrapper.log (wrapper diagnostics)
+    // - %APPDATA%\\ZiggyStarClaw\\node-service.log (older / user-scope)
+
+    const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+    defer if (programdata) |v| allocator.free(v);
 
     const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch null;
     defer if (appdata) |v| allocator.free(v);
@@ -501,6 +535,14 @@ fn openLogs(allocator: std.mem.Allocator) !void {
         candidates.deinit(allocator);
     }
 
+    // System-scope logs (Task Scheduler onstart mode)
+    if (programdata) |pd| {
+        try candidates.append(allocator, try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "logs", "node.log" }));
+        try candidates.append(allocator, try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "logs", "node-stdio.log" }));
+        try candidates.append(allocator, try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "logs", "wrapper.log" }));
+    }
+
+    // User-scope logs (manual / older)
     if (appdata) |v| {
         try candidates.append(allocator, try std.fs.path.join(allocator, &.{ v, "ZiggyStarClaw", "node-service.log" }));
         try candidates.append(allocator, try std.fs.path.join(allocator, &.{ v, "ZiggyStarClaw", "logs", "node.log" }));
@@ -511,13 +553,41 @@ fn openLogs(allocator: std.mem.Allocator) !void {
     }
 
     for (candidates.items) |p| {
-        if (pathExists(p)) {
+        if (fileExists(p)) {
             try explorerSelectFile(allocator, p);
             return;
         }
     }
 
-    // If no file found, open config folder as fallback.
+    // Fall back to opening a likely logs folder.
+    if (programdata) |pd| {
+        const sys_logs = try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "logs" });
+        defer allocator.free(sys_logs);
+        if (dirExists(sys_logs)) {
+            try shellOpenPath(allocator, sys_logs);
+            return;
+        }
+    }
+
+    if (localapp) |v| {
+        const p = try std.fs.path.join(allocator, &.{ v, "ZiggyStarClaw", "logs" });
+        defer allocator.free(p);
+        if (dirExists(p)) {
+            try shellOpenPath(allocator, p);
+            return;
+        }
+    }
+
+    if (appdata) |v| {
+        const p = try std.fs.path.join(allocator, &.{ v, "ZiggyStarClaw", "logs" });
+        defer allocator.free(p);
+        if (dirExists(p)) {
+            try shellOpenPath(allocator, p);
+            return;
+        }
+    }
+
+    // If nothing obvious, open config folder as a last resort.
     try openConfigFolder(allocator);
 }
 
