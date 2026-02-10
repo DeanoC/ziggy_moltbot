@@ -335,55 +335,20 @@ const Action = enum { start, stop, status };
 
 fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
     const mode = queryRunnerMode(allocator);
-    const name: ?[]const u8 = "ZiggyStarClaw Node";
-
     if (mode == .conflict) return error.DuplicateRunners;
 
-    if (mode == .service) {
-        switch (action) {
-            .start => scm_service.startService(allocator, name) catch |err| switch (err) {
-                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
-                else => return error.CommandFailed,
-            },
-            .stop => scm_service.stopService(allocator, name) catch |err| switch (err) {
-                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
-                else => return error.CommandFailed,
-            },
-            .status => return,
-        }
-        return;
-    }
-
-    if (mode == .session) {
-        // Prefer the supervisor control pipe when available (it can stop/start the node without
-        // killing the wrapper process).
-        if (try tryRunPipeServiceAction(allocator, action)) |ok| {
-            if (ok) return;
-        }
-
-        // Otherwise control the Scheduled Task instance directly.
-        if (try tryRunScheduledTaskAction(allocator, action)) |ok| {
-            if (ok) return;
-        }
-
-        // Final fallback: invoke ziggystarclaw-cli if present.
-        if (try tryRunCliServiceAction(allocator, action)) |ok| {
-            if (ok) return;
-        }
-
-        return error.NotInstalled;
-    }
-
-    // Unknown/not installed: best-effort chain.
-    const q = scm_service.queryService(allocator, name) catch null;
+    // Prefer SCM when the service exists. (The node process may expose a control pipe even when
+    // running as an SCM service, so the pipe is not a reliable indicator of runner type.)
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const q = scm_service.queryService(allocator, svc_name) catch null;
     if (q) |qq| {
         if (qq.state != .not_installed) {
             switch (action) {
-                .start => scm_service.startService(allocator, name) catch |err| switch (err) {
+                .start => scm_service.startService(allocator, svc_name) catch |err| switch (err) {
                     scm_service.ServiceError.AccessDenied => return error.AccessDenied,
                     else => return error.CommandFailed,
                 },
-                .stop => scm_service.stopService(allocator, name) catch |err| switch (err) {
+                .stop => scm_service.stopService(allocator, svc_name) catch |err| switch (err) {
                     scm_service.ServiceError.AccessDenied => return error.AccessDenied,
                     else => return error.CommandFailed,
                 },
@@ -393,6 +358,7 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
         }
     }
 
+    // Otherwise prefer the supervisor control pipe if available.
     if (try tryRunPipeServiceAction(allocator, action)) |ok| {
         if (ok) return;
     }
@@ -407,7 +373,6 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
 
     return error.NotInstalled;
 }
-
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
     const mode = queryRunnerMode(allocator);
     const name: ?[]const u8 = "ZiggyStarClaw Node";
