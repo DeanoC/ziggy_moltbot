@@ -243,27 +243,18 @@ fn compactGlobalSingletonAcrossWindowsSnapshot(
     main: *workspace.WorkspaceSnapshot,
     wins_opt: *?[]workspace.DetachedWindowSnapshot,
 ) !void {
-    const wins = wins_opt.* orelse return;
-    const global_singletons = [_]workspace.PanelKind{ .Chat, .Showcase };
-
-    for (global_singletons) |kind| {
-        var keeper_idx: ?usize = null;
-        for (wins, 0..) |w, idx| {
-            if (snapshotHasKind(w.panels, kind)) {
-                keeper_idx = idx;
-                break;
-            }
-        }
-        if (keeper_idx == null) continue;
-
-        try snapshotRemoveAllKind(allocator, kind, &main.panels);
-        for (wins, 0..) |*w, idx| {
-            if (idx == keeper_idx.?) continue;
-            if (snapshotHasKind(w.panels, kind)) {
-                try snapshotRemoveAllKind(allocator, kind, &w.panels);
-            }
-        }
-    }
+    // IMPORTANT:
+    // We intentionally do NOT enforce any "global singleton" panel kinds across windows.
+    //
+    // Users may legitimately want the same panel kind (e.g. Chat/Showcase) in multiple detached
+    // windows. Enforcing this at save-time caused silent data loss (panels removed from later
+    // windows in the on-disk snapshot).
+    //
+    // Singleton enforcement remains per-workspace (per-window) via compactSnapshotSingletonPanels().
+    _ = allocator;
+    _ = main;
+    _ = wins_opt;
+    return;
 }
 
 pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.Workspace {

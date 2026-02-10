@@ -104,13 +104,14 @@ fn hashSubdirJsonFiles(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, d
     };
     defer d.close();
 
-    var names = std.ArrayList([]u8).init(allocator);
+    var names: std.ArrayList([]u8) = .empty;
     defer {
         for (names.items) |n| allocator.free(n);
-        names.deinit();
+        names.deinit(allocator);
     }
 
     var it = d.iterate();
+
     while (it.next() catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
@@ -119,7 +120,7 @@ fn hashSubdirJsonFiles(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, d
             hasher.update("!oom");
             return;
         };
-        names.append(name_copy) catch {
+        names.append(allocator, name_copy) catch {
             allocator.free(name_copy);
             hasher.update("!oom");
             return;
