@@ -45,21 +45,14 @@ Key renderer additions:
 - pixel snapping (optional per window)
 - nearest-neighbor sampling option per material
 
-### Tier 2: Winamp 2.x importer (.wsz)
-Implement a converter:
-- input: `.wsz`
-- output: a standard ZSC theme package
+### Tier 2: Winamp 2.x importer (.wsz) (Not planned right now)
+We are *not* implementing a `.wsz` importer in the near term.
 
-Why convert instead of rendering .wsz directly?
-- caching and validation
-- consistent runtime format
-- ability to patch/fallback missing assets
+Reason:
+- It is a large amount of format-specific work (zip/BMP/TXT parsing + mapping) for relatively low product value,
+  compared to just shipping “Winamp-style” packs authored directly as ZSC theme packs.
 
-Importer responsibilities:
-- zip read
-- BMP decode
-- parse TXT configs where relevant (colors, region, etc.)
-- map known assets to ZSC component roles
+If we ever revisit this, prefer keeping it as an **offline converter tool** (not a runtime dependency).
 
 ### Tier 3: Arbitrary window shapes (optional)
 Some Winamp skins use non-rectangular windows.
@@ -79,7 +72,7 @@ Recommendation:
 Add optional sections:
 
 - `windows.json`: defines multiple windows and their default sizes/roles.
-- `winamp_import/mapping.json`: mapping from imported resources to ZSC style roles.
+- (Optional, future) `winamp_import/mapping.json`: mapping from imported resources to ZSC style roles.
 
 Example mapping concept:
 
@@ -105,4 +98,3 @@ Example mapping concept:
   - Use fallback styles.
 - Real Winamp support implies multiple windows.
   - Capability-gate it.
-
