@@ -11,7 +11,7 @@
     },
     "surface": {
       "image": {
-        "path": "assets/images/toolbar_metal_tile.png",
+        "path": "assets/images/brushed_metal_tile.png",
         "mode": "tile",
         "scale": 1.0,
         "tint": "#FFFFFFFF",
@@ -76,7 +76,7 @@
       "radius": 0,
       "fill": {
         "image": {
-          "path": "assets/images/toolbar_metal_tile.png",
+          "path": "assets/images/brushed_metal_tile.png",
           "mode": "tile",
           "scale": 1.0,
           "tint": "#FFFFFFFF",
@@ -97,7 +97,7 @@
     "radius": 0,
     "fill": {
       "image": {
-        "path": "assets/images/toolbar_metal_tile.png",
+        "path": "assets/images/brushed_metal_tile.png",
         "mode": "tile",
         "scale": 1.0,
         "tint": "#FFFFFFEE",
@@ -114,7 +114,7 @@
     "radius": 0,
     "fill": {
       "image": {
-        "path": "assets/images/toolbar_metal_tile.png",
+        "path": "assets/images/brushed_metal_tile.png",
         "mode": "tile",
         "scale": 1.0,
         "tint": "#FFFFFFFF",
