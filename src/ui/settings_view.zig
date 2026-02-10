@@ -392,6 +392,35 @@ fn drawAppearanceCard(
         }
         cursor_y += checkbox_height + t.spacing.sm;
     }
+
+    // Profile picker near the top so it's easy to exit Fullscreen mode (especially when
+    // large hit targets make the rest of the card tall).
+    {
+        const picker_label = "Profile:";
+        const picker_x = inner.min[0] + padding;
+        dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
+
+        var profile_px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+        const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
+            .{ .id = .auto, .label = "Auto" },
+            .{ .id = .desktop, .label = "Desktop" },
+            .{ .id = .phone, .label = "Phone" },
+            .{ .id = .tablet, .label = "Tablet" },
+            .{ .id = .fullscreen, .label = "Fullscreen" },
+        };
+        for (choices) |c| {
+            const w = buttonWidth(dc, c.label, t);
+            const r = draw_context.Rect.fromMinSize(.{ profile_px, cursor_y }, .{ w, button_height });
+            const is_selected = profile_choice == c.id;
+            if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
+                profile_choice = c.id;
+                appearance_changed = true;
+            }
+            profile_px += w + t.spacing.xs;
+        }
+    }
+    cursor_y += button_height + t.spacing.sm;
+
     cursor_y += drawLabeledInput(
         dc,
         queue,
@@ -702,32 +731,6 @@ fn drawAppearanceCard(
         if (shown < theme_pack_entries.items.len and px + dc.measureText("...", 0.0)[0] < avail_max_x) {
             dc.drawText("...", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
         }
-    }
-
-    cursor_y += button_height + t.spacing.sm;
-
-    // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
-    const picker_label = "Profile:";
-    const picker_x = inner.min[0] + padding;
-    dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
-
-    var profile_px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
-    const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
-        .{ .id = .auto, .label = "Auto" },
-        .{ .id = .desktop, .label = "Desktop" },
-        .{ .id = .phone, .label = "Phone" },
-        .{ .id = .tablet, .label = "Tablet" },
-        .{ .id = .fullscreen, .label = "Fullscreen" },
-    };
-    for (choices) |c| {
-        const w = buttonWidth(dc, c.label, t);
-        const r = draw_context.Rect.fromMinSize(.{ profile_px, cursor_y }, .{ w, button_height });
-        const is_selected = profile_choice == c.id;
-        if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
-            profile_choice = c.id;
-            appearance_changed = true;
-        }
-        profile_px += w + t.spacing.xs;
     }
 
     return height;
