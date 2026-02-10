@@ -435,9 +435,16 @@ pub const ThemeEngine = struct {
         var abs_tmp: ?[]u8 = null;
         defer if (abs_tmp) |buf| self.allocator.free(buf);
         if (!std.fs.path.isAbsolute(root_for_assets) and builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi and !builtin.target.abi.isAndroid()) {
-            if (try resolveRelativeToExeDir(self.allocator, root_for_assets)) |abs| {
-                abs_tmp = abs;
-                root_for_assets = abs_tmp.?;
+            // Only attempt exe-dir resolution if the directory isn't already accessible
+            // relative to CWD. (Also reduces reliance on selfExePath when running from
+            // odd locations like UNC paths.)
+            if (std.fs.cwd().access(root_for_assets, .{})) |_| {
+                // ok, keep as-is
+            } else |_| {
+                if (try resolveRelativeToExeDir(self.allocator, root_for_assets)) |abs| {
+                    abs_tmp = abs;
+                    root_for_assets = abs_tmp.?;
+                }
             }
         }
         self.active_pack_root = try self.allocator.dupe(u8, root_for_assets);
@@ -1681,6 +1688,13 @@ const ThemePackCandidates = struct {
 
         if (self.raw_path.len == 0) return;
         if (std.fs.path.isAbsolute(self.raw_path)) return;
+
+        // If the pack exists relative to CWD, don't bother probing exe-dir fallbacks.
+        // This also avoids calling `selfExePathAlloc` on platforms/environments where
+        // the executable path resolution can be fragile (e.g. running from UNC paths).
+        if (std.fs.cwd().access(self.raw_path, .{})) |_| {
+            return;
+        } else |_| {}
 
         // WASM/WASI builds: theme packs are unsupported anyway, and selfExePath is not
         // available (or meaningful).

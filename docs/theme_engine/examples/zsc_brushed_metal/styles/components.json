@@ -53,7 +53,7 @@
       "image": "assets/images/brushed_metal_9slice_bordered.png",
       "slices_px": [32, 32, 32, 32],
       "tint": "#FFFFFFFF",
-      "draw_center": true,
+      "draw_center": false,
       "center_mode": "tile"
     }
   },

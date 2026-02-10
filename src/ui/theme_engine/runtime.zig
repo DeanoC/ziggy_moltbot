@@ -37,6 +37,10 @@ var active_profile: Profile = profile.defaultsFor(.desktop, profile.PlatformCaps
 var active_styles_light: StyleSheet = .{};
 var active_styles_dark: StyleSheet = .{};
 var active_pack_root: ?[]const u8 = null;
+// `ThemeEngine` owns its own copy of the active pack root and may free/replace it when
+// switching packs (or when swapping cached pack state). Keep an owned copy here so the
+// render/runtime layer never holds a dangling slice.
+var active_pack_root_storage: std.ArrayListUnmanaged(u8) = .{};
 var active_windows: []const WindowTemplate = &[_]WindowTemplate{};
 var active_workspace_layouts: [4]WorkspaceLayoutPreset = .{ .{}, .{}, .{}, .{} };
 var active_workspace_layouts_set: [4]bool = .{ false, false, false, false };
@@ -214,7 +218,28 @@ pub fn getStyleSheet() StyleSheet {
 }
 
 pub fn setThemePackRootPath(path: ?[]const u8) void {
-    active_pack_root = path;
+    const p = path orelse {
+        active_pack_root_storage.clearRetainingCapacity();
+        active_pack_root = null;
+        return;
+    };
+    if (p.len == 0) {
+        active_pack_root_storage.clearRetainingCapacity();
+        active_pack_root = null;
+        return;
+    }
+
+    if (active_pack_root) |cur| {
+        if (std.mem.eql(u8, cur, p)) return;
+    }
+
+    active_pack_root_storage.resize(std.heap.page_allocator, p.len) catch {
+        active_pack_root_storage.clearRetainingCapacity();
+        active_pack_root = null;
+        return;
+    };
+    @memcpy(active_pack_root_storage.items[0..p.len], p);
+    active_pack_root = active_pack_root_storage.items[0..p.len];
 }
 
 pub fn getThemePackRootPath() ?[]const u8 {
