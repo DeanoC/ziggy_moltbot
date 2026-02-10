@@ -21,7 +21,7 @@ Deliverables:
 {
   "backend": "powershell-cim",
   "devices": [
-    { "deviceId": "<PNPDeviceID>", "name": "<Name>" }
+    { "id": "<PNPDeviceID>", "name": "<Name>" }
   ]
 }
 ```
