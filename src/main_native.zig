@@ -1289,26 +1289,46 @@ fn sendChatMessageRequest(
         logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
-    errdefer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
 
     var msg = buildUserMessage(allocator, idempotency, message) catch |err| {
         logger.warn("Failed to build user message: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
         return;
     };
+
     ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
     };
+
+    // Mark the session as waiting immediately, even before streaming starts.
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = true;
+    }
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send chat.send: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        // Best-effort: mark the optimistic message as failed.
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            for (state_ptr.messages.items) |*m| {
+                if (std.mem.eql(u8, m.id, msg.id)) {
+                    m.local_state = .failed;
+                    break;
+                }
+            }
+            state_ptr.awaiting_reply = false;
+        }
         return;
     };
+
     allocator.free(request.payload);
-    ctx.setPendingSendRequest(request.id);
+    ctx.setPendingSendRequest(request.id, session_key, msg.id);
 }
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
@@ -1342,6 +1362,7 @@ fn buildUserMessage(
         .content = content_copy,
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
+        .local_state = .sending,
     };
 }
 
