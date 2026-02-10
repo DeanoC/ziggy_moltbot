@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("../protocol/types.zig");
 const ProcessManager = @import("process_manager.zig").ProcessManager;
 const CanvasManager = @import("canvas.zig").CanvasManager;
@@ -285,6 +286,17 @@ pub const NodeContext = struct {
         try self.addCommand(.process_poll);
         try self.addCommand(.process_stop);
         try self.addCommand(.process_list);
+    }
+
+    /// Register Windows camera capabilities.
+    ///
+    /// MVP: advertise `camera.list` only.
+    pub fn registerWindowsCameraCapabilities(self: *NodeContext) !void {
+        if (builtin.target.os.tag != .windows) return;
+
+        try self.addCapability(.camera);
+        try self.addCommand(.camera_list);
+        try self.setPermission("camera.list", true);
     }
 };
 

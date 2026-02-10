@@ -388,6 +388,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     try node_ctx.registerSystemCapabilities();
     try node_ctx.registerProcessCapabilities();
     try node_ctx.registerCanvasCapabilities();
+    try node_ctx.registerWindowsCameraCapabilities();
 
     // Initialize command router
     var router = try command_router.initStandardRouter(allocator);
