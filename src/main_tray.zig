@@ -368,29 +368,39 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
-    // Prefer the supervisor control pipe if available.
+    // Prefer SCM if it exists. (The node process may expose a control pipe even when running as
+    // an SCM service, so the pipe is not a reliable indicator of runner type.)
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const q = scm_service.queryService(allocator, svc_name) catch null;
+    if (q) |qq| {
+        switch (qq.state) {
+            .not_installed => {},
+            .running => return .running,
+            .stopped => return .stopped,
+            else => return .unknown,
+        }
+    }
+
+    // Next: supervisor control pipe (user-session wrapper / control plane).
     if (try queryServiceStatePipe(allocator)) |st| return st;
 
-    // Query SCM directly (not localized).
-    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
-    const q = scm_service.queryService(allocator, svc_name) catch return .unknown;
+    // Last resort: Scheduled Task state (older installs).
+    if (try queryServiceStatePowerShell(allocator)) |ts| {
+        return switch (ts) {
+            .not_installed => .not_installed,
+            .running => .running,
+            .stopped => .stopped,
+            else => .unknown,
+        };
+    }
 
-    return switch (q.state) {
-        .not_installed => .not_installed,
-        .running => .running,
-        .stopped => .stopped,
-        // Pending states: show unknown so the menu stays permissive.
-        else => .unknown,
-    };
+    return .unknown;
 }
 
 fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
-    // If the supervisor pipe responds, we're almost certainly in the legacy wrapper mode.
-    if (queryServiceStatePipe(allocator) catch null != null) {
-        return .supervisor_pipe;
-    }
-
     const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+
+    // Prefer SCM service start-type when installed.
     const st = scm_service.queryStartType(allocator, svc_name) catch |err| switch (err) {
         scm_service.ServiceError.NotInstalled => null,
         else => return .unknown,
@@ -406,11 +416,16 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
         };
     }
 
-    // Fallback for older installs: Scheduled Task at logon.
+    // Fallback: Scheduled Task at logon.
     const task_state = queryServiceStatePowerShell(allocator) catch null;
     if (task_state) |ts| {
         if (ts != .not_installed) return .scheduled_task;
         return .not_installed;
+    }
+
+    // Fallback: if the control pipe responds, a user-session wrapper is running.
+    if (queryServiceStatePipe(allocator) catch null != null) {
+        return .supervisor_pipe;
     }
 
     return .unknown;
