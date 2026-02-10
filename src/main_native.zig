@@ -1946,6 +1946,9 @@ pub fn main() !void {
             }
             ui.frameBegin(allocator, &ctx, &active_window.manager, &command_inbox);
             for (ui_windows.items) |w| {
+                const win_zone = profiler.zone(@src(), "frame.ui.window");
+                defer win_zone.end();
+
                 var w_fb_w: c_int = 0;
                 var w_fb_h: c_int = 0;
                 _ = sdl.SDL_GetWindowSizeInPixels(w.window, &w_fb_w, &w_fb_h);
@@ -1957,7 +1960,11 @@ pub fn main() !void {
                 const desired_pack: ?[]const u8 = w.ui_state.theme_pack_override orelse cfg.ui_theme_pack;
                 const force_reload_pack = w.ui_state.theme_pack_reload_requested;
                 if (w.ui_state.theme_pack_reload_requested) w.ui_state.theme_pack_reload_requested = false;
-                theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+                {
+                    const tz = profiler.zone(@src(), "theme.activate_pack_for_render");
+                    defer tz.end();
+                    theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+                }
 
                 // Multi-window: each window can have a different framebuffer size (and potentially DPI),
                 // so resolve profile and typography scale per window before we record its UI commands.
