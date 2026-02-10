@@ -141,6 +141,7 @@ pub const TextInputStates = struct {
     pressed: TextInputStateStyle = .{},
     disabled: TextInputStateStyle = .{},
     focused: TextInputStateStyle = .{},
+    read_only: TextInputStateStyle = .{},
 };
 
 pub const TextInputStyle = struct {
@@ -159,6 +160,14 @@ pub const SurfacesStyle = struct {
     // If unset, the engine falls back to theme tokens (colors.background/colors.surface).
     background: ?Paint = null,
     surface: ?Paint = null,
+    // Optional top-level chrome paints.
+    menu_bar: ?Paint = null,
+    status_bar: ?Paint = null,
+};
+
+pub const PanelHeaderButtonsStyle = struct {
+    close: ButtonVariantStyle = .{},
+    detach: ButtonVariantStyle = .{},
 };
 
 pub const PanelStyle = struct {
@@ -171,6 +180,8 @@ pub const PanelStyle = struct {
     header_overlay: ?Paint = null,
     // Optional override for the focus border drawn around docked panels.
     focus_border: ?Color = null,
+    // Optional button styles for the docked panel header controls (close/detach).
+    header_buttons: PanelHeaderButtonsStyle = .{},
     // Optional inset applied to layouts that place content "inside" a panel.
     // This is separate from visual padding and is meant to keep content out of thick frame borders.
     // Order: left, top, right, bottom (pixels).
@@ -383,6 +394,8 @@ fn parseSurfaces(out: *SurfacesStyle, v: std.json.Value, theme: *const theme_tok
     const obj = v.object;
     if (obj.get("background")) |bv| out.background = parsePaint(bv, theme) orelse out.background;
     if (obj.get("surface")) |sv| out.surface = parsePaint(sv, theme) orelse out.surface;
+    if (obj.get("menu_bar")) |mv| out.menu_bar = parsePaint(mv, theme) orelse out.menu_bar;
+    if (obj.get("status_bar")) |sv2| out.status_bar = parsePaint(sv2, theme) orelse out.status_bar;
 }
 
 fn parseButtons(out: *ButtonStyles, v: std.json.Value, theme: *const theme_tokens.Theme) void {
@@ -471,6 +484,7 @@ fn parseTextInputStates(out: *TextInputStates, v: std.json.Value, theme: *const 
     if (obj.get("pressed")) |pv| parseTextInputStateStyle(&out.pressed, pv, theme);
     if (obj.get("disabled")) |dv| parseTextInputStateStyle(&out.disabled, dv, theme);
     if (obj.get("focused")) |fv| parseTextInputStateStyle(&out.focused, fv, theme);
+    if (obj.get("read_only")) |rv| parseTextInputStateStyle(&out.read_only, rv, theme);
 }
 
 fn parseTextInputStateStyle(out: *TextInputStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
@@ -492,6 +506,13 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
     if (obj.get("header_overlay")) |hv| out.header_overlay = parsePaint(hv, theme) orelse out.header_overlay;
     if (obj.get("focus_border")) |cv| out.focus_border = parseColor(cv, theme) orelse out.focus_border;
+    if (obj.get("header_buttons")) |bv| {
+        if (bv == .object) {
+            const bobj = bv.object;
+            if (bobj.get("close")) |cv2| parseButtonVariant(&out.header_buttons.close, cv2, theme);
+            if (bobj.get("detach")) |dv2| parseButtonVariant(&out.header_buttons.detach, dv2, theme);
+        }
+    }
     if (obj.get("content_inset_px")) |iv| out.content_inset_px = parseSlicesPx(iv) orelse out.content_inset_px;
     if (obj.get("overlay")) |ov| out.overlay = parsePaint(ov, theme) orelse out.overlay;
     if (obj.get("shadow")) |sv| {

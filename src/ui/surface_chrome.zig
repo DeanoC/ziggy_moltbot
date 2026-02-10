@@ -78,3 +78,14 @@ pub fn drawSurface(dc: *draw_context.DrawContext, rect: draw_context.Rect) void 
     drawPaintRect(dc, rect, paint);
 }
 
+pub fn drawMenuBar(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
+    const ss = theme_runtime.getStyleSheet();
+    const paint = paintOrSolid(ss.surfaces.menu_bar orelse ss.surfaces.surface, dc.theme.colors.surface);
+    drawPaintRect(dc, rect, paint);
+}
+
+pub fn drawStatusBar(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
+    const ss = theme_runtime.getStyleSheet();
+    const paint = paintOrSolid(ss.surfaces.status_bar orelse ss.surfaces.surface, dc.theme.colors.surface);
+    drawPaintRect(dc, rect, paint);
+}

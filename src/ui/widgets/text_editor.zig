@@ -166,7 +166,9 @@ pub const TextEditor = struct {
         }
 
         const allow_hover = theme_runtime.allowHover(queue);
-        const hovered = allow_hover and rect.contains(queue.state.mouse_pos);
+        const inside = rect.contains(queue.state.mouse_pos);
+        const hovered = allow_hover and inside;
+        const pressed = inside and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
         const focused = self.focused or (nav_active and nav_focused);
 
         if (focused) {
@@ -174,15 +176,26 @@ pub const TextEditor = struct {
             const radius = ss.text_input.radius orelse t.radius.md;
             focus_ring.draw(ctx, rect, radius);
         }
-        drawBackground(ctx, rect, t, hovered, focused, opts.read_only);
+        drawBackground(ctx, rect, t, hovered, pressed, focused, opts.read_only);
         ctx.pushClip(rect);
         defer ctx.popClip();
 
         const ss = theme_runtime.getStyleSheet();
         const ti = ss.text_input;
-        const text_color = ti.text orelse t.colors.text_primary;
-        const caret_color = ti.caret orelse text_color;
-        const selection_color: colors.Color = ti.selection orelse colors.withAlpha(t.colors.primary, 0.25);
+        // Resolve stateful style overrides for text/caret/selection/placeholder.
+        var text_color = ti.text orelse t.colors.text_primary;
+        var caret_color = ti.caret orelse text_color;
+        var selection_color: colors.Color = ti.selection orelse colors.withAlpha(t.colors.primary, 0.25);
+        const st = blk: {
+            if (opts.read_only) break :blk ti.states.read_only;
+            if (focused) break :blk ti.states.focused;
+            if (pressed) break :blk ti.states.pressed;
+            if (hovered) break :blk ti.states.hover;
+            break :blk style_sheet.TextInputStateStyle{};
+        };
+        if (st.text) |v| text_color = v;
+        if (st.caret) |v| caret_color = v;
+        if (st.selection) |v| selection_color = v;
 
         drawSelection(ctx, text_rect, &lines, self.buffer.items, self.selectionRange(), line_height, self.scroll_y, self.scroll_x, selection_color, mask);
         drawText(ctx, text_rect, &lines, self.buffer.items, line_height, self.scroll_y, self.scroll_x, text_color, mask);
@@ -219,6 +232,7 @@ fn drawBackground(
     rect: draw_context.Rect,
     t: *const theme.Theme,
     hovered: bool,
+    pressed: bool,
     focused: bool,
     read_only: bool,
 ) void {
@@ -230,8 +244,9 @@ fn drawBackground(
 
     // Optional state overrides.
     const st = blk: {
-        if (read_only and ti.states.disabled.isSet()) break :blk ti.states.disabled;
+        if (read_only) break :blk ti.states.read_only;
         if (focused) break :blk ti.states.focused;
+        if (pressed) break :blk ti.states.pressed;
         if (hovered) break :blk ti.states.hover;
         break :blk style_sheet.TextInputStateStyle{};
     };

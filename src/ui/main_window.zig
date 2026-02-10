@@ -153,14 +153,8 @@ fn drawCustomMenuBar(
     win_state: *WindowUiState,
 ) void {
     const t = dc.theme;
-    // Use the shared panel chrome (supports image/gradient fills) so "brushed metal" packs
-    // can theme the menu bar and other top-level chrome.
-    panel_chrome.draw(dc, rect, .{
-        .radius = 0.0,
-        .draw_shadow = false,
-        .draw_frame = false,
-        .draw_border = true,
-    });
+    surface_chrome.drawMenuBar(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const label = "Window";
     const button_width = dc.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
@@ -1096,8 +1090,8 @@ fn drawFullscreenHost(
     else
         draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_rect.max[1] - hints_h }, .{ content_rect.size()[0], hints_h });
 
-    // Header chrome.
-    surface_chrome.drawSurface(dc, header_rect);
+    // Header chrome (same material as menu bar).
+    surface_chrome.drawMenuBar(dc, header_rect);
     dc.drawRect(header_rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
     dc.drawText("ZiggyStarClaw", .{ header_rect.min[0] + t.spacing.lg, header_rect.min[1] + t.spacing.md }, .{ .color = t.colors.text_primary });
 
@@ -1617,12 +1611,14 @@ fn drawPanelFrame(
         detach_clicked = widgets.button.draw(dc, detach_rect, "[]", queue, .{
             .variant = .ghost,
             .radius = t.radius.sm,
+            .style_override = &ss.panel.header_buttons.detach,
         });
     }
 
     const close_clicked = widgets.button.draw(dc, close_rect, "x", queue, .{
         .variant = .ghost,
         .radius = t.radius.sm,
+        .style_override = &ss.panel.header_buttons.close,
     });
 
     const title_x = layout_rect.min[0] + t.spacing.sm;

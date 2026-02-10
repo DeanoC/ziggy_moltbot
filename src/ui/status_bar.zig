@@ -3,7 +3,7 @@ const state = @import("../client/state.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
-const panel_chrome = @import("panel_chrome.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const BadgeVariant = enum {
     neutral,
@@ -35,12 +35,8 @@ pub fn drawCustom(
     };
     const connection_variant: BadgeVariant = if (is_connected) .success else .neutral;
 
-    panel_chrome.draw(dc, rect, .{
-        .radius = 0.0,
-        .draw_shadow = false,
-        .draw_frame = false,
-        .draw_border = true,
-    });
+    surface_chrome.drawStatusBar(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const line_height = dc.lineHeight();
     var cursor_x = rect.min[0] + t.spacing.sm;

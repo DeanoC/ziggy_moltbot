@@ -17,6 +17,24 @@
         "tint": "#FFFFFFFF",
         "offset_px": [0, 0]
       }
+    },
+    "menu_bar": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFF0",
+        "offset_px": [0, 0]
+      }
+    },
+    "status_bar": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFF0",
+        "offset_px": [0, 0]
+      }
     }
   },
   "panel": {
@@ -32,6 +50,28 @@
       }
     },
     "focus_border": "#2E6DD6FF",
+    "header_buttons": {
+      "close": {
+        "radius": 6,
+        "fill": "#00000000",
+        "text": "#1A1A1AFF",
+        "border": "#00000000",
+        "states": {
+          "hover": { "fill": "#00000012" },
+          "pressed": { "fill": "#00000022" }
+        }
+      },
+      "detach": {
+        "radius": 6,
+        "fill": "#00000000",
+        "text": "#1A1A1AFF",
+        "border": "#00000000",
+        "states": {
+          "hover": { "fill": "#00000012" },
+          "pressed": { "fill": "#00000022" }
+        }
+      }
+    },
     "fill": {
       "image": {
         "path": "assets/images/brushed_metal_tile.png",

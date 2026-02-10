@@ -45,6 +45,10 @@ pub const Options = struct {
     disabled: bool = false,
     variant: Variant = .secondary,
     radius: ?f32 = null,
+    /// Optional style override applied on top of the base variant style.
+    /// Useful for special-purpose buttons (panel header controls, etc) without introducing
+    /// a new widget type.
+    style_override: ?*const style_sheet.ButtonVariantStyle = null,
 };
 
 pub fn defaultHeight(t: *const theme.Theme, line_height: f32) f32 {
@@ -74,11 +78,22 @@ pub fn draw(
     const pressed = inside and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
 
     const ss = theme_runtime.getStyleSheet();
-    const variant_style = switch (opts.variant) {
+    const variant_style_base = switch (opts.variant) {
         .primary => ss.button.primary,
         .secondary => ss.button.secondary,
         .ghost => ss.button.ghost,
     };
+    var variant_style = variant_style_base;
+    if (opts.style_override) |ov| {
+        if (ov.radius) |v| variant_style.radius = v;
+        if (ov.fill) |v| variant_style.fill = v;
+        if (ov.text) |v| variant_style.text = v;
+        if (ov.border) |v| variant_style.border = v;
+        if (ov.states.hover.isSet()) variant_style.states.hover = ov.states.hover;
+        if (ov.states.pressed.isSet()) variant_style.states.pressed = ov.states.pressed;
+        if (ov.states.focused.isSet()) variant_style.states.focused = ov.states.focused;
+        if (ov.states.disabled.isSet()) variant_style.states.disabled = ov.states.disabled;
+    }
 
     const State = enum { none, hover, pressed, focused, disabled };
     const state: State = blk: {
