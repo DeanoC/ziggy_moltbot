@@ -539,12 +539,12 @@ fn runnerModeLabel(mode: RunnerMode) []const u8 {
     return switch (mode) {
         .unknown => "Runner: Unknown",
         .not_installed => "Runner: Not installed",
-        .supervisor_pipe => "Runner: Supervisor (pipe)",
+        .supervisor_pipe => "Runner: User session (wrapper)",
         .windows_service_auto => "Runner: Windows service (auto-start)",
-        .windows_service_manual => "Runner: Windows service (manual)",
+        .windows_service_manual => "Runner: Windows service (manual start)",
         .windows_service_disabled => "Runner: Windows service (disabled)",
         .windows_service_other => "Runner: Windows service (boot/system)",
-        .scheduled_task => "Runner: Scheduled Task (logon)",
+        .scheduled_task => "Runner: User session (Scheduled Task)",
     };
 }
 
