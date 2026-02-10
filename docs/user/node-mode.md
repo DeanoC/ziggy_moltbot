@@ -109,9 +109,9 @@ openclaw nodes invoke --node <id> --command system.execApprovals.set \
   --params '{"mode":"allowlist","allowlist":["whoami","cmd **","where **","powershell **","pwsh **"],"ask_patterns":[]}'
 ```
 
-## Windows "always-on" node (Task Scheduler)
+## Windows "always-on" node (SCM service)
 
-Install the scheduled task (will ensure node-register first, using the same config file):
+Install the Windows SCM service (will ensure node-register first, using the same config file):
 
 ```powershell
 .\ziggystarclaw-cli.exe --node-service-install
@@ -126,10 +126,10 @@ Useful commands:
 .\ziggystarclaw-cli.exe --node-service-uninstall
 ```
 
-Logs:
+Logs (default onstart/system config):
 
 ```powershell
-Get-Content (Join-Path $env:APPDATA 'ZiggyStarClaw\node-service.log') -Tail 200
+Get-Content (Join-Path $env:ProgramData 'ZiggyStarClaw\logs\node.log') -Tail 200
 ```
 
 ## Common options

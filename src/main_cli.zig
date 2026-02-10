@@ -16,6 +16,9 @@ const build_options = @import("build_options");
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
+const win_scm = if (builtin.os.tag == .windows) @import("windows/scm_service.zig") else struct {};
+const win_scm_host = if (builtin.os.tag == .windows) @import("windows/scm_host.zig") else struct {};
+const win_control_pipe = if (builtin.os.tag == .windows) @import("windows/control_pipe_client.zig") else struct {};
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
@@ -25,6 +28,16 @@ pub const std_options = std.Options{
     .logFn = cliLogFn,
     .log_level = .debug,
 };
+
+const supervisor_pipe = if (builtin.os.tag == .windows)
+    @import("windows/supervisor_pipe.zig")
+else
+    struct {};
+
+const win_single_instance = if (builtin.os.tag == .windows)
+    @import("windows/single_instance.zig")
+else
+    struct {};
 
 fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8 {
     // Minimal /etc/passwd parser to find a user's home directory.
@@ -53,6 +66,185 @@ fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8
     }
 
     return error.FileNotFound;
+}
+
+fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    // Windows-only: legacy headless supervisor (used by the older Task Scheduler service MVP).
+    // Keeps a named-pipe control channel so the tray app can query status and request
+    // start/stop/restart even when running headless.
+    if (builtin.os.tag != .windows) return error.Unsupported;
+
+    var shared = supervisor_pipe.Shared{};
+    supervisor_pipe.spawnServerThread(allocator, &shared) catch {};
+
+    // Parse node options for the child process.
+    var opts = try main_node.parseNodeOptions(allocator, args);
+    if (opts.as_node == null) opts.as_node = true;
+    if (opts.as_operator == null) opts.as_operator = false;
+
+    // Determine config path so we can place logs next to it.
+    var cfg_path_owned: ?[]u8 = null;
+    const cfg_path: []const u8 = if (opts.config_path) |p| p else blk: {
+        const p = try unified_config.defaultConfigPath(allocator);
+        cfg_path_owned = @constCast(p);
+        break :blk p;
+    };
+    defer if (cfg_path_owned) |p| allocator.free(p);
+
+    const cfg_dir = std.fs.path.dirname(cfg_path) orelse ".";
+    const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
+    defer allocator.free(logs_dir);
+    std.fs.cwd().makePath(logs_dir) catch {};
+
+    const node_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
+    defer allocator.free(node_log_path);
+    const wrapper_log_path = try std.fs.path.join(allocator, &.{ logs_dir, "wrapper.log" });
+    defer allocator.free(wrapper_log_path);
+
+    _ = std.fs.cwd().createFile(node_log_path, .{ .truncate = false }) catch {};
+    var wrapper_file = try std.fs.cwd().createFile(wrapper_log_path, .{ .truncate = false });
+    defer wrapper_file.close();
+    try wrapper_file.seekFromEnd(0);
+    var wrap = wrapper_file.deprecatedWriter();
+
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    // Guard against multiple supervisors fighting over the pipe / child process.
+    const mutex = win_single_instance.acquireNodeSupervisorMutex(allocator) catch |err| {
+        wrap.print("{d} [wrapper] supervisor mutex error: {}\n", .{ std.time.timestamp(), err }) catch {};
+        return err;
+    };
+    // Keep handle open for lifetime of supervisor.
+    defer std.os.windows.CloseHandle(mutex.handle);
+
+    if (mutex.already_running) {
+        wrap.print(
+            "{d} [wrapper] supervisor already running (mutex {s}); exiting\n",
+            .{ std.time.timestamp(), mutex.name_used_utf8 },
+        ) catch {};
+        return;
+    }
+
+    wrap.print(
+        "{d} [wrapper] supervisor starting; config={s}; node_log={s}; pipe={s}\n",
+        .{ std.time.timestamp(), cfg_path, node_log_path, supervisor_pipe.pipe_name_utf8 },
+    ) catch {};
+
+    const diag_enabled = (opts.log_level == .debug);
+
+    // Periodically report pipe diagnostics (debug only).
+    var last_diag_ms: i64 = 0;
+
+    var child: ?std.process.Child = null;
+    defer if (child) |*c| {
+        if (c.kill()) |_| {} else |_| {}
+        _ = c.wait() catch {};
+    };
+
+    while (true) {
+        // Snapshot desired state.
+        shared.mutex.lock();
+        const want = shared.desired_running;
+        const do_restart = shared.restart_requested;
+        shared.restart_requested = false;
+        shared.mutex.unlock();
+
+        if (do_restart and child != null) {
+            wrap.print("{d} [wrapper] restart requested\n", .{std.time.timestamp()}) catch {};
+            if (child.?.kill()) |_| {} else |_| {}
+            _ = child.?.wait() catch {};
+            child = null;
+        }
+
+        if (!want and child != null) {
+            wrap.print("{d} [wrapper] stop requested\n", .{std.time.timestamp()}) catch {};
+            if (child.?.kill()) |_| {} else |_| {}
+            _ = child.?.wait() catch {};
+            child = null;
+        }
+
+        if (want and child == null) {
+            // Spawn node-mode as a child process so the supervisor can remain responsive.
+            var argv = std.ArrayList([]const u8).empty;
+            defer argv.deinit(allocator);
+            try argv.append(allocator, self_exe);
+            try argv.append(allocator, "--node-mode");
+            try argv.append(allocator, "--config");
+            try argv.append(allocator, cfg_path);
+            try argv.append(allocator, "--as-node");
+            try argv.append(allocator, "--no-operator");
+            try argv.append(allocator, "--log-level");
+            try argv.append(allocator, @tagName(opts.log_level));
+
+            var c = std.process.Child.init(argv.items, allocator);
+            c.stdin_behavior = .Ignore;
+            c.stdout_behavior = .Ignore;
+            c.stderr_behavior = .Ignore;
+            c.create_no_window = true;
+
+            var env = std.process.getEnvMap(allocator) catch std.process.EnvMap.init(allocator);
+            defer env.deinit();
+            env.put("MOLT_LOG_FILE", node_log_path) catch {};
+            env.put("MOLT_LOG_LEVEL", @tagName(opts.log_level)) catch {};
+            c.env_map = &env;
+
+            wrap.print("{d} [wrapper] launching node-mode child\n", .{std.time.timestamp()}) catch {};
+            c.spawn() catch |err| {
+                wrap.print("{d} [wrapper] spawn failed: {s}\n", .{ std.time.timestamp(), @errorName(err) }) catch {};
+                std.Thread.sleep(2 * std.time.ns_per_s);
+                continue;
+            };
+            child = c;
+        }
+
+        // Update running state.
+        if (child) |*c| {
+            const code_opt = supervisor_pipe.getExitCode(c.id);
+            if (code_opt) |code| {
+                if (supervisor_pipe.isStillActive(code)) {
+                    const pid = supervisor_pipe.getPid(c.id);
+                    shared.mutex.lock();
+                    shared.is_running = true;
+                    shared.pid = pid;
+                    shared.mutex.unlock();
+                } else {
+                    shared.mutex.lock();
+                    shared.is_running = false;
+                    shared.pid = 0;
+                    shared.mutex.unlock();
+                    wrap.print("{d} [wrapper] child exited code={d}\n", .{ std.time.timestamp(), code }) catch {};
+                    _ = c.wait() catch {};
+                    child = null;
+                }
+            }
+        } else {
+            shared.mutex.lock();
+            shared.is_running = false;
+            shared.pid = 0;
+            shared.mutex.unlock();
+        }
+
+        const now_ms = std.time.milliTimestamp();
+        if (diag_enabled and now_ms - last_diag_ms > 10_000) {
+            shared.mutex.lock();
+            const creates = shared.pipe_creates;
+            const create_fails = shared.pipe_create_fails;
+            const last_create_err = shared.pipe_last_create_err;
+            const last_connect_err = shared.pipe_last_connect_err;
+            const accepts = shared.pipe_accepts;
+            const timeouts = shared.pipe_timeouts;
+            const reqs = shared.pipe_requests;
+            shared.mutex.unlock();
+            wrap.print(
+                "{d} [wrapper] pipe stats: creates={d} create_fails={d} last_create_err={d} last_connect_err={d} accepts={d} reqs={d} timeouts={d}\n",
+                .{ std.time.timestamp(), creates, create_fails, last_create_err, last_connect_err, accepts, reqs, timeouts },
+            ) catch {};
+            last_diag_ms = now_ms;
+        }
+
+        std.Thread.sleep(200 * std.time.ns_per_ms);
+    }
 }
 
 var cli_log_level: std.log.Level = .warn;
@@ -105,13 +297,19 @@ const usage =
     \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
-    \\Node service helpers (Windows Task Scheduler / Linux systemd)
+    \\Node runner (Windows)
+    \\  node runner install --mode <m>  Switch runner mode: service|session
+    \\  node runner start|stop|status   Control the active runner mode
+    \\  node session <action>           Manage user-session runner: install|uninstall|start|stop|status
+    \\
+    \\Node service helpers (Windows SCM service / Linux systemd)
+    \\  node service <action>      Convenience: install|uninstall|start|stop|status
     \\  --node-service-install    Install and enable node-mode background service
     \\  --node-service-uninstall  Uninstall the background service
     \\  --node-service-start      Start the service now
     \\  --node-service-stop       Stop the service
     \\  --node-service-status     Show service status
-    \\  --node-service-mode <m>   onlogon|onstart (default: onlogon)
+    \\  --node-service-mode <m>   onlogon|onstart (default: onstart on Windows; onlogon elsewhere)
     \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
     \\  --extract-wsz <path>      Extract a Winamp .wsz skin to a directory (zip)
     \\  --extract-dest <path>     Destination directory for --extract-wsz
@@ -199,14 +397,31 @@ pub fn main() !void {
     var extract_wsz: ?[]const u8 = null;
     var extract_dest: ?[]const u8 = null;
 
-    // Windows task-scheduler "service" helpers
+    // Node service helpers
     var node_service_install = false;
     var node_service_uninstall = false;
     var node_service_start = false;
     var node_service_stop = false;
     var node_service_status = false;
-    var node_service_mode: win_service.InstallMode = .onlogon;
+    var node_service_mode: win_service.InstallMode = if (builtin.os.tag == .windows) .onstart else .onlogon;
     var node_service_name: ?[]const u8 = null;
+
+    // Windows-only: user-session runner (Scheduled Task / wrapper)
+    var node_session_install = false;
+    var node_session_uninstall = false;
+    var node_session_start = false;
+    var node_session_stop = false;
+    var node_session_status = false;
+
+    const RunnerInstallMode = enum { service, session };
+    var node_runner_install = false;
+    var node_runner_start = false;
+    var node_runner_stop = false;
+    var node_runner_status = false;
+    var node_runner_mode: ?RunnerInstallMode = null;
+
+    // Internal: when invoked by Windows Service Control Manager (SCM).
+    var windows_service_run = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
     var operator_mode = false;
@@ -215,6 +430,7 @@ pub fn main() !void {
         if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
         if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
         if (std.mem.eql(u8, a, "--wait-for-approval")) node_register_wait = true;
+        if (std.mem.eql(u8, a, "--windows-service")) windows_service_run = true;
     }
     var save_config = false;
 
@@ -227,8 +443,114 @@ pub fn main() !void {
             return;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.print("ziggystarclaw-cli {s}\n", .{build_options.app_version});
+            try stdout.print("ziggystarclaw-cli {s}+{s}\n", .{ build_options.app_version, build_options.git_rev });
             return;
+        } else if (i == 1 and std.mem.eql(u8, arg, "node")) {
+            // Minimal verb-noun style convenience wrapper:
+            //   ziggystarclaw-cli node service install|uninstall|start|stop|status
+            //   ziggystarclaw-cli node supervise [--config <path>] [--log-level <level>]
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const noun = args[i + 1];
+
+            if (std.mem.eql(u8, noun, "supervise")) {
+                // Legacy headless supervisor (used by the older Task Scheduler runner MVP).
+                // Usage:
+                //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
+                try runNodeSupervisor(allocator, args[(i + 2)..]);
+                return;
+            }
+
+            if (std.mem.eql(u8, noun, "session")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    node_session_install = true;
+                } else if (std.mem.eql(u8, action, "uninstall")) {
+                    node_session_uninstall = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    node_session_start = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    node_session_stop = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    node_session_status = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node session action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node session <action>".
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "runner")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    node_runner_install = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    node_runner_start = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    node_runner_stop = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    node_runner_status = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node runner action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node runner <action>".
+                i += 2;
+                continue;
+            }
+
+            if (!std.mem.eql(u8, noun, "service")) {
+                logger.err("Unknown subcommand: node {s}", .{noun});
+                return error.InvalidArguments;
+            }
+            if (i + 2 >= args.len) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            }
+            const action = args[i + 2];
+            if (std.mem.eql(u8, action, "install")) {
+                node_service_install = true;
+            } else if (std.mem.eql(u8, action, "uninstall")) {
+                node_service_uninstall = true;
+            } else if (std.mem.eql(u8, action, "start")) {
+                node_service_start = true;
+            } else if (std.mem.eql(u8, action, "stop")) {
+                node_service_stop = true;
+            } else if (std.mem.eql(u8, action, "status")) {
+                node_service_status = true;
+            } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            } else {
+                logger.err("Unknown node service action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
+            // Skip "node service <action>".
+            i += 2;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -386,6 +708,19 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             extract_dest = args[i];
+        } else if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "--runner-mode")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "service")) {
+                node_runner_mode = .service;
+            } else if (std.mem.eql(u8, v, "session")) {
+                node_runner_mode = .session;
+            } else {
+                return error.InvalidArguments;
+            }
+        } else if (std.mem.eql(u8, arg, "--windows-service")) {
+            // handled by pre-scan; keep parsing so we accept --config/--log-level/etc.
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
@@ -402,7 +737,7 @@ pub fn main() !void {
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
-            if (!(node_mode or operator_mode or node_register_mode)) {
+            if (!(node_mode or operator_mode or node_register_mode or windows_service_run)) {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
@@ -413,8 +748,10 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or node_register_mode or save_config or
-        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
+        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
+        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
+        node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
+        node_runner_install or node_runner_start or node_runner_stop or node_runner_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
@@ -432,7 +769,273 @@ pub fn main() !void {
         return;
     }
 
-    // Node service helpers (Windows Task Scheduler, Linux systemd)
+    // Internal: Windows SCM invokes the service executable with --windows-service.
+    if (windows_service_run) {
+        if (builtin.os.tag != .windows) {
+            logger.err("--windows-service is only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+        const svc_name = node_service_name orelse win_scm.defaultServiceName();
+        // Note: this call blocks until the service stops.
+        win_scm_host.runWindowsService(allocator, svc_name, args[1..]) catch |err| {
+            logger.err("Failed to start Windows service dispatcher: {s}", .{@errorName(err)});
+            return;
+        };
+        return;
+    }
+
+    // Node runner helpers (Windows): select between SCM service mode and user-session runner mode.
+    if (node_runner_status or node_runner_start or node_runner_stop) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node runner helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const name = node_service_name orelse win_scm.defaultServiceName();
+
+        const svc_q = win_scm.queryService(allocator, name) catch null;
+        const has_svc = if (svc_q) |q| q.state != .not_installed else false;
+
+        const has_task = win_service.taskInstalled(allocator, name) catch |err| switch (err) {
+            win_service.ServiceError.AccessDenied => {
+                logger.err("Scheduled Task query failed: access denied", .{});
+                return error.AccessDenied;
+            },
+            else => false,
+        };
+
+        if (has_svc and has_task) {
+            _ = std.fs.File.stdout().write("Runner: configuration error (both service and session runner are installed)\n") catch {};
+            _ = std.fs.File.stdout().write("Fix: ziggystarclaw-cli node runner install --mode service\n") catch {};
+            _ = std.fs.File.stdout().write("  or: ziggystarclaw-cli node runner install --mode session\n") catch {};
+            return error.InvalidArguments;
+        }
+
+        if (node_runner_status) {
+            if (has_svc) {
+                const q = svc_q.?;
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print("Runner: service ({s})\n", .{win_scm.stateLabel(q.state)});
+                return;
+            }
+            if (has_task) {
+                _ = std.fs.File.stdout().write("Runner: user session runner (Scheduled Task)\n") catch {};
+                return;
+            }
+            _ = std.fs.File.stdout().write("Runner: not installed\n") catch {};
+            return;
+        }
+
+        if (node_runner_start) {
+            if (has_svc) {
+                win_scm.startService(allocator, name) catch |err| switch (err) {
+                    win_scm.ServiceError.AccessDenied => {
+                        logger.err("Start failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Started node runner (service).\n") catch {};
+                return;
+            }
+            if (has_task) {
+                win_service.startTask(allocator, name) catch |err| switch (err) {
+                    win_service.ServiceError.AccessDenied => {
+                        logger.err("Start failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    win_service.ServiceError.NotInstalled => {
+                        logger.err("Start failed: not installed", .{});
+                        return error.InvalidArguments;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Started node runner (user session).\n") catch {};
+                return;
+            }
+            logger.err("Runner is not installed", .{});
+            return error.InvalidArguments;
+        }
+
+        if (node_runner_stop) {
+            if (has_svc) {
+                win_scm.stopService(allocator, name) catch |err| switch (err) {
+                    win_scm.ServiceError.AccessDenied => {
+                        logger.err("Stop failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Stopped node runner (service).\n") catch {};
+                return;
+            }
+            if (has_task) {
+                // Stop the running task instance (best-effort).
+                _ = win_service.stopTask(allocator, name) catch {};
+                _ = std.fs.File.stdout().write("Stopped node runner (user session).\n") catch {};
+                return;
+            }
+            logger.err("Runner is not installed", .{});
+            return error.InvalidArguments;
+        }
+    }
+
+    if (node_runner_install) {
+        if (node_runner_mode == null) {
+            logger.err("node runner install requires --mode service|session", .{});
+            return error.InvalidArguments;
+        }
+        switch (node_runner_mode.?) {
+            .service => node_service_install = true,
+            .session => node_session_install = true,
+        }
+    }
+
+    // User-session runner helpers (Windows Scheduled Task wrapper)
+    if (node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node session helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const runner_name = node_service_name orelse win_scm.defaultServiceName();
+
+        const node_cfg_path = if (config_path_set) blk: {
+            break :blk try allocator.dupe(u8, config_path);
+        } else blk: {
+            break :blk try unified_config.defaultConfigPath(allocator);
+        };
+        defer allocator.free(node_cfg_path);
+
+        const cfg_exists = blk: {
+            std.fs.cwd().access(node_cfg_path, .{}) catch |err| switch (err) {
+                error.FileNotFound => break :blk false,
+                else => return err,
+            };
+            break :blk true;
+        };
+        const storage_scope: node_register.StorageScope = .user;
+
+        if (!cfg_exists) {
+            if (override_url != null and override_token != null) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
+            } else if (override_url != null and override_token == null) {
+                const secret_prompt = @import("utils/secret_prompt.zig");
+                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
+                defer allocator.free(tok);
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+            } else if (override_url == null and override_token != null) {
+                logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            }
+        }
+
+        if (node_session_install) {
+            // Migrate away from SCM service mode first; otherwise we'd start two runners.
+            const q = win_scm.queryService(allocator, runner_name) catch null;
+            if (q) |qq| {
+                if (qq.state != .not_installed) {
+                    // Try to stop + uninstall the service.
+                    win_scm.stopService(allocator, runner_name) catch |err| switch (err) {
+                        win_scm.ServiceError.AccessDenied => {
+                            logger.err("Cannot switch to user session runner: Windows service is installed and requires elevation to remove.", .{});
+                            logger.err("Fix: run in an elevated PowerShell: ziggystarclaw-cli node service uninstall", .{});
+                            return error.AccessDenied;
+                        },
+                        else => {},
+                    };
+
+                    win_scm.uninstallService(allocator, runner_name) catch |err| switch (err) {
+                        win_scm.ServiceError.AccessDenied => {
+                            logger.err("Cannot switch to user session runner: Windows service uninstall requires elevation.", .{});
+                            logger.err("Fix: run in an elevated PowerShell: ziggystarclaw-cli node service uninstall", .{});
+                            return error.AccessDenied;
+                        },
+                        else => return err,
+                    };
+                }
+            }
+
+            // Ensure config has a valid node token/id before installing the runner.
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
+
+            // Ensure any existing task instance is stopped before overwriting.
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+
+            win_service.installTask(allocator, node_cfg_path, .onlogon, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Scheduled Task install failed: access denied. Try re-running from an elevated (Administrator) PowerShell.", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+
+            // Best-effort: start immediately (otherwise it starts on next logon).
+            _ = win_service.startTask(allocator, runner_name) catch {};
+
+            _ = std.fs.File.stdout().write("Installed user session runner (Scheduled Task).\n") catch {};
+            _ = std.fs.File.stdout().write("Mode: User session runner (interactive desktop access)\n") catch {};
+            return;
+        }
+
+        if (node_session_uninstall) {
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+            win_service.uninstallTask(allocator, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Scheduled Task uninstall failed: access denied", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Uninstalled user session runner (Scheduled Task).\n") catch {};
+            return;
+        }
+
+        if (node_session_start) {
+            win_service.startTask(allocator, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Start failed: access denied", .{});
+                    return error.AccessDenied;
+                }
+                if (err == win_service.ServiceError.NotInstalled) {
+                    logger.err("Start failed: not installed", .{});
+                    return error.InvalidArguments;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Started user session runner.\n") catch {};
+            return;
+        }
+
+        if (node_session_stop) {
+            // Stop the task instance (kills the wrapper).
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+            _ = std.fs.File.stdout().write("Stopped user session runner.\n") catch {};
+            return;
+        }
+
+        if (node_session_status) {
+            const has_task = win_service.taskInstalled(allocator, runner_name) catch false;
+            if (!has_task) {
+                _ = std.fs.File.stdout().write("User session runner: not installed\n") catch {};
+                return;
+            }
+
+            const svc_q = win_scm.queryService(allocator, runner_name) catch null;
+            if (svc_q) |qq| {
+                if (qq.state != .not_installed) {
+                    _ = std.fs.File.stdout().write("WARNING: Windows service is also installed (modes should be mutually exclusive).\n") catch {};
+                    _ = std.fs.File.stdout().write("Fix: ziggystarclaw-cli node runner install --mode service\n") catch {};
+                    _ = std.fs.File.stdout().write("  or: ziggystarclaw-cli node runner install --mode session\n") catch {};
+                }
+            }
+
+            _ = std.fs.File.stdout().write("User session runner: installed (Scheduled Task)\n") catch {};
+            return;
+        }
+    }
+
+    // Node service helpers (Windows SCM service, Linux systemd)
     if (node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status) {
         // For node services, prefer the explicit --config path if provided; otherwise
         // use the unified node config default path.
@@ -443,6 +1046,14 @@ pub fn main() !void {
         // not root's, otherwise the service will fail to read its config.
         const node_cfg_path = if (config_path_set) blk: {
             break :blk try allocator.dupe(u8, config_path);
+        } else if (builtin.os.tag == .windows and node_service_mode == .onstart) blk: {
+            // System-scope default (boot-start on Windows).
+            const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+            if (programdata) |pd| {
+                defer allocator.free(pd);
+                break :blk try std.fs.path.join(allocator, &.{ pd, "ZiggyStarClaw", "config.json" });
+            }
+            break :blk try allocator.dupe(u8, "C:\\ProgramData\\ZiggyStarClaw\\config.json");
         } else if (builtin.os.tag == .linux and node_service_mode == .onstart and std.posix.geteuid() == 0) blk: {
             const sudo_user = std.process.getEnvVarOwned(allocator, "SUDO_USER") catch null;
             if (sudo_user) |u| {
@@ -467,16 +1078,35 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        const storage_scope: node_register.StorageScope = if (builtin.os.tag == .windows and node_service_mode == .onstart)
+            .system
+        else
+            .user;
+
         if (!cfg_exists) {
+            // Bootstrap config non-interactively when possible.
+            //
+            // If only --url is provided, prompt only for the auth token (so users don't get stuck
+            // at a URL prompt even though they already passed one).
             if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?);
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
+            } else if (override_url != null and override_token == null) {
+                const secret_prompt = @import("utils/secret_prompt.zig");
+                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
+                defer allocator.free(tok);
+                // Token may be empty when connecting via Tailscale Serve with gateway.auth.allowTailscale=true.
+                // If the gateway requires a shared token, the subsequent connect/register step will fail with auth.
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+            } else if (override_url == null and override_token != null) {
+                logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
             }
         }
 
         if (builtin.os.tag == .linux) {
             if (node_service_install) {
                 // Ensure config has a valid node token/id before enabling the service.
-                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
+                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
                 const unit = linux_service.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
                     if (err == linux_service.ServiceError.AccessDenied) {
@@ -525,138 +1155,111 @@ pub fn main() !void {
             }
         }
 
-        if (builtin.os.tag != .windows) {
-            logger.err("node service helpers are only supported on Windows and Linux", .{});
-            return error.InvalidArguments;
-        }
+        if (builtin.os.tag == .windows) {
+            if (node_service_install) {
+                // Enforce mutual exclusivity: disable/remove any user-session runner artifacts first.
+                const runner_name = node_service_name orelse win_scm.defaultServiceName();
+                _ = win_service.stopTask(allocator, runner_name) catch {};
+                win_service.uninstallTask(allocator, runner_name) catch |err| switch (err) {
+                    win_service.ServiceError.AccessDenied => logger.warn("Scheduled Task cleanup failed (access denied); continuing", .{}),
+                    else => {},
+                };
 
-        if (node_service_install) {
-            // Ensure the node is registered/persisted in the SAME config.json the service will use.
-            // This keeps manual runs and the scheduled task deterministic.
-            //
-            // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
-            // can approve without re-running commands.
-            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null);
+                // Best-effort: if a user-session supervisor is still running, ask it to stop its child node.
+                _ = win_control_pipe.requestOk(allocator, "stop") catch null;
 
-            // Install a short wrapper script so we can:
-            // - avoid schtasks /TR length limits
-            // - always redirect logs to a file for debugging
-            // - avoid relying on Task Scheduler working directory
-            const exe_path = try std.fs.selfExePathAlloc(allocator);
-            defer allocator.free(exe_path);
+                // Ensure the node is registered/persisted in the SAME config.json the service will use.
+                // This keeps manual runs and the installed service deterministic.
+                //
+                // NOTE: this may require a one-time approval in Control UI; we wait/retry so the user
+                // can approve without re-running commands.
+                try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
 
-            // Best-effort: place wrapper + logs alongside the config (typically %APPDATA%\ZiggyStarClaw).
-            const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
-            std.fs.cwd().makePath(cfg_dir) catch {};
+                // Put logs next to the config (system-scope config => ProgramData; user-scope config => AppData).
+                const cfg_dir = std.fs.path.dirname(node_cfg_path) orelse ".";
+                const logs_dir = try std.fs.path.join(allocator, &.{ cfg_dir, "logs" });
+                defer allocator.free(logs_dir);
+                std.fs.cwd().makePath(logs_dir) catch {};
 
-            const log_path = try std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" });
-            defer allocator.free(log_path);
+                const log_path = try std.fs.path.join(allocator, &.{ logs_dir, "node.log" });
+                defer allocator.free(log_path);
 
-            // Prefer a VBScript launcher (no console window). Fallback to cmd if Windows Script Host is missing.
-            const windir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
-            defer if (windir) |v| allocator.free(v);
+                // Create log file up-front so users have a concrete place to look even if
+                // the node fails early.
+                _ = std.fs.cwd().createFile(log_path, .{ .truncate = false }) catch |err| {
+                    logger.warn("Failed to create log file {s}: {}", .{ log_path, err });
+                };
 
-            const wscript_path = if (windir) |v|
-                try std.fs.path.join(allocator, &.{ v, "System32", "wscript.exe" })
-            else
-                try allocator.dupe(u8, "wscript.exe");
-            defer allocator.free(wscript_path);
-
-            const wscript_ok = (std.fs.cwd().access(wscript_path, .{}) catch null) == null;
-
-            if (wscript_ok) {
-                const vbs_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.vbs" });
-                defer allocator.free(vbs_path);
-
-                // VBScript uses WScript.Shell.Run windowstyle=0 to stay hidden.
-                // We still use cmd /c for output redirection.
-                const vbs = try std.fmt.allocPrint(
-                    allocator,
-                    "Set sh=CreateObject(\"WScript.Shell\")\r\n" ++
-                        "sh.Run \"cmd /c \"\"\"\"{s}\"\"\"\" --node-mode --config \"\"\"\"{s}\"\"\"\" --as-node --no-operator --log-level debug >> \"\"\"\"{s}\"\"\"\" 2>&1\"\"\", 0, False\r\n",
-                    .{ exe_path, node_cfg_path, log_path },
-                );
-                defer allocator.free(vbs);
-
-                {
-                    const f = try std.fs.cwd().createFile(vbs_path, .{ .truncate = true });
-                    defer f.close();
-                    try f.writeAll(vbs);
-                }
-
-                // Task scheduler runs wscript.exe "...\run-node.vbs"
-                const task_run = try std.fmt.allocPrint(allocator, "\"{s}\" \"{s}\"", .{ wscript_path, vbs_path });
-                defer allocator.free(task_run);
-
-                win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {
-                    if (err == win_service.ServiceError.AccessDenied) {
-                        logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                        return;
+                win_scm.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
+                        return error.AccessDenied;
                     }
                     return err;
                 };
 
-                logger.info("Installed scheduled task for node-mode (hidden via wscript).", .{});
-                _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-                _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
+                const svc_name = node_service_name orelse win_scm.defaultServiceName();
+
+                logger.info("Installed Windows SCM service for node-mode.", .{});
+                _ = std.fs.File.stdout().write("Installed Windows service for node-mode.\n") catch {};
+                _ = std.fs.File.stdout().write("Service name: ") catch {};
+                _ = std.fs.File.stdout().write(svc_name) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                _ = std.fs.File.stdout().write("Node logs: ") catch {};
+                _ = std.fs.File.stdout().write(log_path) catch {};
+                _ = std.fs.File.stdout().write("\n") catch {};
+                _ = std.fs.File.stdout().write("Recovery: configured to restart automatically on failure (via SCM).\n") catch {};
                 return;
             }
-
-            // Fallback: cmd wrapper (may open a console window)
-            const cmd_path = try std.fs.path.join(allocator, &.{ cfg_dir, "run-node.cmd" });
-            defer allocator.free(cmd_path);
-
-            const cmd = try std.fmt.allocPrint(
-                allocator,
-                "@echo off\r\nsetlocal\r\n\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator --log-level debug >> \"{s}\" 2>&1\r\n",
-                .{ exe_path, node_cfg_path, log_path },
-            );
-            defer allocator.free(cmd);
-
-            {
-                const f = try std.fs.cwd().createFile(cmd_path, .{ .truncate = true });
-                defer f.close();
-                try f.writeAll(cmd);
+            if (node_service_uninstall) {
+                win_scm.uninstallService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service uninstall failed: access denied. Re-run from an elevated (Administrator) PowerShell.", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+                logger.info("Uninstalled Windows service.", .{});
+                _ = std.fs.File.stdout().write("Uninstalled Windows service.\n") catch {};
+                return;
             }
+            if (node_service_start) {
+                win_scm.startService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service start failed: access denied. If you installed the service without the tray-control permissions, re-install it from an elevated shell.", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+                logger.info("Started Windows service.", .{});
+                _ = std.fs.File.stdout().write("Started Windows service.\n") catch {};
+                return;
+            }
+            if (node_service_stop) {
+                win_scm.stopService(allocator, node_service_name) catch |err| {
+                    if (err == win_scm.ServiceError.AccessDenied) {
+                        logger.err("Windows service stop failed: access denied.\n", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+                logger.info("Stopped Windows service.", .{});
+                _ = std.fs.File.stdout().write("Stopped Windows service.\n") catch {};
+                return;
+            }
+            if (node_service_status) {
+                const q = try win_scm.queryService(allocator, node_service_name);
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print("Service: {s}", .{win_scm.stateLabel(q.state)});
+                if (q.pid != 0) try out.print(" pid={d}", .{q.pid});
+                if (q.win32_exit_code != 0) try out.print(" win32Exit={d}", .{q.win32_exit_code});
+                try out.writeByte('\n');
+                return;
+            }
+        }
 
-            const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{cmd_path});
-            defer allocator.free(task_run);
-
-            win_service.installTaskCommand(allocator, task_run, node_service_mode, node_service_name) catch |err| {  
-                if (err == win_service.ServiceError.AccessDenied) {
-                    logger.err("Task Scheduler install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                    return;
-                }
-                return err;
-            };
-
-            logger.info("Installed scheduled task for node-mode (cmd wrapper).", .{});
-            _ = std.fs.File.stdout().write("Installed scheduled task for node-mode.\n") catch {};
-            _ = std.fs.File.stdout().write("Logs: node-service.log (next to config.json)\n") catch {};
-            return;
-        }
-        if (node_service_uninstall) {
-            try win_service.uninstallTask(allocator, node_service_name);
-            logger.info("Uninstalled scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Uninstalled scheduled task.\n") catch {};
-            return;
-        }
-        if (node_service_start) {
-            try win_service.startTask(allocator, node_service_name);
-            logger.info("Started scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Started scheduled task.\n") catch {};
-            return;
-        }
-        if (node_service_stop) {
-            try win_service.stopTask(allocator, node_service_name);
-            logger.info("Stopped scheduled task.", .{});
-            _ = std.fs.File.stdout().write("Stopped scheduled task.\n") catch {};
-            return;
-        }
-        if (node_service_status) {
-            try win_service.queryTask(allocator, node_service_name);
-            return;
-        }
+        logger.err("node service helpers are only supported on Windows and Linux", .{});
+        return error.InvalidArguments;
     }
 
     // Handle node register (interactive helper)
@@ -665,7 +1268,7 @@ pub fn main() !void {
         // TODO(openclaw): in the future, OpenClaw gateway should expose a first-class
         // RPC/UI flow to grant role=node tokens during pairing. Until then we prompt the
         // user to paste the node token explicitly.
-        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait, node_opts.display_name);
+        try node_register.run(allocator, node_opts.config_path, node_opts.insecure_tls, node_register_wait, node_opts.display_name, .user);
         return;
     }
 

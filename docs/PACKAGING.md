@@ -8,6 +8,15 @@ ZiggyStarClaw ships release bundles for Linux, Windows, Android, and WASM.
 scripts/package-release.sh
 ```
 
+## Windows MSIX + App Installer (MVP)
+
+MSIX packaging is currently driven by PowerShell scripts intended to run on a Windows packaging machine:
+
+- `scripts/windows/msix/README.md`
+- `scripts/windows/msix/Build-ZscMsix.ps1`
+
+See: `docs/spec_windows_msix_appinstaller_mvp.md`
+
 This will:
 - Build all targets (native, Windows, WASM, Android).
 - Gather artifacts into `dist/ziggystarclaw_<version>_<date>/`.

@@ -49,7 +49,7 @@ pub const HealthReporter = struct {
     }
 
     fn healthReporterThread(self: *HealthReporter) void {
-        while (self.running) {
+        while (self.running and !node_platform.stopRequested()) {
             // Send heartbeat
             self.sendHeartbeat() catch |err| {
                 logger.err("Failed to send heartbeat: {s}", .{@errorName(err)});
@@ -65,7 +65,7 @@ pub const HealthReporter = struct {
 
     fn sendHeartbeat(self: *HealthReporter) !void {
         // IMPORTANT: The gateway requires the *first* request on a fresh WS connection
-        // to be `connect`. Do not emit `node.heartbeat` until the node is fully
+        // to be `connect`. Do not emit node events until the node is fully
         // registered (hello-ok received).
         switch (self.node_ctx.state) {
             .idle, .executing, .error_state => {},
@@ -102,14 +102,21 @@ pub const HealthReporter = struct {
         const process_list = try self.node_ctx.process_manager.listProcesses(a);
         try health_data.put("activeProcesses", std.json.Value{ .integer = @intCast(process_list.array.items.len) });
 
-        // Build heartbeat frame
+        // Build node health frame (sent as node.event).
+        // OpenClaw gateway accepts node-role methods: node.event / node.invoke.result.
+        // Health updates are carried via event="node.health.frame".
         const frame = .{
             .type = "req",
             .id = request_id,
-            .method = "node.heartbeat",
+            .method = "node.event",
             .params = .{
-                .status = "healthy",
-                .data = std.json.Value{ .object = health_data },
+                .event = "node.health.frame",
+                .payload = .{
+                    .ts = node_platform.nowMs(),
+                    .v = 1,
+                    .kind = "zsc.health",
+                    .data = std.json.Value{ .object = health_data },
+                },
             },
         };
 
@@ -119,7 +126,7 @@ pub const HealthReporter = struct {
         defer if (self.ws_mutex) |m| m.unlock();
 
         try self.ws_client.send(payload);
-        logger.debug("Heartbeat sent", .{});
+        logger.debug("Health frame sent", .{});
     }
 };
 

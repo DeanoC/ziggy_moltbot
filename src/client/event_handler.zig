@@ -92,6 +92,13 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
 
+        if (std.mem.eql(u8, frame.value.event, "node.health.frame")) {
+            handleNodeHealthFrame(ctx, frame.value.payload) catch |err| {
+                logger.warn("Failed to handle node health frame ({s})", .{@errorName(err)});
+            };
+            return null;
+        }
+
         if (std.mem.eql(u8, frame.value.event, "tick") or
             std.mem.eql(u8, frame.value.event, "cron") or
             std.mem.eql(u8, frame.value.event, "health"))
@@ -375,7 +382,12 @@ fn handleNodeDescribeResponse(ctx: *state.ClientContext, payload: std.json.Value
 fn handleExecApprovalResolveResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
     _ = payload;
     if (ctx.pending_approval_target_id) |target_id| {
-        _ = ctx.removeApprovalById(target_id);
+        ctx.markApprovalResolvedOwned(
+            target_id,
+            ctx.pending_approval_decision,
+            "local",
+            std.time.milliTimestamp(),
+        ) catch {};
     }
     ctx.clearPendingApprovalResolveRequest();
     ctx.clearOperatorNotice();
@@ -390,10 +402,12 @@ fn handleExecApprovalRequested(ctx: *state.ClientContext, payload: ?std.json.Val
     errdefer {
         if (extracted.id) |id| ctx.allocator.free(id);
         if (extracted.summary) |summary| ctx.allocator.free(summary);
+        if (extracted.requested_by) |who| ctx.allocator.free(who);
     }
     const approval_id = extracted.id orelse try requests.makeRequestId(ctx.allocator);
     const summary = extracted.summary;
     const requested_at = extracted.requested_at_ms;
+    const requested_by = extracted.requested_by;
     const can_resolve = extracted.id != null;
 
     const approval = types.ExecApproval{
@@ -401,15 +415,23 @@ fn handleExecApprovalRequested(ctx: *state.ClientContext, payload: ?std.json.Val
         .payload_json = rendered,
         .summary = summary,
         .requested_at_ms = requested_at,
+        .requested_by = requested_by,
+        .resolved_at_ms = null,
+        .resolved_by = null,
+        .decision = null,
         .can_resolve = can_resolve,
     };
     errdefer {
         ctx.allocator.free(approval.id);
         ctx.allocator.free(approval.payload_json);
         if (approval.summary) |text| ctx.allocator.free(text);
+        if (approval.requested_by) |who| ctx.allocator.free(who);
+        if (approval.resolved_by) |who| ctx.allocator.free(who);
+        if (approval.decision) |decision| ctx.allocator.free(decision);
     }
     extracted.id = null;
     extracted.summary = null;
+    extracted.requested_by = null;
     try ctx.upsertApprovalOwned(approval);
 
     if (!can_resolve) {
@@ -419,9 +441,14 @@ fn handleExecApprovalRequested(ctx: *state.ClientContext, payload: ?std.json.Val
 
 fn handleExecApprovalResolved(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
     const value = payload orelse return;
-    if (extractApprovalId(value)) |id| {
-        _ = ctx.removeApprovalById(id);
-    }
+    const id = extractApprovalId(value) orelse return;
+
+    const decision = extractApprovalDecision(value);
+    const resolved_by = extractApprovalResolvedBy(value);
+    const resolved_at_ms = extractApprovalResolvedAtMs(value);
+
+    // This will also remove the pending approval when present.
+    try ctx.markApprovalResolvedOwned(id, decision, resolved_by, resolved_at_ms);
 }
 
 fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
@@ -756,6 +783,20 @@ fn nodeListHasId(list: []const types.Node, id: []const u8) bool {
     return false;
 }
 
+
+fn handleNodeHealthFrame(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
+    if (payload == null) return;
+    const value = payload.?;
+    if (value != .object) return;
+    const obj = value.object;
+    const node_id_val = obj.get("nodeId") orelse return;
+    if (node_id_val != .string) return;
+
+    const node_id = node_id_val.string;
+    const rendered = try stringifyJsonValue(ctx.allocator, value);
+    try ctx.upsertNodeHealthOwned(node_id, rendered);
+}
+
 fn stringifyJsonValue(allocator: std.mem.Allocator, value: std.json.Value) ![]u8 {
     var out: std.io.Writer.Allocating = .init(allocator);
     errdefer out.deinit();
@@ -768,6 +809,7 @@ const ApprovalInfo = struct {
     id: ?[]const u8 = null,
     summary: ?[]const u8 = null,
     requested_at_ms: ?i64 = null,
+    requested_by: ?[]const u8 = null,
 };
 
 fn extractApprovalInfo(allocator: std.mem.Allocator, value: std.json.Value) ApprovalInfo {
@@ -826,6 +868,40 @@ fn extractApprovalInfo(allocator: std.mem.Allocator, value: std.json.Value) Appr
         break :blk null;
     } else if (obj.get("cwd")) |cwd_val| if (cwd_val == .string) cwd_val.string else null else null;
 
+    const requested_by = if (request_obj) |req| blk: {
+        if (req.get("requestedBy")) |val| if (val == .string) break :blk val.string;
+        if (req.get("requestedByName")) |val| if (val == .string) break :blk val.string;
+        if (req.get("sessionKey")) |val| if (val == .string) break :blk val.string;
+        if (req.get("clientId")) |val| if (val == .string) break :blk val.string;
+        if (req.get("actor")) |actor| {
+            if (actor == .object) {
+                if (actor.object.get("displayName")) |name| if (name == .string) break :blk name.string;
+                if (actor.object.get("name")) |name| if (name == .string) break :blk name.string;
+                if (actor.object.get("id")) |name| if (name == .string) break :blk name.string;
+            }
+        }
+        break :blk null;
+    } else blk: {
+        if (obj.get("requestedBy")) |val| if (val == .string) break :blk val.string;
+        if (obj.get("requestedByName")) |val| if (val == .string) break :blk val.string;
+        if (obj.get("sessionKey")) |val| if (val == .string) break :blk val.string;
+        if (obj.get("clientId")) |val| if (val == .string) break :blk val.string;
+        if (obj.get("actor")) |actor| {
+            if (actor == .object) {
+                if (actor.object.get("displayName")) |name| if (name == .string) break :blk name.string;
+                if (actor.object.get("name")) |name| if (name == .string) break :blk name.string;
+                if (actor.object.get("id")) |name| if (name == .string) break :blk name.string;
+            }
+        }
+        break :blk null;
+    };
+
+    if (requested_by) |who| {
+        info.requested_by = allocator.dupe(u8, who) catch null;
+    } else if (node_id) |fallback| {
+        info.requested_by = allocator.dupe(u8, fallback) catch null;
+    }
+
     if (command != null or node_id != null) {
         const command_text = command orelse "unknown";
         const context_text = resolved_path orelse host orelse cwd orelse node_id;
@@ -855,6 +931,60 @@ fn extractApprovalId(value: std.json.Value) ?[]const u8 {
     }
     if (obj.get("requestId")) |id_val| {
         if (id_val == .string) return id_val.string;
+    }
+    return null;
+}
+
+fn extractApprovalDecision(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+    if (obj.get("decision")) |val| {
+        if (val == .string) return val.string;
+    }
+    if (obj.get("result")) |val| {
+        if (val == .string) return val.string;
+    }
+    return null;
+}
+
+fn extractApprovalResolvedBy(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    const obj = value.object;
+
+    if (obj.get("resolvedBy")) |val| {
+        if (val == .string) return val.string;
+    }
+    if (obj.get("operator")) |val| {
+        if (val == .object) {
+            const op = val.object;
+            if (op.get("displayName")) |name| if (name == .string) return name.string;
+            if (op.get("name")) |name| if (name == .string) return name.string;
+            if (op.get("id")) |id_val| if (id_val == .string) return id_val.string;
+        }
+    }
+
+    if (obj.get("client")) |val| {
+        if (val == .object) {
+            const client = val.object;
+            if (client.get("displayName")) |name| if (name == .string) return name.string;
+            if (client.get("id")) |id_val| if (id_val == .string) return id_val.string;
+        }
+    }
+
+    return null;
+}
+
+fn extractApprovalResolvedAtMs(value: std.json.Value) ?i64 {
+    if (value != .object) return null;
+    const obj = value.object;
+    if (obj.get("resolvedAtMs")) |val| {
+        if (val == .integer) return val.integer;
+    }
+    if (obj.get("ts")) |val| {
+        if (val == .integer) return val.integer;
+    }
+    if (obj.get("createdAtMs")) |val| {
+        if (val == .integer) return val.integer;
     }
     return null;
 }

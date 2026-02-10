@@ -490,7 +490,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     defer reporter.stop();
 
     // Main event loop
-    while (true) {
+    while (!node_platform.stopRequested()) {
         conn.step();
 
         if (!conn.is_connected) {
@@ -689,9 +689,21 @@ fn handleNodeMessage(
                                             cfg.node.nodeToken = try allocator.dupe(u8, token.string);
 
                                             if (conn) |cm| {
+                                                // After pairing completes, we MUST switch the connection to use the paired node token
+                                                // for WS Authorization + connect.auth.token + device-auth payload.
+                                                // Otherwise the gateway may treat us as an operator and reject node-only methods
+                                                // like node.heartbeat with "unauthorized role: node".
+                                                cm.setHandshakeToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update handshake token: {s}", .{@errorName(err)});
+                                                };
+                                                cm.setConnectAuthToken(cfg.node.nodeToken) catch |err| {
+                                                    logger.warn("Failed to update connect auth token: {s}", .{@errorName(err)});
+                                                };
                                                 cm.setDeviceAuthToken(cfg.node.nodeToken) catch |err| {
                                                     logger.warn("Failed to update device auth token: {s}", .{@errorName(err)});
                                                 };
+                                                // Force a reconnect so the gateway re-registers us under role=node using the new token.
+                                                cm.disconnect();
                                             }
 
                                             saveUpdatedNodeToken(allocator, cfg_path, token.string) catch |err| {
@@ -727,7 +739,18 @@ fn handleNodeMessage(
                                 handled_pairing = true;
                             }
                             if (!handled_pairing) {
-                                logger.err("Error: {s}", .{msg.string});
+                                if (std.mem.indexOf(u8, msg.string, "unauthorized role: node") != null) {
+                                    logger.err("Error: {s}", .{msg.string});
+                                    logger.err(
+                                        "Node auth hint: you are connecting with a token that is not allowed to claim role=node. " ++
+                                            "This usually means node-mode is using gateway/auth token (operator/shared) instead of a paired node token. " ++
+                                            "Ensure your config.json has node.nodeToken populated and that the node service is using that config.",
+                                        .{},
+                                    );
+                                    handled_pairing = true;
+                                } else {
+                                    logger.err("Error: {s}", .{msg.string});
+                                }
                             }
                         }
                     }

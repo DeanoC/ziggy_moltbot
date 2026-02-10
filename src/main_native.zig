@@ -16,6 +16,7 @@ const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
 const config = @import("client/config.zig");
+const unified_config = @import("unified_config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
@@ -527,6 +528,146 @@ fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
     };
 }
 
+const WinNodeServiceJobKind = enum {
+    install_onlogon,
+    uninstall,
+    start,
+    stop,
+    status,
+};
+
+const WinNodeServiceJob = struct {
+    kind: WinNodeServiceJobKind,
+    url: []u8,
+    token: []u8,
+    insecure_tls: bool,
+
+    fn deinit(self: *WinNodeServiceJob) void {
+        std.heap.page_allocator.free(self.url);
+        std.heap.page_allocator.free(self.token);
+    }
+};
+
+fn spawnWinNodeServiceJob(kind: WinNodeServiceJobKind, url: []const u8, token: []const u8, insecure_tls: bool) void {
+    // Copy inputs so the UI config can change/free independently.
+    const job = std.heap.page_allocator.create(WinNodeServiceJob) catch return;
+    job.* = .{
+        .kind = kind,
+        .url = std.heap.page_allocator.dupe(u8, url) catch {
+            std.heap.page_allocator.destroy(job);
+            return;
+        },
+        .token = std.heap.page_allocator.dupe(u8, token) catch {
+            std.heap.page_allocator.free(job.url);
+            std.heap.page_allocator.destroy(job);
+            return;
+        },
+        .insecure_tls = insecure_tls,
+    };
+
+    _ = std.Thread.spawn(.{}, runWinNodeServiceJob, .{job}) catch {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+        return;
+    };
+}
+
+fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
+    defer {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+    }
+
+    const allocator = std.heap.page_allocator;
+
+    const cli = findSiblingExecutable(allocator, if (builtin.os.tag == .windows) "ziggystarclaw-cli.exe" else "ziggystarclaw-cli") catch |err| {
+        logger.err("node service: failed to resolve cli path: {}", .{err});
+        return;
+    };
+    defer allocator.free(cli);
+
+    const action_args: []const []const u8 = switch (job.kind) {
+        .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
+        .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
+        .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
+        .stop => &.{ "node", "service", "stop", "--node-service-mode", "onlogon" },
+        .status => &.{ "node", "service", "status", "--node-service-mode", "onlogon" },
+    };
+
+    // Build argv = [cli] + action_args + common bootstrap args
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+
+    argv.append(allocator, cli) catch return;
+    argv.appendSlice(allocator, action_args) catch return;
+
+    // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
+    argv.append(allocator, "--url") catch return;
+    argv.append(allocator, job.url) catch return;
+    argv.append(allocator, "--gateway-token") catch return;
+    argv.append(allocator, job.token) catch return;
+
+    if (job.insecure_tls) {
+        argv.append(allocator, "--insecure-tls") catch {};
+    }
+
+    // Be verbose in logs.
+    argv.append(allocator, "--log-level") catch {};
+    argv.append(allocator, "debug") catch {};
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+
+    child.spawn() catch |err| {
+        logger.err("node service: spawn failed: {}", .{err});
+        return;
+    };
+
+    const term = child.wait() catch |err| {
+        logger.err("node service: wait failed: {}", .{err});
+        return;
+    };
+
+    switch (term) {
+        .Exited => |code| {
+            if (code == 0) {
+                logger.info("node service: {s} ok", .{@tagName(job.kind)});
+            } else {
+                logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+            }
+        },
+        else => {
+            logger.err("node service: {s} terminated unexpectedly", .{@tagName(job.kind)});
+        },
+    }
+}
+
+fn findSiblingExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(exe);
+    const dir = std.fs.path.dirname(exe) orelse ".";
+    const candidate = try std.fs.path.join(allocator, &.{ dir, name });
+
+    std.fs.cwd().access(candidate, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            // Fall back to PATH.
+            allocator.free(candidate);
+            return allocator.dupe(u8, name);
+        },
+        else => {
+            allocator.free(candidate);
+            return err;
+        },
+    };
+
+    return candidate;
+}
+
 fn installUpdate(allocator: std.mem.Allocator, archive_path: []const u8) bool {
     if (!(builtin.os.tag == .windows or builtin.os.tag == .linux or builtin.os.tag == .macos)) {
         return false;
@@ -726,6 +867,9 @@ const ConnectJob = struct {
 };
 
 fn connectThreadMain(job: *ConnectJob) void {
+    profiler.setThreadName("ws.connect");
+    const zone = profiler.zone(@src(), "ws.connect");
+    defer zone.end();
     const result = job.ws_client.connect();
     if (result) |_| {
         job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
@@ -736,28 +880,33 @@ fn connectThreadMain(job: *ConnectJob) void {
 }
 
 fn readLoopMain(loop: *ReadLoop) void {
+    profiler.setThreadName("ws.read");
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
     loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
-        const payload = loop.ws_client.receive() catch |err| {
-            if (err == error.NotConnected or err == error.Closed) {
-                return;
-            }
-            if (err == error.ReadFailed) {
-                const now_ms = std.time.milliTimestamp();
-                const last_ms = loop.last_receive_ms;
-                const delta = if (last_ms > 0) now_ms - last_ms else -1;
-                logger.warn(
-                    "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
-                    .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
-                );
+        const payload = blk: {
+            const zone = profiler.zone(@src(), "ws.receive");
+            defer zone.end();
+            break :blk loop.ws_client.receive() catch |err| {
+                if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.ReadFailed) {
+                    const now_ms = std.time.milliTimestamp();
+                    const last_ms = loop.last_receive_ms;
+                    const delta = if (last_ms > 0) now_ms - last_ms else -1;
+                    logger.warn(
+                        "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
+                        .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
+                    );
+                    loop.ws_client.disconnect();
+                    return;
+                }
+                logger.err("WebSocket receive failed (thread): {}", .{err});
                 loop.ws_client.disconnect();
                 return;
-            }
-            logger.err("WebSocket receive failed (thread): {}", .{err});
-            loop.ws_client.disconnect();
-            return;
+            };
         } orelse continue;
 
         loop.last_receive_ms = std.time.milliTimestamp();
@@ -766,10 +915,14 @@ fn readLoopMain(loop: *ReadLoop) void {
             loop.allocator.free(payload);
             return;
         }
-        loop.queue.push(loop.allocator, payload) catch {
-            loop.allocator.free(payload);
-            return;
-        };
+        {
+            const zone = profiler.zone(@src(), "ws.enqueue");
+            defer zone.end();
+            loop.queue.push(loop.allocator, payload) catch {
+                loop.allocator.free(payload);
+                return;
+            };
+        }
     }
 }
 
@@ -1062,14 +1215,23 @@ fn sendExecApprovalResolveRequest(
         allocator.free(request.id);
         return;
     };
-    errdefer allocator.free(target_copy);
+    const decision_copy = allocator.dupe(u8, decision) catch {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        return;
+    };
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send exec.approval.resolve: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        allocator.free(decision_copy);
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingApprovalResolveRequest(request.id, target_copy);
+    ctx.setPendingApprovalResolveRequest(request.id, target_copy, decision_copy);
     ctx.clearOperatorNotice();
 }
 
@@ -1308,6 +1470,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
+
+    profiler.setThreadName("main");
 
     try initLogging(allocator);
     defer logger.deinit();
@@ -1641,11 +1805,11 @@ pub fn main() !void {
     defer window_close_requests.deinit(allocator);
     while (!should_close) {
         profiler.frameMark();
-        const frame_zone = profiler.zone("frame");
+        const frame_zone = profiler.zone(@src(), "frame");
         defer frame_zone.end();
         window_close_requests.clearRetainingCapacity();
         {
-            const zone = profiler.zone("frame.events");
+            const zone = profiler.zone(@src(), "frame.events");
             defer zone.end();
             var event: sdl.SDL_Event = undefined;
             while (sdl.SDL_PollEvent(&event)) {
@@ -1686,7 +1850,7 @@ pub fn main() !void {
             drained.deinit(allocator);
         }
         {
-            const zone = profiler.zone("frame.net");
+            const zone = profiler.zone(@src(), "frame.net");
             defer zone.end();
             for (drained.items) |payload| {
                 const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
@@ -1743,7 +1907,7 @@ pub fn main() !void {
         var any_save_workspace: bool = false;
         var detach_req: ?struct { wid: u32, panel_ptr: *workspace.Panel } = null;
         {
-            const zone = profiler.zone("frame.ui");
+            const zone = profiler.zone(@src(), "frame.ui");
             defer zone.end();
 
             // Apply assistant UI commands to the currently focused window only.
@@ -2194,6 +2358,55 @@ pub fn main() !void {
                 "https://github.com/DeanoC/ZiggyStarClaw/releases/latest";
             openUrl(allocator, release_url);
         }
+
+        if (ui_action.open_node_logs and builtin.os.tag == .windows) {
+            // Node runner logs are written to node-service.log next to the unified node config.
+            const node_cfg_path = unified_config.defaultConfigPath(allocator) catch null;
+            if (node_cfg_path) |cfg_path| {
+                defer allocator.free(cfg_path);
+
+                const cfg_dir = std.fs.path.dirname(cfg_path) orelse ".";
+                const log_path = std.fs.path.join(allocator, &.{ cfg_dir, "node-service.log" }) catch null;
+                if (log_path) |p| {
+                    defer allocator.free(p);
+
+                    const log_exists = blk: {
+                        std.fs.cwd().access(p, .{}) catch |err| switch (err) {
+                            error.FileNotFound => break :blk false,
+                            else => break :blk false,
+                        };
+                        break :blk true;
+                    };
+
+                    if (log_exists) {
+                        openPath(allocator, p);
+                    } else {
+                        openPath(allocator, cfg_dir);
+                    }
+                } else {
+                    openPath(allocator, cfg_dir);
+                }
+            }
+        }
+
+        if (builtin.os.tag == .windows) {
+            if (ui_action.node_service_install_onlogon) {
+                spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_uninstall) {
+                spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_start) {
+                spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_stop) {
+                spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+            if (ui_action.node_service_status) {
+                spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+            }
+        }
+
         if (ui_action.open_url) |url| {
             defer allocator.free(url);
             openUrl(allocator, url);
@@ -2657,6 +2870,12 @@ pub fn main() !void {
                     i += 1;
                 }
             }
+        }
+
+        {
+            const zone = profiler.zone(@src(), "frame.render");
+            defer zone.end();
+            renderer.render();
         }
     }
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const data_uri = @import("data_uri.zig");
 const wasm_fetch = @import("../platform/wasm_fetch.zig");
+const profiler = @import("../utils/profiler.zig");
 const image_fetch = if (builtin.cpu.arch == .wasm32)
     struct {
         pub fn fetchHttpBytes(_: std.mem.Allocator, _: []const u8) ![]u8 {
@@ -236,29 +237,38 @@ fn fetchThread(ctx: *FetchContext) void {
     const cache = ctx.cache;
     defer cache.allocator.destroy(ctx);
 
-    // If it looks like a URL, fetch over HTTP. Otherwise treat it as a filesystem path.
-    if (std.mem.indexOf(u8, ctx.url, "://") != null) {
-        const bytes = image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
-            setFailed(cache, ctx.url, @errorName(err));
-            return;
-        };
-        defer cache.allocator.free(bytes);
+    profiler.setThreadName("image.fetch");
 
+    const zone = profiler.zone(@src(), "image.fetch");
+    defer zone.end();
+
+    var bytes: []u8 = undefined;
+    {
+        // If it looks like a URL, fetch over HTTP. Otherwise treat it as a filesystem path.
+        const is_url = std.mem.indexOf(u8, ctx.url, "://") != null;
+        const z = profiler.zone(@src(), if (is_url) "image.fetch.http" else "image.fetch.file");
+        defer z.end();
+
+        bytes = if (is_url)
+            image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
+                setFailed(cache, ctx.url, @errorName(err));
+                return;
+            }
+        else
+            readFileBytes(cache.allocator, ctx.url) catch |err| {
+                setFailed(cache, ctx.url, @errorName(err));
+                return;
+            };
+    }
+    defer cache.allocator.free(bytes);
+
+    {
+        const z = profiler.zone(@src(), "image.decode");
+        defer z.end();
         decodeImage(cache, ctx.url, bytes) catch |err| {
             setFailed(cache, ctx.url, @errorName(err));
         };
-        return;
     }
-
-    const bytes = readFileBytes(cache.allocator, ctx.url) catch |err| {
-        setFailed(cache, ctx.url, @errorName(err));
-        return;
-    };
-    defer cache.allocator.free(bytes);
-
-    decodeImage(cache, ctx.url, bytes) catch |err| {
-        setFailed(cache, ctx.url, @errorName(err));
-    };
 }
 
 fn readFileBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {

@@ -26,7 +26,7 @@ pub const UnifiedConfig = struct {
         /// Optional display name (falls back to "ZiggyStarClaw Node").
         displayName: ?[]const u8 = null,
 
-        /// Health reporter interval (node.heartbeat) in milliseconds.
+        /// Health reporter interval (node.event: node.health.frame) in milliseconds.
         /// Keep this reasonably frequent so the gateway doesn't mark the node as stale.
         healthReporterIntervalMs: i64 = 10000,
 
@@ -83,7 +83,7 @@ fn expandVarsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var s = try allocator.dupe(u8, raw);
     errdefer allocator.free(s);
 
-    // Expand %APPDATA% / %USERPROFILE%
+    // Expand %APPDATA% / %USERPROFILE% / %ProgramData%
     const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch null;
     defer if (appdata) |v| allocator.free(v);
     if (appdata) |v| {
@@ -96,6 +96,19 @@ fn expandVarsAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     defer if (userprofile) |v| allocator.free(v);
     if (userprofile) |v| {
         const replaced = try std.mem.replaceOwned(u8, allocator, s, "%USERPROFILE%", v);
+        allocator.free(s);
+        s = replaced;
+    }
+
+    const programdata = std.process.getEnvVarOwned(allocator, "ProgramData") catch (std.process.getEnvVarOwned(allocator, "PROGRAMDATA") catch null);
+    defer if (programdata) |v| allocator.free(v);
+    if (programdata) |v| {
+        // Support both common spellings.
+        var replaced = try std.mem.replaceOwned(u8, allocator, s, "%ProgramData%", v);
+        allocator.free(s);
+        s = replaced;
+
+        replaced = try std.mem.replaceOwned(u8, allocator, s, "%PROGRAMDATA%", v);
         allocator.free(s);
         s = replaced;
     }

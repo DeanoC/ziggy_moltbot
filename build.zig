@@ -48,13 +48,20 @@ pub fn build(b: *std.Build) void {
     const android_targets = android.standardTargets(b, target);
     const build_android = android_targets.len > 0;
     const enable_ztracy = b.option(bool, "enable_ztracy", "Enable Tracy profile markers") orelse false;
+    const enable_ztracy_android = b.option(bool, "enable_ztracy_android", "Enable Tracy client on Android (opt-in)") orelse false;
     const enable_tracy_fibers = b.option(bool, "enable_tracy_fibers", "Enable Tracy fiber support") orelse false;
     const tracy_on_demand = b.option(bool, "tracy_on_demand", "Build Tracy with TRACY_ON_DEMAND") orelse false;
+    const tracy_callstack = b.option(u32, "tracy_callstack", "Tracy callstack depth (0=off)") orelse 0;
+    const enable_wasm_perf_markers = b.option(bool, "enable_wasm_perf_markers", "On WASM, emit JS performance marks/measures for profiler zones") orelse false;
     const app_version = readAppVersion(b);
+    const git_rev = readGitRev(b);
     const build_client = b.option(bool, "client", "Build native UI client") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
+    build_options.addOption([]const u8, "git_rev", git_rev);
     build_options.addOption(bool, "enable_ztracy", enable_ztracy);
+    build_options.addOption(bool, "enable_ztracy_android", enable_ztracy_android);
+    build_options.addOption(bool, "enable_wasm_perf_markers", enable_wasm_perf_markers);
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -73,9 +80,12 @@ pub fn build(b: *std.Build) void {
     // compiled with that option must have the import wired up (including app_module
     // used by tests).
     const ztracy_pkg = if (enable_ztracy) b.dependency("ztracy", .{
+        .target = target,
+        .optimize = optimize,
         .enable_ztracy = enable_ztracy,
         .enable_fibers = enable_tracy_fibers,
         .on_demand = tracy_on_demand,
+        .callstack = tracy_callstack,
     }) else null;
     if (enable_ztracy) {
         app_module.addImport("ztracy", ztracy_pkg.?.module("root"));
@@ -92,12 +102,22 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "websocket", .module = ws_native },
             },
         });
+        if (enable_ztracy) {
+            cli_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+        }
 
         const cli_exe = b.addExecutable(.{
             .name = "ziggystarclaw-cli",
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
+        if (enable_ztracy) {
+            cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+        }
 
         b.installArtifact(cli_exe);
 
@@ -226,8 +246,40 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_exe.root_module.linkSystemLibrary("advapi32", .{});
+        }
+        if (enable_ztracy) {
+            cli_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+            cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+        }
 
         b.installArtifact(cli_exe);
+
+        // Windows-only tray app (MVP): status + start/stop/restart + open logs.
+        if (target.result.os.tag == .windows) {
+            const tray_module = b.createModule(.{
+                .root_source_file = b.path("src/main_tray.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const tray_exe = b.addExecutable(.{
+                .name = "ziggystarclaw-tray",
+                .root_module = tray_module,
+            });
+            tray_exe.linkLibC();
+            tray_exe.subsystem = .Windows;
+            tray_exe.root_module.addOptions("build_options", build_options);
+            tray_exe.root_module.linkSystemLibrary("user32", .{});
+            tray_exe.root_module.linkSystemLibrary("shell32", .{});
+            tray_exe.root_module.linkSystemLibrary("gdi32", .{});
+            tray_exe.root_module.linkSystemLibrary("advapi32", .{});
+            tray_exe.root_module.addWin32ResourceFile(.{
+                .file = b.path("assets/icons/ziggystarclaw.rc"),
+            });
+            b.installArtifact(tray_exe);
+        }
 
         const run_cli_step = b.step("run-cli", "Run the CLI client");
         const run_cli_cmd = b.addRunArtifact(cli_exe);
@@ -254,6 +306,7 @@ pub fn build(b: *std.Build) void {
             "tests/image_cache_tests.zig",
             "tests/update_checker_tests.zig",
             "tests/theme_engine_tests.zig",
+            "tests/unified_config_programdata_tests.zig",
         };
 
         for (test_files) |test_path| {
@@ -392,7 +445,9 @@ pub fn build(b: *std.Build) void {
                 .embed_paths = null,
                 .preload_paths = null,
                 .shell_file_path = b.path("web/shell.html"),
-                .js_library_path = null,
+                // Optional: map profiler zones to Performance marks/measures so Chrome/Firefox traces
+                // show the same zone names as native Tracy.
+                .js_library_path = if (enable_wasm_perf_markers) b.path("web/zsc_perf_markers.js") else null,
                 .out_file_name = "ziggystarclaw-client.html",
                 .install_dir = .{ .custom = "web" },
             },
@@ -488,6 +543,21 @@ pub fn build(b: *std.Build) void {
             android_module.addImport("zgpu", zgpu_pkg.module("root"));
             const ws_android = b.dependency("websocket", .{ .target = android_target, .optimize = optimize }).module("websocket");
             android_module.addImport("websocket", ws_android);
+
+            if (enable_ztracy and enable_ztracy_android) {
+                const ztracy_android = b.dependency("ztracy", .{
+                    .target = android_target,
+                    .optimize = optimize,
+                    .enable_ztracy = enable_ztracy,
+                    .enable_fibers = enable_tracy_fibers,
+                    .on_demand = tracy_on_demand,
+                    .callstack = tracy_callstack,
+                });
+                android_module.addImport("ztracy", ztracy_android.module("root"));
+                android_lib.linkLibrary(ztracy_android.artifact("tracy"));
+                // Tracy client is C++; ensure libc++ is available when linking.
+                android_lib.root_module.link_libcpp = true;
+            }
 
             const sdl3_lib_dir = sdl3_aar_extracted.path(b, "prefab/modules/SDL3-shared/libs/android.arm64-v8a");
             android_lib.root_module.addLibraryPath(sdl3_lib_dir);
@@ -641,4 +711,31 @@ fn readAppVersion(b: *std.Build) []const u8 {
     const after_start = slice[quote_start + 1 ..];
     const quote_end = std.mem.indexOfScalar(u8, after_start, '"') orelse return "0.0.0";
     return after_start[0..quote_end];
+}
+
+fn readGitRev(b: *std.Build) []const u8 {
+    const res = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "git", "rev-parse", "--short", "HEAD" },
+    }) catch return "unknown";
+    defer b.allocator.free(res.stdout);
+    defer b.allocator.free(res.stderr);
+
+    const rev_trim = std.mem.trim(u8, res.stdout, " \t\r\n");
+    if (rev_trim.len == 0) return "unknown";
+
+    const base = b.allocator.dupe(u8, rev_trim) catch return "unknown";
+
+    // Mark dirty working tree (best effort). This helps avoid “wait, am I running the latest exe?”
+    const res2 = std.process.Child.run(.{
+        .allocator = b.allocator,
+        .argv = &.{ "git", "status", "--porcelain" },
+    }) catch return base;
+    defer b.allocator.free(res2.stdout);
+    defer b.allocator.free(res2.stderr);
+
+    const dirty = std.mem.trim(u8, res2.stdout, " \t\r\n");
+    if (dirty.len == 0) return base;
+
+    return std.fmt.allocPrint(b.allocator, "{s}-dirty", .{base}) catch base;
 }

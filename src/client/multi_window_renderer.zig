@@ -110,7 +110,7 @@ pub const WindowSwapchain = struct {
     }
 
     pub fn render(self: *WindowSwapchain, shared: *Shared, list: *command_list.CommandList) void {
-        const zone = profiler.zone("multi_renderer.render_window");
+        const zone = profiler.zone(@src(), "multi_renderer.render_window");
         defer zone.end();
 
         const gctx = shared.gctx;

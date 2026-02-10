@@ -21,6 +21,7 @@ const websocket_client = @import("openclaw_transport.zig").websocket;
 const update_checker = @import("client/update_checker.zig");
 const build_options = @import("build_options");
 const logger = @import("utils/logger.zig");
+const profiler = @import("utils/profiler.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const chat_proto = @import("protocol/chat.zig");
@@ -31,6 +32,7 @@ const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
+const android_node_service = @import("node/android_node_service.zig");
 
 const webgpu_renderer = @import("client/renderer.zig");
 const font_system = @import("ui/font_system.zig");
@@ -206,6 +208,9 @@ const ConnectJob = struct {
 };
 
 fn connectThreadMain(job: *ConnectJob) void {
+    profiler.setThreadName("ws.connect");
+    const zone = profiler.zone(@src(), "ws.connect");
+    defer zone.end();
     const result = job.ws_client.connect();
     if (result) |_| {
         job.status.store(@intFromEnum(ConnectJob.Status.success), .monotonic);
@@ -216,28 +221,33 @@ fn connectThreadMain(job: *ConnectJob) void {
 }
 
 fn readLoopMain(loop: *ReadLoop) void {
+    profiler.setThreadName("ws.read");
     loop.running.store(true, .monotonic);
     defer loop.running.store(false, .monotonic);
     loop.ws_client.setReadTimeout(250);
     while (!loop.stop.load(.monotonic)) {
-        const payload = loop.ws_client.receive() catch |err| {
-            if (err == error.NotConnected or err == error.Closed) {
-                return;
-            }
-            if (err == error.ReadFailed) {
-                const now_ms = std.time.milliTimestamp();
-                const last_ms = loop.last_receive_ms;
-                const delta = if (last_ms > 0) now_ms - last_ms else -1;
-                logger.warn(
-                    "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
-                    .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
-                );
+        const payload = blk: {
+            const zone = profiler.zone(@src(), "ws.receive");
+            defer zone.end();
+            break :blk loop.ws_client.receive() catch |err| {
+                if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.ReadFailed) {
+                    const now_ms = std.time.milliTimestamp();
+                    const last_ms = loop.last_receive_ms;
+                    const delta = if (last_ms > 0) now_ms - last_ms else -1;
+                    logger.warn(
+                        "WebSocket receive failed (thread) connected={} last_payload_len={} last_payload_age_ms={d}",
+                        .{ loop.ws_client.is_connected, loop.last_payload_len, delta },
+                    );
+                    loop.ws_client.disconnect();
+                    return;
+                }
+                logger.err("WebSocket receive failed (thread): {}", .{err});
                 loop.ws_client.disconnect();
                 return;
-            }
-            logger.err("WebSocket receive failed (thread): {}", .{err});
-            loop.ws_client.disconnect();
-            return;
+            };
         } orelse continue;
 
         loop.last_receive_ms = std.time.milliTimestamp();
@@ -246,10 +256,14 @@ fn readLoopMain(loop: *ReadLoop) void {
             loop.allocator.free(payload);
             return;
         }
-        loop.queue.push(loop.allocator, payload) catch {
-            loop.allocator.free(payload);
-            return;
-        };
+        {
+            const zone = profiler.zone(@src(), "ws.enqueue");
+            defer zone.end();
+            loop.queue.push(loop.allocator, payload) catch {
+                loop.allocator.free(payload);
+                return;
+            };
+        }
     }
 }
 
@@ -542,14 +556,23 @@ fn sendExecApprovalResolveRequest(
         allocator.free(request.id);
         return;
     };
-    errdefer allocator.free(target_copy);
+    const decision_copy = allocator.dupe(u8, decision) catch {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        return;
+    };
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send exec.approval.resolve: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        allocator.free(target_copy);
+        allocator.free(decision_copy);
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingApprovalResolveRequest(request.id, target_copy);
+    ctx.setPendingApprovalResolveRequest(request.id, target_copy, decision_copy);
     ctx.clearOperatorNotice();
 }
 
@@ -797,6 +820,8 @@ fn run() !void {
 
     const allocator = gpa.allocator();
 
+    profiler.setThreadName("main");
+
     try initLogging(allocator);
     defer logger.deinit();
 
@@ -851,6 +876,32 @@ fn run() !void {
         cfg.insecure_tls,
         cfg.connect_host_override,
     );
+
+    // Optional: run as a node host alongside the UI client.
+    // This is primarily for Android, where the companion app is expected to be a node.
+    var node_host = android_node_service.AndroidNodeHost.init(allocator);
+    defer node_host.stop();
+    if (cfg.enable_node_host and cfg.server_url.len > 0) {
+        const token = cfg.node_host_token orelse cfg.token;
+        if (token.len == 0) {
+            logger.warn("node-host enabled but no token configured (node_host_token/token).", .{});
+        } else {
+            const started = try node_host.start(.{
+                .ws_url = cfg.server_url,
+                .auth_token = token,
+                .insecure_tls = cfg.insecure_tls,
+                .connect_host_override = cfg.connect_host_override,
+                .display_name = cfg.node_host_display_name,
+                .device_identity_path = cfg.node_host_device_identity_path orelse "ziggystarclaw_node_device.json",
+                .exec_approvals_path = cfg.node_host_exec_approvals_path orelse "exec-approvals.json",
+                .heartbeat_interval_ms = cfg.node_host_heartbeat_interval_ms orelse 10_000,
+            });
+            if (started) {
+                logger.info("node-host started (Android)", .{});
+            }
+        }
+    }
+
     var connect_job = ConnectJob{
         .allocator = allocator,
         .ws_client = &ws_client,

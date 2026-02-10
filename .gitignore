@@ -10,8 +10,10 @@ moltbot_device.json
 .pyc
 __pycache__/
 assets/images/
+profiles/
 
 # local debug / identity artifacts
+ziggystarclaw_agents.json
 ziggystarclaw_config.json
 ziggystarclaw_workspace.json
 ziggystarclaw_device.json
@@ -21,3 +23,7 @@ scripts/debug_gateway.py
 
 # runtime theme packs (created next to cwd when applying/installing packs)
 themes/
+
+# local git worktrees / helper scripts
+worktrees/
+workflow/

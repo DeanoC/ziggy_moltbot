@@ -63,6 +63,7 @@ pub const ControlPanel = struct {
 
 pub const ControlTab = enum {
     Agents,
+    Inbox,
     Projects,
     Sources,
     ArtifactWorkspace,
@@ -376,6 +377,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
             snap.control = .{
                 .active_tab = try allocator.dupe(u8, switch (ctrl.active_tab) {
                     .Agents => "Agents",
+                    .Inbox => "Inbox",
                     .Projects => "Projects",
                     .Sources => "Sources",
                     .ArtifactWorkspace => "Artifact Workspace",
@@ -497,6 +499,7 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
 
 fn parseControlTab(label: []const u8) ControlTab {
     if (std.mem.eql(u8, label, "Agents")) return .Agents;
+    if (std.mem.eql(u8, label, "Inbox")) return .Inbox;
     if (std.mem.eql(u8, label, "Projects")) return .Projects;
     if (std.mem.eql(u8, label, "Sources")) return .Sources;
     if (std.mem.eql(u8, label, "Artifact Workspace")) return .ArtifactWorkspace;

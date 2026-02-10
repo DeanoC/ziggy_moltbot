@@ -6,7 +6,7 @@ const profiler = @import("../../utils/profiler.zig");
 var global_list: ?command_list.CommandList = null;
 
 pub fn beginFrame(allocator: std.mem.Allocator) *command_list.CommandList {
-    const zone = profiler.zone("ui.commands.beginFrame");
+    const zone = profiler.zone(@src(), "ui.commands.beginFrame");
     defer zone.end();
     if (global_list == null) {
         global_list = command_list.CommandList.init(allocator);
@@ -18,7 +18,7 @@ pub fn beginFrame(allocator: std.mem.Allocator) *command_list.CommandList {
 }
 
 pub fn endFrame() void {
-    const zone = profiler.zone("ui.commands.endFrame");
+    const zone = profiler.zone(@src(), "ui.commands.endFrame");
     defer zone.end();
     draw_context.clearGlobalCommandList();
 }

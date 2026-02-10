@@ -18,6 +18,17 @@ pub const Config = struct {
     ui_theme_pack_recent: ?[]const []const u8 = null,
     ui_profile: ?[]const u8 = null,
 
+    // Optional: run a local node host alongside the UI client (Android primarily).
+    //
+    // Token design: for node-mode, WS Authorization + connect.auth.token must match.
+    // If node_host_token is not set, we fall back to `token`.
+    enable_node_host: bool = false,
+    node_host_token: ?[]const u8 = null,
+    node_host_display_name: ?[]const u8 = null,
+    node_host_device_identity_path: ?[]const u8 = null,
+    node_host_exec_approvals_path: ?[]const u8 = null,
+    node_host_heartbeat_interval_ms: ?i64 = null,
+
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.server_url);
         allocator.free(self.token);
@@ -44,6 +55,16 @@ pub const Config = struct {
             allocator.free(list);
         }
         if (self.ui_profile) |value| {
+        if (self.node_host_token) |value| {
+            allocator.free(value);
+        }
+        if (self.node_host_display_name) |value| {
+            allocator.free(value);
+        }
+        if (self.node_host_device_identity_path) |value| {
+            allocator.free(value);
+        }
+        if (self.node_host_exec_approvals_path) |value| {
             allocator.free(value);
         }
     }
@@ -82,6 +103,24 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .ui_watch_theme_pack = false,
         .ui_theme_pack_recent = null,
         .ui_profile = null,
+
+        .enable_node_host = false,
+        .node_host_token = null,
+        .node_host_display_name = null,
+        .node_host_device_identity_path = null,
+        .node_host_exec_approvals_path = null,
+        .node_host_heartbeat_interval_ms = null,
+        .ui_theme_pack = null,
+        .ui_watch_theme_pack = false,
+        .ui_theme_pack_recent = null,
+        .ui_profile = null,
+
+        .enable_node_host = false,
+        .node_host_token = null,
+        .node_host_display_name = null,
+        .node_host_device_identity_path = null,
+        .node_host_exec_approvals_path = null,
+        .node_host_heartbeat_interval_ms = null,
     };
 }
 
@@ -146,6 +185,25 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
             try allocator.dupe(u8, value)
         else
             null,
+
+        .enable_node_host = parsed.value.enable_node_host,
+        .node_host_token = if (parsed.value.node_host_token) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .node_host_display_name = if (parsed.value.node_host_display_name) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .node_host_device_identity_path = if (parsed.value.node_host_device_identity_path) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .node_host_exec_approvals_path = if (parsed.value.node_host_exec_approvals_path) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .node_host_heartbeat_interval_ms = parsed.value.node_host_heartbeat_interval_ms,
     };
 }
 

@@ -49,6 +49,24 @@ pub fn sleepMs(ms: u64) void {
 }
 
 // -----------------------------------------------------------------------------
+// Process lifecycle / shutdown
+// -----------------------------------------------------------------------------
+
+// NOTE: node-mode runs as a long-lived loop. Some hosts (Windows SCM service)
+// need a cooperative shutdown signal.
+var g_stop_requested = std.atomic.Value(bool).init(false);
+
+/// Request a cooperative stop for node-mode (best-effort).
+pub fn requestStop() void {
+    g_stop_requested.store(true, .seq_cst);
+}
+
+/// Returns true if a cooperative stop has been requested.
+pub fn stopRequested() bool {
+    return g_stop_requested.load(.seq_cst);
+}
+
+// -----------------------------------------------------------------------------
 // Storage paths (defaults / templates)
 // -----------------------------------------------------------------------------
 
@@ -80,6 +98,30 @@ pub fn defaultNodeDeviceIdentityPathTemplate() []const u8 {
 pub fn defaultExecApprovalsPathTemplate() []const u8 {
     return if (builtin.target.os.tag == .windows)
         "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json"
+    else
+        "~/.config/ziggystarclaw/exec-approvals.json";
+}
+
+/// System-wide storage templates (primarily for always-on Windows service mode).
+///
+/// NOTE: unified_config expands %ProgramData% at load time.
+pub fn defaultSystemNodeStorageDirTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw"
+    else
+        "~/.config/ziggystarclaw";
+}
+
+pub fn defaultSystemNodeDeviceIdentityPathTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw\\node-device.json"
+    else
+        "~/.config/ziggystarclaw/node-device.json";
+}
+
+pub fn defaultSystemExecApprovalsPathTemplate() []const u8 {
+    return if (builtin.target.os.tag == .windows)
+        "%ProgramData%\\ZiggyStarClaw\\exec-approvals.json"
     else
         "~/.config/ziggystarclaw/exec-approvals.json";
 }

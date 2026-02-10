@@ -6,6 +6,8 @@ const agents_panel = @import("agents_panel.zig");
 const sessions_panel = @import("sessions_panel.zig");
 const settings_panel = @import("settings_panel.zig");
 const operator_view = @import("../operator_view.zig");
+const approvals_inbox_view = @import("../approvals_inbox_view.zig");
+const inbox_panel = @import("inbox_panel.zig");
 const workspace = @import("../workspace.zig");
 const draw_context = @import("../draw_context.zig");
 const theme = @import("../theme.zig");
@@ -45,6 +47,15 @@ pub const ControlPanelAction = struct {
     download_update: bool = false,
     open_download: bool = false,
     install_update: bool = false,
+
+    // Windows node runner helpers (SCM service)
+    node_service_install_onlogon: bool = false,
+    node_service_start: bool = false,
+    node_service_stop: bool = false,
+    node_service_status: bool = false,
+    node_service_uninstall: bool = false,
+    open_node_logs: bool = false,
+
     refresh_nodes: bool = false,
     select_node: ?[]u8 = null,
     invoke_node: ?operator_view.NodeInvokeAction = null,
@@ -64,6 +75,9 @@ const Tab = struct {
 
 const tabs = [_]Tab{
     .{ .label = "Agents", .kind = .Agents },
+    .{ .label = "Operator", .kind = .Operator },
+    .{ .label = "Approvals", .kind = .ApprovalsInbox },
+    .{ .label = "Inbox", .kind = .Inbox },
     .{ .label = "Settings", .kind = .Settings },
 };
 
@@ -90,7 +104,7 @@ pub fn draw(
     surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
-    if (panel.active_tab != .Agents and panel.active_tab != .Settings) {
+    if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .ApprovalsInbox and panel.active_tab != .Inbox and panel.active_tab != .Settings) {
         panel.active_tab = .Agents;
     }
     const tab_height = drawTabs(&dc, panel_rect, queue, &panel.active_tab);
@@ -113,6 +127,24 @@ pub fn draw(
             action.delete_session = agents_action.delete_session;
             action.add_agent = agents_action.add_agent;
             action.remove_agent_id = agents_action.remove_agent_id;
+        },
+        .Operator => {
+            const op_action = operator_view.draw(allocator, ctx, is_connected, content_rect);
+            action.refresh_nodes = op_action.refresh_nodes;
+            action.select_node = op_action.select_node;
+            action.invoke_node = op_action.invoke_node;
+            action.describe_node = op_action.describe_node;
+            action.resolve_approval = op_action.resolve_approval;
+            action.clear_node_describe = op_action.clear_node_describe;
+            action.clear_node_result = op_action.clear_node_result;
+            action.clear_operator_notice = op_action.clear_operator_notice;
+        },
+        .ApprovalsInbox => {
+            const approvals_action = approvals_inbox_view.draw(allocator, ctx, content_rect);
+            action.resolve_approval = approvals_action.resolve_approval;
+        },
+        .Inbox => {
+            _ = inbox_panel.draw(allocator, ctx, panel, content_rect);
         },
         .Settings => {
             const settings_action = settings_panel.draw(
@@ -140,6 +172,13 @@ pub fn draw(
             action.download_update = settings_action.download_update;
             action.open_download = settings_action.open_download;
             action.install_update = settings_action.install_update;
+
+            action.node_service_install_onlogon = settings_action.node_service_install_onlogon;
+            action.node_service_start = settings_action.node_service_start;
+            action.node_service_stop = settings_action.node_service_stop;
+            action.node_service_status = settings_action.node_service_status;
+            action.node_service_uninstall = settings_action.node_service_uninstall;
+            action.open_node_logs = settings_action.open_node_logs;
         },
         else => unreachable,
     }
