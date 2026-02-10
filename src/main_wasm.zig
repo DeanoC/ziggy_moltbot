@@ -18,6 +18,7 @@ const clipboard = @import("ui/clipboard.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
+const session_kind = @import("client/session_kind.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -877,9 +878,58 @@ fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u
     return agent_id;
 }
 
-fn isNotificationSession(session: types.Session) bool {
-    const kind = session.kind orelse return false;
-    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+fn isAutomationSession(session: types.Session) bool {
+    return session_kind.isAutomationSession(session);
+}
+
+fn findBestConversationSessionKeyForAgent(
+    sessions: []const types.Session,
+    agent_id: []const u8,
+) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const parts = session_keys.parse(session.key) orelse continue;
+        if (!std.mem.eql(u8, parts.agent_id, agent_id)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn ensureSafeCurrentSession(alloc: std.mem.Allocator, ctx_ptr: *client_state.ClientContext) bool {
+    if (ctx_ptr.current_session) |current| {
+        for (ctx_ptr.sessions.items) |session| {
+            if (std.mem.eql(u8, session.key, current)) return false;
+        }
+        alloc.free(current);
+        ctx_ptr.current_session = null;
+    }
+
+    const best = findBestConversationSessionKeyForAgent(ctx_ptr.sessions.items, "main") orelse
+        findBestConversationSessionKey(ctx_ptr.sessions.items) orelse
+        return false;
+
+    ctx_ptr.setCurrentSession(best) catch return false;
+    return true;
 }
 
 fn syncRegistryDefaults(
@@ -893,7 +943,7 @@ fn syncRegistryDefaults(
         if (agent.default_session_key) |key| {
             for (sessions) |session| {
                 if (!std.mem.eql(u8, session.key, key)) continue;
-                if (isNotificationSession(session)) break;
+                if (isAutomationSession(session)) break;
                 const parts = session_keys.parse(session.key) orelse break;
                 if (std.mem.eql(u8, parts.agent_id, agent.id)) {
                     default_valid = true;
@@ -906,7 +956,7 @@ fn syncRegistryDefaults(
             var best_key: ?[]const u8 = null;
             var best_updated: i64 = -1;
             for (sessions) |session| {
-                if (isNotificationSession(session)) continue;
+                if (isAutomationSession(session)) continue;
                 const parts = session_keys.parse(session.key) orelse continue;
                 if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
                 const updated = session.updated_at orelse 0;
@@ -1244,9 +1294,11 @@ fn frame() callconv(.c) void {
     }
 
     if (ctx.sessions_updated) {
-        if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+        const defaults_changed = syncRegistryDefaults(allocator, &agents, ctx.sessions.items);
+        if (defaults_changed) {
             saveAgentRegistryToStorage();
         }
+        _ = ensureSafeCurrentSession(allocator, &ctx);
         ctx.clearSessionsUpdated();
     } else if (ws_connected and use_device_identity and !connect_sent) {
         const now_ms = std.time.milliTimestamp();

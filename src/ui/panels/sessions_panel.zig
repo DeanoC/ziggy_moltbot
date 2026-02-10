@@ -1,6 +1,7 @@
 const std = @import("std");
 const state = @import("../../client/state.zig");
 const types = @import("../../protocol/types.zig");
+const session_kind = @import("../../client/session_kind.zig");
 const components = @import("../components/components.zig");
 const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
@@ -236,14 +237,29 @@ fn drawSessionRow(
     const text_pos = .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs };
     dc.drawText(label, text_pos, .{ .color = t.colors.text_primary });
 
+    var badge_right = rect.max[0] - t.spacing.sm;
+
     if (selected) {
         const badge_label = "active";
         const badge_w = badgeWidth(dc, badge_label, t);
         const badge_rect = draw_context.Rect.fromMinSize(
-            .{ rect.max[0] - badge_w - t.spacing.sm, rect.min[1] + t.spacing.xs * 0.5 },
+            .{ badge_right - badge_w, rect.min[1] + t.spacing.xs * 0.5 },
             .{ badge_w, rect.size()[1] - t.spacing.xs },
         );
         drawBadge(dc, badge_rect, badge_label, t.colors.success, t);
+        badge_right = badge_rect.min[0] - t.spacing.xs;
+    }
+
+    if (session_kind.isAutomationSession(session)) {
+        const badge_label = "automation";
+        const badge_w = badgeWidth(dc, badge_label, t);
+        if (badge_right - badge_w > rect.min[0] + t.spacing.sm) {
+            const badge_rect = draw_context.Rect.fromMinSize(
+                .{ badge_right - badge_w, rect.min[1] + t.spacing.xs * 0.5 },
+                .{ badge_w, rect.size()[1] - t.spacing.xs },
+            );
+            drawBadge(dc, badge_rect, badge_label, t.colors.warning, t);
+        }
     }
 
     return clicked;

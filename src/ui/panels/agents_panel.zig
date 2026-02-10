@@ -2,6 +2,7 @@ const std = @import("std");
 const state = @import("../../client/state.zig");
 const agent_registry = @import("../../client/agent_registry.zig");
 const session_keys = @import("../../client/session_keys.zig");
+const session_kind = @import("../../client/session_kind.zig");
 const types = @import("../../protocol/types.zig");
 const workspace = @import("../workspace.zig");
 const draw_context = @import("../draw_context.zig");
@@ -506,11 +507,19 @@ fn drawAgentSessionRow(
     var time_buf: [32]u8 = undefined;
     const time_label = relativeTimeLabel(now_ms, session.updated_at, &time_buf);
     dc.drawText(time_label, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
+
+    var meta_x = inner_rect.min[0] + dc.measureText(time_label, 0.0)[0] + t.spacing.sm;
     const is_default = agent.default_session_key != null and std.mem.eql(u8, agent.default_session_key.?, session.key);
     if (is_default) {
-        const offset = dc.measureText(time_label, 0.0)[0] + t.spacing.sm;
-        dc.drawText("Default", .{ inner_rect.min[0] + offset, cursor_y }, .{ .color = t.colors.text_secondary });
+        const default_label = "Default";
+        dc.drawText(default_label, .{ meta_x, cursor_y }, .{ .color = t.colors.text_secondary });
+        meta_x += dc.measureText(default_label, 0.0)[0] + t.spacing.sm;
     }
+
+    if (session_kind.isAutomationSession(session)) {
+        dc.drawText("Automation", .{ meta_x, cursor_y }, .{ .color = t.colors.warning });
+    }
+
     cursor_y += line_height + t.spacing.xs;
 
     dc.drawText(session.key, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
