@@ -1,12 +1,16 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
+const scm_service = @import("windows/scm_service.zig");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
 // NOTE: This is intentionally minimal and Windows-only.
-// - Uses Task Scheduler helper task "ZiggyStarClaw Node" (same default as ziggystarclaw-cli node service ...)
-// - Spawns ziggystarclaw-cli where available; falls back to schtasks.
+// - Controls the ZiggyStarClaw node runner on Windows.
+//   Modes are mutually exclusive:
+//   - Always-on SCM service (reliable, limited desktop access)
+//   - User session runner (interactive desktop access)
+// - Spawns ziggystarclaw-cli where available; falls back to SCM APIs / Scheduled Task / control pipe.
 // - Logs basic tray actions to %APPDATA%\\ZiggyStarClaw\\tray.log for troubleshooting.
 
 pub fn main() !void {
@@ -38,6 +42,7 @@ const NODE_CONTROL_PIPE: []const u8 = "\\\\.\\pipe\\ZiggyStarClaw.NodeControl";
 const IDM_COPY_VERSION: u16 = 998;
 const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
+const IDM_MODE: u16 = 1006;
 const IDM_START: u16 = 1001;
 const IDM_STOP: u16 = 1002;
 const IDM_RESTART: u16 = 1003;
@@ -50,6 +55,14 @@ const ServiceState = enum {
     not_installed,
     running,
     stopped,
+};
+
+const RunnerMode = enum {
+    unknown,
+    not_installed,
+    service,
+    session,
+    conflict,
 };
 
 var g_allocator: std.mem.Allocator = undefined;
@@ -179,10 +192,13 @@ fn showContextMenu() void {
         .unknown => "Status: Unknown",
     };
 
+    const mode_label = runnerModeLabel(queryRunnerMode(g_allocator));
+
     const version_label = std.fmt.comptimePrint("ZSC Tray {s}+{s}", .{ build_options.app_version, build_options.git_rev });
     appendMenuItem(hMenu, IDM_VERSION, version_label, true);
     appendMenuItem(hMenu, IDM_COPY_VERSION, "Copy Version", false);
     appendMenuItem(hMenu, IDM_STATUS, status_label, true);
+    appendMenuItem(hMenu, IDM_MODE, mode_label, true);
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
 
     // Be permissive: if status is unknown (common when task query is restricted/localized),
@@ -318,63 +334,173 @@ fn handleCommand(cmd_id: u16) void {
 const Action = enum { start, stop, status };
 
 fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
-    // Prefer the supervisor control pipe if available.
+    const mode = queryRunnerMode(allocator);
+    const name: ?[]const u8 = "ZiggyStarClaw Node";
+
+    if (mode == .conflict) return error.DuplicateRunners;
+
+    if (mode == .service) {
+        switch (action) {
+            .start => scm_service.startService(allocator, name) catch |err| switch (err) {
+                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                else => return error.CommandFailed,
+            },
+            .stop => scm_service.stopService(allocator, name) catch |err| switch (err) {
+                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                else => return error.CommandFailed,
+            },
+            .status => return,
+        }
+        return;
+    }
+
+    if (mode == .session) {
+        // Prefer the supervisor control pipe when available (it can stop/start the node without
+        // killing the wrapper process).
+        if (try tryRunPipeServiceAction(allocator, action)) |ok| {
+            if (ok) return;
+        }
+
+        // Otherwise control the Scheduled Task instance directly.
+        if (try tryRunScheduledTaskAction(allocator, action)) |ok| {
+            if (ok) return;
+        }
+
+        // Final fallback: invoke ziggystarclaw-cli if present.
+        if (try tryRunCliServiceAction(allocator, action)) |ok| {
+            if (ok) return;
+        }
+
+        return error.NotInstalled;
+    }
+
+    // Unknown/not installed: best-effort chain.
+    const q = scm_service.queryService(allocator, name) catch null;
+    if (q) |qq| {
+        if (qq.state != .not_installed) {
+            switch (action) {
+                .start => scm_service.startService(allocator, name) catch |err| switch (err) {
+                    scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                    else => return error.CommandFailed,
+                },
+                .stop => scm_service.stopService(allocator, name) catch |err| switch (err) {
+                    scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                    else => return error.CommandFailed,
+                },
+                .status => return,
+            }
+            return;
+        }
+    }
+
     if (try tryRunPipeServiceAction(allocator, action)) |ok| {
         if (ok) return;
     }
 
-    // Next: invoke ziggystarclaw-cli if present.
+    if (try tryRunScheduledTaskAction(allocator, action)) |ok| {
+        if (ok) return;
+    }
+
     if (try tryRunCliServiceAction(allocator, action)) |ok| {
         if (ok) return;
     }
 
-    // Fallback to schtasks.
-    const task_name = "ZiggyStarClaw Node";
-
-    const res = switch (action) {
-        .start => try runCapture(allocator, &.{ "schtasks", "/Run", "/TN", task_name }),
-        .stop => try runCapture(allocator, &.{ "schtasks", "/End", "/TN", task_name }),
-        .status => try runCapture(allocator, &.{ "schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST" }),
-    };
-    defer res.deinit(allocator);
-
-    if (res.exit_code != 0) {
-        if (isAccessDenied(res.stdout) or isAccessDenied(res.stderr)) return error.AccessDenied;
-        return error.CommandFailed;
-    }
+    return error.NotInstalled;
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
-    // Prefer the supervisor control pipe if available (works without Task Scheduler permissions).
-    if (try queryServiceStatePipe(allocator)) |st| return st;
+    const mode = queryRunnerMode(allocator);
+    const name: ?[]const u8 = "ZiggyStarClaw Node";
 
-    // NOTE: Avoid parsing `schtasks /Query` stdout for status.
-    // That output is localized (non-English Windows), which would keep the tray
-    // state stuck at `.unknown` and disable Start/Stop/Restart.
-    if (try queryServiceStatePowerShell(allocator)) |st| return st;
+    if (mode == .conflict) return .unknown;
 
-    // Fallback: schtasks (best-effort; may be localized).
-    const task_name = "ZiggyStarClaw Node";
-    const argv = &.{ "schtasks", "/Query", "/TN", task_name, "/FO", "LIST" };
-    const res = try runCapture(allocator, argv);
-    defer res.deinit(allocator);
+    if (mode == .service) {
+        const q = scm_service.queryService(allocator, name) catch return .unknown;
+        return switch (q.state) {
+            .running => .running,
+            .stopped => .stopped,
+            .not_installed => .not_installed,
+            else => .unknown,
+        };
+    }
 
-    if (res.exit_code != 0) {
-        if (looksLikeNotInstalled(res.stdout) or looksLikeNotInstalled(res.stderr)) return .not_installed;
+    if (mode == .session) {
+        if (try queryServiceStatePipe(allocator)) |st| return st;
+        if (try queryServiceStatePowerShell(allocator)) |ts| {
+            return switch (ts) {
+                .not_installed => .not_installed,
+                .running => .running,
+                .stopped => .stopped,
+                else => .unknown,
+            };
+        }
         return .unknown;
     }
 
-    if (res.stdout.len != 0) {
-        // Best-effort parse (English-only).
-        if (std.mem.indexOf(u8, res.stdout, "Status:") != null) {
-            if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
-            return .stopped;
+    // Unknown/not installed: best-effort probe.
+    const q = scm_service.queryService(allocator, name) catch null;
+    if (q) |qq| {
+        switch (qq.state) {
+            .not_installed => {},
+            .running => return .running,
+            .stopped => return .stopped,
+            else => return .unknown,
         }
-        if (std.mem.indexOf(u8, res.stdout, "Running") != null) return .running;
-        if (std.mem.indexOf(u8, res.stdout, "Ready") != null) return .stopped;
+    }
+
+    if (try queryServiceStatePipe(allocator)) |st| return st;
+
+    if (try queryServiceStatePowerShell(allocator)) |ts| {
+        return switch (ts) {
+            .not_installed => .not_installed,
+            .running => .running,
+            .stopped => .stopped,
+            else => .unknown,
+        };
     }
 
     return .unknown;
+}
+
+fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
+    const name: ?[]const u8 = "ZiggyStarClaw Node";
+
+    const st = scm_service.queryStartType(allocator, name) catch |err| switch (err) {
+        scm_service.ServiceError.NotInstalled => null,
+        else => return .unknown,
+    };
+    const has_service = (st != null);
+
+    // Session mode is indicated by either:
+    // - the Scheduled Task being present (install-time artifact)
+    // - the supervisor control pipe responding (runtime artifact)
+    const task_state = queryServiceStatePowerShell(allocator) catch null;
+    const has_task = if (task_state) |ts| ts != .not_installed else false;
+
+    const has_pipe = (queryServiceStatePipe(allocator) catch null) != null;
+
+    const has_session = has_task or has_pipe;
+
+    if (has_service and has_session) return .conflict;
+    if (has_service) return .service;
+    if (has_session) return .session;
+
+    if (task_state) |ts| {
+        // PowerShell was available, and it confirmed the task is missing.
+        if (ts == .not_installed) return .not_installed;
+    }
+
+    return .unknown;
+}
+
+fn runnerModeLabel(mode: RunnerMode) []const u8 {
+    return switch (mode) {
+        .unknown => "Mode: Unknown",
+        .not_installed => "Mode: Not installed",
+        .service => "Mode: Always-on service (reliable, limited desktop access)",
+        .session => "Mode: User session runner (interactive desktop access)",
+        .conflict => "Mode: ERROR (both enabled) — run: ziggystarclaw-cli node runner install --mode service|session",
+    };
 }
 
 fn queryServiceStatePowerShell(allocator: std.mem.Allocator) !?ServiceState {
@@ -469,6 +595,29 @@ fn tryRunPipeServiceAction(allocator: std.mem.Allocator, action: Action) !?bool 
     return std.mem.startsWith(u8, s, "ok");
 }
 
+fn tryRunScheduledTaskAction(allocator: std.mem.Allocator, action: Action) !?bool {
+    const task_name = "ZiggyStarClaw Node";
+
+    const argv: []const []const u8 = switch (action) {
+        .start => &.{ "schtasks", "/Run", "/TN", task_name },
+        .stop => &.{ "schtasks", "/End", "/TN", task_name },
+        .status => return true,
+    };
+
+    const res = runCapture(allocator, argv) catch return null;
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return true;
+
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return null;
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return error.AccessDenied;
+
+    if (action == .start and (looksLikeAlreadyRunning(res.stderr) or looksLikeAlreadyRunning(res.stdout))) return true;
+    if (action == .stop and (looksLikeNotRunning(res.stderr) or looksLikeNotRunning(res.stdout))) return true;
+
+    return false;
+}
+
 fn tryRunCliServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {
     // Return null if CLI not found.
     const exe_dir = try selfExeDir(allocator);
@@ -486,7 +635,7 @@ fn tryRunCliServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {
                 .stop => "stop",
                 .status => "status",
             };
-            const argv = &.{ full, "node", "service", verb };
+            const argv = &.{ full, "node", "runner", verb };
             const res = try runCapture(allocator, argv);
             defer res.deinit(allocator);
             return res.exit_code == 0;
@@ -499,7 +648,7 @@ fn tryRunCliServiceAction(allocator: std.mem.Allocator, action: Action) !?bool {
         .stop => "stop",
         .status => "status",
     };
-    const argv = &.{ "ziggystarclaw-cli", "node", "service", verb };
+    const argv = &.{ "ziggystarclaw-cli", "node", "runner", verb };
     const res = runCapture(allocator, argv) catch return null;
     defer res.deinit(allocator);
     return res.exit_code == 0;
@@ -771,8 +920,22 @@ fn looksLikeNotInstalled(buf: []const u8) bool {
         std.mem.indexOf(u8, buf, "ERROR: The system cannot find") != null;
 }
 
+fn looksLikeAlreadyRunning(buf: []const u8) bool {
+    return std.mem.indexOf(u8, buf, "currently running") != null or
+        std.mem.indexOf(u8, buf, "already running") != null;
+}
+
+fn looksLikeNotRunning(buf: []const u8) bool {
+    return std.mem.indexOf(u8, buf, "not running") != null or
+        std.mem.indexOf(u8, buf, "is not running") != null;
+}
+
 fn showError(allocator: std.mem.Allocator, title: []const u8, err: anyerror) void {
-    const msg = std.fmt.allocPrint(allocator, "{s}\n\nError: {s}\n\nTip: If this is an Access Denied error, try running as Administrator or reinstall the node service using: ziggystarclaw-cli node service install", .{ title, @errorName(err) }) catch return;
+    const msg = std.fmt.allocPrint(
+        allocator,
+        "{s}\n\nError: {s}\n\nTip: If this is an Access Denied error, try running as Administrator. To switch runner modes: ziggystarclaw-cli node runner install --mode service|session",
+        .{ title, @errorName(err) },
+    ) catch return;
     defer allocator.free(msg);
 
     const wtitle = utf16Z(allocator, "ZiggyStarClaw") catch return;

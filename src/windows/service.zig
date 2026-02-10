@@ -5,66 +5,82 @@ pub const ServiceError = error{
     Unsupported,
     InvalidArguments,
     AccessDenied,
+    NotInstalled,
     ExecFailed,
-};
+} || std.mem.Allocator.Error;
 
 pub const InstallMode = enum {
     onlogon,
     onstart,
 };
 
-fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) !void {
-    // We capture output so we can detect common Windows errors (e.g. schtasks access denied)
-    // and provide actionable guidance.
+const RunResult = struct {
+    stdout: []u8,
+    stderr: []u8,
+    exit_code: u8,
+
+    fn deinit(self: RunResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runCommandCapture(allocator: std.mem.Allocator, argv: []const []const u8) ServiceError!RunResult {
     var child = std.process.Child.init(argv, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
+    child.create_no_window = true;
 
     try child.spawn();
 
-    var stdout_buf: []u8 = &.{};
-    var stderr_buf: []u8 = &.{};
-    defer {
-        if (stdout_buf.len != 0) allocator.free(stdout_buf);
-        if (stderr_buf.len != 0) allocator.free(stderr_buf);
-    }
+    const out = if (child.stdout) |f|
+        f.readToEndAlloc(allocator, 64 * 1024) catch try allocator.dupe(u8, "")
+    else
+        try allocator.dupe(u8, "");
 
-    if (child.stdout) |out| {
-        stdout_buf = out.readToEndAlloc(allocator, 64 * 1024) catch &.{};
-    }
-    if (child.stderr) |err| {
-        stderr_buf = err.readToEndAlloc(allocator, 64 * 1024) catch &.{};
-    }
+    const err = if (child.stderr) |f|
+        f.readToEndAlloc(allocator, 64 * 1024) catch try allocator.dupe(u8, "")
+    else
+        try allocator.dupe(u8, "");
 
-    const term = try child.wait();
+    const term = child.wait() catch {
+        allocator.free(out);
+        allocator.free(err);
+        return ServiceError.ExecFailed;
+    };
 
-    // Preserve original tool output for the user.
-    if (stdout_buf.len != 0) {
-        _ = std.fs.File.stdout().write(stdout_buf) catch {};
-    }
-    if (stderr_buf.len != 0) {
-        _ = std.fs.File.stderr().write(stderr_buf) catch {};
-    }
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
 
-    switch (term) {
-        .Exited => |code| {
-            if (code != 0) {
-                // schtasks often exits 1 even for specific errors; match the message too.
-                if (std.mem.indexOf(u8, stderr_buf, "Access is denied") != null or
-                    std.mem.indexOf(u8, stderr_buf, "ERROR: Access is denied") != null)
-                {
-                    return ServiceError.AccessDenied;
-                }
-                // Some systems emit "The requested operation requires elevation." for non-admin.
-                if (std.mem.indexOf(u8, stderr_buf, "requires elevation") != null) {
-                    return ServiceError.AccessDenied;
-                }
-                return ServiceError.ExecFailed;
-            }
-        },
-        else => return ServiceError.ExecFailed,
-    }
+    return .{ .stdout = out, .stderr = err, .exit_code = code };
+}
+
+fn isAccessDenied(buf: []const u8) bool {
+    return std.mem.indexOf(u8, buf, "Access is denied") != null or
+        std.mem.indexOf(u8, buf, "ERROR: Access is denied") != null or
+        std.mem.indexOf(u8, buf, "requires elevation") != null;
+}
+
+fn looksLikeNotInstalled(buf: []const u8) bool {
+    // schtasks uses a few common phrasings; keep this heuristic broad.
+    return std.mem.indexOf(u8, buf, "cannot find") != null or
+        std.mem.indexOf(u8, buf, "Cannot find") != null or
+        std.mem.indexOf(u8, buf, "The system cannot find") != null or
+        std.mem.indexOf(u8, buf, "ERROR: The system cannot find") != null or
+        std.mem.indexOf(u8, buf, "ERROR: The specified task name") != null;
+}
+
+fn looksLikeAlreadyRunning(buf: []const u8) bool {
+    return std.mem.indexOf(u8, buf, "currently running") != null or
+        std.mem.indexOf(u8, buf, "already running") != null;
+}
+
+fn looksLikeNotRunning(buf: []const u8) bool {
+    return std.mem.indexOf(u8, buf, "not running") != null or
+        std.mem.indexOf(u8, buf, "is not running") != null;
 }
 
 fn selfExePath(allocator: std.mem.Allocator) ![]u8 {
@@ -75,21 +91,40 @@ fn defaultTaskName() []const u8 {
     return "ZiggyStarClaw Node";
 }
 
+pub fn taskInstalled(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) ServiceError!bool {
+    if (builtin.os.tag != .windows) return ServiceError.Unsupported;
+    const task_name = task_name_opt orelse defaultTaskName();
+
+    const argv = &.{ "schtasks", "/Query", "/TN", task_name };
+    const res = try runCommandCapture(allocator, argv);
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return true;
+
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return false;
+
+    return ServiceError.ExecFailed;
+}
+
 pub fn installTask(
     allocator: std.mem.Allocator,
     config_path: []const u8,
     mode: InstallMode,
     task_name_opt: ?[]const u8,
-) !void {
+) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
 
     const exe_path = try selfExePath(allocator);
     defer allocator.free(exe_path);
 
-    // Quote exe and config path for schtasks.
+    // Use the node supervisor wrapper so we:
+    // - write logs next to the config
+    // - keep a control pipe for the tray app (start/stop)
     const task_run = try std.fmt.allocPrint(
         allocator,
-        "\"{s}\" --node-mode --config \"{s}\" --as-node --no-operator",
+        // NOTE: schtasks expects a single command line string.
+        "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level info",
         .{ exe_path, config_path },
     );
     defer allocator.free(task_run);
@@ -102,7 +137,7 @@ pub fn installTaskCommand(
     task_run: []const u8,
     mode: InstallMode,
     task_name_opt: ?[]const u8,
-) !void {
+) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
 
     const task_name = task_name_opt orelse defaultTaskName();
@@ -126,8 +161,12 @@ pub fn installTaskCommand(
     try argv.append(allocator, "/SC");
     try argv.append(allocator, schedule);
 
+    // For ONLOGON tasks, ensure the task runs in the interactive session.
+    if (mode == .onlogon) {
+        try argv.append(allocator, "/IT");
+    }
+
     // For ONSTART, default to SYSTEM so the node can run without a logged-in user.
-    // (This is the closest thing to a "service" without a dedicated SCM service wrapper.)
     if (mode == .onstart) {
         try argv.append(allocator, "/RU");
         try argv.append(allocator, "SYSTEM");
@@ -137,37 +176,74 @@ pub fn installTaskCommand(
     try argv.append(allocator, "/RL");
     try argv.append(allocator, "HIGHEST");
 
-    try runCommand(allocator, argv.items);
+    const res = try runCommandCapture(allocator, argv.items);
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return;
+
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    return ServiceError.ExecFailed;
 }
 
-pub fn uninstallTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) !void {
+pub fn uninstallTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
     const task_name = task_name_opt orelse defaultTaskName();
 
     const argv = &.{ "schtasks", "/Delete", "/F", "/TN", task_name };
-    try runCommand(allocator, argv);
+    const res = try runCommandCapture(allocator, argv);
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return;
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return;
+
+    return ServiceError.ExecFailed;
 }
 
-pub fn startTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) !void {
+pub fn startTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
     const task_name = task_name_opt orelse defaultTaskName();
 
     const argv = &.{ "schtasks", "/Run", "/TN", task_name };
-    try runCommand(allocator, argv);
+    const res = try runCommandCapture(allocator, argv);
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return;
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    if (looksLikeAlreadyRunning(res.stderr) or looksLikeAlreadyRunning(res.stdout)) return;
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return ServiceError.NotInstalled;
+
+    return ServiceError.ExecFailed;
 }
 
-pub fn stopTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) !void {
+pub fn stopTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
     const task_name = task_name_opt orelse defaultTaskName();
 
     const argv = &.{ "schtasks", "/End", "/TN", task_name };
-    try runCommand(allocator, argv);
+    const res = try runCommandCapture(allocator, argv);
+    defer res.deinit(allocator);
+
+    if (res.exit_code == 0) return;
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    if (looksLikeNotRunning(res.stderr) or looksLikeNotRunning(res.stdout)) return;
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return ServiceError.NotInstalled;
+
+    return ServiceError.ExecFailed;
 }
 
-pub fn queryTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) !void {
+pub fn queryTask(allocator: std.mem.Allocator, task_name_opt: ?[]const u8) ServiceError!RunResult {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
     const task_name = task_name_opt orelse defaultTaskName();
 
     const argv = &.{ "schtasks", "/Query", "/TN", task_name, "/V", "/FO", "LIST" };
-    try runCommand(allocator, argv);
+    const res = try runCommandCapture(allocator, argv);
+
+    if (res.exit_code == 0) return res;
+
+    defer res.deinit(allocator);
+    if (isAccessDenied(res.stderr) or isAccessDenied(res.stdout)) return ServiceError.AccessDenied;
+    if (looksLikeNotInstalled(res.stderr) or looksLikeNotInstalled(res.stdout)) return ServiceError.NotInstalled;
+
+    return ServiceError.ExecFailed;
 }

@@ -254,6 +254,7 @@ pub fn build(b: *std.Build) void {
             tray_exe.root_module.linkSystemLibrary("user32", .{});
             tray_exe.root_module.linkSystemLibrary("shell32", .{});
             tray_exe.root_module.linkSystemLibrary("gdi32", .{});
+            tray_exe.root_module.linkSystemLibrary("advapi32", .{});
             tray_exe.root_module.addWin32ResourceFile(.{
                 .file = b.path("assets/icons/ziggystarclaw.rc"),
             });

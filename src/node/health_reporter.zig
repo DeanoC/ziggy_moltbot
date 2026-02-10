@@ -49,7 +49,7 @@ pub const HealthReporter = struct {
     }
 
     fn healthReporterThread(self: *HealthReporter) void {
-        while (self.running) {
+        while (self.running and !node_platform.stopRequested()) {
             // Send heartbeat
             self.sendHeartbeat() catch |err| {
                 logger.err("Failed to send heartbeat: {s}", .{@errorName(err)});
