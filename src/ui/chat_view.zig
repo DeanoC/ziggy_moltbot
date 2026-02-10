@@ -409,9 +409,48 @@ pub fn drawCustom(
         stream_changed,
     );
 
+    // When following the tail, avoid the one-frame "lag" where the streaming message grows,
+    // max_scroll increases, and we only pin after rendering (causing visible bounce/jitter).
+    //
+    // Pre-measure the stream item (only when it changes) so max_scroll is correct *before* we
+    // compute the render window and draw.
+    const prevent_auto_follow_tail_pre = state.selecting or pending_select;
+    const debug_scroll_follow_tail = false;
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and stream_text != null and stream_changed) {
+        if (state.virt.items.items.len > 0 and state.virt.items.items[state.virt.items.items.len - 1].kind == .stream) {
+            const idx_stream = state.virt.items.items.len - 1;
+            const layout = measureMessageLayout(
+                allocator,
+                ctx,
+                stream_text.?,
+                null,
+                bubble_width,
+                line_height,
+                padding,
+                &measures_per_frame,
+            );
+            const item = state.virt.items.items[idx_stream];
+            if (layout.height != item.height or layout.text_len != item.text_len) {
+                if (debug_scroll_follow_tail) {
+                    std.log.debug(
+                        "chat: premeasure stream: height {d:.1}->{d:.1} text {d}->{d}",
+                        .{ item.height, layout.height, item.text_len, layout.text_len },
+                    );
+                }
+                virtualUpdateItemMetrics(state, idx_stream, layout.height, layout.text_len, gap, separator_len);
+            }
+        }
+    }
+
     var content_height = virtualContentHeight(&state.virt, padding, gap);
     const view_height = rect.size()[1];
     var max_scroll: f32 = @max(0.0, content_height - view_height);
+
+    // If we are following the tail, pin *before* computing the render window so the current
+    // frame draws from the true bottom.
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging) {
+        state.scroll_y = max_scroll;
+    }
 
     const was_follow_tail = state.follow_tail;
 
