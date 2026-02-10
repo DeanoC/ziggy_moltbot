@@ -47,6 +47,7 @@ var active_workspace_layouts_set: [4]bool = .{ false, false, false, false };
 var render_defaults: RenderDefaults = .{};
 var pack_default_mode: ?theme.Mode = null;
 var pack_default_profile: ?ProfileId = null;
+var pack_lock_mode_to_default: bool = false;
 
 pub const PackStatusKind = enum {
     none,
@@ -291,9 +292,18 @@ pub fn setPackDefaults(variant_label: []const u8, profile_label: []const u8) voi
     pack_default_profile = profile.profileFromLabel(profile_label);
 }
 
+pub fn setPackModeLockToDefault(v: bool) void {
+    pack_lock_mode_to_default = v;
+}
+
+pub fn getPackModeLockToDefault() bool {
+    return pack_lock_mode_to_default;
+}
+
 pub fn clearPackDefaults() void {
     pack_default_mode = null;
     pack_default_profile = null;
+    pack_lock_mode_to_default = false;
 }
 
 pub fn getPackDefaultMode() ?theme.Mode {

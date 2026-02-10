@@ -88,6 +88,7 @@ pub const ThemeEngine = struct {
     pack_meta_license: ?[]u8 = null,
     pack_meta_defaults_variant: ?[]u8 = null,
     pack_meta_defaults_profile: ?[]u8 = null,
+    pack_defaults_lock_variant: bool = false,
     pack_meta_requires_multi_window: bool = false,
     pack_meta_requires_custom_shaders: bool = false,
     render_defaults: runtime.RenderDefaults = .{},
@@ -147,6 +148,7 @@ pub const ThemeEngine = struct {
         pack_meta_license: ?[]u8 = null,
         pack_meta_defaults_variant: ?[]u8 = null,
         pack_meta_defaults_profile: ?[]u8 = null,
+        pack_defaults_lock_variant: bool = false,
         pack_meta_requires_multi_window: bool = false,
         pack_meta_requires_custom_shaders: bool = false,
         render_defaults: runtime.RenderDefaults = .{},
@@ -199,6 +201,7 @@ pub const ThemeEngine = struct {
             self.pack_meta_defaults_variant = null;
             self.pack_meta_defaults_profile = null;
             self.pack_meta_set = false;
+            self.pack_defaults_lock_variant = false;
             self.pack_meta_requires_multi_window = false;
             self.pack_meta_requires_custom_shaders = false;
 
@@ -463,6 +466,8 @@ pub const ThemeEngine = struct {
         self.pack_meta_requires_multi_window = pack.manifest.capabilities.requires_multi_window;
         self.pack_meta_requires_custom_shaders = pack.manifest.capabilities.requires_custom_shaders;
         runtime.setPackDefaults(pack.manifest.defaults.variant, pack.manifest.defaults.profile);
+        self.pack_defaults_lock_variant = pack.manifest.defaults.lock_variant;
+        runtime.setPackModeLockToDefault(self.pack_defaults_lock_variant);
         runtime.setPackMeta(pack.manifest);
 
         // Pack-wide render defaults (used for "pixel" style packs).
@@ -528,6 +533,7 @@ pub const ThemeEngine = struct {
         runtime.setRenderDefaults(self.render_defaults);
         if (self.pack_meta_set) {
             runtime.setPackDefaults(self.pack_meta_defaults_variant orelse "", self.pack_meta_defaults_profile orelse "");
+            runtime.setPackModeLockToDefault(self.pack_defaults_lock_variant);
             runtime.setPackMetaFields(
                 self.pack_meta_id orelse "",
                 self.pack_meta_name orelse "",
@@ -540,6 +546,7 @@ pub const ThemeEngine = struct {
             );
         } else {
             runtime.clearPackDefaults();
+            runtime.setPackModeLockToDefault(false);
             runtime.clearPackMeta();
         }
     }
@@ -568,6 +575,7 @@ pub const ThemeEngine = struct {
             .pack_meta_license = self.pack_meta_license,
             .pack_meta_defaults_variant = self.pack_meta_defaults_variant,
             .pack_meta_defaults_profile = self.pack_meta_defaults_profile,
+            .pack_defaults_lock_variant = self.pack_defaults_lock_variant,
             .pack_meta_requires_multi_window = self.pack_meta_requires_multi_window,
             .pack_meta_requires_custom_shaders = self.pack_meta_requires_custom_shaders,
             .render_defaults = self.render_defaults,
@@ -597,6 +605,7 @@ pub const ThemeEngine = struct {
         self.pack_meta_license = null;
         self.pack_meta_defaults_variant = null;
         self.pack_meta_defaults_profile = null;
+        self.pack_defaults_lock_variant = false;
         self.pack_meta_requires_multi_window = false;
         self.pack_meta_requires_custom_shaders = false;
         self.render_defaults = .{};
@@ -628,6 +637,7 @@ pub const ThemeEngine = struct {
         self.pack_meta_license = st.pack_meta_license;
         self.pack_meta_defaults_variant = st.pack_meta_defaults_variant;
         self.pack_meta_defaults_profile = st.pack_meta_defaults_profile;
+        self.pack_defaults_lock_variant = st.pack_defaults_lock_variant;
         self.pack_meta_requires_multi_window = st.pack_meta_requires_multi_window;
         self.pack_meta_requires_custom_shaders = st.pack_meta_requires_custom_shaders;
         self.render_defaults = st.render_defaults;
@@ -1530,9 +1540,9 @@ fn applyWebJob(job: *WebPackJob) void {
     theme_mod.setRuntimeTheme(.light, light_theme);
     theme_mod.setRuntimeTheme(.dark, dark_theme);
 
-    if (eng.active_pack_root) |p| eng.allocator.free(p);
-    eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
-    runtime.setThemePackRootPath(eng.active_pack_root);
+        if (eng.active_pack_root) |p| eng.allocator.free(p);
+        eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
+        runtime.setThemePackRootPath(eng.active_pack_root);
 
     if (job.manifest) |m| {
         eng.clearPackMetaOwned();
@@ -1545,7 +1555,9 @@ fn applyWebJob(job: *WebPackJob) void {
         eng.pack_meta_defaults_profile = eng.allocator.dupe(u8, m.defaults.profile) catch null;
         eng.pack_meta_requires_multi_window = m.capabilities.requires_multi_window;
         eng.pack_meta_requires_custom_shaders = m.capabilities.requires_custom_shaders;
+        eng.pack_defaults_lock_variant = m.defaults.lock_variant;
         runtime.setPackDefaults(m.defaults.variant, m.defaults.profile);
+        runtime.setPackModeLockToDefault(eng.pack_defaults_lock_variant);
         runtime.setPackMeta(m);
         const defaults_sampling = if (std.ascii.eqlIgnoreCase(m.defaults.image_sampling, "nearest"))
             ui_commands.ImageSampling.nearest
@@ -1559,7 +1571,9 @@ fn applyWebJob(job: *WebPackJob) void {
     } else {
         eng.clearPackMetaOwned();
         eng.render_defaults = .{};
+        eng.pack_defaults_lock_variant = false;
         runtime.clearPackDefaults();
+        runtime.setPackModeLockToDefault(false);
         runtime.clearPackMeta();
         runtime.setRenderDefaults(eng.render_defaults);
     }

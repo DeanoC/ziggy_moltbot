@@ -133,10 +133,14 @@ pub fn draw(
     const token_text = editorText(token_editor);
     const update_url_text = editorText(update_url_editor);
     const theme_pack_text = editorText(theme_pack_editor);
-    const theme_default_light = (if (cfg.ui_theme) |label|
+    const pack_default_mode = theme_runtime.getPackDefaultMode() orelse .light;
+    const effective_mode: theme.Mode = if (theme_runtime.getPackModeLockToDefault())
+        pack_default_mode
+    else if (cfg.ui_theme) |label|
         theme.modeFromLabel(label)
     else
-        theme_runtime.getPackDefaultMode() orelse .light) == .light;
+        pack_default_mode;
+    const theme_default_light = effective_mode == .light;
     const cfg_profile = cfg.ui_profile orelse "";
     const desired_profile = profileLabel(profile_choice) orelse "";
     const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
@@ -259,10 +263,14 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
     watch_theme_pack_value = cfg.ui_watch_theme_pack;
-    theme_is_light = (if (cfg.ui_theme) |label|
+    const pack_default = theme_runtime.getPackDefaultMode() orelse .light;
+    const effective_mode: theme.Mode = if (theme_runtime.getPackModeLockToDefault())
+        pack_default
+    else if (cfg.ui_theme) |label|
         theme.modeFromLabel(label)
     else
-        theme_runtime.getPackDefaultMode() orelse .light) == .light;
+        pack_default;
+    theme_is_light = effective_mode == .light;
     profile_choice = profileChoiceFromLabel(cfg.ui_profile);
 
     if (config_cwd) |value| allocator.free(value);
@@ -344,12 +352,20 @@ fn drawAppearanceCard(
     const base = drawCardBase(dc, rect, "Appearance");
     const inner = base.inner_rect;
     const content_y = base.cursor_y;
+    const pack_default = theme_runtime.getPackDefaultMode() orelse .light;
+    const mode_locked = theme_runtime.getPackModeLockToDefault();
+    if (mode_locked) {
+        // Force the checkbox display to match the pack default.
+        theme_is_light = (pack_default == .light);
+    }
+
     var use_light = theme_is_light;
     const checkbox_rect = draw_context.Rect.fromMinSize(
         .{ inner.min[0] + padding, content_y },
         .{ inner.size()[0] - padding * 2.0, checkbox_height },
     );
-    if (widgets.checkbox.draw(dc, checkbox_rect, "Light theme", &use_light, queue, .{})) {
+    const mode_label = if (mode_locked) "Light theme (locked by pack)" else "Light theme";
+    if (widgets.checkbox.draw(dc, checkbox_rect, mode_label, &use_light, queue, .{ .disabled = mode_locked })) {
         theme_is_light = use_light;
         theme.setMode(if (theme_is_light) .light else .dark);
         theme.apply();
@@ -1351,17 +1367,19 @@ fn applyConfig(
         changed = true;
     }
 
-    const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
-    const desired_label = theme.labelForMode(desired_mode);
-    const current_mode: theme.Mode = if (cfg.ui_theme) |label|
-        theme.modeFromLabel(label)
-    else
-        theme_runtime.getPackDefaultMode() orelse .light;
-    const current_label = theme.labelForMode(current_mode);
-    if (!std.mem.eql(u8, current_label, desired_label)) {
-        if (cfg.ui_theme) |value| allocator.free(value);
-        cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
-        changed = true;
+    if (!theme_runtime.getPackModeLockToDefault()) {
+        const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+        const desired_label = theme.labelForMode(desired_mode);
+        const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+            theme.modeFromLabel(label)
+        else
+            theme_runtime.getPackDefaultMode() orelse .light;
+        const current_label = theme.labelForMode(current_mode);
+        if (!std.mem.eql(u8, current_label, desired_label)) {
+            if (cfg.ui_theme) |value| allocator.free(value);
+            cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
+            changed = true;
+        }
     }
 
     const current_update = cfg.update_manifest_url orelse "";
@@ -1417,17 +1435,19 @@ fn applyAppearanceConfig(
         changed = true;
     }
 
-    const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
-    const desired_label = theme.labelForMode(desired_mode);
-    const current_mode: theme.Mode = if (cfg.ui_theme) |label|
-        theme.modeFromLabel(label)
-    else
-        theme_runtime.getPackDefaultMode() orelse .light;
-    const current_label = theme.labelForMode(current_mode);
-    if (!std.mem.eql(u8, current_label, desired_label)) {
-        if (cfg.ui_theme) |value| allocator.free(value);
-        cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
-        changed = true;
+    if (!theme_runtime.getPackModeLockToDefault()) {
+        const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+        const desired_label = theme.labelForMode(desired_mode);
+        const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+            theme.modeFromLabel(label)
+        else
+            theme_runtime.getPackDefaultMode() orelse .light;
+        const current_label = theme.labelForMode(current_mode);
+        if (!std.mem.eql(u8, current_label, desired_label)) {
+            if (cfg.ui_theme) |value| allocator.free(value);
+            cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
+            changed = true;
+        }
     }
 
     const current_theme_pack = cfg.ui_theme_pack orelse "";

@@ -6,6 +6,7 @@
   "license": "MIT",
   "defaults": {
     "variant": "light",
+    "lock_variant": true,
     "profile": "desktop"
   },
   "capabilities": {
@@ -13,4 +14,3 @@
     "requires_custom_shaders": false
   }
 }
-

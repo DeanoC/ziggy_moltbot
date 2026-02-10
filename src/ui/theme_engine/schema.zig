@@ -16,6 +16,9 @@ pub const Manifest = struct {
 
     pub const Defaults = struct {
         variant: []const u8 = "dark",
+        // If true, the theme pack opts out of user light/dark switching and forces
+        // `variant` as the active mode while the pack is selected.
+        lock_variant: bool = false,
         profile: []const u8 = "desktop",
         image_sampling: []const u8 = "linear",
         pixel_snap_textured: bool = false,

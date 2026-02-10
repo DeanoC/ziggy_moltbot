@@ -50,6 +50,7 @@ Example:
 
   "defaults": {
     "variant": "dark",
+    "lock_variant": false,
     "profile": "desktop",
     "image_sampling": "linear",
     "pixel_snap_textured": false
@@ -65,6 +66,8 @@ Example:
 Notes:
 - `schema_version` must be bumped when breaking changes occur.
 - `capabilities` enables early rejection/fallback.
+- `defaults.lock_variant` can be set to `true` for themes that should not allow user light/dark switching
+  (for example: textured chrome packs that are authored for only one variant).
 
 ## Packaging (Directory vs Zip)
 

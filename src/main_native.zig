@@ -1339,14 +1339,22 @@ pub fn main() !void {
         defer if (cfg_path) |v| allocator.free(v);
         logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse "ziggystarclaw_config.json", cwd orelse "." });
     }
-    if (cfg.ui_theme) |label| {
-        theme.setMode(theme.modeFromLabel(label));
-    }
     var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
     defer theme_eng.deinit();
     theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
         logger.warn("Failed to load theme pack: {}", .{err});
     };
+    // Apply initial mode after the pack loads so packs can opt out of user light/dark toggles.
+    {
+        const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+        if (theme_engine.runtime.getPackModeLockToDefault()) {
+            theme.setMode(pack_default);
+        } else if (cfg.ui_theme) |label| {
+            theme.setMode(theme.modeFromLabel(label));
+        } else if (theme_engine.runtime.getPackDefaultMode() != null) {
+            theme.setMode(pack_default);
+        }
+    }
     var theme_pack_watch: ThemePackWatch = .{};
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
@@ -1755,10 +1763,13 @@ pub fn main() !void {
                 else
                     null;
                 theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, requested_profile);
-                const cfg_mode: theme.Mode = if (cfg.ui_theme) |label|
+                const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+                const cfg_mode: theme.Mode = if (theme_engine.runtime.getPackModeLockToDefault())
+                    pack_default
+                else if (cfg.ui_theme) |label|
                     theme.modeFromLabel(label)
                 else
-                    theme_engine.runtime.getPackDefaultMode() orelse .light;
+                    pack_default;
                 theme.setMode(w.theme_mode_override orelse cfg_mode);
                 theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
 
@@ -1809,8 +1820,13 @@ pub fn main() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
-            if (cfg.ui_theme) |label| {
+            const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+            if (theme_engine.runtime.getPackModeLockToDefault()) {
+                theme.setMode(pack_default);
+            } else if (cfg.ui_theme) |label| {
                 theme.setMode(theme.modeFromLabel(label));
+            } else if (theme_engine.runtime.getPackDefaultMode() != null) {
+                theme.setMode(pack_default);
             }
         }
 
