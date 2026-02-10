@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""Generate a flat brushed-metal 9-slice frame (border-only).
+"""Generate a flat brushed-metal 9-slice panel frame (with center).
 
 This produces a 1024x1024 RGBA PNG with:
-- brushed metal texture on the border ring
-- transparent interior (so panel fill can provide the tiled center)
-- rounded corners
+- brushed metal texture everywhere (center included)
+- a darker border ring + crisp strokes
+- no lighting gradient (flat); lighting should come from `panel.overlay` (or a future shader)
 
-It is intentionally "flat" (no lighting gradient); lighting should come from
-`panel.overlay` (or future GPU shader).
+This avoids visible seams between a separate tiled fill and a border-only frame.
 """
 
 from __future__ import annotations
 
 import os
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -28,8 +27,8 @@ DEFAULT_OUT = os.path.join(
 )
 
 
-def make_masks(size: int, border_px: int, radius_px: int) -> tuple[Image.Image, Image.Image]:
-    """Return (outer_mask, border_mask) as L images."""
+def make_masks(size: int, border_px: int, radius_px: int) -> tuple[Image.Image, Image.Image, Image.Image]:
+    """Return (outer_mask, inner_mask, border_mask) as L images."""
     outer = Image.new("L", (size, size), 0)
     d = ImageDraw.Draw(outer)
     d.rounded_rectangle(
@@ -47,7 +46,7 @@ def make_masks(size: int, border_px: int, radius_px: int) -> tuple[Image.Image, 
     )
 
     border = ImageChops.subtract(outer, inner)
-    return outer, border
+    return outer, inner, border
 
 
 def main() -> None:
@@ -60,26 +59,35 @@ def main() -> None:
         # Preserve seamlessness by resizing only if needed. (Expect 1024x1024 in repo.)
         tile = tile.resize((size, size), resample=Image.BICUBIC)
 
-    _, border_mask = make_masks(size=size, border_px=border_px, radius_px=radius_px)
+    outer_mask, inner_mask, border_mask = make_masks(size=size, border_px=border_px, radius_px=radius_px)
 
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    # Start from full brushed metal texture (center included).
+    out = tile.copy()
 
-    # Textured border ring.
-    border_layer = tile.copy()
-    border_layer.putalpha(border_mask)
-    out = Image.alpha_composite(out, border_layer)
+    # Darken the border ring so it reads as "chrome".
+    darker = ImageEnhance.Brightness(tile).enhance(0.80)
+    out = Image.composite(darker, out, border_mask)
 
-    # Subtle outer outline to help it read as a frame (still flat, no lighting).
-    # Avoid inner strokes: they create a visible seam against the tiled interior.
-    outline_outer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(outline_outer)
+    # Outside the rounded panel: paint black so we don't rely on alpha/rounded image fills.
+    black_bg = Image.new("RGBA", (size, size), (0, 0, 0, 255))
+    out = Image.composite(out, black_bg, outer_mask)
+
+    # Crisp strokes (still flat, no lighting).
+    d = ImageDraw.Draw(out)
+    # Outer stroke
     d.rounded_rectangle(
         [0, 0, size - 1, size - 1],
         radius=radius_px,
-        outline=(0, 0, 0, 70),
+        outline=(0, 0, 0, 255),
+        width=6,
+    )
+    # Inner stroke
+    d.rounded_rectangle(
+        [border_px, border_px, size - 1 - border_px, size - 1 - border_px],
+        radius=max(0, radius_px - border_px),
+        outline=(0, 0, 0, 140),
         width=2,
     )
-    out = Image.alpha_composite(out, outline_outer)
 
     os.makedirs(os.path.dirname(DEFAULT_OUT), exist_ok=True)
     out.save(DEFAULT_OUT)
