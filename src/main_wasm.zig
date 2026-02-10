@@ -916,19 +916,32 @@ fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
 }
 
 fn ensureSafeCurrentSession(alloc: std.mem.Allocator, ctx_ptr: *client_state.ClientContext) bool {
+    var preferred_agent_id: ?[]const u8 = null;
+    var missing_current: ?[]const u8 = null;
+
     if (ctx_ptr.current_session) |current| {
         for (ctx_ptr.sessions.items) |session| {
             if (std.mem.eql(u8, session.key, current)) return false;
         }
-        alloc.free(current);
+
+        if (session_keys.parse(current)) |parts| {
+            preferred_agent_id = parts.agent_id;
+        }
+
+        missing_current = current;
         ctx_ptr.current_session = null;
     }
 
-    const best = findBestConversationSessionKeyForAgent(ctx_ptr.sessions.items, "main") orelse
-        findBestConversationSessionKey(ctx_ptr.sessions.items) orelse
-        return false;
+    const best = if (preferred_agent_id) |agent_id|
+        findBestConversationSessionKeyForAgent(ctx_ptr.sessions.items, agent_id) orelse
+            findBestConversationSessionKey(ctx_ptr.sessions.items)
+    else
+        findBestConversationSessionKey(ctx_ptr.sessions.items);
 
-    ctx_ptr.setCurrentSession(best) catch return false;
+    if (missing_current) |current| alloc.free(current);
+
+    const key = best orelse return false;
+    ctx_ptr.setCurrentSession(key) catch return false;
     return true;
 }
 
