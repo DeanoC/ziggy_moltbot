@@ -656,6 +656,9 @@ fn drawWorkspaceHost(
         return;
     }
 
+    // Enforce singleton panel kinds per window (see PanelManager.compactSingletonPanels).
+    manager.compactSingletonPanels();
+
     if (win_state.theme_layout_presets_enabled) {
         applyThemeWorkspaceLayoutPreset(manager, win_state);
     }

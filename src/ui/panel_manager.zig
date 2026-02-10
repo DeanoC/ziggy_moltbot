@@ -25,6 +25,51 @@ pub const PanelManager = struct {
         self.workspace.deinit(self.allocator);
     }
 
+    /// The workspace renderer/layout currently treats some panel kinds as singletons per-window
+    /// (one slot per kind). If duplicates exist, behavior is confusing (detach appears to "copy",
+    /// focus routing is ambiguous, etc). Compact them by keeping one and dropping the rest.
+    ///
+    /// Note: this is intentionally conservative (only applies to kinds that are effectively
+    /// singleton in today's UI).
+    pub fn compactSingletonPanels(self: *PanelManager) void {
+        const singleton_kinds = [_]workspace.PanelKind{ .Control, .Chat, .Showcase };
+        for (singleton_kinds) |kind| {
+            var keep_id: ?workspace.PanelId = null;
+            // Prefer keeping the focused instance.
+            if (self.workspace.focused_panel_id) |fid| {
+                for (self.workspace.panels.items) |panel| {
+                    if (panel.kind == kind and panel.id == fid) {
+                        keep_id = fid;
+                        break;
+                    }
+                }
+            }
+            // Otherwise keep the first one we find.
+            if (keep_id == null) {
+                for (self.workspace.panels.items) |panel| {
+                    if (panel.kind == kind) {
+                        keep_id = panel.id;
+                        break;
+                    }
+                }
+            }
+            if (keep_id == null) continue;
+
+            var i: usize = 0;
+            while (i < self.workspace.panels.items.len) {
+                const p = self.workspace.panels.items[i];
+                if (p.kind == kind and p.id != keep_id.?) {
+                    var removed = self.workspace.panels.orderedRemove(i);
+                    removed.deinit(self.allocator);
+                    self.workspace.markDirty();
+                    // Don't increment: orderedRemove compacts.
+                    continue;
+                }
+                i += 1;
+            }
+        }
+    }
+
     pub fn recomputeNextId(self: *PanelManager) void {
         var max_id: workspace.PanelId = 0;
         for (self.workspace.panels.items) |panel| {
