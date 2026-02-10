@@ -413,6 +413,8 @@ pub fn drawCustom(
     const view_height = rect.size()[1];
     var max_scroll: f32 = @max(0.0, content_height - view_height);
 
+    const was_follow_tail = state.follow_tail;
+
     // If content shrank (or we just rebuilt estimates), clamp scroll before searching.
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
     if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
@@ -678,7 +680,12 @@ pub fn drawCustom(
     }
 
     const near_bottom = state.scroll_y >= max_scroll - 4.0;
-    if (user_scrolled and !near_bottom) {
+    // Sticky follow-tail: if we were following at frame start, keep following unless the user
+    // explicitly scrolls away from the bottom. This avoids visible jitter while streaming replies
+    // grow the document and `max_scroll` shifts during the frame.
+    if (was_follow_tail and !user_scrolled and !state.scrollbar_dragging) {
+        state.follow_tail = true;
+    } else if (user_scrolled and !near_bottom) {
         state.follow_tail = false;
     } else if (near_bottom) {
         state.follow_tail = true;

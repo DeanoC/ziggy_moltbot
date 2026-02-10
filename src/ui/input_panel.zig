@@ -11,6 +11,23 @@ const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 var editor_state: ?text_editor.TextEditor = null;
 var emoji_open = false;
 
+fn computeEmojiPickerRect(t: anytype, anchor: draw_context.Rect) draw_context.Rect {
+    const emojis_len: usize = 24;
+    const cols: usize = 6;
+    const rows: usize = (emojis_len + cols - 1) / cols;
+    const cell = anchor.size()[1];
+    const gap = t.spacing.xs;
+    const padding = t.spacing.xs;
+    const picker_w = @as(f32, @floatFromInt(cols)) * cell + @as(f32, @floatFromInt(cols - 1)) * gap + padding * 2.0;
+    const picker_h = @as(f32, @floatFromInt(rows)) * cell + @as(f32, @floatFromInt(rows - 1)) * gap + padding * 2.0;
+
+    var picker_min = .{ anchor.min[0], anchor.min[1] - picker_h - gap };
+    if (picker_min[1] < 0.0) {
+        picker_min[1] = anchor.max[1] + gap;
+    }
+    return draw_context.Rect.fromMinSize(picker_min, .{ picker_w, picker_h });
+}
+
 pub fn deinit(allocator: std.mem.Allocator) void {
     if (editor_state) |*editor| editor.deinit(allocator);
     editor_state = null;
@@ -46,12 +63,67 @@ pub fn draw(
     disabled_queue.state.mouse_pos = .{ -10000.0, -10000.0 };
     const active_queue = if (enabled) queue else &disabled_queue;
 
+    const emoji_label = "😀";
+    const emoji_width = button_height;
+    const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
+
     if (!enabled) {
         editor.focused = false;
         editor.dragging = false;
     }
 
+    // If the emoji picker is open, clicks within the picker should not move the caret in the
+    // underlying text editor (prevent click-through).
+    var saved_mouse_pos: [16]struct { idx: usize, pos: [2]f32 } = undefined;
+    var saved_mouse_pos_len: usize = 0;
+    if (emoji_open and enabled) {
+        const picker_rect = computeEmojiPickerRect(t, emoji_rect);
+        for (active_queue.events.items, 0..) |*evt, i| {
+            switch (evt.*) {
+                .mouse_down => |md| {
+                    if (md.button == .left and picker_rect.contains(md.pos)) {
+                        if (saved_mouse_pos_len < saved_mouse_pos.len) {
+                            saved_mouse_pos[saved_mouse_pos_len] = .{ .idx = i, .pos = md.pos };
+                            saved_mouse_pos_len += 1;
+                            evt.* = .{ .mouse_down = .{ .button = md.button, .pos = .{ -10000.0, -10000.0 } } };
+                        }
+                    }
+                },
+                .mouse_up => |mu| {
+                    if (mu.button == .left and picker_rect.contains(mu.pos)) {
+                        if (saved_mouse_pos_len < saved_mouse_pos.len) {
+                            saved_mouse_pos[saved_mouse_pos_len] = .{ .idx = i, .pos = mu.pos };
+                            saved_mouse_pos_len += 1;
+                            evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = .{ -10000.0, -10000.0 } } };
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     const action = editor.draw(allocator, ctx, editor_rect, active_queue, .{ .submit_on_enter = true });
+
+    // Restore masked mouse event positions so the picker can still handle the click.
+    if (saved_mouse_pos_len > 0) {
+        var j: usize = 0;
+        while (j < saved_mouse_pos_len) : (j += 1) {
+            const entry = saved_mouse_pos[j];
+            if (entry.idx < active_queue.events.items.len) {
+                const evt = &active_queue.events.items[entry.idx];
+                switch (evt.*) {
+                    .mouse_down => |md| {
+                        evt.* = .{ .mouse_down = .{ .button = md.button, .pos = entry.pos } };
+                    },
+                    .mouse_up => |mu| {
+                        evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = entry.pos } };
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
 
     if (editor.focused) {
         const sys = ui_systems.get();
@@ -64,9 +136,6 @@ pub fn draw(
     }
 
     var send = action.send;
-    const emoji_label = "😀";
-    const emoji_width = button_height;
-    const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
     if (widgets.button.draw(ctx, emoji_rect, emoji_label, active_queue, .{
         .variant = .ghost,
         .disabled = !enabled,
