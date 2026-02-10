@@ -18,6 +18,8 @@ pub fn isAutomationLabel(label: []const u8) bool {
     // Backstop in case the gateway doesn't provide a kind. Session keys typically look like:
     //   agent:<agent_id>:chat-<id>
     // We treat non-chat labels like cron/heartbeat/worker as automation to avoid accidental sends.
+    if (isAutomationKind(label)) return true;
+
     return startsWithIgnoreCase(label, "cron-") or
         startsWithIgnoreCase(label, "heartbeat-") or
         startsWithIgnoreCase(label, "worker-") or
