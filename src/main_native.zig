@@ -1721,7 +1721,7 @@ pub fn main() !void {
         var ui_action: ui.UiAction = .{};
         var active_window: *UiWindow = main_win;
         var any_save_workspace: bool = false;
-        var detach_req: ?struct { wid: u32, panel_id: workspace.PanelId } = null;
+        var detach_req: ?struct { wid: u32, panel_ptr: *workspace.Panel } = null;
         {
             const zone = profiler.zone("frame.ui");
             defer zone.end();
@@ -1796,8 +1796,18 @@ pub fn main() !void {
                     &w.ui_state,
                 );
                 if (action.save_workspace) any_save_workspace = true;
-                if (action.detach_panel_id) |pid| {
-                    detach_req = .{ .wid = w.id, .panel_id = pid };
+                if (action.detach_panel) |pp| {
+                    // UI already removed the panel from the manager; keep ownership in a heap node
+                    // until we spawn the tear-off window at the end of the frame.
+                    if (detach_req == null) {
+                        detach_req = .{ .wid = w.id, .panel_ptr = pp };
+                    } else {
+                        // Only one detach per frame is supported; don't leak if multiple fire.
+                        const moved = pp.*;
+                        allocator.destroy(pp);
+                        var tmp = moved;
+                        tmp.deinit(allocator);
+                    }
                 }
                 if (w.id == focused_id) {
                     ui_action = action;
@@ -2010,57 +2020,68 @@ pub fn main() !void {
                     }
                 }
                 if (source_window) |src_w| {
-                    if (src_w.manager.takePanel(req.panel_id)) |panel| {
-                        var ws_new = workspace.Workspace.initEmpty(allocator);
-                        // Transfer the panel into the new window workspace.
-                        if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
-                            logger.warn("Failed to allocate detached window workspace: {}", .{err});
-                            // Put the panel back to avoid losing it.
-                            _ = src_w.manager.putPanel(panel) catch {};
-                            ws_new.deinit(allocator);
-                            break :detach_block;
-                        }
-                        ws_new.focused_panel_id = panel.id;
-
-                        var title_buf: [192]u8 = undefined;
-                        const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
-                        const size = defaultWindowSizeForPanelKind(panel.kind);
-
-                        const new_win = createUiWindow(
-                            allocator,
-                            &gpu,
-                            title_z,
-                            size.w,
-                            size.h,
-                            window_flags,
-                            ws_new,
-                            &next_panel_id_global,
-                            true,
-                            false,
-                            src_w.profile_override,
-                            src_w.theme_mode_override,
-                            src_w.image_sampling_override,
-                            src_w.pixel_snap_textured_override,
-                        ) catch |err| blk: {
-                            logger.warn("Failed to detach panel into new window: {}", .{err});
-                            // Reattach: pull the panel back out of ws_new before freeing.
-                            const restored = ws_new.panels.pop();
-                            ws_new.deinit(allocator);
-                            if (restored) |p| {
-                                _ = src_w.manager.putPanel(p) catch {};
-                            }
-                            break :blk null;
+                    const panel = req.panel_ptr.*;
+                    allocator.destroy(req.panel_ptr);
+                    var ws_new = workspace.Workspace.initEmpty(allocator);
+                    // Transfer the panel into the new window workspace.
+                    if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
+                        logger.warn("Failed to allocate detached window workspace: {}", .{err});
+                        // Put the panel back to avoid losing it.
+                        _ = src_w.manager.putPanel(panel) catch {
+                            var tmp = panel;
+                            tmp.deinit(allocator);
                         };
-                        if (new_win) |wnew| {
-                            var pos_x: c_int = 0;
-                            var pos_y: c_int = 0;
-                            _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
-                            _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
-                            ui_windows.append(allocator, wnew) catch {
-                                destroyUiWindow(allocator, wnew);
+                        ws_new.deinit(allocator);
+                        break :detach_block;
+                    }
+                    ws_new.focused_panel_id = panel.id;
+
+                    var title_buf: [192]u8 = undefined;
+                    const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
+                    const size = defaultWindowSizeForPanelKind(panel.kind);
+
+                    const new_win = createUiWindow(
+                        allocator,
+                        &gpu,
+                        title_z,
+                        size.w,
+                        size.h,
+                        window_flags,
+                        ws_new,
+                        &next_panel_id_global,
+                        true,
+                        false,
+                        src_w.profile_override,
+                        src_w.theme_mode_override,
+                        src_w.image_sampling_override,
+                        src_w.pixel_snap_textured_override,
+                    ) catch |err| blk: {
+                        logger.warn("Failed to detach panel into new window: {}", .{err});
+                        // Reattach: pull the panel back out of ws_new before freeing.
+                        const restored = ws_new.panels.pop();
+                        ws_new.deinit(allocator);
+                        if (restored) |p| {
+                            _ = src_w.manager.putPanel(p) catch {
+                                var tmp = p;
+                                tmp.deinit(allocator);
                             };
                         }
+                        break :blk null;
+                    };
+                    if (new_win) |wnew| {
+                        var pos_x: c_int = 0;
+                        var pos_y: c_int = 0;
+                        _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
+                        _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
+                        ui_windows.append(allocator, wnew) catch {
+                            destroyUiWindow(allocator, wnew);
+                        };
                     }
+                } else {
+                    // Source window disappeared; avoid leaking the detached panel.
+                    var tmp = req.panel_ptr.*;
+                    allocator.destroy(req.panel_ptr);
+                    tmp.deinit(allocator);
                 }
             }
         }

@@ -116,6 +116,9 @@ pub const UiAction = struct {
     clear_operator_notice: bool = false,
     save_workspace: bool = false,
     detach_panel_id: ?workspace.PanelId = null,
+    // When non-null, the UI already removed the panel from the source manager; the native loop
+    // should create the tear-off window from this panel and then free the pointer.
+    detach_panel: ?*workspace.Panel = null,
     open_url: ?[]u8 = null,
 };
 
@@ -786,6 +789,23 @@ fn drawWorkspaceHost(
                     active_agent_id = draw_result.agent_id;
                 }
             }
+        }
+    }
+
+    // If a panel was detached, remove it from this manager *now* so the source window updates
+    // immediately. We pass ownership to the native main loop via `action.detach_panel`.
+    if (action.detach_panel_id) |pid| {
+        if (manager.takePanel(pid)) |moved| {
+            if (allocator.create(workspace.Panel)) |p| {
+                p.* = moved;
+                action.detach_panel = p;
+            } else |_| {
+                // Restore on allocation failure.
+                _ = manager.putPanel(moved) catch {};
+            }
+            action.detach_panel_id = null;
+        } else {
+            action.detach_panel_id = null;
         }
     }
 
