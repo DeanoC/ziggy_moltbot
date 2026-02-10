@@ -246,19 +246,21 @@ fn fetchThread(ctx: *FetchContext) void {
     {
         // If it looks like a URL, fetch over HTTP. Otherwise treat it as a filesystem path.
         const is_url = std.mem.indexOf(u8, ctx.url, "://") != null;
-        const z = profiler.zone(@src(), if (is_url) "image.fetch.http" else "image.fetch.file");
-        defer z.end();
-
-        bytes = if (is_url)
-            image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
-                setFailed(cache, ctx.url, @errorName(err));
-                return;
-            }
-        else
-            readFileBytes(cache.allocator, ctx.url) catch |err| {
+        if (is_url) {
+            const z = profiler.zone(@src(), "image.fetch.http");
+            defer z.end();
+            bytes = image_fetch.fetchHttpBytes(cache.allocator, ctx.url) catch |err| {
                 setFailed(cache, ctx.url, @errorName(err));
                 return;
             };
+        } else {
+            const z = profiler.zone(@src(), "image.fetch.file");
+            defer z.end();
+            bytes = readFileBytes(cache.allocator, ctx.url) catch |err| {
+                setFailed(cache, ctx.url, @errorName(err));
+                return;
+            };
+        }
     }
     defer cache.allocator.free(bytes);
 

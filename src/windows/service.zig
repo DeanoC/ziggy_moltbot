@@ -32,7 +32,9 @@ fn runCommandCapture(allocator: std.mem.Allocator, argv: []const []const u8) Ser
     child.stderr_behavior = .Pipe;
     child.create_no_window = true;
 
-    try child.spawn();
+    child.spawn() catch {
+        return ServiceError.ExecFailed;
+    };
 
     const out = if (child.stdout) |f|
         f.readToEndAlloc(allocator, 64 * 1024) catch try allocator.dupe(u8, "")
@@ -115,7 +117,9 @@ pub fn installTask(
 ) ServiceError!void {
     if (builtin.os.tag != .windows) return ServiceError.Unsupported;
 
-    const exe_path = try selfExePath(allocator);
+    const exe_path = selfExePath(allocator) catch {
+        return ServiceError.ExecFailed;
+    };
     defer allocator.free(exe_path);
 
     // Use the node supervisor wrapper so we:

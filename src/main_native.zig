@@ -2872,11 +2872,7 @@ pub fn main() !void {
             }
         }
 
-        {
-            const zone = profiler.zone(@src(), "frame.render");
-            defer zone.end();
-            renderer.render();
-        }
+        // Rendering is performed per-window during the UI loop above.
     }
 }
 

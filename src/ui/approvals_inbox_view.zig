@@ -59,7 +59,7 @@ pub fn draw(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    surface_chrome.drawBackground(dc, panel_rect);
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect, queue, ctx.approvals.items.len);

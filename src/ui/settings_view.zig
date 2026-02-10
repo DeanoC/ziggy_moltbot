@@ -922,7 +922,7 @@ fn drawWindowsNodeServiceCard(
     action: *SettingsAction,
 ) f32 {
     _ = allocator;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -935,9 +935,10 @@ fn drawWindowsNodeServiceCard(
     height += button_height + padding;
 
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Windows Node Runner");
+    const base = drawCardBase(dc, rect, "Windows Node Runner");
+    var cursor_y = base.cursor_y;
 
-    const content_x = rect.min[0] + padding;
+    const content_x = base.inner_rect.min[0] + padding;
 
     dc.drawText(
         "Installs a Scheduled Task that runs node-mode at user logon (recommended for camera/screen/browser).",

@@ -55,6 +55,8 @@ pub const Config = struct {
             allocator.free(list);
         }
         if (self.ui_profile) |value| {
+            allocator.free(value);
+        }
         if (self.node_host_token) |value| {
             allocator.free(value);
         }
@@ -99,17 +101,6 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .default_session = null,
         .default_node = null,
         .ui_theme = null,
-        .ui_theme_pack = null,
-        .ui_watch_theme_pack = false,
-        .ui_theme_pack_recent = null,
-        .ui_profile = null,
-
-        .enable_node_host = false,
-        .node_host_token = null,
-        .node_host_display_name = null,
-        .node_host_device_identity_path = null,
-        .node_host_exec_approvals_path = null,
-        .node_host_heartbeat_interval_ms = null,
         .ui_theme_pack = null,
         .ui_watch_theme_pack = false,
         .ui_theme_pack_recent = null,

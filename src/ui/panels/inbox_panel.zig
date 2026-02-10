@@ -230,9 +230,9 @@ fn drawSearch(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) SearchRowResult {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_h = dc.lineHeight();
-    const input_h = widgets.text_input.defaultHeight(line_h);
+    const input_h = widgets.text_input.defaultHeight(t, line_h);
 
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) {
         return .{ .height = input_h, .changed = false };
