@@ -17,7 +17,26 @@
       "radius": "radius.md",
       "fill": "colors.surface",
       "text": "colors.text_primary",
-      "border": "colors.border"
+      "border": "colors.border",
+      "states": {
+        "hover": {
+          "border": "colors.primary"
+        },
+        "pressed": {
+          "fill": {
+            "gradient4": {
+              "tl": "colors.background",
+              "tr": "colors.surface",
+              "bl": "colors.surface",
+              "br": "colors.background"
+            }
+          }
+        },
+        "disabled": {
+          "text": "colors.text_secondary",
+          "border": "colors.divider"
+        }
+      }
     },
     "ghost": {
       "radius": "radius.full",
@@ -93,7 +112,15 @@
     "text": "colors.text_primary",
     "placeholder": "colors.text_secondary",
     "selection": "#6B6BFF40",
-    "caret": "colors.text_primary"
+    "caret": "colors.text_primary",
+    "states": {
+      "hover": {
+        "border": "colors.primary"
+      },
+      "focused": {
+        "border": "colors.success"
+      }
+    }
   },
 
   "_notes": {

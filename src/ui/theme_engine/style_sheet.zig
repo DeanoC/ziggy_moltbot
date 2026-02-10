@@ -68,12 +68,49 @@ pub const ButtonVariantStyle = struct {
     fill: ?Paint = null,
     text: ?Color = null,
     border: ?Color = null,
+    states: ButtonVariantStates = .{},
+};
+
+pub const ButtonVariantStateStyle = struct {
+    fill: ?Paint = null,
+    text: ?Color = null,
+    border: ?Color = null,
+
+    pub fn isSet(self: *const ButtonVariantStateStyle) bool {
+        return self.fill != null or self.text != null or self.border != null;
+    }
+};
+
+pub const ButtonVariantStates = struct {
+    hover: ButtonVariantStateStyle = .{},
+    pressed: ButtonVariantStateStyle = .{},
+    disabled: ButtonVariantStateStyle = .{},
+    focused: ButtonVariantStateStyle = .{},
 };
 
 pub const ButtonStyles = struct {
     primary: ButtonVariantStyle = .{},
     secondary: ButtonVariantStyle = .{},
     ghost: ButtonVariantStyle = .{},
+};
+
+pub const CheckboxStateStyle = struct {
+    fill: ?Paint = null,
+    fill_checked: ?Paint = null,
+    border: ?Color = null,
+    border_checked: ?Color = null,
+    check: ?Color = null,
+
+    pub fn isSet(self: *const CheckboxStateStyle) bool {
+        return self.fill != null or self.fill_checked != null or self.border != null or self.border_checked != null or self.check != null;
+    }
+};
+
+pub const CheckboxStates = struct {
+    hover: CheckboxStateStyle = .{},
+    pressed: CheckboxStateStyle = .{},
+    disabled: CheckboxStateStyle = .{},
+    focused: CheckboxStateStyle = .{},
 };
 
 pub const CheckboxStyle = struct {
@@ -83,6 +120,27 @@ pub const CheckboxStyle = struct {
     border: ?Color = null,
     border_checked: ?Color = null,
     check: ?Color = null,
+    states: CheckboxStates = .{},
+};
+
+pub const TextInputStateStyle = struct {
+    fill: ?Paint = null,
+    border: ?Color = null,
+    text: ?Color = null,
+    placeholder: ?Color = null,
+    selection: ?Color = null,
+    caret: ?Color = null,
+
+    pub fn isSet(self: *const TextInputStateStyle) bool {
+        return self.fill != null or self.border != null or self.text != null or self.placeholder != null or self.selection != null or self.caret != null;
+    }
+};
+
+pub const TextInputStates = struct {
+    hover: TextInputStateStyle = .{},
+    pressed: TextInputStateStyle = .{},
+    disabled: TextInputStateStyle = .{},
+    focused: TextInputStateStyle = .{},
 };
 
 pub const TextInputStyle = struct {
@@ -93,6 +151,7 @@ pub const TextInputStyle = struct {
     placeholder: ?Color = null,
     selection: ?Color = null,
     caret: ?Color = null,
+    states: TextInputStates = .{},
 };
 
 pub const SurfacesStyle = struct {
@@ -266,6 +325,24 @@ fn parseButtonVariant(out: *ButtonVariantStyle, v: std.json.Value, theme: *const
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("states")) |sv| parseButtonStates(&out.states, sv, theme);
+}
+
+fn parseButtonStates(out: *ButtonVariantStates, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("hover")) |hv| parseButtonStateStyle(&out.hover, hv, theme);
+    if (obj.get("pressed")) |pv| parseButtonStateStyle(&out.pressed, pv, theme);
+    if (obj.get("disabled")) |dv| parseButtonStateStyle(&out.disabled, dv, theme);
+    if (obj.get("focused")) |fv| parseButtonStateStyle(&out.focused, fv, theme);
+}
+
+fn parseButtonStateStyle(out: *ButtonVariantStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
+    if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
+    if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
 }
 
 fn parseCheckbox(out: *CheckboxStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
@@ -277,12 +354,53 @@ fn parseCheckbox(out: *CheckboxStyle, v: std.json.Value, theme: *const theme_tok
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
     if (obj.get("border_checked")) |cv| out.border_checked = parseColor(cv, theme) orelse out.border_checked;
     if (obj.get("check")) |cv| out.check = parseColor(cv, theme) orelse out.check;
+    if (obj.get("states")) |sv| parseCheckboxStates(&out.states, sv, theme);
+}
+
+fn parseCheckboxStates(out: *CheckboxStates, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("hover")) |hv| parseCheckboxStateStyle(&out.hover, hv, theme);
+    if (obj.get("pressed")) |pv| parseCheckboxStateStyle(&out.pressed, pv, theme);
+    if (obj.get("disabled")) |dv| parseCheckboxStateStyle(&out.disabled, dv, theme);
+    if (obj.get("focused")) |fv| parseCheckboxStateStyle(&out.focused, fv, theme);
+}
+
+fn parseCheckboxStateStyle(out: *CheckboxStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
+    if (obj.get("fill_checked")) |cv| out.fill_checked = parsePaint(cv, theme) orelse out.fill_checked;
+    if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("border_checked")) |cv| out.border_checked = parseColor(cv, theme) orelse out.border_checked;
+    if (obj.get("check")) |cv| out.check = parseColor(cv, theme) orelse out.check;
 }
 
 fn parseTextInput(out: *TextInputStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
     if (v != .object) return;
     const obj = v.object;
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
+    if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
+    if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;
+    if (obj.get("placeholder")) |cv| out.placeholder = parseColor(cv, theme) orelse out.placeholder;
+    if (obj.get("selection")) |cv| out.selection = parseColor(cv, theme) orelse out.selection;
+    if (obj.get("caret")) |cv| out.caret = parseColor(cv, theme) orelse out.caret;
+    if (obj.get("states")) |sv| parseTextInputStates(&out.states, sv, theme);
+}
+
+fn parseTextInputStates(out: *TextInputStates, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("hover")) |hv| parseTextInputStateStyle(&out.hover, hv, theme);
+    if (obj.get("pressed")) |pv| parseTextInputStateStyle(&out.pressed, pv, theme);
+    if (obj.get("disabled")) |dv| parseTextInputStateStyle(&out.disabled, dv, theme);
+    if (obj.get("focused")) |fv| parseTextInputStateStyle(&out.focused, fv, theme);
+}
+
+fn parseTextInputStateStyle(out: *TextInputStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
     if (obj.get("text")) |cv| out.text = parseColor(cv, theme) orelse out.text;

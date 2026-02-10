@@ -55,6 +55,7 @@ pub fn draw(
     const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
 
     const hovered = (theme_runtime.allowHover(queue) and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
     const ss = theme_runtime.getStyleSheet();
     const cs = ss.checkbox;
     var clicked = false;
@@ -114,6 +115,23 @@ pub fn draw(
     if (opts.disabled) {
         border = colors.withAlpha(border, 0.6);
         fill = withAlphaPaint(fill, 0.6);
+    }
+
+    // Optional explicit state overrides.
+    const st = blk: {
+        if (opts.disabled) break :blk cs.states.disabled;
+        if (pressed) break :blk cs.states.pressed;
+        if (hovered) break :blk cs.states.hover;
+        if (focused) break :blk cs.states.focused;
+        break :blk style_sheet.CheckboxStateStyle{};
+    };
+    if (st.fill) |v| fill = v;
+    if (st.fill_checked) |v| {
+        if (value.*) fill = v;
+    }
+    if (st.border) |v| border = v;
+    if (st.border_checked) |v| {
+        if (value.*) border = v;
     }
 
     const radius = cs.radius orelse t.radius.sm;
@@ -179,6 +197,7 @@ pub fn draw(
     }
     if (value.*) {
         var check_color = cs.check orelse colors.rgba(255, 255, 255, 255);
+        if (st.check) |v| check_color = v;
         if (opts.disabled) check_color = t.colors.text_secondary;
         const check_size = box_rect.size()[0];
         const inset = check_size * 0.2;

@@ -80,6 +80,15 @@ pub fn draw(
         .ghost => ss.button.ghost,
     };
 
+    const State = enum { none, hover, pressed, focused, disabled };
+    const state: State = blk: {
+        if (opts.disabled) break :blk .disabled;
+        if (pressed) break :blk .pressed;
+        if (hovered) break :blk .hover;
+        if (focused) break :blk .focused;
+        break :blk .none;
+    };
+
     var clicked = false;
     if (!opts.disabled) {
         for (queue.events.items) |evt| {
@@ -149,7 +158,19 @@ pub fn draw(
         border = colors.blend(border, t.colors.primary, 0.2);
     }
 
-    if (opts.disabled) {
+    // Optional explicit state overrides (hover/pressed/focused/disabled).
+    const st = switch (state) {
+        .hover => variant_style.states.hover,
+        .pressed => variant_style.states.pressed,
+        .focused => variant_style.states.focused,
+        .disabled => variant_style.states.disabled,
+        .none => style_sheet.ButtonVariantStateStyle{},
+    };
+    if (st.fill) |v| fill = v;
+    if (st.text) |v| text_color = v;
+    if (st.border) |v| border = v;
+
+    if (opts.disabled and !variant_style.states.disabled.isSet()) {
         fill = withAlphaPaint(fill, 0.4);
         text_color = t.colors.text_secondary;
         border = colors.withAlpha(border, 0.6);

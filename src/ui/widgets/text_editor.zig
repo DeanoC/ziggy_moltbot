@@ -165,12 +165,16 @@ pub const TextEditor = struct {
             ensureCaretVisible(self, caret_pos[1], line_height, view_height, max_scroll);
         }
 
-        if (self.focused or (nav_active and nav_focused)) {
+        const allow_hover = theme_runtime.allowHover(queue);
+        const hovered = allow_hover and rect.contains(queue.state.mouse_pos);
+        const focused = self.focused or (nav_active and nav_focused);
+
+        if (focused) {
             const ss = theme_runtime.getStyleSheet();
             const radius = ss.text_input.radius orelse t.radius.md;
             focus_ring.draw(ctx, rect, radius);
         }
-        drawBackground(ctx, rect, t);
+        drawBackground(ctx, rect, t, hovered, focused, opts.read_only);
         ctx.pushClip(rect);
         defer ctx.popClip();
 
@@ -210,12 +214,30 @@ pub const TextEditor = struct {
     }
 };
 
-fn drawBackground(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *const theme.Theme) void {
+fn drawBackground(
+    ctx: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    t: *const theme.Theme,
+    hovered: bool,
+    focused: bool,
+    read_only: bool,
+) void {
     const ss = theme_runtime.getStyleSheet();
     const ti = ss.text_input;
     const radius = ti.radius orelse t.radius.md;
-    const border = ti.border orelse t.colors.border;
-    const fill = ti.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+    var border = ti.border orelse t.colors.border;
+    var fill = ti.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+
+    // Optional state overrides.
+    const st = blk: {
+        if (read_only and ti.states.disabled.isSet()) break :blk ti.states.disabled;
+        if (focused) break :blk ti.states.focused;
+        if (hovered) break :blk ti.states.hover;
+        break :blk style_sheet.TextInputStateStyle{};
+    };
+    if (st.border) |v| border = v;
+    if (st.fill) |v| fill = v;
+
     switch (fill) {
         .solid => |c| ctx.drawRoundedRect(rect, radius, .{
             .fill = c,
