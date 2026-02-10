@@ -69,8 +69,8 @@ def main() -> None:
     border_layer.putalpha(border_mask)
     out = Image.alpha_composite(out, border_layer)
 
-    # Subtle outline lines to help it read as a frame (still flat, no lighting).
-    # Outer stroke
+    # Subtle outer outline to help it read as a frame (still flat, no lighting).
+    # Avoid inner strokes: they create a visible seam against the tiled interior.
     outline_outer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(outline_outer)
     d.rounded_rectangle(
@@ -80,17 +80,6 @@ def main() -> None:
         width=2,
     )
     out = Image.alpha_composite(out, outline_outer)
-
-    # Inner stroke
-    outline_inner = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d2 = ImageDraw.Draw(outline_inner)
-    d2.rounded_rectangle(
-        [border_px, border_px, size - 1 - border_px, size - 1 - border_px],
-        radius=max(0, radius_px - border_px),
-        outline=(0, 0, 0, 55),
-        width=2,
-    )
-    out = Image.alpha_composite(out, outline_inner)
 
     os.makedirs(os.path.dirname(DEFAULT_OUT), exist_ok=True)
     out.save(DEFAULT_OUT)
