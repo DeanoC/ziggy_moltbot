@@ -503,6 +503,51 @@ fn runnerModeLabel(mode: RunnerMode) []const u8 {
     };
 }
 
+fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
+    // If the supervisor pipe responds, we're almost certainly in the legacy wrapper mode.
+    if (queryServiceStatePipe(allocator) catch null != null) {
+        return .supervisor_pipe;
+    }
+
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const st = scm_service.queryStartType(allocator, svc_name) catch |err| switch (err) {
+        scm_service.ServiceError.NotInstalled => null,
+        else => return .unknown,
+    };
+
+    if (st) |start_type| {
+        return switch (start_type) {
+            .auto => .windows_service_auto,
+            .demand => .windows_service_manual,
+            .disabled => .windows_service_disabled,
+            .boot, .system => .windows_service_other,
+            .unknown => .unknown,
+        };
+    }
+
+    // Fallback for older installs: Scheduled Task at logon.
+    const task_state = queryServiceStatePowerShell(allocator) catch null;
+    if (task_state) |ts| {
+        if (ts != .not_installed) return .scheduled_task;
+        return .not_installed;
+    }
+
+    return .unknown;
+}
+
+fn runnerModeLabel(mode: RunnerMode) []const u8 {
+    return switch (mode) {
+        .unknown => "Runner: Unknown",
+        .not_installed => "Runner: Not installed",
+        .supervisor_pipe => "Runner: Supervisor (pipe)",
+        .windows_service_auto => "Runner: Windows service (auto-start)",
+        .windows_service_manual => "Runner: Windows service (manual)",
+        .windows_service_disabled => "Runner: Windows service (disabled)",
+        .windows_service_other => "Runner: Windows service (boot/system)",
+        .scheduled_task => "Runner: Scheduled Task (logon)",
+    };
+}
+
 fn queryServiceStatePowerShell(allocator: std.mem.Allocator) !?ServiceState {
     // `Get-ScheduledTask` exposes `State` as an enum; `[int]$t.State` is stable and
     // not localized, unlike `schtasks /Query` output.
