@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .cell{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .head{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .htext{fill:#e6edf7;font:700 16px Arial,sans-serif;}
+      .rtext{fill:#cfe0ff;font:700 15px Arial,sans-serif;}
+      .text{fill:#e6edf7;font:14px Arial,sans-serif;}
+      .muted{fill:#b7c4d8;font:13px Arial,sans-serif;}
+    </style>
+  </defs>
+  <rect class="bg" x="0" y="0" width="1400" height="760"/>
+  <text class="title" x="40" y="56">Usage Models (Profiles) Matrix</text>
+  <text class="sub" x="40" y="86">Profiles are runtime presets: layout + scaling + input modality + visual language. Themes can provide overrides per profile.</text>
+
+  <!-- Grid origin -->
+  <!-- Column widths -->
+  <!-- Row heights -->
+  <g transform="translate(40,120)">
+    <!-- Header row -->
+    <rect class="head" x="0" y="0" width="260" height="60" rx="12"/>
+    <rect class="head" x="270" y="0" width="270" height="60" rx="12"/>
+    <rect class="head" x="550" y="0" width="270" height="60" rx="12"/>
+    <rect class="head" x="830" y="0" width="270" height="60" rx="12"/>
+    <rect class="head" x="1110" y="0" width="270" height="60" rx="12"/>
+
+    <text class="htext" x="30" y="38">Property</text>
+    <text class="htext" x="300" y="38">Desktop</text>
+    <text class="htext" x="580" y="38">Phone</text>
+    <text class="htext" x="860" y="38">Tablet</text>
+    <text class="htext" x="1140" y="38">Fullscreen</text>
+
+    <!-- Row 1: Input -->
+    <rect class="cell" x="0" y="70" width="260" height="90" rx="12"/>
+    <rect class="cell" x="270" y="70" width="270" height="90" rx="12"/>
+    <rect class="cell" x="550" y="70" width="270" height="90" rx="12"/>
+    <rect class="cell" x="830" y="70" width="270" height="90" rx="12"/>
+    <rect class="cell" x="1110" y="70" width="270" height="90" rx="12"/>
+
+    <text class="rtext" x="30" y="110">Input</text>
+    <text class="text" x="300" y="105">Mouse + keyboard</text>
+    <text class="muted" x="300" y="128">hotkeys, hover states</text>
+
+    <text class="text" x="580" y="105">Touch</text>
+    <text class="muted" x="580" y="128">gestures, no hover</text>
+
+    <text class="text" x="860" y="105">Touch + pen</text>
+    <text class="muted" x="860" y="128">precision + gestures</text>
+
+    <text class="text" x="1140" y="105">Controller-first</text>
+    <text class="muted" x="1140" y="128">focus + navigation</text>
+
+    <!-- Row 2: Density -->
+    <rect class="cell" x="0" y="170" width="260" height="90" rx="12"/>
+    <rect class="cell" x="270" y="170" width="270" height="90" rx="12"/>
+    <rect class="cell" x="550" y="170" width="270" height="90" rx="12"/>
+    <rect class="cell" x="830" y="170" width="270" height="90" rx="12"/>
+    <rect class="cell" x="1110" y="170" width="270" height="90" rx="12"/>
+
+    <text class="rtext" x="30" y="210">Density</text>
+    <text class="text" x="300" y="205">Compact</text>
+    <text class="muted" x="300" y="228">small padding, more panels</text>
+
+    <text class="text" x="580" y="205">Large targets</text>
+    <text class="muted" x="580" y="228">48px min hit size</text>
+
+    <text class="text" x="860" y="205">Medium</text>
+    <text class="muted" x="860" y="228">bigger than desktop</text>
+
+    <text class="text" x="1140" y="205">Very large</text>
+    <text class="muted" x="1140" y="228">10ft UI readability</text>
+
+    <!-- Row 3: Layout -->
+    <rect class="cell" x="0" y="270" width="260" height="90" rx="12"/>
+    <rect class="cell" x="270" y="270" width="270" height="90" rx="12"/>
+    <rect class="cell" x="550" y="270" width="270" height="90" rx="12"/>
+    <rect class="cell" x="830" y="270" width="270" height="90" rx="12"/>
+    <rect class="cell" x="1110" y="270" width="270" height="90" rx="12"/>
+
+    <text class="rtext" x="30" y="310">Layout</text>
+    <text class="text" x="300" y="305">Split panes</text>
+    <text class="muted" x="300" y="328">dock/tabs, resizable</text>
+
+    <text class="text" x="580" y="305">Single column</text>
+    <text class="muted" x="580" y="328">stacked screens</text>
+
+    <text class="text" x="860" y="305">Two-pane</text>
+    <text class="muted" x="860" y="328">adaptive split</text>
+
+    <text class="text" x="1140" y="305">Cards + overlays</text>
+    <text class="muted" x="1140" y="328">HUD, transitions</text>
+
+    <!-- Row 4: Windows -->
+    <rect class="cell" x="0" y="370" width="260" height="90" rx="12"/>
+    <rect class="cell" x="270" y="370" width="270" height="90" rx="12"/>
+    <rect class="cell" x="550" y="370" width="270" height="90" rx="12"/>
+    <rect class="cell" x="830" y="370" width="270" height="90" rx="12"/>
+    <rect class="cell" x="1110" y="370" width="270" height="90" rx="12"/>
+
+    <text class="rtext" x="30" y="410">Windows</text>
+    <text class="text" x="300" y="405">Multi-window</text>
+    <text class="muted" x="300" y="428">detach panels if supported</text>
+
+    <text class="text" x="580" y="405">Single window</text>
+    <text class="muted" x="580" y="428">safe insets aware</text>
+
+    <text class="text" x="860" y="405">Single window</text>
+    <text class="muted" x="860" y="428">split + floating palettes</text>
+
+    <text class="text" x="1140" y="405">Single window</text>
+    <text class="muted" x="1140" y="428">exclusive focus</text>
+
+    <!-- Row 5: Visual language -->
+    <rect class="cell" x="0" y="470" width="260" height="110" rx="12"/>
+    <rect class="cell" x="270" y="470" width="270" height="110" rx="12"/>
+    <rect class="cell" x="550" y="470" width="270" height="110" rx="12"/>
+    <rect class="cell" x="830" y="470" width="270" height="110" rx="12"/>
+    <rect class="cell" x="1110" y="470" width="270" height="110" rx="12"/>
+
+    <text class="rtext" x="30" y="510">Visual</text>
+    <text class="text" x="300" y="505">Clean or wild</text>
+    <text class="muted" x="300" y="528">Winamp-style skins possible</text>
+
+    <text class="text" x="580" y="505">Minimal</text>
+    <text class="muted" x="580" y="528">high contrast, thick borders</text>
+
+    <text class="text" x="860" y="505">Tool-ish</text>
+    <text class="muted" x="860" y="528">pen affordances, rulers</text>
+
+    <text class="text" x="1140" y="505">Game-like</text>
+    <text class="muted" x="1140" y="528">motion + glow + depth</text>
+
+    <!-- Row 6: Navigation -->
+    <rect class="cell" x="0" y="590" width="260" height="110" rx="12"/>
+    <rect class="cell" x="270" y="590" width="270" height="110" rx="12"/>
+    <rect class="cell" x="550" y="590" width="270" height="110" rx="12"/>
+    <rect class="cell" x="830" y="590" width="270" height="110" rx="12"/>
+    <rect class="cell" x="1110" y="590" width="270" height="110" rx="12"/>
+
+    <text class="rtext" x="30" y="632">Nav</text>
+    <text class="text" x="300" y="625">Hover + focus</text>
+    <text class="muted" x="300" y="648">keyboard focus rings</text>
+
+    <text class="text" x="580" y="625">Touch navigation</text>
+    <text class="muted" x="580" y="648">back stack + gestures</text>
+
+    <text class="text" x="860" y="625">Hybrid</text>
+    <text class="muted" x="860" y="648">gesture + precise selection</text>
+
+    <text class="text" x="1140" y="625">Focus graph</text>
+    <text class="muted" x="1140" y="648">D-pad/left stick selection</text>
+  </g>
+</svg>

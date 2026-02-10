@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="720" viewBox="0 0 1400 720">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .tablet{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .screen{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .pane{fill:#121c2c;stroke:#2a3a52;stroke-width:2;}
+      .palette{fill:#1b2a44;stroke:#7aa2ff;stroke-width:2;}
+      .label{fill:#e6edf7;font:700 16px Arial,sans-serif;}
+      .text{fill:#b7c4d8;font:13px Arial,sans-serif;}
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="720"/>
+  <text class="title" x="40" y="56">Tablet Profile: Split View + Touch/Pen Hybrid</text>
+  <text class="sub" x="40" y="86">Adaptive two-pane layout with floating tool palettes and bigger targets than desktop.</text>
+
+  <g transform="translate(60,130)">
+    <rect class="tablet" x="0" y="0" width="880" height="520" rx="34"/>
+    <rect class="screen" x="24" y="24" width="832" height="472" rx="24"/>
+
+    <!-- header -->
+    <rect class="pane" x="44" y="44" width="792" height="46" rx="14"/>
+    <text class="label" x="64" y="74">Project  |  Tabs  |  Search</text>
+
+    <!-- split panes -->
+    <rect class="pane" x="44" y="104" width="240" height="338" rx="14"/>
+    <text class="text" x="64" y="132">Explorer / Agents</text>
+
+    <rect class="pane" x="298" y="104" width="538" height="230" rx="14"/>
+    <text class="text" x="318" y="132">Editor / Canvas</text>
+
+    <rect class="pane" x="298" y="344" width="538" height="98" rx="14"/>
+    <text class="text" x="318" y="372">Chat / Tool Output</text>
+
+    <!-- floating palette -->
+    <rect class="palette" x="760" y="120" width="76" height="200" rx="18"/>
+    <text class="text" x="770" y="150" font-size="12">Pen</text>
+    <text class="text" x="770" y="170" font-size="12">Tools</text>
+    <text class="text" x="770" y="190" font-size="12">Brush</text>
+    <text class="text" x="770" y="210" font-size="12">Eraser</text>
+
+    <!-- footer -->
+    <rect class="pane" x="44" y="454" width="792" height="26" rx="12"/>
+    <text class="text" x="64" y="472">Status / Gestures / Undo</text>
+  </g>
+
+  <g transform="translate(980,170)">
+    <rect class="pane" x="0" y="0" width="360" height="420" rx="18"/>
+    <text class="label" x="18" y="36">Tablet Notes</text>
+    <text class="text" x="18" y="72">- Prefer two-pane layouts with resizable split.</text>
+    <text class="text" x="18" y="98">- Support pen hover if available, but do not require it.</text>
+    <text class="text" x="18" y="124">- Allow floating palettes that auto-hide in fullscreen canvas.</text>
+    <text class="text" x="18" y="150">- Scale typography + spacing above desktop defaults.</text>
+  </g>
+</svg>

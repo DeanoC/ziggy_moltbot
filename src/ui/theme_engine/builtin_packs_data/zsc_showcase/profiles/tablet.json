@@ -1,0 +1,8 @@
+{
+  "profile": "tablet",
+  "overrides": {
+    "ui_scale": 1.15,
+    "hit_target_min_px": 50.0
+  }
+}
+

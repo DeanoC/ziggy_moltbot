@@ -1,0 +1,221 @@
+{
+  "surfaces": {
+    "background": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "surface": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "menu_bar": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFF0",
+        "offset_px": [0, 0]
+      }
+    },
+    "status_bar": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFF0",
+        "offset_px": [0, 0]
+      }
+    }
+  },
+  "panel": {
+    "radius": 0,
+    "content_inset_px": [32, 32, 32, 32],
+    "header_overlay": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFB0",
+        "offset_px": [0, 0]
+      }
+    },
+    "focus_border": "#2E6DD6FF",
+    "header_buttons": {
+      "close": {
+        "radius": 6,
+        "fill": "#00000000",
+        "text": "#1A1A1AFF",
+        "border": "#00000000",
+        "states": {
+          "hover": { "fill": "#00000012" },
+          "pressed": { "fill": "#00000022" }
+        }
+      },
+      "detach": {
+        "radius": 6,
+        "fill": "#00000000",
+        "text": "#1A1A1AFF",
+        "border": "#00000000",
+        "states": {
+          "hover": { "fill": "#00000012" },
+          "pressed": { "fill": "#00000022" }
+        }
+      }
+    },
+    "fill": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "overlay": {
+      "image": {
+        "path": "assets/images/brushed_metal_lighting_overlay.png",
+        "mode": "stretch",
+        "scale": 1.0,
+        "tint": "#FFFFFFAA",
+        "offset_px": [0, 0]
+      }
+    },
+    "border": "#00000000",
+    "shadow": {
+      "color": "#00000030",
+      "blur_px": 14,
+      "spread_px": 0,
+      "offset": [0, 6],
+      "falloff_exp": 1.0,
+      "ignore_clip": false,
+      "blend": "alpha"
+    },
+    "frame": {
+      "image": "assets/images/brushed_metal_9slice_bordered.png",
+      "slices_px": [32, 32, 32, 32],
+      "tint": "#FFFFFFFF",
+      "draw_center": true,
+      "center_mode": "tile"
+    }
+  },
+  "menu": {
+    "item": {
+      "radius": 8,
+      "text": "colors.text_primary",
+      "states": {
+        "hover": { "fill": "#2E6DD61A" },
+        "pressed": { "fill": "#2E6DD633" },
+        "focused": { "fill": "#2E6DD61A" },
+        "selected": { "text": "#0A0A0AFF" },
+        "selected_hover": { "fill": "#2E6DD633" },
+        "disabled": { "text": "colors.text_secondary" }
+      }
+    }
+  },
+  "tabs": {
+    "radius": 12,
+    "border": "#00000000",
+    "underline_thickness": 2,
+    "states": {
+      "hover": { "fill": "#00000010" },
+      "pressed": { "fill": "#00000018" },
+      "active": {
+        "fill": "#2E6DD620",
+        "text": "#2E6DD6FF",
+        "underline": "#2E6DD6FF"
+      },
+      "active_hover": { "fill": "#2E6DD633" }
+    }
+  },
+  "button": {
+    "primary": {
+      "radius": 0,
+      "fill": {
+        "gradient4": {
+          "tl": "#7FB6FFFF",
+          "tr": "#7FB6FFFF",
+          "bl": "#2E6DD6FF",
+          "br": "#2E6DD6FF"
+        }
+      },
+      "text": "#FFFFFFFF",
+      "border": "#1B3E7CFF"
+    },
+    "secondary": {
+      "radius": 0,
+      "fill": {
+        "image": {
+          "path": "assets/images/brushed_metal_tile.png",
+          "mode": "tile",
+          "scale": 1.0,
+          "tint": "#FFFFFFFF",
+          "offset_px": [0, 0]
+        }
+      },
+      "text": "#1A1A1AFF",
+      "border": "#6B6B6BFF"
+    },
+    "ghost": {
+      "radius": 0,
+      "fill": "#00000000",
+      "text": "colors.text_primary",
+      "border": "#00000000"
+    }
+  },
+  "text_input": {
+    "radius": 0,
+    "fill": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFEE",
+        "offset_px": [0, 0]
+      }
+    },
+    "border": "#5D5D5DFF",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#2E6DD633",
+    "caret": "colors.text_primary"
+  },
+  "checkbox": {
+    "radius": 0,
+    "fill": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFFF",
+        "offset_px": [0, 0]
+      }
+    },
+    "border": "#6B6B6BFF",
+    "fill_checked": "colors.primary",
+    "border_checked": "#1B3E7CFF",
+    "check": "#FFFFFFFF"
+  },
+  "focus_ring": {
+    "thickness": 2.0,
+    "color": "#2E6DD6FF",
+    "glow": {
+      "color": "#2E6DD666",
+      "blur_px": 10,
+      "spread_px": 0,
+      "offset": [0, 0],
+      "falloff_exp": 1.1,
+      "ignore_clip": true,
+      "blend": "additive"
+    }
+  }
+}

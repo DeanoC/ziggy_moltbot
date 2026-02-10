@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "windows": [
+    {
+      "id": "workspace",
+      "title": "Workspace",
+      "width": 960,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "light",
+      "panels": ["workspace"]
+    },
+    {
+      "id": "chat",
+      "title": "Chat",
+      "width": 560,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "dark",
+      "panels": ["chat"],
+      "focused_panel": "chat"
+    },
+    {
+      "id": "showcase",
+      "title": "Showcase",
+      "width": 900,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "dark",
+      "panels": ["showcase"]
+    }
+  ]
+}

@@ -1,0 +1,103 @@
+{
+  "button": {
+    "primary": {
+      "radius": 0.0,
+      "fill": {
+        "gradient4": {
+          "tl": "#00F5FFFF",
+          "tr": "#FF2DB2FF",
+          "bl": "#00FF77FF",
+          "br": "#FFD200FF"
+        }
+      },
+      "text": "#000000FF",
+      "border": "#00F5FFFF"
+    },
+    "secondary": {
+      "radius": 0.0,
+      "fill": {
+        "gradient4": {
+          "tl": "#0D1016FF",
+          "tr": "#0A0C10FF",
+          "bl": "#07080BFF",
+          "br": "#0F1218FF"
+        }
+      },
+      "text": "colors.text_primary",
+      "border": "#00F5FF66"
+    },
+    "ghost": {
+      "radius": 0.0,
+      "fill": "#00000000",
+      "text": "#00F5FFFF",
+      "border": "#00F5FF66"
+    }
+  },
+  "panel": {
+    "radius": 0.0,
+    "fill": {
+      "gradient4": {
+        "tl": "#080A0DFF",
+        "tr": "#050608FF",
+        "bl": "#050608FF",
+        "br": "#0A0C10FF"
+      }
+    },
+    "border": "#00F5FF55",
+    "shadow": {
+      "color": "#00F5FF1F",
+      "blur_px": 14.0,
+      "spread_px": 0.0,
+      "falloff_exp": 1.0,
+      "offset": [0.0, 6.0],
+      "steps": 10,
+      "blend": "additive"
+    },
+    "frame": {
+      "image": "assets/images/panel_frame.png",
+      "slices_px": [8, 8, 8, 8],
+      "tint": "#00F5FFB3"
+    }
+  },
+  "focus_ring": {
+    "thickness": 3.0,
+    "color": "#00F5FFFF",
+    "glow": {
+      "color": "#FF2DB2FF",
+      "blend": "additive",
+      "blur_px": 18.0,
+      "spread_px": 2.0,
+      "falloff_exp": 0.75,
+      "offset": [0.0, 0.0],
+      "steps": 12
+    }
+  },
+  "checkbox": {
+    "radius": 0.0,
+    "fill": "colors.surface",
+    "border": "#00F5FF66",
+    "fill_checked": "#00FF77FF",
+    "border_checked": "#00F5FFFF",
+    "check": "#000000FF"
+  },
+  "text_input": {
+    "radius": 0.0,
+    "fill": {
+      "gradient4": {
+        "tl": "#06070AFF",
+        "tr": "#0A0C10FF",
+        "bl": "#020203FF",
+        "br": "#0B0E14FF"
+      }
+    },
+    "border": "#00F5FF66",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#FF2DB240",
+    "caret": "#00F5FFFF"
+  },
+  "_notes": {
+    "purpose": "Winamp-ish neon: bold borders, sharp corners, heavy glow. Use with multi-window templates for a classic multi-pane desktop vibe."
+  }
+}
+

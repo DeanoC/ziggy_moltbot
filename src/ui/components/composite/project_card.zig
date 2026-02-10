@@ -42,9 +42,9 @@ pub fn measureHeight(
     args: Args,
     width: f32,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
     const content_width = width - padding * 2.0;
@@ -78,9 +78,9 @@ pub fn draw(
     rect: draw_context.Rect,
     args: Args,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
     const content_width = rect.size()[0] - padding * 2.0;
@@ -94,7 +94,7 @@ pub fn draw(
     dc.drawRoundedRect(accent_rect, t.radius.md, .{ .fill = colors.withAlpha(t.colors.primary, 0.14) });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(args.name, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += heading_height;
@@ -193,7 +193,7 @@ fn drawBadge(
     label: []const u8,
     variant: BadgeVariant,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);

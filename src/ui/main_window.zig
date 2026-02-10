@@ -19,7 +19,10 @@ const ui_systems = @import("ui_systems.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const cursor = @import("input/cursor.zig");
+const nav = @import("input/nav.zig");
+const nav_router = @import("input/nav_router.zig");
 const colors = @import("theme/colors.zig");
+const style_sheet = @import("theme_engine/style_sheet.zig");
 const agent_registry = @import("../client/agent_registry.zig");
 const session_keys = @import("../client/session_keys.zig");
 const types = @import("../protocol/types.zig");
@@ -28,14 +31,51 @@ const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
 const control_panel = @import("panels/control_panel.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
+const showcase_panel = @import("panels/showcase_panel.zig");
 const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
 const profiler = @import("../utils/profiler.zig");
+const panel_chrome = @import("panel_chrome.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const SendMessageAction = struct {
     session_key: []u8,
     message: []u8,
+};
+
+pub const WindowUiState = struct {
+    custom_split_dragging: bool = false,
+    custom_window_menu_open: bool = false,
+    nav: nav.NavState = .{},
+
+    fullscreen_page: FullscreenPage = .home,
+    // When true, the first frame for a given profile applies the theme pack's `layouts/workspace.json`
+    // preset (open panels, focus, optional sizing). For tear-off / template windows we keep the
+    // workspace exactly as authored/saved and do not auto-open extra panels.
+    theme_layout_presets_enabled: bool = true,
+    // Track which profile layouts have been applied for this window so theme layout
+    // presets don't fight user-driven layout changes every frame.
+    theme_layout_applied: [4]bool = .{ false, false, false, false },
+    // Optional per-window theme pack override. When null, the window uses the global config pack.
+    theme_pack_override: ?[]u8 = null,
+    // When set (by the Window menu), the native main loop will force-reload the window's pack.
+    theme_pack_reload_requested: bool = false,
+
+    pub fn deinit(self: *WindowUiState, allocator: std.mem.Allocator) void {
+        self.nav.deinit(allocator);
+        if (self.theme_pack_override) |buf| allocator.free(buf);
+        self.* = undefined;
+    }
+};
+
+const FullscreenPage = enum {
+    home,
+    agents,
+    settings,
+    chat,
+    showcase,
 };
 
 pub const UiAction = struct {
@@ -43,8 +83,15 @@ pub const UiAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save_config: bool = false,
+    reload_theme_pack: bool = false,
+    browse_theme_pack: bool = false,
+    browse_theme_pack_override: bool = false,
+    clear_theme_pack_override: bool = false,
+    reload_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
+    spawn_window: bool = false,
+    spawn_window_template: ?u32 = null,
     refresh_sessions: bool = false,
     new_session: bool = false,
     select_session: ?[]u8 = null,
@@ -78,6 +125,10 @@ pub const UiAction = struct {
     clear_node_result: bool = false,
     clear_operator_notice: bool = false,
     save_workspace: bool = false,
+    detach_panel_id: ?workspace.PanelId = null,
+    // When non-null, the UI already removed the panel from the source manager; the native loop
+    // should create the tear-off window from this panel and then free the pointer.
+    detach_panel: ?*workspace.Panel = null,
     open_url: ?[]u8 = null,
 };
 
@@ -89,6 +140,7 @@ const PanelDrawResult = struct {
 const PanelFrameResult = struct {
     content_rect: draw_context.Rect,
     close_clicked: bool,
+    detach_clicked: bool,
     clicked: bool,
 };
 
@@ -105,9 +157,13 @@ fn drawCustomMenuBar(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     manager: *panel_manager.PanelManager,
+    cfg: *const config.Config,
+    action: *UiAction,
+    win_state: *WindowUiState,
 ) void {
-    const t = theme.activeTheme();
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    const t = dc.theme;
+    surface_chrome.drawMenuBar(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const label = "Window";
     const button_width = dc.measureText(label, 0.0)[0] + t.spacing.sm * 2.0;
@@ -115,39 +171,234 @@ fn drawCustomMenuBar(
         .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs },
         .{ button_width, rect.size()[1] - t.spacing.xs * 2.0 },
     );
-    const menu_open = custom_window_menu_open;
+    const menu_open = win_state.custom_window_menu_open;
     if (widgets.button.draw(dc, button_rect, label, queue, .{
         .variant = if (menu_open) .secondary else .ghost,
         .radius = t.radius.sm,
     })) {
-        custom_window_menu_open = !custom_window_menu_open;
+        win_state.custom_window_menu_open = !win_state.custom_window_menu_open;
     }
 
-    if (!custom_window_menu_open) {
+    if (!win_state.custom_window_menu_open) {
         return;
     }
 
-    const menu_width: f32 = 240.0;
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
-    const menu_height = menu_padding * 2.0 + item_height * 2.0;
+    const menu_width: f32 = computeWindowMenuWidth(dc, cfg, win_state, item_height);
+    // Multi-window is a platform capability (desktop native), not a UI profile feature.
+    // Even if the user is running the Phone/Tablet profile on desktop, they may still want
+    // detachable/multi-window UI (Winamp-style use case).
+    const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
+    const templates_all = theme_runtime.getWindowTemplates();
+    const max_templates: usize = 8;
+    const templates = templates_all[0..@min(templates_all.len, max_templates)];
+    const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+    const max_recent: usize = 4;
+    const recent_shown: usize = @min(recent.len, max_recent);
+    const theme_items_u: usize = @as(usize, 3) + (if (win_state.theme_pack_override != null) @as(usize, 1) else @as(usize, 0)) + recent_shown;
+    const multi_items_u: usize = if (allow_multi_window) (1 + templates.len) else 0;
+    const item_count_u: usize = 3 + theme_items_u + multi_items_u;
+    const item_count: f32 = @floatFromInt(item_count_u);
+    const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + t.spacing.sm, rect.max[1] + t.spacing.xs },
         .{ menu_width, menu_height },
     );
-    dc.drawRoundedRect(menu_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    panel_chrome.draw(dc, menu_rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const has_control = manager.hasPanel(.Control);
     const has_chat = manager.hasPanel(.Chat);
+    const has_showcase = manager.hasPanel(.Showcase);
     var cursor_y = menu_rect.min[1] + menu_padding;
-    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Workspace", has_control)) {
-        manager.ensurePanel(.Control);
-        custom_window_menu_open = false;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Workspace",
+        has_control,
+        false,
+    )) {
+        if (has_control) {
+            _ = manager.closePanelByKind(.Control);
+        } else {
+            manager.ensurePanel(.Control);
+        }
+        win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
-    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Chat", has_chat)) {
-        manager.ensurePanel(.Chat);
-        custom_window_menu_open = false;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Chat",
+        has_chat,
+        false,
+    )) {
+        if (has_chat) {
+            _ = manager.closePanelByKind(.Chat);
+        } else {
+            manager.ensurePanel(.Chat);
+        }
+        win_state.custom_window_menu_open = false;
+    }
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Showcase",
+        has_showcase,
+        false,
+    )) {
+        if (has_showcase) {
+            _ = manager.closePanelByKind(.Showcase);
+        } else {
+            manager.ensurePanel(.Showcase);
+        }
+        win_state.custom_window_menu_open = false;
+    }
+
+    const can_browse_pack = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
+    const global_pack = cfg.ui_theme_pack orelse "";
+    const effective_pack = win_state.theme_pack_override orelse global_pack;
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Global",
+        win_state.theme_pack_override == null,
+        false,
+    )) {
+        if (win_state.theme_pack_override) |buf| {
+            dc.allocator.free(buf);
+            win_state.theme_pack_override = null;
+        }
+        win_state.theme_layout_applied = .{ false, false, false, false };
+        win_state.custom_window_menu_open = false;
+    }
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Browse...",
+        false,
+        !can_browse_pack,
+    )) {
+        if (can_browse_pack) {
+            action.browse_theme_pack_override = true;
+        }
+        win_state.custom_window_menu_open = false;
+    }
+
+    cursor_y += item_height;
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Theme pack: Reload",
+        false,
+        effective_pack.len == 0,
+    )) {
+        if (effective_pack.len > 0) {
+            win_state.theme_pack_reload_requested = true;
+        }
+        win_state.custom_window_menu_open = false;
+    }
+
+    if (win_state.theme_pack_override != null) {
+        cursor_y += item_height;
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "Theme pack: Clear override",
+            false,
+            false,
+        )) {
+            if (win_state.theme_pack_override) |buf| {
+                dc.allocator.free(buf);
+                win_state.theme_pack_override = null;
+            }
+            win_state.theme_layout_applied = .{ false, false, false, false };
+            win_state.custom_window_menu_open = false;
+        }
+    }
+
+    // Quick picks from the global MRU list.
+    if (recent_shown > 0) {
+        var i: usize = 0;
+        while (i < recent_shown) : (i += 1) {
+            const item = recent[i];
+            var label_buf: [200]u8 = undefined;
+            const short = blk: {
+                const prefix = "themes/";
+                if (std.mem.startsWith(u8, item, prefix)) break :blk item[prefix.len..];
+                const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                break :blk item;
+            };
+            const item_label = std.fmt.bufPrint(&label_buf, "Theme: {s}", .{short}) catch "Theme";
+
+            cursor_y += item_height;
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                item_label,
+                win_state.theme_pack_override != null and std.mem.eql(u8, win_state.theme_pack_override.?, item),
+                false,
+            )) {
+                const owned = dc.allocator.dupe(u8, item) catch null;
+                if (owned) |buf| {
+                    if (win_state.theme_pack_override) |old| dc.allocator.free(old);
+                    win_state.theme_pack_override = buf;
+                    win_state.theme_layout_applied = .{ false, false, false, false };
+                }
+                win_state.custom_window_menu_open = false;
+            }
+        }
+    }
+
+    if (allow_multi_window) {
+        cursor_y += item_height;
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "New Window",
+            false,
+            false,
+        )) {
+            action.spawn_window = true;
+            win_state.custom_window_menu_open = false;
+        }
+
+        for (templates, 0..) |tpl, idx| {
+            cursor_y += item_height;
+            var label_buf: [96]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const label2 = std.fmt.bufPrint(&label_buf, "New: {s}", .{title}) catch title;
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                label2,
+                false,
+                false,
+            )) {
+                action.spawn_window_template = @intCast(idx);
+                win_state.custom_window_menu_open = false;
+            }
+        }
     }
 
     var clicked_outside = false;
@@ -162,7 +413,7 @@ fn drawCustomMenuBar(
         }
     }
     if (clicked_outside) {
-        custom_window_menu_open = false;
+        win_state.custom_window_menu_open = false;
     }
 }
 
@@ -172,12 +423,82 @@ fn drawMenuItem(
     rect: draw_context.Rect,
     label: []const u8,
     selected: bool,
+    disabled: bool,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
-    if (hovered) {
-        dc.drawRect(rect, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const item_style = ss.menu.item;
+    const cs = ss.checkbox;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "main_window.menu_item", label) else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
+
+    const radius = item_style.radius orelse t.radius.sm;
+    const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+    var fill: ?style_sheet.Paint = item_style.fill;
+    var text_color: colors.Color = item_style.text orelse t.colors.text_primary;
+    var border_color: colors.Color = item_style.border orelse transparent;
+
+    // Apply selection + interaction state overrides (most-specific last).
+    if (selected and item_style.states.selected.isSet()) {
+        const st = item_style.states.selected;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
     }
+    if (focused and item_style.states.focused.isSet()) {
+        const st = item_style.states.focused;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (hovered and item_style.states.hover.isSet()) {
+        const st = item_style.states.hover;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (pressed and item_style.states.pressed.isSet()) {
+        const st = item_style.states.pressed;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (selected and hovered and item_style.states.selected_hover.isSet()) {
+        const st = item_style.states.selected_hover;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (disabled and item_style.states.disabled.isSet()) {
+        const st = item_style.states.disabled;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+
+    if (!disabled) {
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        } else if (hovered) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
+        }
+    } else {
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        }
+        text_color = t.colors.text_secondary;
+    }
+    if (border_color[3] > 0.001) {
+        dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+    }
+
     const line_height = dc.lineHeight();
     const text_y = rect.min[1] + (rect.size()[1] - line_height) * 0.5;
     const box_size = @min(rect.size()[1], line_height) * 0.9;
@@ -189,16 +510,16 @@ fn drawMenuItem(
         .min = box_min,
         .max = .{ box_min[0] + box_size, box_min[1] + box_size },
     };
-    const box_fill = if (selected) t.colors.primary else t.colors.surface;
-    const box_border = if (selected)
-        colors.blend(t.colors.primary, colors.rgba(255, 255, 255, 255), 0.1)
-    else
-        t.colors.border;
-    dc.drawRoundedRect(box_rect, t.radius.sm, .{
-        .fill = box_fill,
-        .stroke = box_border,
-        .thickness = 1.0,
-    });
+    const unchecked_fill = cs.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+    const checked_fill = cs.fill_checked orelse style_sheet.Paint{ .solid = t.colors.primary };
+    const box_fill = if (selected) checked_fill else unchecked_fill;
+    var box_border = cs.border orelse t.colors.border;
+    if (selected) {
+        box_border = cs.border_checked orelse box_border;
+    }
+    const box_radius = cs.radius orelse t.radius.sm;
+    panel_chrome.drawPaintRoundedRect(dc, box_rect, box_radius, box_fill);
+    dc.drawRoundedRect(box_rect, box_radius, .{ .fill = null, .stroke = box_border, .thickness = 1.0 });
     if (selected) {
         const inset = box_size * 0.2;
         const x0 = box_rect.min[0] + inset;
@@ -208,23 +529,30 @@ fn drawMenuItem(
         const x2 = box_rect.min[0] + box_size * 0.8;
         const y2 = box_rect.min[1] + box_size * 0.3;
         const thickness = @max(1.5, box_size * 0.12);
-        const check_color = colors.rgba(255, 255, 255, 255);
+        const check_color = cs.check orelse colors.rgba(255, 255, 255, 255);
         dc.drawLine(.{ x0, y0 }, .{ x1, y1 }, thickness, check_color);
         dc.drawLine(.{ x1, y1 }, .{ x2, y2 }, thickness, check_color);
     }
 
     const label_x = box_rect.max[0] + t.spacing.xs;
-    dc.drawText(label, .{ label_x, text_y }, .{ .color = t.colors.text_primary });
+    dc.drawText(label, .{ label_x, text_y }, .{ .color = text_color });
 
     var clicked = false;
-    for (queue.events.items) |evt| {
-        switch (evt) {
-            .mouse_up => |mu| {
-                if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
-                }
-            },
-            else => {},
+    if (!disabled) {
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_up => |mu| {
+                    if (mu.button == .left and rect.contains(mu.pos)) {
+                        if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                            clicked = true;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        if (!clicked and nav_active and focused) {
+            clicked = nav_router.wasActivated(queue, nav_id);
         }
     }
     return clicked;
@@ -246,8 +574,7 @@ const PanelIdList = struct {
 };
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
-var custom_split_dragging: bool = false;
-var custom_window_menu_open: bool = false;
+var default_window_ui_state: WindowUiState = .{};
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
 const attachment_json_pretty_limit: usize = 64 * 1024;
@@ -280,23 +607,59 @@ pub fn draw(
     manager: *panel_manager.PanelManager,
     inbox: *ui_command_inbox.UiCommandInbox,
 ) UiAction {
-    var action = UiAction{};
     _ = use_wgpu_renderer;
     const zone = profiler.zone(@src(), "ui.draw");
     defer zone.end();
-    var pending_attachment: ?sessions_panel.AttachmentOpen = null;
+    frameBegin(allocator, ctx, manager, inbox);
+    defer frameEnd();
+    const queue = collectInput(allocator);
+    return drawWindow(allocator, ctx, cfg, registry, is_connected, app_version, framebuffer_width, framebuffer_height, manager, inbox, queue, &default_window_ui_state);
+}
+
+pub fn frameBegin(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+) void {
     image_cache.beginFrame();
     _ = ui_systems.beginFrame();
-    _ = input_router.beginFrame(allocator);
-    input_router.collect(allocator);
-    const queue = input_router.getQueue();
     text_input_backend.beginFrame();
-    defer text_input_backend.endFrame();
 
     var session_it = ctx.session_states.iterator();
     while (session_it.next()) |entry| {
         inbox.collectFromMessages(allocator, entry.key_ptr.*, entry.value_ptr.messages.items, manager);
     }
+}
+
+pub fn frameEnd() void {
+    text_input_backend.endFrame();
+}
+
+pub fn collectInput(allocator: std.mem.Allocator) *input_state.InputQueue {
+    _ = input_router.beginFrame(allocator);
+    input_router.collect(allocator);
+    return input_router.getQueue();
+}
+
+pub fn drawWindow(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    framebuffer_width: u32,
+    framebuffer_height: u32,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    queue: *input_state.InputQueue,
+    win_state: *WindowUiState,
+) UiAction {
+    var action = UiAction{};
+    const zone = profiler.zone(@src(), "ui.draw_window");
+    defer zone.end();
+    var pending_attachment: ?sessions_panel.AttachmentOpen = null;
 
     const t = theme.activeTheme();
 
@@ -311,6 +674,12 @@ pub fn draw(
         const extra_bottom: f32 = if (builtin.abi.isAndroid()) 24.0 else 0.0;
         const height = @max(1.0, display_h - top - bottom - extra_bottom);
         const host_rect = draw_context.Rect.fromMinSize(.{ left, top }, .{ width, height });
+
+        nav_router.set(&win_state.nav);
+        defer nav_router.set(null);
+        win_state.nav.beginFrame(allocator, host_rect, queue);
+        defer win_state.nav.endFrame(allocator);
+
         drawWorkspaceHost(
             allocator,
             ctx,
@@ -325,10 +694,15 @@ pub fn draw(
             host_rect,
             &action,
             &pending_attachment,
+            win_state,
         );
     }
 
     if (manager.workspace.dirty) action.save_workspace = true;
+
+    // Clear any pointer capture on mouse-up/focus-lost even if the release happened
+    // outside widgets (important when spawning new windows during a click).
+    input_state.endFrame(queue);
 
     return action;
 }
@@ -347,6 +721,7 @@ fn drawWorkspaceHost(
     host_rect: draw_context.Rect,
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
 ) void {
     const zone = profiler.zone(@src(), "ui.workspace");
     defer zone.end();
@@ -357,7 +732,35 @@ fn drawWorkspaceHost(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, host_rect);
     defer dc.deinit();
 
-    dc.drawRect(host_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, host_rect);
+
+    if (theme_runtime.getProfile().id == .fullscreen) {
+        drawFullscreenHost(
+            allocator,
+            ctx,
+            cfg,
+            registry,
+            is_connected,
+            app_version,
+            manager,
+            inbox,
+            queue,
+            &dc,
+            host_rect,
+            action,
+            pending_attachment,
+            win_state,
+        );
+        ui_systems.endFrame(&dc);
+        return;
+    }
+
+    // Enforce singleton panel kinds per window (see PanelManager.compactSingletonPanels).
+    manager.compactSingletonPanels();
+
+    if (win_state.theme_layout_presets_enabled) {
+        applyThemeWorkspaceLayoutPreset(manager, win_state);
+    }
 
     const line_height = dc.lineHeight();
     const menu_height = customMenuHeight(line_height, t);
@@ -383,6 +786,10 @@ fn drawWorkspaceHost(
         right_buf[right_len] = .Control;
         right_len += 1;
     }
+    if (manager.hasPanel(.Showcase) and right_len < right_buf.len) {
+        right_buf[right_len] = .Showcase;
+        right_len += 1;
+    }
 
     var ratio = manager.workspace.custom_layout.left_ratio;
     if (left_kind != null and right_len > 0 and content_rect.size()[0] > 0.0) {
@@ -397,28 +804,28 @@ fn drawWorkspaceHost(
             .{ divider_width, content_rect.size()[1] },
         );
         const hovered = divider_rect.contains(queue.state.mouse_pos);
-        if (hovered or custom_split_dragging) {
+        if (hovered or win_state.custom_split_dragging) {
             cursor.set(.resize_ew);
         }
         for (queue.events.items) |evt| {
             switch (evt) {
                 .mouse_down => |md| {
                     if (md.button == .left and hovered) {
-                        custom_split_dragging = true;
+                        win_state.custom_split_dragging = true;
                     }
                 },
                 .mouse_up => |mu| {
                     if (mu.button == .left) {
-                        custom_split_dragging = false;
+                        win_state.custom_split_dragging = false;
                     }
                 },
                 .focus_lost => {
-                    custom_split_dragging = false;
+                    win_state.custom_split_dragging = false;
                 },
                 else => {},
             }
         }
-        if (custom_split_dragging) {
+        if (win_state.custom_split_dragging) {
             const mouse_x = queue.state.mouse_pos[0];
             const clamped_left = std.math.clamp(mouse_x - content_rect.min[0], min_left, max_left);
             ratio = if (width > 0.0) clamped_left / width else ratio;
@@ -447,6 +854,10 @@ fn drawWorkspaceHost(
 
     for (layout_result.slice()) |panel_slot| {
         if (selectPanelForKind(manager, panel_slot.kind)) |panel| {
+            // Namespace controller-nav ids to the panel, so identical labels in different panels don't collide.
+            nav_router.pushScope(panel.id);
+            defer nav_router.popScope();
+
             const focused = if (manager.workspace.focused_panel_id) |id| id == panel.id else false;
             panel.state.is_focused = focused;
             const frame = drawPanelFrame(&dc, panel_slot.rect, panel.title, queue, focused);
@@ -455,6 +866,20 @@ fn drawWorkspaceHost(
             }
             if (frame.close_clicked) {
                 close_panel_id = panel.id;
+            }
+            if (frame.detach_clicked and action.detach_panel == null) {
+                // Tear off: remove from this manager immediately so the source window updates.
+                // We intentionally skip drawing contents this frame to avoid using a stale pointer.
+                if (manager.takePanel(panel.id)) |moved| {
+                    if (allocator.create(workspace.Panel)) |pp| {
+                        pp.* = moved;
+                        action.detach_panel = pp;
+                    } else |_| {
+                        // Restore on allocation failure.
+                        _ = manager.putPanel(moved) catch {};
+                    }
+                }
+                continue;
             }
             const draw_result = drawPanelContents(
                 allocator,
@@ -469,6 +894,7 @@ fn drawWorkspaceHost(
                 manager,
                 action,
                 pending_attachment,
+                win_state,
             );
             if (panel.kind == .Chat and draw_result.session_key != null) {
                 if (focused or active_session_key == null) {
@@ -492,7 +918,7 @@ fn drawWorkspaceHost(
     }
     syncAttachmentFetches(allocator, manager);
 
-    drawCustomMenuBar(&dc, menu_rect, queue, manager);
+    drawCustomMenuBar(&dc, menu_rect, queue, manager, cfg, action, win_state);
 
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;
@@ -517,7 +943,318 @@ fn drawWorkspaceHost(
         ctx.last_error,
     );
 
+    drawControllerFocusOverlay(&dc, queue, host_rect);
+
     ui_systems.endFrame(&dc);
+}
+
+fn applyThemeWorkspaceLayoutPreset(manager: *panel_manager.PanelManager, win_state: *WindowUiState) void {
+    const pid = theme_runtime.getProfile().id;
+    const idx: usize = switch (pid) {
+        .desktop => 0,
+        .phone => 1,
+        .tablet => 2,
+        .fullscreen => 3,
+    };
+    if (win_state.theme_layout_applied[idx]) return;
+    win_state.theme_layout_applied[idx] = true;
+
+    const preset = theme_runtime.getWorkspaceLayout(pid) orelse return;
+    const open_panels = preset.openPanels();
+    if (open_panels.len == 0) return;
+
+    for (open_panels) |kind| {
+        manager.ensurePanel(kind);
+    }
+
+    if (preset.close_others) {
+        var i: usize = 0;
+        while (i < manager.workspace.panels.items.len) {
+            const p = manager.workspace.panels.items[i];
+            var wanted = false;
+            for (open_panels) |k| {
+                if (k == p.kind) {
+                    wanted = true;
+                    break;
+                }
+            }
+            if (wanted) {
+                i += 1;
+                continue;
+            }
+            _ = manager.closePanel(p.id);
+            // closePanel compacts the list; don't increment.
+        }
+    }
+
+    // Apply custom layout sizing only if the user hasn't adjusted it yet (heuristic).
+    if (preset.custom_layout_left_ratio != null or preset.custom_layout_min_left_width != null or preset.custom_layout_min_right_width != null) {
+        const eps: f32 = 0.0005;
+        const def = workspace.CustomLayoutState{};
+        const cur = manager.workspace.custom_layout;
+        const untouched = (@abs(cur.left_ratio - def.left_ratio) <= eps) and
+            (@abs(cur.min_left_width - def.min_left_width) <= eps) and
+            (@abs(cur.min_right_width - def.min_right_width) <= eps);
+        if (untouched) {
+            if (preset.custom_layout_left_ratio) |v| manager.workspace.custom_layout.left_ratio = v;
+            if (preset.custom_layout_min_left_width) |v| manager.workspace.custom_layout.min_left_width = v;
+            if (preset.custom_layout_min_right_width) |v| manager.workspace.custom_layout.min_right_width = v;
+            manager.workspace.markDirty();
+        }
+    }
+
+    if (preset.focused) |focus_kind| {
+        for (manager.workspace.panels.items) |panel| {
+            if (panel.kind == focus_kind) {
+                manager.focusPanel(panel.id);
+                break;
+            }
+        }
+    }
+}
+
+fn drawControllerFocusOverlay(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    host_rect: draw_context.Rect,
+) void {
+    const nav_state = nav_router.get() orelse return;
+    if (!nav_state.isActive()) return;
+
+    // Find the rect that contains the virtual cursor. This is approximate but fast and
+    // works well because the cursor is pinned to the focused item's center.
+    const pos = queue.state.mouse_pos;
+    const items = nav_state.prev_items.items;
+    for (items) |it| {
+        if (!it.rect.contains(pos)) continue;
+        if (!host_rect.contains(it.center())) continue;
+        const h = it.rect.size()[1];
+        const approx_radius = std.math.clamp(h * 0.25, dc.theme.radius.sm, dc.theme.radius.lg);
+        widgets.focus_ring.draw(dc, it.rect, approx_radius);
+        break;
+    }
+}
+
+fn ensureOnlyPanelKind(manager: *panel_manager.PanelManager, kind: workspace.PanelKind) void {
+    // Open the requested one, close everything else.
+    manager.ensurePanel(kind);
+    var idx: usize = 0;
+    while (idx < manager.workspace.panels.items.len) {
+        const panel = manager.workspace.panels.items[idx];
+        if (panel.kind == kind) {
+            idx += 1;
+            continue;
+        }
+        _ = manager.closePanel(panel.id);
+        // closePanel compacts the list.
+    }
+
+    // Ensure focus follows.
+    for (manager.workspace.panels.items) |p| {
+        if (p.kind == kind) {
+            manager.focusPanel(p.id);
+            break;
+        }
+    }
+}
+
+fn drawFullscreenHost(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    queue: *input_state.InputQueue,
+    dc: *draw_context.DrawContext,
+    host_rect: draw_context.Rect,
+    action: *UiAction,
+    pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
+) void {
+    const t = dc.theme;
+
+    // Controller "back" returns to the home cards.
+    if (win_state.nav.actions.back and win_state.fullscreen_page != .home) {
+        win_state.fullscreen_page = .home;
+    }
+
+    const line_h = dc.lineHeight();
+    const header_h = line_h + t.spacing.md * 2.0;
+    const status_h = statusBarHeight(line_h, t);
+    const header_rect = draw_context.Rect.fromMinSize(host_rect.min, .{ host_rect.size()[0], header_h });
+    const status_rect = draw_context.Rect.fromMinSize(
+        .{ host_rect.min[0], host_rect.max[1] - status_h },
+        .{ host_rect.size()[0], status_h },
+    );
+    const content_h = @max(1.0, host_rect.size()[1] - header_h - status_h);
+    const content_rect = draw_context.Rect.fromMinSize(.{ host_rect.min[0], header_rect.max[1] }, .{ host_rect.size()[0], content_h });
+    const hints_h = line_h + t.spacing.sm * 2.0;
+    const content_main_rect = if (content_rect.size()[1] > hints_h + t.spacing.sm)
+        draw_context.Rect.fromMinSize(content_rect.min, .{ content_rect.size()[0], content_rect.size()[1] - hints_h - t.spacing.sm })
+    else
+        content_rect;
+    const hints_rect = if (content_rect.size()[1] > hints_h + t.spacing.sm)
+        draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_main_rect.max[1] + t.spacing.sm }, .{ content_rect.size()[0], hints_h })
+    else
+        draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_rect.max[1] - hints_h }, .{ content_rect.size()[0], hints_h });
+
+    // Header chrome (same material as menu bar).
+    surface_chrome.drawMenuBar(dc, header_rect);
+    dc.drawRect(header_rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
+    dc.drawText("ZiggyStarClaw", .{ header_rect.min[0] + t.spacing.lg, header_rect.min[1] + t.spacing.md }, .{ .color = t.colors.text_primary });
+
+    if (win_state.fullscreen_page != .home) {
+        const back_label = "Back";
+        const back_w = dc.measureText(back_label, 0.0)[0] + t.spacing.lg * 2.0;
+        const back_rect = draw_context.Rect.fromMinSize(
+            .{ header_rect.max[0] - back_w - t.spacing.lg, header_rect.min[1] + t.spacing.sm },
+            .{ back_w, header_rect.size()[1] - t.spacing.sm * 2.0 },
+        );
+        if (widgets.button.draw(dc, back_rect, back_label, queue, .{ .variant = .secondary })) {
+            win_state.fullscreen_page = .home;
+        }
+    }
+
+    // Main content.
+    switch (win_state.fullscreen_page) {
+        .home => {
+            nav_router.pushScope(1);
+            drawFullscreenHome(dc, content_main_rect, queue, win_state, manager);
+            nav_router.popScope();
+        },
+        .agents => {
+            nav_router.pushScope(2);
+            ensureOnlyPanelKind(manager, .Control);
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                panel.data.Control.active_tab = .Agents;
+            }
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+            }
+            nav_router.popScope();
+        },
+        .settings => {
+            nav_router.pushScope(3);
+            ensureOnlyPanelKind(manager, .Control);
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                panel.data.Control.active_tab = .Settings;
+            }
+            if (selectPanelForKind(manager, .Control)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+            }
+            nav_router.popScope();
+        },
+        .chat => {
+            nav_router.pushScope(4);
+            ensureOnlyPanelKind(manager, .Chat);
+            if (selectPanelForKind(manager, .Chat)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+            }
+            nav_router.popScope();
+        },
+        .showcase => {
+            nav_router.pushScope(5);
+            ensureOnlyPanelKind(manager, .Showcase);
+            if (selectPanelForKind(manager, .Showcase)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+            }
+            nav_router.popScope();
+        },
+    }
+
+    drawControllerHints(dc, hints_rect, win_state.fullscreen_page != .home);
+    drawControllerFocusOverlay(dc, queue, host_rect);
+
+    status_bar.drawCustom(
+        dc,
+        status_rect,
+        ctx.state,
+        is_connected,
+        null,
+        null,
+        0,
+        ctx.last_error,
+    );
+}
+
+fn drawControllerHints(dc: *draw_context.DrawContext, rect: draw_context.Rect, show_back: bool) void {
+    const t = dc.theme;
+    dc.drawRoundedRect(rect, t.radius.md, .{
+        .fill = colors.withAlpha(t.colors.surface, 0.55),
+        .stroke = colors.withAlpha(t.colors.border, 0.7),
+        .thickness = 1.0,
+    });
+
+    const gap = t.spacing.sm;
+    const pad_x = t.spacing.md;
+    const pill_h = rect.size()[1] - t.spacing.xs * 2.0;
+    var cursor_x = rect.min[0] + pad_x;
+    const y = rect.min[1] + t.spacing.xs;
+
+    cursor_x = drawHintPill(dc, .{ cursor_x, y }, pill_h, "A Select");
+    cursor_x += gap;
+    if (show_back) {
+        cursor_x = drawHintPill(dc, .{ cursor_x, y }, pill_h, "B Back");
+        cursor_x += gap;
+    }
+    cursor_x = drawHintPill(dc, .{ cursor_x, y }, pill_h, "LB/RB Tabs");
+    cursor_x += gap;
+    _ = drawHintPill(dc, .{ cursor_x, y }, pill_h, "LT/RT Scroll");
+}
+
+fn drawHintPill(dc: *draw_context.DrawContext, pos: [2]f32, h: f32, label: []const u8) f32 {
+    const t = dc.theme;
+    const text_sz = dc.measureText(label, 0.0);
+    const w = text_sz[0] + t.spacing.md * 2.0;
+    const r = draw_context.Rect.fromMinSize(pos, .{ w, h });
+    dc.drawRoundedRect(r, t.radius.lg, .{
+        .fill = colors.withAlpha(t.colors.background, 0.35),
+        .stroke = colors.withAlpha(t.colors.border, 0.6),
+        .thickness = 1.0,
+    });
+    dc.drawText(label, .{ r.min[0] + t.spacing.md, r.min[1] + (h - text_sz[1]) * 0.5 }, .{ .color = t.colors.text_secondary });
+    return r.max[0];
+}
+
+fn drawFullscreenHome(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    win_state: *WindowUiState,
+    manager: *panel_manager.PanelManager,
+) void {
+    _ = manager;
+    const t = dc.theme;
+    const gap = t.spacing.lg;
+    const cols: usize = 2;
+    const rows: usize = 2;
+    const card_w = @max(1.0, (rect.size()[0] - gap * (@as(f32, @floatFromInt(cols - 1)))) / @as(f32, @floatFromInt(cols)));
+    const card_h = @max(1.0, (rect.size()[1] - gap * (@as(f32, @floatFromInt(rows - 1)))) / @as(f32, @floatFromInt(rows)));
+
+    const start_x = rect.min[0] + (rect.size()[0] - (card_w * @as(f32, @floatFromInt(cols)) + gap * @as(f32, @floatFromInt(cols - 1)))) * 0.5;
+    const start_y = rect.min[1] + (rect.size()[1] - (card_h * @as(f32, @floatFromInt(rows)) + gap * @as(f32, @floatFromInt(rows - 1)))) * 0.5;
+
+    const cards = [_]struct { label: []const u8, page: FullscreenPage }{
+        .{ .label = "Agents", .page = .agents },
+        .{ .label = "Settings", .page = .settings },
+        .{ .label = "Chat", .page = .chat },
+        .{ .label = "Showcase", .page = .showcase },
+    };
+
+    for (cards, 0..) |card, idx| {
+        const col: f32 = @floatFromInt(idx % cols);
+        const row: f32 = @floatFromInt(idx / cols);
+        const card_rect = draw_context.Rect.fromMinSize(
+            .{ start_x + col * (card_w + gap), start_y + row * (card_h + gap) },
+            .{ card_w, card_h },
+        );
+        if (widgets.button.draw(dc, card_rect, card.label, queue, .{ .variant = .primary, .radius = t.radius.lg })) {
+            win_state.fullscreen_page = card.page;
+        }
+    }
 }
 
 fn drawPanelContents(
@@ -533,6 +1270,7 @@ fn drawPanelContents(
     manager: *panel_manager.PanelManager,
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
     const zone = profiler.zone(@src(), "ui.panel");
@@ -631,10 +1369,16 @@ fn drawPanelContents(
                 app_version,
                 &panel.data.Control,
                 panel_rect,
+                win_state.theme_pack_override,
             );
             action.connect = control_action.connect;
             action.disconnect = control_action.disconnect;
             action.save_config = control_action.save_config;
+            action.reload_theme_pack = control_action.reload_theme_pack;
+            action.browse_theme_pack = control_action.browse_theme_pack;
+            action.browse_theme_pack_override = control_action.browse_theme_pack_override;
+            action.clear_theme_pack_override = control_action.clear_theme_pack_override;
+            action.reload_theme_pack_override = control_action.reload_theme_pack_override;
             action.clear_saved = control_action.clear_saved;
             action.config_updated = control_action.config_updated;
             action.refresh_sessions = control_action.refresh_sessions;
@@ -671,6 +1415,21 @@ fn drawPanelContents(
             }
             replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
             replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
+        },
+        .Showcase => {
+            const showcase_action = showcase_panel.draw(allocator, panel_rect);
+            if (showcase_action.reload_effective_pack) {
+                if (win_state.theme_pack_override != null) {
+                    action.reload_theme_pack_override = true;
+                } else {
+                    action.reload_theme_pack = true;
+                }
+            }
+            if (showcase_action.open_pack_root) {
+                const root = theme_runtime.getThemePackRootPath() orelse "themes";
+                const owned = allocator.dupe(u8, root) catch null;
+                replaceOwnedSlice(allocator, &action.open_url, owned);
+            }
         },
     }
 
@@ -729,6 +1488,81 @@ fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]cons
     return null;
 }
 
+fn menuItemWidth(dc: *draw_context.DrawContext, label: []const u8, item_height: f32, t: *const theme.Theme) f32 {
+    const line_height = dc.lineHeight();
+    const box_size = @min(item_height, line_height) * 0.9;
+    const label_w = dc.measureText(label, 0.0)[0];
+    // box + label + padding (match drawMenuItem layout).
+    return t.spacing.sm + box_size + t.spacing.xs + label_w + t.spacing.sm;
+}
+
+fn computeWindowMenuWidth(
+    dc: *draw_context.DrawContext,
+    cfg: *const config.Config,
+    win_state: *const WindowUiState,
+    item_height: f32,
+) f32 {
+    const t = dc.theme;
+    const templates_all = theme_runtime.getWindowTemplates();
+    const max_templates: usize = 8;
+    const templates = templates_all[0..@min(templates_all.len, max_templates)];
+    const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
+    const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+    const max_recent: usize = 4;
+    const recent_shown: usize = @min(recent.len, max_recent);
+
+    var max_w: f32 = 0.0;
+    const base_labels = [_][]const u8{
+        "Workspace",
+        "Chat",
+        "Showcase",
+        "Theme pack: Global",
+        "Theme pack: Browse...",
+        "Theme pack: Reload",
+        "Theme pack: Clear override",
+        "New Window",
+    };
+    for (base_labels) |lbl| {
+        max_w = @max(max_w, menuItemWidth(dc, lbl, item_height, t));
+    }
+
+    // Quick picks from the global MRU list (same label shortening logic as the draw loop).
+    if (recent_shown > 0) {
+        var i: usize = 0;
+        while (i < recent_shown) : (i += 1) {
+            const item = recent[i];
+            var label_buf: [200]u8 = undefined;
+            const short = blk: {
+                const prefix = "themes/";
+                if (std.mem.startsWith(u8, item, prefix)) break :blk item[prefix.len..];
+                const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                break :blk item;
+            };
+            const item_label = std.fmt.bufPrint(&label_buf, "Theme: {s}", .{short}) catch "Theme";
+            max_w = @max(max_w, menuItemWidth(dc, item_label, item_height, t));
+        }
+    }
+
+    if (allow_multi_window) {
+        for (templates, 0..) |tpl, idx| {
+            _ = idx;
+            var label_buf: [96]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const lbl = std.fmt.bufPrint(&label_buf, "New: {s}", .{title}) catch title;
+            max_w = @max(max_w, menuItemWidth(dc, lbl, item_height, t));
+        }
+    }
+
+    // Slightly widen if we show the "Clear override" line.
+    if (win_state.theme_pack_override != null) {
+        max_w = @max(max_w, menuItemWidth(dc, "Theme pack: Clear override", item_height, t));
+    }
+
+    // Clamp to a sane max so we don't cover the whole app on narrow windows.
+    return std.math.clamp(max_w, 240.0, 520.0);
+}
+
 fn drawPanelFrame(
     dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
@@ -736,44 +1570,85 @@ fn drawPanelFrame(
     queue: *input_state.InputQueue,
     focused: bool,
 ) PanelFrameResult {
-    const t = theme.activeTheme();
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
     const size = rect.size();
     if (size[0] <= 0.0 or size[1] <= 0.0) {
         return .{
             .content_rect = rect,
             .close_clicked = false,
+            .detach_clicked = false,
             .clicked = false,
         };
     }
 
+    // Layout inside the theme-provided content inset so thick 9-slice borders don't overlap text/widgets.
+    const layout_rect = panel_chrome.contentRect(rect);
+    const layout_size = layout_rect.size();
+
     const title_height = dc.lineHeight();
     const pad_y = t.spacing.xs;
-    const header_height = @min(size[1], title_height + pad_y * 2.0);
-    const header_rect = draw_context.Rect.fromMinSize(rect.min, .{ size[0], header_height });
+    const header_height = @min(layout_size[1], title_height + pad_y * 2.0);
+    const header_rect = draw_context.Rect.fromMinSize(layout_rect.min, .{ layout_size[0], header_height });
 
-    const border_color = if (focused) t.colors.primary else t.colors.border;
-    dc.drawRect(rect, .{ .fill = t.colors.background, .stroke = border_color, .thickness = 1.0 });
-    dc.drawRect(header_rect, .{ .fill = t.colors.surface });
+    // Panel background/chrome (supports image fills like brushed metal).
+    panel_chrome.draw(dc, rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = true,
+        .draw_border = false,
+    });
+
+    // Header overlay: themeable, so texture-based themes can keep the "material" consistent.
+    if (ss.panel.header_overlay) |paint| {
+        panel_chrome.drawPaintRect(dc, header_rect, paint);
+    } else {
+        // Fallback: subtle solid tint to separate header from content.
+        dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.55) });
+    }
+
+    // Focus border on top of theme border/frame.
+    const base_border = ss.panel.border orelse t.colors.border;
+    const focus_border = ss.panel.focus_border orelse t.colors.primary;
+    const border_color = if (focused) focus_border else base_border;
+    dc.drawRect(layout_rect, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
 
     const close_size = @min(header_height, @max(12.0, header_height - pad_y * 2.0));
     const close_rect = draw_context.Rect.fromMinSize(
-        .{ rect.max[0] - t.spacing.xs - close_size, rect.min[1] + (header_height - close_size) * 0.5 },
+        .{ layout_rect.max[0] - t.spacing.xs - close_size, layout_rect.min[1] + (header_height - close_size) * 0.5 },
         .{ close_size, close_size },
     );
+
+    // Optional detach button (multi-window desktop only).
+    var detach_clicked = false;
+    const p = theme_runtime.getProfile();
+    if (p.allow_multi_window) {
+        const detach_rect = draw_context.Rect.fromMinSize(
+            .{ close_rect.min[0] - t.spacing.xs - close_size, close_rect.min[1] },
+            .{ close_size, close_size },
+        );
+        detach_clicked = widgets.button.draw(dc, detach_rect, "[]", queue, .{
+            .variant = .ghost,
+            .radius = t.radius.sm,
+            .style_override = &ss.panel.header_buttons.detach,
+        });
+    }
+
     const close_clicked = widgets.button.draw(dc, close_rect, "x", queue, .{
         .variant = .ghost,
         .radius = t.radius.sm,
+        .style_override = &ss.panel.header_buttons.close,
     });
 
-    const title_x = rect.min[0] + t.spacing.sm;
-    const title_y = rect.min[1] + (header_height - title_height) * 0.5;
-    theme.push(.title);
+    const title_x = layout_rect.min[0] + t.spacing.sm;
+    const title_y = layout_rect.min[1] + (header_height - title_height) * 0.5;
+    theme.pushFor(t, .title);
     dc.drawText(title, .{ title_x, title_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     const divider_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0], header_rect.max[1] - 1.0 },
-        .{ rect.size()[0], 1.0 },
+        .{ layout_rect.min[0], header_rect.max[1] - 1.0 },
+        .{ layout_rect.size()[0], 1.0 },
     );
     dc.drawRect(divider_rect, .{ .fill = t.colors.divider });
 
@@ -789,20 +1664,21 @@ fn drawPanelFrame(
         }
     }
 
-    const content_height = @max(0.0, size[1] - header_height);
+    const content_height = @max(0.0, layout_size[1] - header_height);
     const content_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0], rect.min[1] + header_height },
-        .{ size[0], content_height },
+        .{ layout_rect.min[0], layout_rect.min[1] + header_height },
+        .{ layout_size[0], content_height },
     );
     return .{
         .content_rect = content_rect,
         .close_clicked = close_clicked,
+        .detach_clicked = detach_clicked,
         .clicked = clicked,
     };
 }
 
-pub fn syncSettings(cfg: config.Config) void {
-    @import("settings_view.zig").syncFromConfig(cfg);
+pub fn syncSettings(allocator: std.mem.Allocator, cfg: config.Config) void {
+    @import("settings_view.zig").syncFromConfig(allocator, cfg);
 }
 
 pub fn deinit(allocator: std.mem.Allocator) void {

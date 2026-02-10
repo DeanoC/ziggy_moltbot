@@ -10,6 +10,13 @@ pub const Config = struct {
     default_session: ?[]const u8 = null,
     default_node: ?[]const u8 = null,
     ui_theme: ?[]const u8 = null,
+    ui_theme_pack: ?[]const u8 = null,
+    /// When enabled, the client will periodically check the active theme pack folder for JSON changes
+    /// and auto-reload the pack (native desktop builds only).
+    ui_watch_theme_pack: bool = false,
+    /// Most-recently-used theme pack paths (portable `themes/<id>` or absolute paths).
+    ui_theme_pack_recent: ?[]const []const u8 = null,
+    ui_profile: ?[]const u8 = null,
 
     // Optional: run a local node host alongside the UI client (Android primarily).
     //
@@ -40,6 +47,16 @@ pub const Config = struct {
         if (self.ui_theme) |value| {
             allocator.free(value);
         }
+        if (self.ui_theme_pack) |value| {
+            allocator.free(value);
+        }
+        if (self.ui_theme_pack_recent) |list| {
+            for (list) |item| allocator.free(item);
+            allocator.free(list);
+        }
+        if (self.ui_profile) |value| {
+            allocator.free(value);
+        }
         if (self.node_host_token) |value| {
             allocator.free(value);
         }
@@ -55,6 +72,21 @@ pub const Config = struct {
     }
 };
 
+/// Back-compat / UX migration: older configs used a repo-relative docs path for the example pack.
+/// New builds install example packs next to the executable at `themes/<id>`.
+pub fn migrateThemePackPath(allocator: std.mem.Allocator, cfg: *Config) bool {
+    const current = cfg.ui_theme_pack orelse return false;
+    const docs_prefix = "docs/theme_engine/examples/";
+    if (!std.mem.startsWith(u8, current, docs_prefix)) return false;
+    const suffix = current[docs_prefix.len..];
+    if (suffix.len == 0) return false;
+
+    const migrated = std.fmt.allocPrint(allocator, "themes/{s}", .{suffix}) catch return false;
+    if (cfg.ui_theme_pack) |old| allocator.free(old);
+    cfg.ui_theme_pack = migrated;
+    return true;
+}
+
 pub fn initDefault(allocator: std.mem.Allocator) !Config {
     return .{
         .server_url = try allocator.dupe(u8, ""),
@@ -69,6 +101,10 @@ pub fn initDefault(allocator: std.mem.Allocator) !Config {
         .default_session = null,
         .default_node = null,
         .ui_theme = null,
+        .ui_theme_pack = null,
+        .ui_watch_theme_pack = false,
+        .ui_theme_pack_recent = null,
+        .ui_profile = null,
 
         .enable_node_host = false,
         .node_host_token = null,
@@ -117,6 +153,29 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
             try allocator.dupe(u8, value)
         else
             null,
+        .ui_theme_pack = if (parsed.value.ui_theme_pack) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
+        .ui_watch_theme_pack = parsed.value.ui_watch_theme_pack,
+        .ui_theme_pack_recent = if (parsed.value.ui_theme_pack_recent) |list| blk: {
+            var out = try allocator.alloc([]const u8, list.len);
+            var written: usize = 0;
+            errdefer {
+                var i: usize = 0;
+                while (i < written) : (i += 1) allocator.free(out[i]);
+                allocator.free(out);
+            }
+            for (list, 0..) |item, i| {
+                out[i] = try allocator.dupe(u8, item);
+                written += 1;
+            }
+            break :blk out;
+        } else null,
+        .ui_profile = if (parsed.value.ui_profile) |value|
+            try allocator.dupe(u8, value)
+        else
+            null,
 
         .enable_node_host = parsed.value.enable_node_host,
         .node_host_token = if (parsed.value.node_host_token) |value|
@@ -139,8 +198,57 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !Config {
     };
 }
 
+pub fn pushRecentThemePack(allocator: std.mem.Allocator, cfg: *Config, pack_path: []const u8) bool {
+    if (pack_path.len == 0) return false;
+
+    const max_items: usize = 8;
+    const current = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+
+    // Fast path: already top.
+    if (current.len > 0 and std.mem.eql(u8, current[0], pack_path)) return false;
+
+    var new_len: usize = 1;
+    for (current) |item| {
+        if (new_len >= max_items) break;
+        if (std.mem.eql(u8, item, pack_path)) continue;
+        new_len += 1;
+    }
+
+    var out = allocator.alloc([]const u8, new_len) catch return false;
+    var written: usize = 0;
+
+    out[written] = allocator.dupe(u8, pack_path) catch {
+        allocator.free(out);
+        return false;
+    };
+    written += 1;
+
+    for (current) |item| {
+        if (written >= new_len) break;
+        if (std.mem.eql(u8, item, pack_path)) continue;
+        out[written] = allocator.dupe(u8, item) catch {
+            var i: usize = 0;
+            while (i < written) : (i += 1) allocator.free(out[i]);
+            allocator.free(out);
+            return false;
+        };
+        written += 1;
+    }
+
+    // Free previous list.
+    if (cfg.ui_theme_pack_recent) |list| {
+        for (list) |item| allocator.free(item);
+        allocator.free(list);
+    }
+    cfg.ui_theme_pack_recent = out;
+    return true;
+}
+
 pub fn save(allocator: std.mem.Allocator, path: []const u8, cfg: Config) !void {
-    const json = try std.json.Stringify.valueAlloc(allocator, cfg, .{ .emit_null_optional_fields = false });
+    const json = try std.json.Stringify.valueAlloc(allocator, cfg, .{
+        .emit_null_optional_fields = false,
+        .whitespace = .indent_2,
+    });
     defer allocator.free(json);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });

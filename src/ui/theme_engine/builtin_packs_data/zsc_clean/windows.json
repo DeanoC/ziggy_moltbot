@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "windows": [
+    {
+      "id": "main",
+      "title": "ZiggyStarClaw",
+      "width": 1280,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "light",
+      "panels": ["workspace", "chat"],
+      "focused_panel": "chat"
+    },
+    {
+      "id": "chat",
+      "title": "Chat",
+      "width": 520,
+      "height": 720,
+      "profile": "desktop",
+      "variant": "light",
+      "panels": ["chat"],
+      "focused_panel": "chat"
+    }
+  ]
+}

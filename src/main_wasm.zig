@@ -3,6 +3,7 @@ const zemscripten = @import("zemscripten");
 const sdl = @import("platform/sdl3.zig").c;
 const ui = @import("ui/main_window.zig");
 const theme = @import("ui/theme.zig");
+const theme_engine = @import("ui/theme_engine/theme_engine.zig");
 const operator_view = @import("ui/operator_view.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace = @import("ui/workspace.zig");
@@ -60,7 +61,9 @@ var cfg: config.Config = undefined;
 var agents: agent_registry.AgentRegistry = undefined;
 var manager: panel_manager.PanelManager = undefined;
 var command_inbox: ui_command_inbox.UiCommandInbox = undefined;
+var theme_eng: ?theme_engine.ThemeEngine = null;
 var message_queue = MessageQueue{};
+var next_panel_id_global: workspace.PanelId = 1;
 var ws_connected = false;
 var ws_connecting = false;
 var connect_sent = false;
@@ -128,7 +131,6 @@ fn initApp() !void {
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    theme.applyTypography(dpi_scale);
 
     image_cache.init(allocator);
     attachment_cache.init(allocator);
@@ -139,15 +141,29 @@ fn initApp() !void {
 
     ctx = try client_state.ClientContext.init(allocator);
     cfg = try loadConfigFromStorage();
+    if (config.migrateThemePackPath(allocator, &cfg)) {
+        saveConfigToStorage();
+    }
     if (cfg.ui_theme) |label| {
         theme.setMode(theme.modeFromLabel(label));
         theme.apply();
     }
+    theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
+    theme_eng.?.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+        logger.warn("Failed to load theme pack: {}", .{err});
+    };
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(win, &fb_w, &fb_h);
+    const fb_w_u32: u32 = @intCast(if (fb_w > 0) fb_w else 1);
+    const fb_h_u32: u32 = @intCast(if (fb_h > 0) fb_h else 1);
+    theme_eng.?.resolveProfileFromConfig(fb_w_u32, fb_h_u32, cfg.ui_profile);
+    theme.applyTypography(dpi_scale * theme_eng.?.active_profile.ui_scale);
     agents = try loadAgentRegistryFromStorage();
     app_state_state = loadAppStateFromStorage();
     auto_connect_pending = app_state_state.last_connected and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     const ws = try loadWorkspaceFromStorage();
-    manager = panel_manager.PanelManager.init(allocator, ws);
+    manager = panel_manager.PanelManager.init(allocator, ws, &next_panel_id_global);
     command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     window = win;
     message_queue = MessageQueue{};
@@ -175,6 +191,10 @@ fn deinitApp() void {
     saveAgentRegistryToStorage();
     agents.deinit(allocator);
     cfg.deinit(allocator);
+    if (theme_eng) |*eng| {
+        eng.deinit();
+        theme_eng = null;
+    }
     saveAppStateToStorage();
     message_queue.deinit(allocator);
     if (connect_nonce) |nonce| {
@@ -326,7 +346,7 @@ fn loadAppStateFromStorage() app_state.AppState {
 }
 
 fn saveAppStateToStorage() void {
-    const json = std.json.Stringify.valueAlloc(allocator, app_state_state, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, app_state_state, .{ .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize app state: {}", .{err});
         return;
     };
@@ -337,7 +357,7 @@ fn saveAppStateToStorage() void {
 }
 
 fn saveConfigToStorage() void {
-    const json = std.json.Stringify.valueAlloc(allocator, cfg, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, cfg, .{ .emit_null_optional_fields = false, .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize config: {}", .{err});
         return;
     };
@@ -401,7 +421,7 @@ fn saveWorkspaceToStorage(ws: *workspace.Workspace) void {
     };
     defer snapshot.deinit(allocator);
 
-    const json = std.json.Stringify.valueAlloc(allocator, snapshot, .{}) catch |err| {
+    const json = std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 }) catch |err| {
         logger.warn("Failed to serialize workspace: {}", .{err});
         return;
     };
@@ -1041,7 +1061,6 @@ fn sendChatMessageRequest(session_key: []const u8, message: []const u8) void {
     }
 }
 
-
 fn openWebSocket() void {
     const url_z = std.mem.concat(allocator, u8, &.{ cfg.server_url, "\x00" }) catch return;
     defer allocator.free(url_z);
@@ -1254,6 +1273,44 @@ fn frame() callconv(.c) void {
         saveConfigToStorage();
     }
 
+    if (ui_action.config_updated or ui_action.reload_theme_pack) {
+        if (cfg.ui_theme) |label| {
+            theme.setMode(theme.modeFromLabel(label));
+            theme.apply();
+        }
+        if (theme_eng) |*eng| {
+            eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack) catch |err| {
+                logger.warn("Failed to apply theme pack: {}", .{err});
+            };
+            if (cfg.ui_theme_pack) |pack_path| {
+                if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
+                    if (!ui_action.config_updated and !ui_action.save_config) {
+                        saveConfigToStorage();
+                    }
+                }
+            }
+
+            if (window) |w| {
+                const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);
+                const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+                eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+                theme.applyTypography(dpi_scale * eng.active_profile.ui_scale);
+            }
+        }
+    }
+
+    // Web theme packs load asynchronously; if one finishes, refresh typography/profile scaling.
+    if (theme_eng) |*eng| {
+        if (eng.takeWebThemeChanged()) {
+            if (window) |w| {
+                const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w);
+                const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
+                eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+                theme.applyTypography(dpi_scale * eng.active_profile.ui_scale);
+            }
+        }
+    }
+
     if (ui_action.save_config) {
         saveConfigToStorage();
     }
@@ -1302,7 +1359,7 @@ fn frame() callconv(.c) void {
             theme.setMode(theme.modeFromLabel(label));
             theme.apply();
         }
-        ui.syncSettings(cfg);
+        ui.syncSettings(allocator, cfg);
     }
 
     if (ui_action.connect) {

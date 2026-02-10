@@ -3,6 +3,7 @@ const state = @import("../client/state.zig");
 const theme = @import("theme.zig");
 const colors = @import("theme/colors.zig");
 const draw_context = @import("draw_context.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const BadgeVariant = enum {
     neutral,
@@ -11,7 +12,6 @@ const BadgeVariant = enum {
     warning,
     danger,
 };
-
 
 pub fn drawCustom(
     dc: *draw_context.DrawContext,
@@ -23,7 +23,7 @@ pub fn drawCustom(
     message_count: usize,
     last_error: ?[]const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const spacing = t.spacing.sm;
     const label = t.colors.text_secondary;
     const value = t.colors.text_primary;
@@ -35,7 +35,8 @@ pub fn drawCustom(
     };
     const connection_variant: BadgeVariant = if (is_connected) .success else .neutral;
 
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    surface_chrome.drawStatusBar(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const line_height = dc.lineHeight();
     var cursor_x = rect.min[0] + t.spacing.sm;
@@ -78,7 +79,6 @@ fn badgeBaseColor(t: *const theme.Theme, variant: BadgeVariant) colors.Color {
     };
 }
 
-
 fn drawBadgeCustom(
     dc: *draw_context.DrawContext,
     label: []const u8,
@@ -87,7 +87,7 @@ fn drawBadgeCustom(
     x: f32,
     bar_rect: draw_context.Rect,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeBaseColor(t, variant);
     const bg = if (filled) base else colors.withAlpha(base, 0.14);
     const border = colors.withAlpha(base, if (filled) 0.4 else 0.55);

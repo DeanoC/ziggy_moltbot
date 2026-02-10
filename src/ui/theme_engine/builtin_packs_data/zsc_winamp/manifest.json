@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "zsc.winampish",
+  "name": "Winamp-ish Neon",
+  "author": "ZiggyStarClaw",
+  "license": "MIT",
+  "defaults": {
+    "variant": "dark",
+    "profile": "desktop"
+  },
+  "capabilities": {
+    "requires_multi_window": true,
+    "requires_custom_shaders": false
+  }
+}
+

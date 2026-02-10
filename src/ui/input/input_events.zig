@@ -70,6 +70,46 @@ pub const TextInputEvent = struct {
     text: []u8,
 };
 
+pub const GamepadButton = enum {
+    south,
+    east,
+    west,
+    north,
+    back,
+    guide,
+    start,
+    left_stick,
+    right_stick,
+    left_shoulder,
+    right_shoulder,
+    dpad_up,
+    dpad_down,
+    dpad_left,
+    dpad_right,
+    misc1,
+    touchpad,
+};
+
+pub const GamepadAxis = enum {
+    left_x,
+    left_y,
+    right_x,
+    right_y,
+    left_trigger,
+    right_trigger,
+};
+
+pub const GamepadButtonEvent = struct {
+    which: u32,
+    button: GamepadButton,
+};
+
+pub const GamepadAxisEvent = struct {
+    which: u32,
+    axis: GamepadAxis,
+    value: i16,
+};
+
 pub const InputEvent = union(enum) {
     key_down: KeyEvent,
     key_up: KeyEvent,
@@ -78,6 +118,10 @@ pub const InputEvent = union(enum) {
     mouse_down: MouseButtonEvent,
     mouse_up: MouseButtonEvent,
     mouse_wheel: MouseWheelEvent,
+    gamepad_button_down: GamepadButtonEvent,
+    gamepad_button_up: GamepadButtonEvent,
+    gamepad_axis: GamepadAxisEvent,
+    nav_activate: u64,
     focus_gained,
     focus_lost,
 

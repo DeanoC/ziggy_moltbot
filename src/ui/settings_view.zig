@@ -9,12 +9,21 @@ const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
+const nav_router = @import("input/nav_router.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const panel_chrome = @import("panel_chrome.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const SettingsAction = struct {
     connect: bool = false,
     disconnect: bool = false,
     save: bool = false,
+    reload_theme_pack: bool = false,
+    browse_theme_pack: bool = false,
+    browse_theme_pack_override: bool = false,
+    clear_theme_pack_override: bool = false,
+    reload_theme_pack_override: bool = false,
     clear_saved: bool = false,
     config_updated: bool = false,
     check_updates: bool = false,
@@ -36,13 +45,25 @@ var server_editor: ?text_editor.TextEditor = null;
 var token_editor: ?text_editor.TextEditor = null;
 var connect_host_editor: ?text_editor.TextEditor = null;
 var update_url_editor: ?text_editor.TextEditor = null;
+var theme_pack_editor: ?text_editor.TextEditor = null;
 var insecure_tls_value = false;
 var auto_connect_value = true;
 var theme_is_light = true;
+var watch_theme_pack_value = false;
+const ProfileChoice = enum { auto, desktop, phone, tablet, fullscreen };
+var profile_choice: ProfileChoice = .auto;
 var initialized = false;
 var download_popup_opened = false;
 var scroll_y: f32 = 0.0;
 var scroll_max: f32 = 0.0;
+var config_cwd: ?[]u8 = null;
+var appearance_changed: bool = false;
+
+const ThemePackEntry = struct {
+    name: []u8,
+};
+var theme_pack_entries: std.ArrayListUnmanaged(ThemePackEntry) = .{};
+var theme_pack_entries_loaded: bool = false;
 
 const BadgeVariant = enum {
     primary,
@@ -57,10 +78,15 @@ pub fn deinit(allocator: std.mem.Allocator) void {
     if (token_editor) |*editor| editor.deinit(allocator);
     if (connect_host_editor) |*editor| editor.deinit(allocator);
     if (update_url_editor) |*editor| editor.deinit(allocator);
+    if (theme_pack_editor) |*editor| editor.deinit(allocator);
+    if (config_cwd) |value| allocator.free(value);
+    clearThemePackEntries(allocator);
     server_editor = null;
     token_editor = null;
     connect_host_editor = null;
     update_url_editor = null;
+    theme_pack_editor = null;
+    config_cwd = null;
     initialized = false;
     download_popup_opened = false;
 }
@@ -73,6 +99,7 @@ pub fn draw(
     update_state: *update_checker.UpdateState,
     app_version: []const u8,
     rect_override: ?draw_context.Rect,
+    window_theme_pack_override: ?[]const u8,
 ) SettingsAction {
     var action = SettingsAction{};
     const t = theme.activeTheme();
@@ -85,7 +112,7 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect);
@@ -106,21 +133,43 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, card_x, cursor_y, card_width);
+    cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, window_theme_pack_override, card_x, cursor_y, card_width, &action);
     cursor_y += t.spacing.md;
 
     const server_text = editorText(server_editor);
     const connect_host_text = editorText(connect_host_editor);
     const token_text = editorText(token_editor);
     const update_url_text = editorText(update_url_editor);
-    const theme_default_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    const theme_pack_text = editorText(theme_pack_editor);
+    const pack_default_mode = theme_runtime.getPackDefaultMode() orelse .light;
+    const effective_mode: theme.Mode = if (theme_runtime.getPackModeLockToDefault())
+        pack_default_mode
+    else if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        pack_default_mode;
+    const theme_default_light = effective_mode == .light;
+    const cfg_profile = cfg.ui_profile orelse "";
+    const desired_profile = profileLabel(profile_choice) orelse "";
     const dirty = !std.mem.eql(u8, server_text, cfg.server_url) or
         !std.mem.eql(u8, token_text, cfg.token) or
         !std.mem.eql(u8, connect_host_text, cfg.connect_host_override orelse "") or
         !std.mem.eql(u8, update_url_text, cfg.update_manifest_url orelse "") or
+        !std.mem.eql(u8, theme_pack_text, cfg.ui_theme_pack orelse "") or
+        !std.mem.eql(u8, desired_profile, cfg_profile) or
         theme_is_light != theme_default_light or
         (show_insecure_tls and insecure_tls_value != cfg.insecure_tls) or
         auto_connect_value != cfg.auto_connect_on_launch;
+
+    // Appearance toggles (theme mode / quick pack buttons / profile buttons) should feel persistent.
+    // If they changed, apply + request save immediately.
+    if (appearance_changed) {
+        appearance_changed = false;
+        if (applyAppearanceConfig(allocator, cfg, theme_pack_text, profileLabel(profile_choice))) {
+            action.config_updated = true;
+            action.save = true;
+        }
+    }
 
     cursor_y += drawConnectionCard(
         &dc,
@@ -165,8 +214,56 @@ pub fn draw(
     return action;
 }
 
-pub fn syncFromConfig(cfg: config.Config) void {
-    syncBuffers(std.heap.page_allocator, cfg);
+pub fn syncFromConfig(allocator: std.mem.Allocator, cfg: config.Config) void {
+    syncBuffers(allocator, cfg);
+}
+
+fn clearThemePackEntries(allocator: std.mem.Allocator) void {
+    for (theme_pack_entries.items) |entry| {
+        allocator.free(entry.name);
+    }
+    theme_pack_entries.deinit(allocator);
+    theme_pack_entries = .{};
+    theme_pack_entries_loaded = false;
+}
+
+fn refreshThemePackEntries(allocator: std.mem.Allocator) void {
+    clearThemePackEntries(allocator);
+    theme_pack_entries_loaded = true;
+
+    // std.fs directory iteration isn't available on wasm/wasi builds.
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) return;
+
+    var themes_dir = std.fs.cwd().openDir("themes", .{ .iterate = true }) catch return;
+    defer themes_dir.close();
+
+    var it = themes_dir.iterate();
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        if (entry.name.len == 0) continue;
+
+        var pack_dir = themes_dir.openDir(entry.name, .{}) catch continue;
+        defer pack_dir.close();
+
+        // "manifest.json" is our minimal marker for a theme pack folder.
+        var f = pack_dir.openFile("manifest.json", .{}) catch continue;
+        f.close();
+
+        const name = allocator.dupe(u8, entry.name) catch continue;
+        theme_pack_entries.append(allocator, .{ .name = name }) catch {
+            allocator.free(name);
+            break;
+        };
+    }
+
+    if (theme_pack_entries.items.len > 1) {
+        const Ctx = struct {};
+        std.sort.pdq(ThemePackEntry, theme_pack_entries.items, Ctx{}, struct {
+            fn lessThan(_: Ctx, a: ThemePackEntry, b: ThemePackEntry) bool {
+                return std.mem.lessThan(u8, a.name, b.name);
+            }
+        }.lessThan);
+    }
 }
 
 fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
@@ -175,9 +272,25 @@ fn syncBuffers(allocator: std.mem.Allocator, cfg: config.Config) void {
     ensureEditor(&connect_host_editor, allocator).setText(allocator, cfg.connect_host_override orelse "");
     ensureEditor(&token_editor, allocator).setText(allocator, cfg.token);
     ensureEditor(&update_url_editor, allocator).setText(allocator, cfg.update_manifest_url orelse "");
+    ensureEditor(&theme_pack_editor, allocator).setText(allocator, cfg.ui_theme_pack orelse "");
     insecure_tls_value = cfg.insecure_tls;
     auto_connect_value = cfg.auto_connect_on_launch;
-    theme_is_light = theme.modeFromLabel(cfg.ui_theme) == .light;
+    watch_theme_pack_value = cfg.ui_watch_theme_pack;
+    const pack_default = theme_runtime.getPackDefaultMode() orelse .light;
+    const effective_mode: theme.Mode = if (theme_runtime.getPackModeLockToDefault())
+        pack_default
+    else if (cfg.ui_theme) |label|
+        theme.modeFromLabel(label)
+    else
+        pack_default;
+    theme_is_light = effective_mode == .light;
+    profile_choice = profileChoiceFromLabel(cfg.ui_profile);
+
+    if (config_cwd) |value| allocator.free(value);
+    config_cwd = null;
+    if (builtin.target.os.tag != .emscripten and builtin.target.os.tag != .wasi) {
+        config_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+    }
 }
 
 fn ensureEditor(
@@ -198,13 +311,13 @@ fn editorText(editor: ?text_editor.TextEditor) []const u8 {
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Settings", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -220,30 +333,440 @@ fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { h
 fn drawAppearanceCard(
     dc: *draw_context.DrawContext,
     queue: *input_state.InputQueue,
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    window_theme_pack_override: ?[]const u8,
     x: f32,
     y: f32,
     width: f32,
+    action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const checkbox_height = line_height + t.spacing.xs * 2.0;
-    const height = padding + line_height + t.spacing.xs + checkbox_height + padding;
+    const checkbox_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
+    const button_height = widgets.button.defaultHeight(t, line_height);
+    const can_watch_pack = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) and !builtin.target.abi.isAndroid();
+    const can_window_override = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) and !builtin.target.abi.isAndroid();
+
+    var height = padding + line_height + t.spacing.xs + checkbox_height + t.spacing.sm;
+    if (can_watch_pack) height += checkbox_height + t.spacing.sm;
+    height += labeledInputHeight(input_height, line_height, t);
+    if (can_window_override) height += (line_height + t.spacing.xs) * 2.0 + button_height + t.spacing.sm;
+    // Helper text + config path + status + pack details.
+    height += (line_height + t.spacing.xs) * 4.0;
+    height += button_height + t.spacing.sm; // pack buttons row
+    height += button_height + t.spacing.sm; // recent row
+    height += button_height + t.spacing.sm; // pack picker row
+    height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
-    const content_y = drawCardBase(dc, rect, "Appearance");
+    const base = drawCardBase(dc, rect, "Appearance");
+    const inner = base.inner_rect;
+    const content_y = base.cursor_y;
+    const pack_default = theme_runtime.getPackDefaultMode() orelse .light;
+    const mode_locked = theme_runtime.getPackModeLockToDefault();
+    if (mode_locked) {
+        // Force the checkbox display to match the pack default.
+        theme_is_light = (pack_default == .light);
+    }
+
     var use_light = theme_is_light;
     const checkbox_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0] + padding, content_y },
-        .{ width - padding * 2.0, checkbox_height },
+        .{ inner.min[0] + padding, content_y },
+        .{ inner.size()[0] - padding * 2.0, checkbox_height },
     );
-    if (widgets.checkbox.draw(dc, checkbox_rect, "Light theme", &use_light, queue, .{})) {
+    const mode_label = if (mode_locked) "Light theme (locked by pack)" else "Light theme";
+    if (widgets.checkbox.draw(dc, checkbox_rect, mode_label, &use_light, queue, .{ .disabled = mode_locked })) {
         theme_is_light = use_light;
         theme.setMode(if (theme_is_light) .light else .dark);
         theme.apply();
+        appearance_changed = true;
+    }
+
+    var cursor_y = content_y + checkbox_height + t.spacing.sm;
+    if (can_watch_pack) {
+        var watch = watch_theme_pack_value;
+        const watch_rect = draw_context.Rect.fromMinSize(
+            .{ inner.min[0] + padding, cursor_y },
+            .{ inner.size()[0] - padding * 2.0, checkbox_height },
+        );
+        if (widgets.checkbox.draw(
+            dc,
+            watch_rect,
+            "Watch pack files (auto reload JSON)",
+            &watch,
+            queue,
+            .{},
+        )) {
+            watch_theme_pack_value = watch;
+            appearance_changed = true;
+        }
+        cursor_y += checkbox_height + t.spacing.sm;
+    }
+
+    // Profile picker near the top so it's easy to exit Fullscreen mode (especially when
+    // large hit targets make the rest of the card tall).
+    {
+        const picker_label = "Profile:";
+        const picker_x = inner.min[0] + padding;
+        dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
+
+        var profile_px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
+        const choices = [_]struct { id: ProfileChoice, label: []const u8 }{
+            .{ .id = .auto, .label = "Auto" },
+            .{ .id = .desktop, .label = "Desktop" },
+            .{ .id = .phone, .label = "Phone" },
+            .{ .id = .tablet, .label = "Tablet" },
+            .{ .id = .fullscreen, .label = "Fullscreen" },
+        };
+        for (choices) |c| {
+            const w = buttonWidth(dc, c.label, t);
+            const r = draw_context.Rect.fromMinSize(.{ profile_px, cursor_y }, .{ w, button_height });
+            const is_selected = profile_choice == c.id;
+            if (widgets.button.draw(dc, r, c.label, queue, .{ .variant = if (is_selected) .primary else .ghost })) {
+                profile_choice = c.id;
+                appearance_changed = true;
+            }
+            profile_px += w + t.spacing.xs;
+        }
+    }
+    cursor_y += button_height + t.spacing.sm;
+
+    cursor_y += drawLabeledInput(
+        dc,
+        queue,
+        allocator,
+        inner.min[0] + padding,
+        cursor_y,
+        inner.size()[0] - padding * 2.0,
+        "Theme pack path",
+        ensureEditor(&theme_pack_editor, allocator),
+        .{ .placeholder = "themes/zsc_showcase" },
+    );
+
+    if (can_window_override) {
+        const override_text = window_theme_pack_override orelse "";
+        const global_text = cfg.ui_theme_pack orelse "";
+        const effective_text = if (override_text.len > 0) override_text else global_text;
+
+        var buf0: [640]u8 = undefined;
+        const ov_line = if (override_text.len > 0)
+            (std.fmt.bufPrint(&buf0, "This window override: {s}", .{override_text}) catch "This window override: (format error)")
+        else
+            "This window override: (none)";
+        dc.drawText(ov_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+
+        var buf1: [640]u8 = undefined;
+        const eff_line = if (effective_text.len > 0)
+            (std.fmt.bufPrint(&buf1, "Effective pack: {s}", .{effective_text}) catch "Effective pack: (format error)")
+        else
+            "Effective pack: (built-in)";
+        dc.drawText(eff_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        cursor_y += line_height + t.spacing.xs;
+
+        // Override buttons row.
+        const button_y = cursor_y;
+        var bx = inner.min[0] + padding;
+        const browse_w = buttonWidth(dc, "Browse override...", t);
+        const browse_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ browse_w, button_height });
+        if (widgets.button.draw(dc, browse_rect, "Browse override...", queue, .{ .variant = .secondary })) {
+            action.browse_theme_pack_override = true;
+        }
+        bx += browse_w + t.spacing.xs;
+
+        const use_global_w = buttonWidth(dc, "Use global", t);
+        const use_global_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ use_global_w, button_height });
+        if (widgets.button.draw(dc, use_global_rect, "Use global", queue, .{ .variant = .ghost, .disabled = override_text.len == 0 })) {
+            action.clear_theme_pack_override = true;
+        }
+        bx += use_global_w + t.spacing.xs;
+
+        const can_reload_override = effective_text.len > 0;
+        const reload_w = buttonWidth(dc, "Reload window pack", t);
+        const reload_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ reload_w, button_height });
+        if (widgets.button.draw(dc, reload_rect, "Reload window pack", queue, .{ .variant = .ghost, .disabled = !can_reload_override })) {
+            action.reload_theme_pack_override = true;
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
+
+    const helper_line: []const u8 = if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)
+        "Edit path then press Apply or Reload (Reload re-fetches)."
+    else
+        "Edit path then press Apply or Reload (Reload re-reads JSON).";
+    dc.drawText(helper_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    cursor_y += line_height + t.spacing.xs;
+
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        dc.drawText(
+            "Config saves to: browser storage",
+            .{ inner.min[0] + padding, cursor_y },
+            .{ .color = t.colors.text_secondary },
+        );
+    } else if (config_cwd) |cwd| {
+        var buf: [512]u8 = undefined;
+        const line = std.fmt.bufPrint(&buf, "Config saves to: {s}/ziggystarclaw_config.json", .{cwd}) catch "Config saves to: (unknown)";
+        dc.drawText(line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    }
+    cursor_y += line_height + t.spacing.xs;
+
+    // Theme pack status (last load result).
+    {
+        const status = theme_runtime.getPackStatus();
+        const badge_label: []const u8 = switch (status.kind) {
+            .none => "Idle",
+            .fetching => "Fetching",
+            .ok => "OK",
+            .failed => "Error",
+        };
+        const badge_variant: BadgeVariant = switch (status.kind) {
+            .fetching => .warning,
+            .ok => .success,
+            .failed => .danger,
+            .none => .neutral,
+        };
+
+        const badge_sz = badgeSize(dc, badge_label, t);
+        const badge_rect = draw_context.Rect.fromMinSize(.{ inner.min[0] + padding, cursor_y }, badge_sz);
+        drawBadge(dc, badge_rect, badge_label, badge_variant);
+        const msg = if (status.msg.len > 0) status.msg else "(no status)";
+        dc.drawText(
+            msg,
+            .{ badge_rect.max[0] + t.spacing.sm, cursor_y + t.spacing.xs * 0.5 },
+            .{ .color = t.colors.text_secondary },
+        );
+    }
+    cursor_y += line_height + t.spacing.xs;
+
+    // Pack metadata (from manifest.json of the currently loaded pack).
+    {
+        const meta = theme_runtime.getPackMeta();
+        if (meta) |m| {
+            var buf: [512]u8 = undefined;
+            const name = if (m.name.len > 0) m.name else m.id;
+            const author = m.author;
+            const variant = if (m.defaults_variant.len > 0) m.defaults_variant else "?";
+            const prof = if (m.defaults_profile.len > 0) m.defaults_profile else "?";
+            const cap_multi: []const u8 = if (m.requires_multi_window) " multi-window" else "";
+            const cap_shaders: []const u8 = if (m.requires_custom_shaders) " shaders" else "";
+            const caps_sep: []const u8 = if (cap_multi.len > 0 or cap_shaders.len > 0) " | caps:" else "";
+            const by: []const u8 = if (author.len > 0) " by " else "";
+            const msg = std.fmt.bufPrint(&buf, "Pack: {s} (id: {s}){s}{s} | defaults: {s}/{s}{s}{s}{s}", .{
+                name,
+                m.id,
+                by,
+                author,
+                variant,
+                prof,
+                caps_sep,
+                cap_multi,
+                cap_shaders,
+            }) catch "Pack: (metadata unavailable)";
+            dc.drawText(msg, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        } else {
+            dc.drawText("Pack: (built-in)", .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        }
+    }
+    cursor_y += line_height + t.spacing.xs;
+
+    // Pack actions row.
+    const button_y = cursor_y;
+    var button_x = inner.min[0] + padding;
+
+    // In browser builds, we can't scan local folders. Keep a few quick picks.
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        const clean_w = buttonWidth(dc, "Clean", t);
+        const clean_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ clean_w, button_height });
+        if (widgets.button.draw(dc, clean_rect, "Clean", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_clean");
+            profile_choice = .desktop;
+            appearance_changed = true;
+        }
+        button_x += clean_w + t.spacing.xs;
+
+        const showcase_w = buttonWidth(dc, "Showcase", t);
+        const showcase_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ showcase_w, button_height });
+        if (widgets.button.draw(dc, showcase_rect, "Showcase", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_showcase");
+            profile_choice = .desktop;
+            appearance_changed = true;
+        }
+        button_x += showcase_w + t.spacing.xs;
+
+        const winamp_w = buttonWidth(dc, "Winamp", t);
+        const winamp_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ winamp_w, button_height });
+        if (widgets.button.draw(dc, winamp_rect, "Winamp", queue, .{ .variant = .secondary })) {
+            ensureEditor(&theme_pack_editor, allocator).setText(allocator, "themes/zsc_winamp");
+            profile_choice = .desktop;
+            // The winamp-ish pack is authored with intentionally dark fills in the style sheet.
+            // Switching to dark mode by default avoids a "mixed" look where token-driven panels
+            // render light while style-driven chrome stays dark.
+            theme_is_light = false;
+            theme.setMode(.dark);
+            theme.apply();
+            appearance_changed = true;
+        }
+        button_x += winamp_w + t.spacing.xs;
+    }
+
+    const theme_pack_text = editorText(theme_pack_editor);
+    const current_pack = cfg.ui_theme_pack orelse "";
+    const pack_dirty = !std.mem.eql(u8, current_pack, theme_pack_text);
+
+    const apply_w = buttonWidth(dc, "Apply", t);
+    const apply_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ apply_w, button_height });
+    if (widgets.button.draw(dc, apply_rect, "Apply", queue, .{ .variant = .primary, .disabled = !pack_dirty })) {
+        appearance_changed = true;
+    }
+    button_x += apply_w + t.spacing.xs;
+
+    const can_reload = theme_pack_text.len > 0 and !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
+    const reload_w = buttonWidth(dc, "Reload pack", t);
+    const reload_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ reload_w, button_height });
+    if (widgets.button.draw(dc, reload_rect, "Reload pack", queue, .{ .variant = .ghost, .disabled = !can_reload })) {
+        appearance_changed = true;
+        action.reload_theme_pack = true;
+    }
+    button_x += reload_w + t.spacing.xs;
+
+    const disable_w = buttonWidth(dc, "Disable pack", t);
+    const disable_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ disable_w, button_height });
+    if (widgets.button.draw(dc, disable_rect, "Disable pack", queue, .{ .variant = .ghost, .disabled = theme_pack_text.len == 0 })) {
+        ensureEditor(&theme_pack_editor, allocator).setText(allocator, "");
+        appearance_changed = true;
+    }
+    cursor_y += button_height + t.spacing.sm;
+
+    // Recent pack shortcuts (persisted in config).
+    {
+        const recent_label = "Recent:";
+        const rx0 = inner.min[0] + padding;
+        dc.drawText(recent_label, .{ rx0, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        var rx = rx0 + dc.measureText(recent_label, 0.0)[0] + t.spacing.sm;
+        const max_x = inner.max[0] - padding;
+
+        const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
+        if (recent.len == 0) {
+            dc.drawText("(none)", .{ rx, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        } else {
+            var shown: usize = 0;
+            for (recent) |item| {
+                const label = blk: {
+                    const themes_prefix = "themes/";
+                    if (std.mem.startsWith(u8, item, themes_prefix)) break :blk item[themes_prefix.len..];
+                    const idx = std.mem.lastIndexOfAny(u8, item, "/\\") orelse break :blk item;
+                    if (idx + 1 < item.len) break :blk item[idx + 1 ..];
+                    break :blk item;
+                };
+                const w = buttonWidth(dc, label, t);
+                if (rx + w > max_x) break;
+                const r = draw_context.Rect.fromMinSize(.{ rx, cursor_y }, .{ w, button_height });
+                if (widgets.button.draw(dc, r, label, queue, .{ .variant = .ghost })) {
+                    ensureEditor(&theme_pack_editor, allocator).setText(allocator, item);
+                    appearance_changed = true;
+                }
+                rx += w + t.spacing.xs;
+                shown += 1;
+            }
+            if (shown < recent.len and rx + dc.measureText("...", 0.0)[0] < max_x) {
+                dc.drawText("...", .{ rx, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+            }
+        }
+    }
+    cursor_y += button_height + t.spacing.sm;
+
+    // Theme pack picker row.
+    if (!(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi)) {
+        if (!theme_pack_entries_loaded) refreshThemePackEntries(allocator);
+    }
+
+    const can_refresh = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
+    const can_browse = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
+
+    const row_min_x = inner.min[0] + padding;
+    const row_max_x = inner.max[0] - padding;
+
+    // Right-side controls, anchored so they don't get pushed off-screen.
+    var right_x = row_max_x;
+    {
+        const browse_w = buttonWidth(dc, "Browse...", t);
+        right_x -= browse_w;
+        const browse_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ browse_w, button_height });
+        if (widgets.button.draw(dc, browse_rect, "Browse...", queue, .{ .variant = .secondary, .disabled = !can_browse })) {
+            action.browse_theme_pack = true;
+        }
+        right_x -= t.spacing.xs;
+    }
+
+    {
+        const refresh_w = buttonWidth(dc, "Refresh", t);
+        right_x -= refresh_w;
+        const refresh_rect = draw_context.Rect.fromMinSize(.{ right_x, cursor_y }, .{ refresh_w, button_height });
+        if (widgets.button.draw(dc, refresh_rect, "Refresh", queue, .{ .variant = .ghost, .disabled = !can_refresh })) {
+            refreshThemePackEntries(allocator);
+        }
+        right_x -= t.spacing.sm;
+    }
+
+    const packs_label = "Packs:";
+    dc.drawText(packs_label, .{ row_min_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+    var px = row_min_x + dc.measureText(packs_label, 0.0)[0] + t.spacing.sm;
+    const avail_max_x = @max(px, right_x);
+
+    if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
+        dc.drawText(
+            "(browser build: no local pack scan)",
+            .{ px, cursor_y + (button_height - line_height) * 0.5 },
+            .{ .color = t.colors.text_secondary },
+        );
+    } else if (theme_pack_entries.items.len == 0) {
+        dc.drawText("(none found in ./themes)", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+    } else {
+        var shown: usize = 0;
+        for (theme_pack_entries.items) |entry| {
+            var buf: [256]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&buf, "themes/{s}", .{entry.name}) catch entry.name;
+            const is_selected = std.mem.eql(u8, full_path, theme_pack_text);
+            const w = buttonWidth(dc, entry.name, t);
+            if (px + w > avail_max_x) break;
+            const r = draw_context.Rect.fromMinSize(.{ px, cursor_y }, .{ w, button_height });
+            if (widgets.button.draw(dc, r, entry.name, queue, .{ .variant = if (is_selected) .primary else .secondary })) {
+                ensureEditor(&theme_pack_editor, allocator).setText(allocator, full_path);
+                appearance_changed = true;
+            }
+            px += w + t.spacing.xs;
+            shown += 1;
+        }
+
+        if (shown < theme_pack_entries.items.len and px + dc.measureText("...", 0.0)[0] < avail_max_x) {
+            dc.drawText("...", .{ px, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
+        }
     }
 
     return height;
+}
+
+fn profileChoiceFromLabel(label: ?[]const u8) ProfileChoice {
+    if (label == null or label.?.len == 0) return .auto;
+    const value = label.?;
+    if (std.ascii.eqlIgnoreCase(value, "desktop")) return .desktop;
+    if (std.ascii.eqlIgnoreCase(value, "phone")) return .phone;
+    if (std.ascii.eqlIgnoreCase(value, "tablet")) return .tablet;
+    if (std.ascii.eqlIgnoreCase(value, "fullscreen")) return .fullscreen;
+    return .auto;
+}
+
+fn profileLabel(choice: ProfileChoice) ?[]const u8 {
+    return switch (choice) {
+        .auto => null,
+        .desktop => "desktop",
+        .phone => "phone",
+        .tablet => "tablet",
+        .fullscreen => "fullscreen",
+    };
 }
 
 fn drawConnectionCard(
@@ -260,12 +783,12 @@ fn drawConnectionCard(
     dirty: bool,
     action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
-    const checkbox_height = line_height + t.spacing.xs * 2.0;
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
+    const checkbox_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     var height = padding + line_height + t.spacing.sm;
     height += labeledInputHeight(input_height, line_height, t) * 3.0;
@@ -279,9 +802,11 @@ fn drawConnectionCard(
     height += line_height + padding;
 
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Connection");
-    const content_x = rect.min[0] + padding;
-    const content_w = width - padding * 2.0;
+    const base = drawCardBase(dc, rect, "Connection");
+    const inner = base.inner_rect;
+    var cursor_y = base.cursor_y;
+    const content_x = inner.min[0] + padding;
+    const content_w = inner.size()[0] - padding * 2.0;
 
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Server URL", ensureEditor(&server_editor, allocator), .{ .placeholder = "ws://host:port" });
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Connect Host (override)", ensureEditor(&connect_host_editor, allocator), .{});
@@ -306,13 +831,34 @@ fn drawConnectionCard(
     var cursor_x = content_x;
     const apply_w = buttonWidth(dc, "Apply", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ apply_w, button_height }), "Apply", queue, .{ .variant = .primary, .disabled = !dirty })) {
-        if (applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), editorText(update_url_editor))) {
+        if (applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
             action.config_updated = true;
         }
     }
     cursor_x += apply_w + t.spacing.sm;
     const save_w = buttonWidth(dc, "Save", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ save_w, button_height }), "Save", queue, .{ .variant = .secondary })) {
+        if (dirty and applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+        }
         action.save = true;
     }
     cursor_x += save_w + t.spacing.sm;
@@ -330,7 +876,16 @@ fn drawConnectionCard(
     } else {
         const conn_w = buttonWidth(dc, "Connect", t);
         if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ content_x, cursor_y }, .{ conn_w, button_height }), "Connect", queue, .{ .variant = .primary })) {
-            if (dirty and applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), editorText(update_url_editor))) {
+            if (dirty and applyConfig(
+                allocator,
+                cfg,
+                editorText(server_editor),
+                editorText(connect_host_editor),
+                editorText(token_editor),
+                editorText(update_url_editor),
+                editorText(theme_pack_editor),
+                profileLabel(profile_choice),
+            )) {
                 action.config_updated = true;
             }
             action.connect = true;
@@ -367,7 +922,7 @@ fn drawWindowsNodeServiceCard(
     action: *SettingsAction,
 ) f32 {
     _ = allocator;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
@@ -380,9 +935,10 @@ fn drawWindowsNodeServiceCard(
     height += button_height + padding;
 
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Windows Node Runner");
+    const base = drawCardBase(dc, rect, "Windows Node Runner");
+    var cursor_y = base.cursor_y;
 
-    const content_x = rect.min[0] + padding;
+    const content_x = base.inner_rect.min[0] + padding;
 
     dc.drawText(
         "Installs a Scheduled Task that runs node-mode at user logon (recommended for camera/screen/browser).",
@@ -479,18 +1035,20 @@ fn drawUpdatesCard(
     app_version: []const u8,
     action: *SettingsAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const progress_height: f32 = 10.0;
 
     const height = calcUpdatesHeight(snapshot, t, line_height, input_height, button_height, progress_height);
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Updates");
-    const content_x = rect.min[0] + padding;
-    const content_w = width - padding * 2.0;
+    const base = drawCardBase(dc, rect, "Updates");
+    const inner = base.inner_rect;
+    var cursor_y = base.cursor_y;
+    const content_x = inner.min[0] + padding;
+    const content_w = inner.size()[0] - padding * 2.0;
 
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Update Manifest URL", ensureEditor(&update_url_editor, allocator), .{});
     dc.drawText("Current version:", .{ content_x, cursor_y }, .{ .color = t.colors.text_secondary });
@@ -529,7 +1087,16 @@ fn drawUpdatesCard(
     const update_url_text = editorText(update_url_editor);
     const check_w = buttonWidth(dc, "Check Updates", t);
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ content_x, cursor_y }, .{ check_w, button_height }), "Check Updates", queue, .{ .variant = .secondary, .disabled = snapshot.in_flight or update_url_text.len == 0 })) {
-        if (applyConfig(allocator, cfg, editorText(server_editor), editorText(connect_host_editor), editorText(token_editor), update_url_text)) {
+        if (applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            update_url_text,
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
             action.config_updated = true;
         }
         action.check_updates = true;
@@ -687,17 +1254,33 @@ fn calcUpdatesHeight(
     return height;
 }
 
-fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
-    const t = theme.activeTheme();
+const CardBase = struct {
+    inner_rect: draw_context.Rect,
+    cursor_y: f32,
+};
+
+fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) CardBase {
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-    theme.push(.heading);
-    dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
+    const radius = ss.panel.radius orelse t.radius.md;
+    panel_chrome.draw(dc, rect, .{
+        .radius = radius,
+        .draw_shadow = true,
+        .draw_frame = true,
+        .draw_border = true,
+    });
+    const inner_rect = panel_chrome.contentRect(rect);
+    theme.pushFor(t, .heading);
+    dc.drawText(title, .{ inner_rect.min[0] + padding, inner_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
-    return rect.min[1] + padding + line_height + t.spacing.xs;
+    return .{
+        .inner_rect = inner_rect,
+        .cursor_y = inner_rect.min[1] + padding + line_height + t.spacing.xs,
+    };
 }
 
 fn drawLabeledInput(
@@ -711,12 +1294,14 @@ fn drawLabeledInput(
     editor: *text_editor.TextEditor,
     opts: widgets.text_input.Options,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
+    nav_router.pushScope(std.hash.Wyhash.hash(0, label));
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
+    nav_router.popScope();
     return labeledInputHeight(input_height, line_height, t);
 }
 
@@ -734,9 +1319,9 @@ fn drawCheckboxRow(
     value: *bool,
     disabled: bool,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, row_height });
     _ = widgets.checkbox.draw(dc, rect, label, value, queue, .{ .disabled = disabled });
     return row_height + t.spacing.xs;
@@ -752,7 +1337,7 @@ fn badgeSize(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.T
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);
@@ -771,7 +1356,7 @@ fn badgeColor(t: *const theme.Theme, variant: BadgeVariant) colors.Color {
 }
 
 fn drawProgressBar(dc: *draw_context.DrawContext, rect: draw_context.Rect, fraction: f32) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const clamped = std.math.clamp(fraction, 0.0, 1.0);
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.border, 0.2), .stroke = t.colors.border, .thickness = 1.0 });
     if (clamped > 0.0) {
@@ -787,18 +1372,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            scroll.* -= evt.mouse_wheel.delta[1] * step;
-        }
-    }
-    if (scroll.* < 0.0) scroll.* = 0.0;
-    if (scroll.* > max_scroll) scroll.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll, max_scroll, step);
 }
 
 fn drawDownloadOverlay(
@@ -807,7 +1381,7 @@ fn drawDownloadOverlay(
     queue: *input_state.InputQueue,
     snapshot: update_checker.Snapshot,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const downloading = snapshot.download_status == .downloading;
     if (downloading) {
         download_popup_opened = true;
@@ -824,7 +1398,7 @@ fn drawDownloadOverlay(
     const line_height = dc.lineHeight();
     const padding = t.spacing.md;
     const progress_height = line_height;
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const extra_button = if (downloading) 0.0 else button_height + t.spacing.sm;
     const card_height = padding + line_height + t.spacing.xs + progress_height + extra_button + padding;
 
@@ -837,7 +1411,7 @@ fn drawDownloadOverlay(
     const card_rect = draw_context.Rect.fromMinSize(card_pos, .{ card_width, card_height });
 
     dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Downloading update...", .{ card_rect.min[0] + padding, card_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -881,6 +1455,8 @@ fn applyConfig(
     connect_host_text: []const u8,
     token_text: []const u8,
     update_url_text: []const u8,
+    theme_pack_text: []const u8,
+    profile_label: ?[]const u8,
 ) bool {
     var changed = false;
 
@@ -919,13 +1495,19 @@ fn applyConfig(
         changed = true;
     }
 
-    const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
-    const desired_label = theme.labelForMode(desired_mode);
-    const current_label = cfg.ui_theme orelse "light";
-    if (!std.mem.eql(u8, current_label, desired_label)) {
-        if (cfg.ui_theme) |value| allocator.free(value);
-        cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
-        changed = true;
+    if (!theme_runtime.getPackModeLockToDefault()) {
+        const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+        const desired_label = theme.labelForMode(desired_mode);
+        const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+            theme.modeFromLabel(label)
+        else
+            theme_runtime.getPackDefaultMode() orelse .light;
+        const current_label = theme.labelForMode(current_mode);
+        if (!std.mem.eql(u8, current_label, desired_label)) {
+            if (cfg.ui_theme) |value| allocator.free(value);
+            cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
+            changed = true;
+        }
     }
 
     const current_update = cfg.update_manifest_url orelse "";
@@ -936,6 +1518,87 @@ fn applyConfig(
         }
         if (update_url_text.len > 0) {
             cfg.update_manifest_url = allocator.dupe(u8, update_url_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const current_theme_pack = cfg.ui_theme_pack orelse "";
+    if (!std.mem.eql(u8, current_theme_pack, theme_pack_text)) {
+        if (cfg.ui_theme_pack) |value| {
+            allocator.free(value);
+            cfg.ui_theme_pack = null;
+        }
+        if (theme_pack_text.len > 0) {
+            cfg.ui_theme_pack = allocator.dupe(u8, theme_pack_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const desired_profile = profile_label orelse "";
+    const current_profile = cfg.ui_profile orelse "";
+    if (!std.mem.eql(u8, current_profile, desired_profile)) {
+        if (cfg.ui_profile) |value| {
+            allocator.free(value);
+            cfg.ui_profile = null;
+        }
+        if (profile_label) |label| {
+            cfg.ui_profile = allocator.dupe(u8, label) catch return changed;
+        }
+        changed = true;
+    }
+
+    return changed;
+}
+
+fn applyAppearanceConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    theme_pack_text: []const u8,
+    profile_label: ?[]const u8,
+) bool {
+    var changed = false;
+
+    if (cfg.ui_watch_theme_pack != watch_theme_pack_value) {
+        cfg.ui_watch_theme_pack = watch_theme_pack_value;
+        changed = true;
+    }
+
+    if (!theme_runtime.getPackModeLockToDefault()) {
+        const desired_mode: theme.Mode = if (theme_is_light) .light else .dark;
+        const desired_label = theme.labelForMode(desired_mode);
+        const current_mode: theme.Mode = if (cfg.ui_theme) |label|
+            theme.modeFromLabel(label)
+        else
+            theme_runtime.getPackDefaultMode() orelse .light;
+        const current_label = theme.labelForMode(current_mode);
+        if (!std.mem.eql(u8, current_label, desired_label)) {
+            if (cfg.ui_theme) |value| allocator.free(value);
+            cfg.ui_theme = allocator.dupe(u8, desired_label) catch return changed;
+            changed = true;
+        }
+    }
+
+    const current_theme_pack = cfg.ui_theme_pack orelse "";
+    if (!std.mem.eql(u8, current_theme_pack, theme_pack_text)) {
+        if (cfg.ui_theme_pack) |value| {
+            allocator.free(value);
+            cfg.ui_theme_pack = null;
+        }
+        if (theme_pack_text.len > 0) {
+            cfg.ui_theme_pack = allocator.dupe(u8, theme_pack_text) catch return changed;
+        }
+        changed = true;
+    }
+
+    const desired_profile = profile_label orelse "";
+    const current_profile = cfg.ui_profile orelse "";
+    if (!std.mem.eql(u8, current_profile, desired_profile)) {
+        if (cfg.ui_profile) |value| {
+            allocator.free(value);
+            cfg.ui_profile = null;
+        }
+        if (profile_label) |label| {
+            cfg.ui_profile = allocator.dupe(u8, label) catch return changed;
         }
         changed = true;
     }

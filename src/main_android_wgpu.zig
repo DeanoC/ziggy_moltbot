@@ -4,6 +4,7 @@ const ui = @import("ui/main_window.zig");
 const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
+const theme_engine = @import("ui/theme_engine/theme_engine.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
@@ -828,9 +829,40 @@ fn run() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
+    // If the user has never saved a config yet, create one so it's easy to edit by hand.
+    const cfg_missing = blk: {
+        std.fs.cwd().access("ziggystarclaw_config.json", .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk true,
+            else => break :blk false,
+        };
+        break :blk false;
+    };
+    if (cfg_missing) {
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to write default config: {}", .{err});
+        };
+    }
+    if (config.migrateThemePackPath(allocator, &cfg)) {
+        logger.info("Migrated ui_theme_pack to: {s}", .{cfg.ui_theme_pack orelse ""});
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to save migrated config: {}", .{err});
+        };
+    }
+    {
+        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+        defer if (cwd) |v| allocator.free(v);
+        const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+        defer if (cfg_path) |v| allocator.free(v);
+        logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse "ziggystarclaw_config.json", cwd orelse "." });
+    }
     if (cfg.ui_theme) |label| {
         theme.setMode(theme.modeFromLabel(label));
     }
+    var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
+    defer theme_eng.deinit();
+    theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+        logger.warn("Failed to load theme pack: {}", .{err});
+    };
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -926,7 +958,13 @@ fn run() !void {
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    theme.applyTypography(dpi_scale);
+    var fb_w_init: c_int = 0;
+    var fb_h_init: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w_init, &fb_h_init);
+    const fb_w_u32: u32 = @intCast(if (fb_w_init > 0) fb_w_init else 1);
+    const fb_h_u32: u32 = @intCast(if (fb_h_init > 0) fb_h_init else 1);
+    theme_eng.resolveProfileFromConfig(fb_w_u32, fb_h_u32, cfg.ui_profile);
+    theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
     image_cache.init(allocator);
     attachment_cache.init(allocator);
     image_cache.setEnabled(true);
@@ -943,7 +981,8 @@ fn run() !void {
             return init_err;
         };
     };
-    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
+    var next_panel_id_global: workspace.PanelId = 1;
+    var manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
     defer manager.deinit();
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
@@ -1137,7 +1176,36 @@ fn run() !void {
             }
         }
 
+        if (ui_action.config_updated or ui_action.reload_theme_pack) {
+            const applied_ok = if (theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, ui_action.reload_theme_pack))
+                true
+            else |err| blk: {
+                if (cfg.ui_theme_pack) |pack_path| {
+                    logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+                } else {
+                    logger.warn("Failed to apply theme pack: {}", .{err});
+                }
+                break :blk false;
+            };
+            if (applied_ok) {
+                if (cfg.ui_theme_pack) |pack_path| {
+                    if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
+                        if (!ui_action.save_config) {
+                            config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+                                logger.err("Failed to save config: {}", .{err});
+                            };
+                        }
+                    }
+                }
+            }
+            theme_eng.resolveProfileFromConfig(fb_width, fb_height, cfg.ui_profile);
+            theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
+        }
+
         if (ui_action.save_config) {
+            const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+            defer if (cfg_path) |v| allocator.free(v);
+            logger.info("Saving config: {s}", .{cfg_path orelse "ziggystarclaw_config.json"});
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
@@ -1209,7 +1277,7 @@ fn run() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
-            ui.syncSettings(cfg);
+            ui.syncSettings(allocator, cfg);
         }
 
         if (ui_action.connect) {

@@ -6,6 +6,12 @@ const input_events = @import("../input/input_events.zig");
 const text_input_backend = @import("../input/text_input_backend.zig");
 const clipboard = @import("../clipboard.zig");
 const theme = @import("../theme.zig");
+const colors = @import("../theme/colors.zig");
+const image_cache = @import("../image_cache.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
+const style_sheet = @import("../theme_engine/style_sheet.zig");
+const nav_router = @import("../input/nav_router.zig");
+const focus_ring = @import("focus_ring.zig");
 
 pub const Options = struct {
     submit_on_enter: bool = true,
@@ -37,6 +43,9 @@ pub const TextEditor = struct {
     scroll_x: f32 = 0.0,
     focused: bool = false,
     dragging: bool = false,
+    drag_start_mouse: [2]f32 = .{ 0.0, 0.0 },
+    drag_anchor_cursor: usize = 0,
+    drag_selecting: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) !TextEditor {
         _ = allocator;
@@ -102,8 +111,16 @@ pub const TextEditor = struct {
         opts: Options,
     ) Action {
         var action = Action{};
-        const t = theme.activeTheme();
+        const t = ctx.theme;
         const padding = .{ t.spacing.sm, t.spacing.xs };
+        const nav_state = nav_router.get();
+        const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "text_editor", "editor") else 0;
+        if (nav_state) |nav| nav.registerItem(ctx.allocator, nav_id, rect);
+        const nav_active = if (nav_state) |nav| nav.isActive() else false;
+        const nav_focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+        if (nav_active and nav_focused and nav_router.wasActivated(queue, nav_id)) {
+            self.focused = true;
+        }
 
         const text_min = .{ rect.min[0] + padding[0], rect.min[1] + padding[1] };
         const text_max = .{ rect.max[0] - padding[0], rect.max[1] - padding[1] };
@@ -148,14 +165,42 @@ pub const TextEditor = struct {
             ensureCaretVisible(self, caret_pos[1], line_height, view_height, max_scroll);
         }
 
-        drawBackground(ctx, rect, t);
+        const allow_hover = theme_runtime.allowHover(queue);
+        const inside = rect.contains(queue.state.mouse_pos);
+        const hovered = allow_hover and inside;
+        const pressed = inside and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
+        const focused = self.focused or (nav_active and nav_focused);
+
+        if (focused) {
+            const ss = theme_runtime.getStyleSheet();
+            const radius = ss.text_input.radius orelse t.radius.md;
+            focus_ring.draw(ctx, rect, radius);
+        }
+        drawBackground(ctx, rect, t, hovered, pressed, focused, opts.read_only);
         ctx.pushClip(rect);
         defer ctx.popClip();
 
-        drawSelection(ctx, text_rect, &lines, self.buffer.items, self.selectionRange(), line_height, self.scroll_y, self.scroll_x, t, mask);
-        drawText(ctx, text_rect, &lines, self.buffer.items, line_height, self.scroll_y, self.scroll_x, t, mask);
+        const ss = theme_runtime.getStyleSheet();
+        const ti = ss.text_input;
+        // Resolve stateful style overrides for text/caret/selection/placeholder.
+        var text_color = ti.text orelse t.colors.text_primary;
+        var caret_color = ti.caret orelse text_color;
+        var selection_color: colors.Color = ti.selection orelse colors.withAlpha(t.colors.primary, 0.25);
+        const st = blk: {
+            if (opts.read_only) break :blk ti.states.read_only;
+            if (focused) break :blk ti.states.focused;
+            if (pressed) break :blk ti.states.pressed;
+            if (hovered) break :blk ti.states.hover;
+            break :blk style_sheet.TextInputStateStyle{};
+        };
+        if (st.text) |v| text_color = v;
+        if (st.caret) |v| caret_color = v;
+        if (st.selection) |v| selection_color = v;
+
+        drawSelection(ctx, text_rect, &lines, self.buffer.items, self.selectionRange(), line_height, self.scroll_y, self.scroll_x, selection_color, mask);
+        drawText(ctx, text_rect, &lines, self.buffer.items, line_height, self.scroll_y, self.scroll_x, text_color, mask);
         if (self.focused) {
-            drawCaret(ctx, text_rect, caret_pos, line_height, self.scroll_y, self.scroll_x, t);
+            drawCaret(ctx, text_rect, caret_pos, line_height, self.scroll_y, self.scroll_x, caret_color);
         }
 
         if (self.focused and !opts.read_only) {
@@ -182,12 +227,100 @@ pub const TextEditor = struct {
     }
 };
 
-fn drawBackground(ctx: *draw_context.DrawContext, rect: draw_context.Rect, t: *const theme.Theme) void {
-    ctx.drawRoundedRect(rect, t.radius.md, .{
-        .fill = t.colors.surface,
-        .stroke = t.colors.border,
-        .thickness = 1.0,
-    });
+fn drawBackground(
+    ctx: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    t: *const theme.Theme,
+    hovered: bool,
+    pressed: bool,
+    focused: bool,
+    read_only: bool,
+) void {
+    const ss = theme_runtime.getStyleSheet();
+    const ti = ss.text_input;
+    const radius = ti.radius orelse t.radius.md;
+    var border = ti.border orelse t.colors.border;
+    var fill = ti.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+
+    // Optional state overrides.
+    const st = blk: {
+        if (read_only) break :blk ti.states.read_only;
+        if (focused) break :blk ti.states.focused;
+        if (pressed) break :blk ti.states.pressed;
+        if (hovered) break :blk ti.states.hover;
+        break :blk style_sheet.TextInputStateStyle{};
+    };
+    if (st.border) |v| border = v;
+    if (st.fill) |v| fill = v;
+
+    switch (fill) {
+        .solid => |c| ctx.drawRoundedRect(rect, radius, .{
+            .fill = c,
+            .stroke = border,
+            .thickness = 1.0,
+        }),
+        .gradient4 => |g| {
+            ctx.drawRoundedRectGradient(rect, radius, .{
+                .tl = g.tl,
+                .tr = g.tr,
+                .bl = g.bl,
+                .br = g.br,
+            });
+            ctx.drawRoundedRect(rect, radius, .{ .stroke = border, .thickness = 1.0 });
+        },
+        .image => |img| {
+            if (!img.path.isSet()) {
+                ctx.drawRoundedRect(rect, radius, .{ .fill = t.colors.surface, .stroke = border, .thickness = 1.0 });
+                return;
+            }
+            var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const abs_path = theme_runtime.resolveThemeAssetPath(path_buf[0..], img.path.slice()) orelse blk: {
+                ctx.drawRoundedRect(rect, radius, .{ .fill = t.colors.surface, .stroke = border, .thickness = 1.0 });
+                break :blk "";
+            };
+            if (abs_path.len == 0) return;
+
+            image_cache.request(abs_path);
+            const entry = image_cache.get(abs_path) orelse {
+                ctx.drawRoundedRect(rect, radius, .{ .fill = t.colors.surface, .stroke = border, .thickness = 1.0 });
+                return;
+            };
+            if (entry.state != .ready) {
+                ctx.drawRoundedRect(rect, radius, .{ .fill = t.colors.surface, .stroke = border, .thickness = 1.0 });
+                return;
+            }
+            const w: f32 = @floatFromInt(@max(entry.width, 1));
+            const h: f32 = @floatFromInt(@max(entry.height, 1));
+            const scale = img.scale orelse 1.0;
+            const tint = img.tint orelse .{ 1.0, 1.0, 1.0, 1.0 };
+            const offset = img.offset_px orelse .{ 0.0, 0.0 };
+            const size = rect.size();
+            if (img.mode == .tile) {
+                const uv0_x = offset[0] / (w * scale);
+                const uv0_y = offset[1] / (h * scale);
+                const uv1_x = uv0_x + (size[0] / (w * scale));
+                const uv1_y = uv0_y + (size[1] / (h * scale));
+                ctx.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ uv0_x, uv0_y },
+                    .{ uv1_x, uv1_y },
+                    tint,
+                    true,
+                );
+            } else {
+                ctx.drawImageUv(
+                    draw_context.DrawContext.textureFromId(entry.texture_id),
+                    rect,
+                    .{ 0.0, 0.0 },
+                    .{ 1.0, 1.0 },
+                    tint,
+                    false,
+                );
+            }
+            ctx.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border, .thickness = 1.0 });
+        },
+    }
 }
 
 fn drawText(
@@ -198,7 +331,7 @@ fn drawText(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    text_color: colors.Color,
     mask: ?Mask,
 ) void {
     for (lines.items, 0..) |line, idx| {
@@ -206,10 +339,10 @@ fn drawText(
         if (y + line_height < text_rect.min[1] or y > text_rect.max[1]) continue;
         if (mask) |mask_info| {
             const count = countChars(text[line.start..line.end]);
-            drawMaskedLine(ctx, .{ text_rect.min[0] - scroll_x, y }, count, mask_info, t.colors.text_primary);
+            drawMaskedLine(ctx, .{ text_rect.min[0] - scroll_x, y }, count, mask_info, text_color);
         } else {
             const slice = text[line.start..line.end];
-            ctx.drawText(slice, .{ text_rect.min[0] - scroll_x, y }, .{ .color = t.colors.text_primary });
+            ctx.drawText(slice, .{ text_rect.min[0] - scroll_x, y }, .{ .color = text_color });
         }
     }
 }
@@ -223,12 +356,11 @@ fn drawSelection(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    highlight: colors.Color,
     mask: ?Mask,
 ) void {
     if (selection == null) return;
     const sel = selection.?;
-    const highlight = .{ t.colors.primary[0], t.colors.primary[1], t.colors.primary[2], 0.25 };
     for (lines.items, 0..) |line, idx| {
         if (sel[1] <= line.start or sel[0] >= line.end) continue;
         const line_sel_start = if (sel[0] > line.start) sel[0] else line.start;
@@ -251,7 +383,7 @@ fn drawCaret(
     line_height: f32,
     scroll_y: f32,
     scroll_x: f32,
-    t: *const theme.Theme,
+    color: colors.Color,
 ) void {
     const x = text_rect.min[0] + caret_pos[0] - scroll_x;
     const y = text_rect.min[1] + caret_pos[1] - scroll_y;
@@ -259,7 +391,7 @@ fn drawCaret(
         .min = .{ x, y },
         .max = .{ x + 1.5, y + line_height },
     };
-    ctx.drawRect(rect, .{ .fill = t.colors.text_primary });
+    ctx.drawRect(rect, .{ .fill = color });
 }
 
 fn handleMouse(
@@ -275,6 +407,7 @@ fn handleMouse(
 ) void {
     const mouse = queue.state.mouse_pos;
     const inside = rect.contains(mouse);
+    const drag_threshold_px: f32 = 3.0;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_down => |md| {
@@ -282,18 +415,25 @@ fn handleMouse(
                 if (inside) {
                     editor.focused = true;
                     editor.dragging = true;
+                    editor.drag_selecting = false;
                     const local = .{ mouse[0] - text_rect.min[0] + editor.scroll_x, mouse[1] - text_rect.min[1] };
                     editor.cursor = cursorFromPosition(ctx, editor.buffer.items, lines, local, editor.scroll_y, editor.scroll_x, line_height, mask);
-                    editor.selection_anchor = editor.cursor;
+                    editor.drag_start_mouse = mouse;
+                    editor.drag_anchor_cursor = editor.cursor;
+                    // Avoid accidental "select all then overwrite" behavior on click+jitter.
+                    // We only start selecting after crossing a small drag threshold.
+                    editor.selection_anchor = null;
                 } else {
                     editor.focused = false;
                     editor.dragging = false;
+                    editor.drag_selecting = false;
                     editor.selection_anchor = null;
                 }
             },
             .mouse_up => |mu| {
                 if (mu.button == .left) {
                     editor.dragging = false;
+                    editor.drag_selecting = false;
                 }
             },
             .mouse_wheel => |mw| {
@@ -306,7 +446,22 @@ fn handleMouse(
     }
 
     if (editor.dragging) {
+        if (queue.state.pointer_kind != .mouse and queue.state.pointer_dragging) {
+            // If the user started a scroll gesture on touch/pen, don't keep selecting text.
+            editor.dragging = false;
+            editor.drag_selecting = false;
+            editor.selection_anchor = null;
+            return;
+        }
         if (inside) {
+            if (!editor.drag_selecting) {
+                const dx = mouse[0] - editor.drag_start_mouse[0];
+                const dy = mouse[1] - editor.drag_start_mouse[1];
+                if (dx * dx + dy * dy >= drag_threshold_px * drag_threshold_px) {
+                    editor.drag_selecting = true;
+                    editor.selection_anchor = editor.drag_anchor_cursor;
+                }
+            }
             const local = .{ mouse[0] - text_rect.min[0] + editor.scroll_x, mouse[1] - text_rect.min[1] };
             editor.cursor = cursorFromPosition(ctx, editor.buffer.items, lines, local, editor.scroll_y, editor.scroll_x, line_height, mask);
         }

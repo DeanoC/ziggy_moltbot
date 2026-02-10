@@ -146,7 +146,7 @@ fn saveIdentity(
         .token_issued_at_ms = token_issued_at_ms,
     };
 
-    const json = try std.json.Stringify.valueAlloc(allocator, stored, .{});
+    const json = try std.json.Stringify.valueAlloc(allocator, stored, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
 
     try storage.set(allocator, default_key, json);

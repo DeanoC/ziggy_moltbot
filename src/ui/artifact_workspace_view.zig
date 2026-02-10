@@ -5,11 +5,17 @@ const draw_context = @import("draw_context.zig");
 const clipboard = @import("clipboard.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
+const nav_router = @import("input/nav_router.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const style_sheet = @import("theme_engine/style_sheet.zig");
+const panel_chrome = @import("panel_chrome.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const focus_ring = @import("widgets/focus_ring.zig");
 const ui_systems = @import("ui_systems.zig");
 const undo_redo = @import("systems/undo_redo.zig");
 const systems = @import("systems/systems.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const ArtifactTab = enum {
     preview,
@@ -58,7 +64,11 @@ pub fn draw(rect_override: ?draw_context.Rect) void {
     var dc = draw_context.DrawContext.init(std.heap.page_allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    // Scope this view so nav IDs for local helpers don't collide with other panels.
+    nav_router.pushScope(std.hash.Wyhash.hash(0, "artifact_workspace_view"));
+    defer nav_router.popScope();
+
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect);
@@ -92,13 +102,13 @@ pub fn draw(rect_override: ?draw_context.Rect) void {
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Artifact Workspace", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -117,7 +127,7 @@ fn drawTabs(
     header_height: f32,
     queue: *input_state.InputQueue,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     const tab_height = line_height + t.spacing.xs * 2.0;
 
@@ -143,7 +153,7 @@ fn drawTabs(
 }
 
 fn drawPreview(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     handleWheelScroll(queue, rect, &preview_scroll_y, preview_scroll_max, 36.0);
 
     dc.pushClip(rect);
@@ -164,7 +174,7 @@ fn drawPreview(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 }
 
 fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
 
     if (editor_state == null) {
         editor_state = text_editor.TextEditor.init(std.heap.page_allocator) catch null;
@@ -220,11 +230,11 @@ fn drawEditor(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *in
 }
 
 fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const icon_size = toolbarIconSize(t);
 
-    dc.drawRect(rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, rect);
     dc.drawRect(draw_context.Rect.fromMinSize(.{ rect.min[0], rect.min[1] }, .{ rect.size()[0], 1.0 }), .{ .fill = t.colors.divider });
 
     var cursor_x = rect.min[0] + padding;
@@ -256,9 +266,9 @@ fn drawToolbar(dc: *draw_context.DrawContext, rect: draw_context.Rect, queue: *i
 }
 
 fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const text = "This report summarizes sales performance, highlights key insights, and links supporting artifacts collected during the run.";
@@ -269,7 +279,7 @@ fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Report Summary", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -280,9 +290,9 @@ fn drawSummaryCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 }
 
 fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const bullet_height = dc.lineHeight();
@@ -298,7 +308,7 @@ fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Key Insights", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -312,9 +322,9 @@ fn drawInsightsCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 
 }
 
 fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const chart_height: f32 = 160.0;
@@ -325,7 +335,7 @@ fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sales Performance (Chart)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -354,7 +364,7 @@ fn drawChartCard(dc: *draw_context.DrawContext, pos: [2]f32, width: f32) f32 {
 }
 
 fn drawChart(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const bars = [_]f32{ 0.4, 0.6, 0.3, 0.8, 0.5, 0.7 };
     const bar_width: f32 = 18.0;
     const gap: f32 = 10.0;
@@ -375,7 +385,7 @@ fn drawChart(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
 }
 
 fn drawBullet(dc: *draw_context.DrawContext, pos: [2]f32, text: []const u8) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const radius: f32 = 3.0;
     const bullet_center = .{ pos[0] + radius, pos[1] + radius + 3.0 };
     dc.drawRoundedRect(
@@ -393,27 +403,121 @@ fn drawTab(
     active: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const tab_style = ss.tabs;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "artifact_workspace.tab", label) else 0;
+    if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},
         }
     }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
+    }
 
-    const base = if (active) t.colors.primary else t.colors.surface;
-    const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
-    dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = colors.withAlpha(base, alpha), .stroke = colors.withAlpha(t.colors.border, 0.3), .thickness = 1.0 });
+    const custom =
+        tab_style.radius != null or tab_style.fill != null or tab_style.text != null or tab_style.border != null or
+        tab_style.underline != null or tab_style.underline_thickness != null or
+        tab_style.states.hover.isSet() or tab_style.states.pressed.isSet() or tab_style.states.focused.isSet() or
+        tab_style.states.disabled.isSet() or tab_style.states.active.isSet() or tab_style.states.active_hover.isSet();
 
-    const text_color = if (active) t.colors.primary else t.colors.text_secondary;
-    const text_size = dc.measureText(label, 0.0);
-    dc.drawText(label, .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 }, .{ .color = text_color });
+    if (!custom) {
+        const base = if (active) t.colors.primary else t.colors.surface;
+        const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
+        dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = colors.withAlpha(base, alpha), .stroke = colors.withAlpha(t.colors.border, 0.3), .thickness = 1.0 });
+
+        const text_color = if (active) t.colors.primary else t.colors.text_secondary;
+        const text_size = dc.measureText(label, 0.0);
+        dc.drawText(label, .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 }, .{ .color = text_color });
+    } else {
+        const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+        const radius = tab_style.radius orelse t.radius.lg;
+        var fill: ?style_sheet.Paint = tab_style.fill;
+        var text_color: colors.Color = tab_style.text orelse t.colors.text_secondary;
+        var border_color: colors.Color = tab_style.border orelse colors.withAlpha(t.colors.border, 0.3);
+        var underline_color: colors.Color = tab_style.underline orelse transparent;
+
+        if (active) {
+            if (tab_style.states.active.isSet()) {
+                const st = tab_style.states.active;
+                if (st.fill) |v| fill = v;
+                if (st.text) |v| text_color = v;
+                if (st.border) |v| border_color = v;
+                if (st.underline) |v| underline_color = v;
+            } else {
+                text_color = tab_style.text orelse t.colors.primary;
+                underline_color = tab_style.underline orelse t.colors.primary;
+                if (fill == null) fill = style_sheet.Paint{ .solid = colors.withAlpha(t.colors.primary, 0.10) };
+            }
+        }
+
+        if (focused and tab_style.states.focused.isSet()) {
+            const st = tab_style.states.focused;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (hovered and tab_style.states.hover.isSet()) {
+            const st = tab_style.states.hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (pressed and tab_style.states.pressed.isSet()) {
+            const st = tab_style.states.pressed;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (active and hovered and tab_style.states.active_hover.isSet()) {
+            const st = tab_style.states.active_hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        } else if (hovered) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
+        }
+        if (border_color[3] > 0.001) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+        }
+
+        const text_size = dc.measureText(label, 0.0);
+        dc.drawText(label, .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 }, .{ .color = text_color });
+
+        const th = tab_style.underline_thickness orelse 2.0;
+        if (underline_color[3] > 0.001 and th > 0.0) {
+            dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, th, underline_color);
+        }
+    }
+
+    if (focused) {
+        focus_ring.draw(dc, rect, t.radius.lg);
+    }
 
     return clicked;
 }
@@ -425,19 +529,39 @@ fn drawToolbarIcon(
     icon: ToolbarIcon,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const rect = draw_context.Rect.fromMinSize(pos, .{ size, size });
-    const hovered = rect.contains(queue.state.mouse_pos);
+
+    const icon_label: []const u8 = switch (icon) {
+        .copy => "copy",
+        .undo => "undo",
+        .redo => "redo",
+        .expand => "expand",
+    };
+
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "artifact_workspace.toolbar_icon", icon_label) else 0;
+    if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |nav| nav.isActive() else false;
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     const bg = if (hovered) colors.withAlpha(t.colors.primary, 0.12) else t.colors.surface;
@@ -480,6 +604,10 @@ fn drawToolbarIcon(
         },
     }
 
+    if (focused) {
+        focus_ring.draw(dc, rect, t.radius.sm);
+    }
+
     return clicked;
 }
 
@@ -507,19 +635,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn ensureUndoStack() void {

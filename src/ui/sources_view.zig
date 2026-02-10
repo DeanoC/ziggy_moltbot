@@ -10,6 +10,9 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 const source_browser = components.composite.source_browser;
 
@@ -43,7 +46,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect, queue);
@@ -168,13 +171,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Sources", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -183,7 +186,7 @@ fn drawHeader(
     const subtitle_height = dc.lineHeight();
     dc.drawText("Indexed Content", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-    const button_height = subtitle_height + t.spacing.xs * 2.0;
+    const button_height = @max(subtitle_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const button_label = "Add Source";
     const button_width = buttonWidth(dc, button_label, t);
     const button_rect = draw_context.Rect.fromMinSize(
@@ -211,7 +214,7 @@ fn drawSplitBrowser(
     previews: []const sessions_panel.AttachmentOpen,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_left: f32 = 200.0;
     const min_right: f32 = 240.0;
@@ -259,13 +262,13 @@ fn drawSourcesPanel(
     active_index: ?usize,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sources", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight() + t.spacing.xs;
@@ -278,7 +281,7 @@ fn drawSourcesPanel(
     drawSourcesList(allocator, ctx, dc, list_rect, queue, sources, map, active_index, action);
 
     const add_label = "+ Add Source";
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const button_width = buttonWidth(dc, add_label, t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, rect.max[1] - padding - button_height },
@@ -298,11 +301,11 @@ fn drawSourcesList(
     active_index: ?usize,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const group_height = line_height + t.spacing.xs + 1.0;
 
     var total_height: f32 = 0.0;
@@ -332,7 +335,7 @@ fn drawSourcesList(
             if (last_type != null) {
                 y += t.spacing.xs;
             }
-            theme.push(.heading);
+            theme.pushFor(t, .heading);
             dc.drawText(sourceGroupLabel(source.source_type), .{ rect.min[0], y }, .{ .color = t.colors.text_primary });
             theme.pop();
             y += line_height + t.spacing.xs;
@@ -346,6 +349,16 @@ fn drawSourcesList(
             const selected = active_index != null and active_index.? == idx;
             var label_buf: [196]u8 = undefined;
             const label = sourceLabel(&label_buf, source);
+            var row_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.sources.source_row");
+            row_scope = std.hash.Wyhash.hash(row_scope, source.name);
+            row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&source.source_type));
+            row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&idx));
+            if (map[idx]) |session_index| {
+                row_scope = std.hash.Wyhash.hash(row_scope, ctx.sessions.items[session_index].key);
+            }
+            nav_router.pushScope(row_scope);
+            defer nav_router.popScope();
+
             if (drawSourceRow(dc, row_rect, label, selected, queue)) {
                 selected_source_index = idx;
                 selected_file_index = null;
@@ -367,15 +380,27 @@ fn drawSourceRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.source_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -404,13 +429,13 @@ fn drawFilesPanel(
     action: *SourcesViewAction,
 ) void {
     _ = ctx;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
 
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const button_width = buttonWidth(dc, "Project Files ▾", t);
     const button_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, cursor_y },
@@ -444,11 +469,11 @@ fn drawFilesList(
     previews: []const sessions_panel.AttachmentOpen,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const section_height = line_height + t.spacing.xs * 2.0;
 
     var total_height: f32 = 0.0;
@@ -474,6 +499,13 @@ fn drawFilesList(
 
     if (sections.len > 0) {
         for (sections, 0..) |section, section_idx| {
+            // Scope section header + its file rows, so nav IDs are stable and don't collide between sections.
+            var section_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.section");
+            section_scope = std.hash.Wyhash.hash(section_scope, section.name);
+            section_scope = std.hash.Wyhash.hash(section_scope, std.mem.asBytes(&section.start_index));
+            nav_router.pushScope(section_scope);
+            defer nav_router.popScope();
+
             const header_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], section_height });
             const header_label = if (section.expanded.*) "v" else ">";
             const label = std.fmt.allocPrint(allocator, "{s} {s}", .{ header_label, section.name }) catch section.name;
@@ -486,9 +518,16 @@ fn drawFilesList(
 
             if (section.expanded.*) {
                 for (section.files, 0..) |file, idx| {
+                    const global_index = section.start_index + idx;
+                    // Scope each file row so repeated labels across sections don't share nav IDs.
+                    var file_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.file");
+                    file_scope = std.hash.Wyhash.hash(file_scope, file.name);
+                    file_scope = std.hash.Wyhash.hash(file_scope, std.mem.asBytes(&global_index));
+                    nav_router.pushScope(file_scope);
+                    defer nav_router.popScope();
+
                     const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
                     if (row_rect.max[1] >= rect.min[1] and row_rect.min[1] <= rect.max[1]) {
-                        const global_index = section.start_index + idx;
                         const selected = selected_file_index != null and selected_file_index.? == global_index;
                         if (drawFileRow(dc, row_rect, file, selected, queue)) {
                             selected_file_index = global_index;
@@ -507,6 +546,13 @@ fn drawFilesList(
         dc.drawText("No files in this source.", .{ rect.min[0], y }, .{ .color = t.colors.text_secondary });
     } else {
         for (files, 0..) |file, idx| {
+            // Scope each file row so repeated names don't collide.
+            var file_scope: u64 = std.hash.Wyhash.hash(0, "sources_view.files.file");
+            file_scope = std.hash.Wyhash.hash(file_scope, file.name);
+            file_scope = std.hash.Wyhash.hash(file_scope, std.mem.asBytes(&idx));
+            nav_router.pushScope(file_scope);
+            defer nav_router.popScope();
+
             const row_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], y }, .{ rect.size()[0], row_height });
             if (row_rect.max[1] >= rect.min[1] and row_rect.min[1] <= rect.max[1]) {
                 const selected = selected_file_index != null and selected_file_index.? == idx;
@@ -530,15 +576,27 @@ fn drawSectionHeader(
     label: []const u8,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.section_header", "toggle") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -548,7 +606,7 @@ fn drawSectionHeader(
         dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
     }
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(label, .{ rect.min[0] + t.spacing.xs, rect.min[1] + t.spacing.xs }, .{ .color = t.colors.text_primary });
     theme.pop();
     return clicked;
@@ -561,15 +619,27 @@ fn drawFileRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sources_view.file_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -649,13 +719,13 @@ fn drawSelectedFileCard(
     queue: *input_state.InputQueue,
     action: *SourcesViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.md;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Selected File", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += dc.lineHeight() + t.spacing.sm;
@@ -666,6 +736,15 @@ fn drawSelectedFileCard(
     }
 
     const preview = previews[selected_file_index.?];
+
+    // Scope actions to the selected file so repeating labels like "Open URL"
+    // don't collide when the user changes selection.
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(preview.url);
+    hasher.update(std.mem.asBytes(&preview.timestamp));
+    nav_router.pushScope(hasher.final());
+    defer nav_router.popScope();
+
     dc.drawText("Name:", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     dc.drawText(preview.name, .{ rect.min[0] + padding + 60.0, cursor_y }, .{ .color = t.colors.text_primary });
     cursor_y += dc.lineHeight() + t.spacing.xs;
@@ -678,7 +757,7 @@ fn drawSelectedFileCard(
     dc.drawText(preview.role, .{ rect.min[0] + padding + 60.0, cursor_y }, .{ .color = t.colors.text_primary });
     cursor_y += dc.lineHeight() + t.spacing.sm;
 
-    const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
     const open_label = "Open in Editor";
     const open_width = buttonWidth(dc, open_label, t);
     const open_rect = draw_context.Rect.fromMinSize(
@@ -710,7 +789,7 @@ fn computeSelectedCardHeight(dc: *draw_context.DrawContext, previews: []const se
         return padding * 2.0 + title_height + t.spacing.sm + body_height;
     }
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const body_height = line_height * 3.0 + t.spacing.xs * 2.0 + t.spacing.sm + button_height;
     return padding * 2.0 + title_height + t.spacing.sm + body_height;
 }
@@ -724,7 +803,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -773,19 +852,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn buttonWidth(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {

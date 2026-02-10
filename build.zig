@@ -211,6 +211,26 @@ pub fn build(b: *std.Build) void {
         }
 
         b.installArtifact(native_exe);
+        // Ship a default example theme pack alongside the executable so theme packs work
+        // consistently in dev (zig-out) and deployed installs.
+        const clean_example_theme = b.addInstallDirectory(.{
+            .source_dir = b.path("docs/theme_engine/examples/zsc_clean"),
+            .install_dir = .bin,
+            .install_subdir = "themes/zsc_clean",
+        });
+        b.getInstallStep().dependOn(&clean_example_theme.step);
+        const showcase_example_theme = b.addInstallDirectory(.{
+            .source_dir = b.path("docs/theme_engine/examples/zsc_showcase"),
+            .install_dir = .bin,
+            .install_subdir = "themes/zsc_showcase",
+        });
+        b.getInstallStep().dependOn(&showcase_example_theme.step);
+        const brushed_metal_example_theme = b.addInstallDirectory(.{
+            .source_dir = b.path("docs/theme_engine/examples/zsc_brushed_metal"),
+            .install_dir = .bin,
+            .install_subdir = "themes/zsc_brushed_metal",
+        });
+        b.getInstallStep().dependOn(&brushed_metal_example_theme.step);
 
         const cli_module = b.createModule(.{
             .root_source_file = b.path("src/main_cli.zig"),
@@ -285,6 +305,7 @@ pub fn build(b: *std.Build) void {
             "tests/ui_tests.zig",
             "tests/image_cache_tests.zig",
             "tests/update_checker_tests.zig",
+            "tests/theme_engine_tests.zig",
             "tests/unified_config_programdata_tests.zig",
         };
 

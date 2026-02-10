@@ -7,7 +7,12 @@ const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
+const surface_chrome = @import("surface_chrome.zig");
 const operator_view = @import("operator_view.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const style_sheet = @import("theme_engine/style_sheet.zig");
+const panel_chrome = @import("panel_chrome.zig");
+const nav_router = @import("input/nav_router.zig");
 
 pub const ApprovalsInboxAction = struct {
     resolve_approval: ?operator_view.ExecApprovalResolveAction = null,
@@ -54,7 +59,7 @@ pub fn draw(
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
 
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&dc, panel_rect, queue, ctx.approvals.items.len);
@@ -120,13 +125,13 @@ fn drawHeader(
     pending_count: usize,
 ) struct { height: f32 } {
     _ = queue;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Approvals Needed", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -155,10 +160,10 @@ fn drawFilters(
     queue: *input_state.InputQueue,
     counts: Counts,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const pill_height = line_height + t.spacing.xs * 2.0;
+    const pill_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
 
     var all_buf: [24]u8 = undefined;
     var pending_buf: [24]u8 = undefined;
@@ -334,7 +339,7 @@ fn drawApprovalDetailPane(
     action: *ApprovalsInboxAction,
     counts: Counts,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
@@ -455,17 +460,18 @@ fn drawApprovalCard(
     approval: types.ExecApproval,
     is_pending: bool,
 ) ApprovalDecision {
-    const t = theme.activeTheme();
+    nav_router.pushScope(std.hash.Wyhash.hash(0, approval.id));
+    defer nav_router.popScope();
+
+    const t = dc.theme;
     const padding = t.spacing.md;
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-
     // Header + status badge
-    theme.push(.heading);
-    const title = "Execution Approval";
-    dc.drawText(title, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
+    theme.pushFor(t, .heading);
+    dc.drawText("Execution Approval", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     const status_label = if (is_pending)
@@ -559,7 +565,7 @@ fn drawApprovalCard(
 
     if (approval.can_resolve) {
         const disabled = ctx.pending_approval_resolve_request_id != null;
-        const button_height = dc.lineHeight() + t.spacing.xs * 2.0;
+        const button_height = widgets.button.defaultHeight(t, dc.lineHeight());
         const approve_w = buttonWidth(dc, "Approve", t);
         const decline_w = buttonWidth(dc, "Decline", t);
         const allow_w = buttonWidth(dc, "Allow Always", t);
@@ -615,7 +621,7 @@ fn drawPayloadBox(
     id: []const u8,
     text: []const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     var lines = std.ArrayList(Line).empty;
@@ -674,19 +680,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn drawTab(
@@ -696,36 +690,131 @@ fn drawTab(
     active: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const tab_style = ss.tabs;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "approvals_inbox.tab", label) else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},
         }
     }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
+    }
 
-    const base = if (active) t.colors.primary else t.colors.surface;
-    const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
-    const fill = colors.withAlpha(base, alpha);
-    const border = colors.withAlpha(t.colors.border, if (active) 0.6 else 0.3);
-    dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = fill, .stroke = border, .thickness = 1.0 });
+    const custom =
+        tab_style.radius != null or tab_style.fill != null or tab_style.text != null or tab_style.border != null or
+        tab_style.underline != null or tab_style.underline_thickness != null or
+        tab_style.states.hover.isSet() or tab_style.states.pressed.isSet() or tab_style.states.focused.isSet() or
+        tab_style.states.disabled.isSet() or tab_style.states.active.isSet() or tab_style.states.active_hover.isSet();
 
-    const text_color = if (active) t.colors.primary else t.colors.text_secondary;
-    const text_size = dc.measureText(label, 0.0);
-    const text_pos = .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 };
-    dc.drawText(label, text_pos, .{ .color = text_color });
+    if (!custom) {
+        const base = if (active) t.colors.primary else t.colors.surface;
+        const alpha: f32 = if (active) 0.18 else if (hovered) 0.1 else 0.0;
+        const fill = colors.withAlpha(base, alpha);
+        const border = colors.withAlpha(t.colors.border, if (active) 0.6 else 0.3);
+        dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = fill, .stroke = border, .thickness = 1.0 });
+
+        const text_color = if (active) t.colors.primary else t.colors.text_secondary;
+        const text_size = dc.measureText(label, 0.0);
+        const text_pos = .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 };
+        dc.drawText(label, text_pos, .{ .color = text_color });
+    } else {
+        const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+        const radius = tab_style.radius orelse t.radius.lg;
+        var fill: ?style_sheet.Paint = tab_style.fill;
+        var text_color: colors.Color = tab_style.text orelse t.colors.text_secondary;
+        var border_color: colors.Color = tab_style.border orelse colors.withAlpha(t.colors.border, 0.3);
+        var underline_color: colors.Color = tab_style.underline orelse transparent;
+
+        if (active) {
+            if (tab_style.states.active.isSet()) {
+                const st = tab_style.states.active;
+                if (st.fill) |v| fill = v;
+                if (st.text) |v| text_color = v;
+                if (st.border) |v| border_color = v;
+                if (st.underline) |v| underline_color = v;
+            } else {
+                text_color = tab_style.text orelse t.colors.primary;
+                underline_color = tab_style.underline orelse t.colors.primary;
+                if (fill == null) fill = style_sheet.Paint{ .solid = colors.withAlpha(t.colors.primary, 0.10) };
+            }
+        }
+
+        if (focused and tab_style.states.focused.isSet()) {
+            const st = tab_style.states.focused;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (hovered and tab_style.states.hover.isSet()) {
+            const st = tab_style.states.hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (pressed and tab_style.states.pressed.isSet()) {
+            const st = tab_style.states.pressed;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (active and hovered and tab_style.states.active_hover.isSet()) {
+            const st = tab_style.states.active_hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        } else if (hovered) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
+        }
+        if (border_color[3] > 0.001) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+        }
+
+        const text_size = dc.measureText(label, 0.0);
+        const text_pos = .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 };
+        dc.drawText(label, text_pos, .{ .color = text_color });
+
+        const th = tab_style.underline_thickness orelse 2.0;
+        if (underline_color[3] > 0.001 and th > 0.0) {
+            dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, th, underline_color);
+        }
+    }
+
+    if (focused) {
+        widgets.focus_ring.draw(dc, rect, t.radius.lg);
+    }
 
     return clicked;
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const base = badgeColor(t, variant);
     const bg = colors.withAlpha(base, 0.18);
     const border = colors.withAlpha(base, 0.4);
@@ -764,7 +853,7 @@ fn approvalCardHeight(
     can_resolve: bool,
 ) f32 {
     _ = payload;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     var height: f32 = padding * 2.0;
     height += dc.lineHeight();

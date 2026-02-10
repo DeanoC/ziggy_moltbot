@@ -12,6 +12,7 @@ pub const PanelKind = enum {
     CodeEditor,
     ToolOutput,
     Control,
+    Showcase,
 };
 
 pub const PanelState = struct {
@@ -81,6 +82,7 @@ pub const PanelData = union(enum) {
     CodeEditor: CodeEditorPanel,
     ToolOutput: ToolOutputPanel,
     Control: ControlPanel,
+    Showcase: void,
 
     pub fn deinit(self: *PanelData, allocator: std.mem.Allocator) void {
         switch (self.*) {
@@ -114,6 +116,7 @@ pub const PanelData = union(enum) {
             .Control => |*ctrl| {
                 if (ctrl.selected_agent_id) |id| allocator.free(id);
             },
+            .Showcase => {},
         }
     }
 };
@@ -178,6 +181,7 @@ pub const Workspace = struct {
     pub fn toSnapshot(self: *const Workspace, allocator: std.mem.Allocator) !WorkspaceSnapshot {
         var panels = try allocator.alloc(PanelSnapshot, self.panels.items.len);
         var filled: usize = 0;
+        var max_id: PanelId = 0;
         errdefer {
             for (panels[0..filled]) |panel| {
                 freePanelSnapshot(allocator, panel);
@@ -185,12 +189,14 @@ pub const Workspace = struct {
             allocator.free(panels);
         }
         for (self.panels.items, 0..) |panel, idx| {
+            if (panel.id > max_id) max_id = panel.id;
             panels[idx] = try panelToSnapshot(allocator, panel);
             filled = idx + 1;
         }
         return .{
             .active_project = self.active_project,
             .focused_panel_id = self.focused_panel_id,
+            .next_panel_id = max_id + 1,
             .custom_layout = .{
                 .left_ratio = self.custom_layout.left_ratio,
                 .min_left_width = self.custom_layout.min_left_width,
@@ -274,8 +280,10 @@ pub const PanelSnapshot = struct {
 pub const WorkspaceSnapshot = struct {
     active_project: ProjectId = 0,
     focused_panel_id: ?PanelId = null,
+    next_panel_id: PanelId = 1,
     custom_layout: ?CustomLayoutSnapshot = null,
     panels: ?[]PanelSnapshot = null,
+    detached_windows: ?[]DetachedWindowSnapshot = null,
 
     pub fn deinit(self: *WorkspaceSnapshot, allocator: std.mem.Allocator) void {
         if (self.panels) |panels| {
@@ -284,6 +292,43 @@ pub const WorkspaceSnapshot = struct {
             }
             allocator.free(panels);
         }
+        if (self.detached_windows) |wins| {
+            for (wins) |*win| {
+                win.deinit(allocator);
+            }
+            allocator.free(wins);
+        }
+    }
+};
+
+pub const DetachedWindowSnapshot = struct {
+    // Window metadata.
+    title: []const u8,
+    width: u32,
+    height: u32,
+    profile: ?[]const u8 = null,
+    variant: ?[]const u8 = null,
+    image_sampling: ?[]const u8 = null,
+    pixel_snap_textured: ?bool = null,
+
+    // Workspace-ish state for this window.
+    active_project: ProjectId = 0,
+    focused_panel_id: ?PanelId = null,
+    custom_layout: ?CustomLayoutSnapshot = null,
+    panels: ?[]PanelSnapshot = null,
+
+    pub fn deinit(self: *DetachedWindowSnapshot, allocator: std.mem.Allocator) void {
+        allocator.free(self.title);
+        if (self.profile) |p| allocator.free(p);
+        if (self.variant) |p| allocator.free(p);
+        if (self.image_sampling) |p| allocator.free(p);
+        if (self.panels) |panels| {
+            for (panels) |panel| {
+                freePanelSnapshot(allocator, panel);
+            }
+            allocator.free(panels);
+        }
+        self.* = undefined;
     }
 };
 
@@ -348,6 +393,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
             };
         },
+        .Showcase => {},
     }
 
     return snap;
@@ -439,6 +485,15 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 .state = state_val,
             };
         },
+        .Showcase => {
+            return .{
+                .id = snap.id,
+                .kind = .Showcase,
+                .title = title_copy,
+                .data = .{ .Showcase = {} },
+                .state = state_val,
+            };
+        },
     }
 }
 
@@ -459,7 +514,9 @@ fn parseControlTab(label: []const u8) ControlTab {
     return .Agents;
 }
 
-fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
+/// Free any allocations owned by a `PanelSnapshot` created via `panelToSnapshot`
+/// or JSON parsing. Useful for snapshot sanitation/compaction.
+pub fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
     allocator.free(panel.title);
     if (panel.chat) |chat| {
         if (chat.agent_id) |agent| allocator.free(agent);
@@ -481,6 +538,8 @@ fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
         if (ctrl.selected_agent_id) |id| allocator.free(id);
     }
 }
+
+// (DetachedWindowSnapshot.deinit() handles freeing.)
 
 pub fn makeChatPanel(
     allocator: std.mem.Allocator,
@@ -559,6 +618,17 @@ pub fn makeControlPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
         .kind = .Control,
         .title = title,
         .data = .{ .Control = .{} },
+        .state = .{},
+    };
+}
+
+pub fn makeShowcasePanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Showcase");
+    return .{
+        .id = id,
+        .kind = .Showcase,
+        .title = title,
+        .data = .{ .Showcase = {} },
         .state = .{},
     };
 }

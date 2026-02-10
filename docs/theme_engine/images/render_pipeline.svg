@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="720" viewBox="0 0 1400 720">
+  <defs>
+    <style>
+      .bg{fill:#0b0f14;}
+      .title{fill:#e6edf7;font:700 28px Arial,sans-serif;}
+      .sub{fill:#b7c4d8;font:14px Arial,sans-serif;}
+      .box{fill:#111826;stroke:#2a3a52;stroke-width:2;}
+      .box2{fill:#0f1724;stroke:#2a3a52;stroke-width:2;}
+      .label{fill:#e6edf7;font:700 16px Arial,sans-serif;}
+      .text{fill:#e6edf7;font:14px Arial,sans-serif;}
+      .muted{fill:#b7c4d8;font:13px Arial,sans-serif;}
+      .arrow{stroke:#7aa2ff;stroke-width:3;fill:none;}
+      .arrow2{stroke:#ffcc66;stroke-width:3;fill:none;}
+    </style>
+    <marker id="arrowHead" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12" fill="#7aa2ff" />
+    </marker>
+    <marker id="arrowHead2" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L12,6 L0,12" fill="#ffcc66" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="720"/>
+  <text class="title" x="40" y="56">Renderer Integration: From DrawContext to GPU Pipelines</text>
+  <text class="sub" x="40" y="86">Current repo: rect/rounded/text/line/image/clip. Theme Engine can add materials by extending CommandList and WGPU renderer.</text>
+
+  <g transform="translate(40,130)">
+    <rect class="box2" x="0" y="0" width="350" height="520" rx="18"/>
+    <text class="label" x="24" y="38">DrawContext (UI)</text>
+    <text class="muted" x="24" y="62">src/ui/draw_context.zig</text>
+
+    <text class="text" x="24" y="110">drawRect</text>
+    <text class="text" x="24" y="136">drawRoundedRect</text>
+    <text class="text" x="24" y="162">drawText</text>
+    <text class="text" x="24" y="188">drawLine</text>
+    <text class="text" x="24" y="214">drawImage</text>
+    <text class="text" x="24" y="240">pushClip / popClip</text>
+
+    <text class="label" x="24" y="300">Extend Here</text>
+    <text class="text" x="24" y="330">drawGradientRect</text>
+    <text class="text" x="24" y="356">drawNineSlice</text>
+    <text class="text" x="24" y="382">drawShadow / blur</text>
+    <text class="text" x="24" y="408">drawPath (fill/stroke)</text>
+    <text class="text" x="24" y="434">drawMaterialQuad(id, params)</text>
+  </g>
+
+  <g transform="translate(430,170)">
+    <rect class="box" x="0" y="0" width="430" height="440" rx="18"/>
+    <text class="label" x="24" y="34">CommandList</text>
+    <text class="muted" x="24" y="58">src/ui/render/command_list.zig</text>
+
+    <text class="text" x="24" y="104">Command.rect</text>
+    <text class="text" x="24" y="130">Command.rounded_rect</text>
+    <text class="text" x="24" y="156">Command.text</text>
+    <text class="text" x="24" y="182">Command.line</text>
+    <text class="text" x="24" y="208">Command.image</text>
+    <text class="text" x="24" y="234">Command.clip_push / clip_pop</text>
+
+    <text class="label" x="24" y="290">New Commands (Theme Effects)</text>
+    <text class="text" x="24" y="320">Command.gradient_rect</text>
+    <text class="text" x="24" y="346">Command.nine_slice</text>
+    <text class="text" x="24" y="372">Command.shadow</text>
+    <text class="text" x="24" y="398">Command.material_quad</text>
+  </g>
+
+  <g transform="translate(930,130)">
+    <rect class="box2" x="0" y="0" width="430" height="520" rx="18"/>
+    <text class="label" x="24" y="38">WGPU Renderer</text>
+    <text class="muted" x="24" y="62">src/ui/render/wgpu_renderer.zig</text>
+
+    <text class="label" x="24" y="112">Today</text>
+    <text class="text" x="24" y="142">shape pipeline: solid color triangles</text>
+    <text class="text" x="24" y="168">textured pipeline: images + font atlas</text>
+
+    <text class="label" x="24" y="230">Add Pipelines</text>
+    <text class="text" x="24" y="260">gradient pipeline</text>
+    <text class="text" x="24" y="286">nine-slice pipeline</text>
+    <text class="text" x="24" y="312">blur/shadow pipeline (offscreens)</text>
+    <text class="text" x="24" y="338">SDF path pipeline (vector AA)</text>
+
+    <text class="label" x="24" y="410">Material Registry</text>
+    <text class="text" x="24" y="440">Theme defines materials by id</text>
+    <text class="text" x="24" y="466">Renderer maps id -> pipeline + bind groups</text>
+  </g>
+
+  <!-- Arrows -->
+  <path class="arrow" marker-end="url(#arrowHead)" d="M390 390 C410 390, 418 390, 430 390"/>
+  <path class="arrow" marker-end="url(#arrowHead)" d="M860 390 C890 390, 910 390, 930 390"/>
+
+  <path class="arrow2" marker-end="url(#arrowHead2)" d="M560 500 C610 560, 760 610, 930 560"/>
+  <text class="sub" x="670" y="658" fill="#ffcc66">Theme Engine provides material ids + params (style sheet)</text>
+</svg>

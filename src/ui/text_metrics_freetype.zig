@@ -164,7 +164,7 @@ fn setFaceSizeWithScale(face: c.FT_Face, size_px: u32) f32 {
 }
 
 fn currentSizePx() u32 {
-    const t = theme.activeTheme();
+    const t = font_system.currentTheme() orelse return 1;
     const size = font_system.currentFontSize(t);
     if (size <= 0.0) return 1;
     const px: u32 = @intFromFloat(size);

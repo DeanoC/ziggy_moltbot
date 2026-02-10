@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "zsc.winampish.pixel",
+  "name": "Winamp-ish Neon (Pixel)",
+  "author": "ZiggyStarClaw",
+  "license": "MIT",
+  "defaults": {
+    "variant": "dark",
+    "profile": "desktop",
+    "image_sampling": "nearest",
+    "pixel_snap_textured": true
+  },
+  "capabilities": {
+    "requires_multi_window": true,
+    "requires_custom_shaders": false
+  }
+}

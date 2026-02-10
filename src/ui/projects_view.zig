@@ -9,6 +9,9 @@ const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const cursor = @import("input/cursor.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
+const surface_chrome = @import("surface_chrome.zig");
 
 pub const ProjectsViewAction = struct {
     refresh_sessions: bool = false,
@@ -62,7 +65,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
     var ctx_draw = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer ctx_draw.deinit();
 
-    ctx_draw.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(ctx_draw, panel_rect);
 
     const queue = input_router.getQueue();
     const header = drawHeader(&ctx_draw, panel_rect, queue, ctx.approvals.items.len);
@@ -122,13 +125,13 @@ fn drawHeader(
     approvals_count: usize,
 ) HeaderResult {
     _ = approvals_count;
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText("Projects Overview", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -137,7 +140,7 @@ fn drawHeader(
     const subtitle_height = ctx.lineHeight();
     ctx.drawText("ZiggyStarClaw", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
 
-    const button_height = subtitle_height + t.spacing.xs * 2.0;
+    const button_height = @max(subtitle_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const buttons_y = cursor_y + subtitle_height + gap;
 
     const new_label = "New Project";
@@ -181,8 +184,9 @@ fn drawSidebar(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
-    dc.drawRect(rect, .{ .fill = t.colors.surface, .stroke = t.colors.border });
+    const t = dc.theme;
+    surface_chrome.drawSurface(dc, rect);
+    dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     const line_height = dc.lineHeight();
@@ -204,13 +208,13 @@ fn drawSidebar(
     }
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("My Projects", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.xs;
 
     const new_label = "+ New Project";
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const new_width = buttonWidth(dc, new_label, t);
     const new_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, cursor_y },
@@ -252,7 +256,7 @@ fn handleSidebarResize(
     max_sidebar_width: f32,
 ) void {
     if (sidebar_collapsed) return;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ sidebar_rect.max[0] + gap * 0.5 - divider_w * 0.5, content_rect.min[1] },
@@ -303,11 +307,11 @@ fn drawProjectList(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     const line_height = dc.lineHeight();
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const content_height = @as(f32, @floatFromInt(ctx.sessions.items.len)) * (row_height + row_gap);
     sidebar_scroll_max = @max(0.0, content_height - rect.size()[1]);
@@ -324,6 +328,10 @@ fn drawProjectList(
     dc.pushClip(rect);
     var y = rect.min[1] - sidebar_scroll_y;
     for (ctx.sessions.items, 0..) |session, idx| {
+        // Scope each row so controller-nav IDs remain stable/unique even if labels repeat.
+        nav_router.pushScope(std.hash.Wyhash.hash(0, session.key));
+        defer nav_router.popScope();
+
         const row_rect = draw_context.Rect.fromMinSize(
             .{ rect.min[0], y },
             .{ rect.size()[0], row_height },
@@ -350,18 +358,30 @@ fn drawProjectRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "projects_view.project_row", "row") else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     if (selected or hovered) {
@@ -400,7 +420,7 @@ fn drawMainContent(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
 
     handleWheelScroll(queue, rect, &main_scroll_y, main_scroll_max, 40.0);
@@ -424,7 +444,7 @@ fn drawMainContent(
         var artifacts_buf: [6]Artifact = undefined;
         const artifacts = previewsToArtifacts(previews, &artifacts_buf);
 
-        theme.push(.title);
+        theme.pushFor(t, .title);
         const title_height = dc.lineHeight();
         dc.drawText("Welcome back!", .{ start_x, cursor_y }, .{ .color = t.colors.text_primary });
         theme.pop();
@@ -490,11 +510,11 @@ fn drawProjectSummaryCard(
     artifacts: []const Artifact,
 ) f32 {
     _ = artifacts;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const inner_width = @max(0.0, width - padding * 2.0);
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
 
@@ -513,7 +533,7 @@ fn drawProjectSummaryCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText(name, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height;
@@ -537,9 +557,9 @@ fn drawCategoriesCard(
     pos: [2]f32,
     width: f32,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const mini_height: f32 = 86.0;
@@ -549,7 +569,7 @@ fn drawCategoriesCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Categories", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -568,7 +588,7 @@ fn drawCategoriesCard(
     dc.drawRoundedRect(left_rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
     dc.drawRoundedRect(right_rect, t.radius.md, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Marketing Analysis", .{ left_rect.min[0] + padding, left_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
     const badge_rect = draw_context.Rect.fromMinSize(
@@ -577,7 +597,7 @@ fn drawCategoriesCard(
     );
     drawBadge(dc, badge_rect, "active", .primary);
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Design Concepts", .{ right_rect.min[0] + padding, right_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
     const badge2_rect = draw_context.Rect.fromMinSize(
@@ -598,13 +618,13 @@ fn drawArtifactsCard(
     queue: *input_state.InputQueue,
     action: *ProjectsViewAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const title_height = dc.lineHeight();
     theme.pop();
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const row_spacing = t.spacing.sm;
 
     var body_height: f32 = 0.0;
@@ -619,7 +639,7 @@ fn drawArtifactsCard(
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Recent Artifacts", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += title_height + t.spacing.sm;
@@ -631,6 +651,8 @@ fn drawArtifactsCard(
 
     for (previews, 0..) |preview, idx| {
         _ = idx;
+        nav_router.pushScope(std.hash.Wyhash.hash(0, preview.url));
+        defer nav_router.popScope();
         const name = preview.name;
         dc.drawText(name, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
         cursor_y += line_height + t.spacing.xs;
@@ -669,19 +691,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn buttonWidth(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {
@@ -699,7 +709,7 @@ fn badgeSize(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.
 }
 
 fn drawBadge(dc: *draw_context.DrawContext, rect: draw_context.Rect, label: []const u8, variant: BadgeVariant) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const colorset = badgeColors(t, variant);
     dc.drawRoundedRect(rect, t.radius.lg, .{ .fill = colorset.fill, .stroke = colorset.border, .thickness = 1.0 });
     dc.drawText(label, .{ rect.min[0] + t.spacing.xs, rect.min[1] + t.spacing.xs * 0.5 }, .{ .color = colorset.text });
@@ -711,7 +721,7 @@ fn drawBadgeRow(
     width: f32,
     categories: []const Category,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     var cursor_x = pos[0];
     const max_x = pos[0] + width;
     for (categories) |category| {

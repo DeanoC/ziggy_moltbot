@@ -4,6 +4,7 @@ const draw_context = @import("../draw_context.zig");
 const theme = @import("../theme.zig");
 const input_router = @import("../input/input_router.zig");
 const text_editor = @import("../widgets/text_editor.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub fn draw(panel: *workspace.Panel, allocator: std.mem.Allocator, rect_override: ?draw_context.Rect) void {
     if (panel.kind != .ToolOutput) return;
@@ -13,7 +14,7 @@ pub fn draw(panel: *workspace.Panel, allocator: std.mem.Allocator, rect_override
     const panel_rect = rect_override orelse return;
     var ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer ctx.deinit();
-    ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&ctx, panel_rect);
 
     const header_height = drawHeader(&ctx, panel_rect, output);
     const content_gap = t.spacing.sm;
@@ -54,13 +55,13 @@ fn drawHeader(
     rect: draw_context.Rect,
     output: *workspace.ToolOutputPanel,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText(output.tool_name, .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();

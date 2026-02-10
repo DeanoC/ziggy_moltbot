@@ -7,10 +7,13 @@ const draw_context = @import("draw_context.zig");
 const input_router = @import("input/input_router.zig");
 const input_state = @import("input/input_state.zig");
 const widgets = @import("widgets/widgets.zig");
+const surface_chrome = @import("surface_chrome.zig");
 const cursor = @import("input/cursor.zig");
 const image_cache = @import("image_cache.zig");
 const ui_systems = @import("ui_systems.zig");
 const drag_drop = @import("systems/drag_drop.zig");
+const theme_runtime = @import("theme_engine/runtime.zig");
+const nav_router = @import("input/nav_router.zig");
 
 const MediaItem = struct {
     name: []const u8,
@@ -42,7 +45,7 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
     const panel_rect = rect_override orelse return;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(dc, panel_rect);
 
     const header = drawHeader(&dc, panel_rect);
     const sep_gap = t.spacing.xs;
@@ -77,13 +80,13 @@ pub fn draw(allocator: std.mem.Allocator, ctx: *state.ClientContext, rect_overri
 }
 
 fn drawHeader(dc: *draw_context.DrawContext, rect: draw_context.Rect) struct { height: f32 } {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const top_pad = t.spacing.sm;
     const gap = t.spacing.xs;
     const left = rect.min[0] + t.spacing.md;
     var cursor_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = dc.lineHeight();
     dc.drawText("Media Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
@@ -103,7 +106,7 @@ fn drawSplitLayout(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_left: f32 = 220.0;
     const min_right: f32 = 320.0;
@@ -133,7 +136,7 @@ fn drawStackedLayout(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const gap = t.spacing.md;
     const min_top: f32 = 200.0;
     const min_bottom: f32 = 160.0;
@@ -164,14 +167,14 @@ fn drawGallery(
     queue: *input_state.InputQueue,
 ) void {
     _ = allocator;
-    const t = theme.activeTheme();
+    const t = dc.theme;
     drawContainer(dc, rect);
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Gallery", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -232,8 +235,22 @@ fn drawThumb(
     padding: f32,
     queue: *input_state.InputQueue,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const selected = selected_index != null and selected_index.? == idx;
+
+    // Scope each thumb so controller nav IDs stay stable and unique in a grid.
+    var scope: u64 = std.hash.Wyhash.hash(0, "media_gallery.thumb");
+    scope = std.hash.Wyhash.hash(scope, item.url);
+    scope = std.hash.Wyhash.hash(scope, std.mem.asBytes(&idx));
+    nav_router.pushScope(scope);
+    defer nav_router.popScope();
+
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "media_gallery.thumb", "thumb") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
 
     var clicked = false;
     for (queue.events.items) |evt| {
@@ -247,8 +264,13 @@ fn drawThumb(
             },
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos) and !(thumb_drag_index == idx and thumb_drag_started)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -261,7 +283,7 @@ fn drawThumb(
         viewer_offset = .{ 0.0, 0.0 };
     }
 
-    if (thumb_drag_index == idx and queue.state.mouse_down_left) {
+    if (thumb_drag_index == idx and queue.state.mouse_down_left and queue.state.pointer_kind == .mouse) {
         const dx = queue.state.mouse_pos[0] - thumb_drag_origin[0];
         const dy = queue.state.mouse_pos[1] - thumb_drag_origin[1];
         if (!thumb_drag_started and (dx * dx + dy * dy) > 9.0) {
@@ -278,7 +300,8 @@ fn drawThumb(
         }
     }
 
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or focused;
     const base = if (selected) t.colors.primary else t.colors.surface;
     const bg = colors.withAlpha(base, if (selected) 0.18 else if (hovered) 0.12 else 0.08);
     const border_alpha: f32 = if (selected) 0.8 else if (hovered) 0.6 else 0.4;
@@ -317,14 +340,14 @@ fn drawThumb(
 }
 
 fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     drawContainer(dc, rect);
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Viewer", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -349,9 +372,9 @@ fn drawViewer(dc: *draw_context.DrawContext, items: []const MediaItem, rect: dra
 }
 
 fn drawViewerControls(dc: *draw_context.DrawContext, queue: *input_state.InputQueue, pos: [2]f32) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     var cursor_x = pos[0];
     const cursor_y = pos[1];
 
@@ -411,13 +434,13 @@ fn drawButton(
 }
 
 fn drawViewerArea(dc: *draw_context.DrawContext, item: MediaItem, rect: draw_context.Rect, queue: *input_state.InputQueue) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
 
     const sys = ui_systems.get();
     sys.drag_drop.registerDropTarget(.{
         .id = "media_viewer",
         .bounds = .{ .min = rect.min, .max = rect.max },
-        .accepts = &[_][]const u8{ "image" },
+        .accepts = &[_][]const u8{"image"},
         .on_drop = handleDrop,
     }) catch {};
 
@@ -528,7 +551,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -579,7 +602,7 @@ fn handleStackResize(
     min_top: f32,
     max_top: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_h: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0], top_rect.max[1] + gap * 0.5 - divider_h * 0.5 },
@@ -624,23 +647,11 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn drawContainer(dc: *draw_context.DrawContext, rect: draw_context.Rect) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.md, .{
         .fill = t.colors.surface,
         .stroke = t.colors.border,

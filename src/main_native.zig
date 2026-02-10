@@ -4,6 +4,8 @@ const ui = @import("ui/main_window.zig");
 const input_router = @import("ui/input/input_router.zig");
 const operator_view = @import("ui/operator_view.zig");
 const theme = @import("ui/theme.zig");
+const theme_engine = @import("ui/theme_engine/theme_engine.zig");
+const profile = @import("ui/theme_engine/profile.zig");
 const panel_manager = @import("ui/panel_manager.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
@@ -32,8 +34,11 @@ const sdl = @import("platform/sdl3.zig").c;
 const input_backend = @import("ui/input/input_backend.zig");
 const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
 const text_input_backend = @import("ui/input/text_input_backend.zig");
+const command_queue = @import("ui/render/command_queue.zig");
+const input_state = @import("ui/input/input_state.zig");
+const ui_commands = @import("ui/render/command_list.zig");
 
-const webgpu_renderer = @import("client/renderer.zig");
+const multi_renderer = @import("client/multi_window_renderer.zig");
 const font_system = @import("ui/font_system.zig");
 
 const icon = @cImport({
@@ -41,6 +46,440 @@ const icon = @cImport({
 });
 
 const startup_log_path = "ziggystarclaw_startup.log";
+
+const UiWindow = struct {
+    window: *sdl.SDL_Window,
+    id: u32,
+    queue: input_state.InputQueue,
+    swapchain: multi_renderer.WindowSwapchain,
+    manager: panel_manager.PanelManager,
+    ui_state: ui.WindowUiState = .{},
+    title: []u8,
+    persist_in_workspace: bool = false,
+    profile_override: ?theme_engine.ProfileId = null,
+    theme_mode_override: ?theme.Mode = null,
+    image_sampling_override: ?ui_commands.ImageSampling = null,
+    pixel_snap_textured_override: ?bool = null,
+};
+
+const ThemePackBrowse = struct {
+    mutex: std.Thread.Mutex = .{},
+    in_flight: bool = false,
+    target: enum { config, window_override } = .config,
+    target_window_id: u32 = 0,
+    // Allocated with std.heap.c_allocator by the SDL callback, then consumed on the main thread.
+    pending_path: ?[]u8 = null,
+    pending_error: bool = false,
+};
+
+var theme_pack_browse: ThemePackBrowse = .{};
+
+const ThemePackWatch = struct {
+    last_root_hash: u64 = 0,
+    last_sig: u64 = 0,
+    pending_sig: u64 = 0,
+    pending_at_ms: i64 = 0,
+    next_poll_ms: i64 = 0,
+};
+
+fn hashStat(hasher: *std.hash.Wyhash, st: std.fs.File.Stat) void {
+    hasher.update(std.mem.asBytes(&st.size));
+    hasher.update(std.mem.asBytes(&st.mtime));
+}
+
+fn hashFileMaybe(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, rel: []const u8) void {
+    hasher.update(rel);
+    const st = dir.statFile(rel) catch {
+        hasher.update("!missing");
+        return;
+    };
+    hashStat(hasher, st);
+}
+
+fn hashSubdirJsonFiles(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []const u8) void {
+    hasher.update(subdir);
+    var d = dir.openDir(subdir, .{ .iterate = true }) catch {
+        hasher.update("!no_dir");
+        return;
+    };
+    defer d.close();
+
+    var names: std.ArrayList([]u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+
+    var it = d.iterate();
+
+    while (it.next() catch null) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
+
+        const name_copy = allocator.dupe(u8, entry.name) catch {
+            hasher.update("!oom");
+            return;
+        };
+        names.append(allocator, name_copy) catch {
+            allocator.free(name_copy);
+            hasher.update("!oom");
+            return;
+        };
+    }
+
+    std.mem.sortUnstable([]u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    for (names.items) |name| {
+        hasher.update(name);
+        const st = d.statFile(name) catch {
+            hasher.update("!stat_err");
+            continue;
+        };
+        hashStat(hasher, st);
+    }
+}
+
+fn computeThemePackJsonSignature(allocator: std.mem.Allocator, root_path: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update("zsc.theme_pack.sig.v1");
+
+    var dir = if (std.fs.path.isAbsolute(root_path))
+        std.fs.openDirAbsolute(root_path, .{ .iterate = true }) catch return 0
+    else
+        std.fs.cwd().openDir(root_path, .{ .iterate = true }) catch return 0;
+    defer dir.close();
+
+    hashFileMaybe(&hasher, &dir, "manifest.json");
+    hashFileMaybe(&hasher, &dir, "windows.json");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "tokens");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "profiles");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "styles");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "layouts");
+    return hasher.final();
+}
+
+fn computeFileSignature(path: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update("zsc.file.sig.v1");
+    hasher.update(path);
+    const st = std.fs.cwd().statFile(path) catch return 0;
+    hashStat(&hasher, st);
+    return hasher.final();
+}
+
+fn resolveThemePackWatchTargetAlloc(allocator: std.mem.Allocator, raw_path: []const u8) ?[]u8 {
+    if (raw_path.len == 0) return null;
+
+    // Absolute paths: just resolve and use directly.
+    if (std.fs.path.isAbsolute(raw_path)) {
+        return std.fs.cwd().realpathAlloc(allocator, raw_path) catch null;
+    }
+
+    // First try relative to current working directory.
+    if (std.fs.cwd().access(raw_path, .{})) |_| {
+        return std.fs.cwd().realpathAlloc(allocator, raw_path) catch null;
+    } else |_| {}
+
+    // Then try relative to the executable directory (production builds).
+    const exe = std.fs.selfExePathAlloc(allocator) catch return null;
+    defer allocator.free(exe);
+    const exe_dir = std.fs.path.dirname(exe) orelse return null;
+    const joined = std.fs.path.join(allocator, &.{ exe_dir, raw_path }) catch return null;
+    defer allocator.free(joined);
+    return std.fs.cwd().realpathAlloc(allocator, joined) catch null;
+}
+
+fn updateThemePackWatch(
+    allocator: std.mem.Allocator,
+    watch: *ThemePackWatch,
+    theme_eng: *theme_engine.ThemeEngine,
+    cfg: *const config.Config,
+    pack_applied_this_frame: bool,
+) void {
+    if (!cfg.ui_watch_theme_pack) {
+        watch.* = .{};
+        return;
+    }
+
+    const raw = cfg.ui_theme_pack orelse "";
+    if (raw.len == 0) return;
+
+    const resolved = resolveThemePackWatchTargetAlloc(allocator, raw) orelse return;
+    defer allocator.free(resolved);
+
+    const is_zip = resolved.len >= 4 and std.ascii.eqlIgnoreCase(resolved[resolved.len - 4 ..], ".zip");
+    const root = if (is_zip) resolved else themePackRootFromSelection(resolved);
+
+    const root_hash = std.hash.Wyhash.hash(0, root);
+    if (root_hash != watch.last_root_hash or watch.last_sig == 0 or pack_applied_this_frame) {
+        watch.last_root_hash = root_hash;
+        watch.last_sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(allocator, root);
+        watch.pending_sig = 0;
+        watch.pending_at_ms = 0;
+        watch.next_poll_ms = 0;
+        return;
+    }
+
+    const now_ms: i64 = std.time.milliTimestamp();
+    if (watch.next_poll_ms != 0 and now_ms < watch.next_poll_ms) return;
+    watch.next_poll_ms = now_ms + 500;
+
+    const sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(allocator, root);
+    if (sig == 0 or sig == watch.last_sig) {
+        watch.pending_sig = 0;
+        watch.pending_at_ms = 0;
+        return;
+    }
+
+    // Debounce: require the signature to remain stable for >=250ms before reloading.
+    if (watch.pending_sig != sig) {
+        watch.pending_sig = sig;
+        watch.pending_at_ms = now_ms;
+        return;
+    }
+    if (now_ms - watch.pending_at_ms < 250) return;
+
+    theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true) catch {};
+    watch.last_sig = sig;
+    watch.pending_sig = 0;
+    watch.pending_at_ms = 0;
+}
+
+fn dirHasManifest(path: []const u8) bool {
+    if (path.len == 0) return false;
+    var dir = if (std.fs.path.isAbsolute(path))
+        std.fs.openDirAbsolute(path, .{}) catch return false
+    else
+        std.fs.cwd().openDir(path, .{}) catch return false;
+    defer dir.close();
+    const f = dir.openFile("manifest.json", .{}) catch return false;
+    f.close();
+    return true;
+}
+
+fn themePackRootFromSelection(selection: []const u8) []const u8 {
+    // If the user selects a subdirectory inside a pack, walk upward until we find `manifest.json`.
+    var cur = selection;
+    var i: usize = 0;
+    while (i < 32) : (i += 1) {
+        if (dirHasManifest(cur)) return cur;
+        const parent = std.fs.path.dirname(cur) orelse break;
+        if (parent.len == 0 or parent.len == cur.len) break;
+        cur = parent;
+    }
+    return selection;
+}
+
+fn sdlDialogPickThemePack(userdata: ?*anyopaque, filelist: [*c]const [*c]const u8, filter: c_int) callconv(.c) void {
+    _ = userdata;
+    _ = filter;
+
+    // NOTE: callback may run on another thread.
+    theme_pack_browse.mutex.lock();
+    defer theme_pack_browse.mutex.unlock();
+    theme_pack_browse.in_flight = false;
+
+    if (theme_pack_browse.pending_path) |buf| {
+        std.heap.c_allocator.free(buf);
+        theme_pack_browse.pending_path = null;
+    }
+    theme_pack_browse.pending_error = false;
+
+    if (filelist == null) {
+        theme_pack_browse.pending_error = true;
+        return;
+    }
+    const first = filelist[0];
+    if (first == null) {
+        // canceled
+        return;
+    }
+    const picked = std.mem.span(@as([*:0]const u8, @ptrCast(first)));
+    if (picked.len == 0) return;
+
+    const copy = std.heap.c_allocator.dupe(u8, picked) catch return;
+    theme_pack_browse.pending_path = copy;
+}
+
+fn destroyUiWindow(allocator: std.mem.Allocator, w: *UiWindow) void {
+    w.queue.deinit(allocator);
+    w.ui_state.deinit(allocator);
+    w.swapchain.deinit();
+    w.manager.deinit();
+    allocator.free(w.title);
+    sdl.SDL_DestroyWindow(w.window);
+    allocator.destroy(w);
+}
+
+fn cloneWorkspace(allocator: std.mem.Allocator, src: *const workspace.Workspace) !workspace.Workspace {
+    var snap = try src.toSnapshot(allocator);
+    defer snap.deinit(allocator);
+    return try workspace.Workspace.fromSnapshot(allocator, snap);
+}
+
+fn remapWorkspacePanelIds(
+    allocator: std.mem.Allocator,
+    ws: *workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+) !void {
+    var map = std.AutoHashMap(workspace.PanelId, workspace.PanelId).init(allocator);
+    defer map.deinit();
+
+    for (ws.panels.items) |*panel| {
+        const old = panel.id;
+        const new_id = next_panel_id.*;
+        next_panel_id.* += 1;
+        panel.id = new_id;
+        try map.put(old, new_id);
+    }
+
+    if (ws.focused_panel_id) |old_focus| {
+        ws.focused_panel_id = map.get(old_focus);
+    }
+}
+
+fn cloneWorkspaceRemap(
+    allocator: std.mem.Allocator,
+    src: *const workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+) !workspace.Workspace {
+    var ws = try cloneWorkspace(allocator, src);
+    errdefer ws.deinit(allocator);
+    try remapWorkspacePanelIds(allocator, &ws, next_panel_id);
+    return ws;
+}
+
+fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
+    if (std.ascii.eqlIgnoreCase(label, "workspace") or std.ascii.eqlIgnoreCase(label, "control")) return .Control;
+    if (std.ascii.eqlIgnoreCase(label, "chat")) return .Chat;
+    if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
+    if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
+    if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;
+    return null;
+}
+
+fn parseImageSamplingLabel(label: ?[]const u8) ui_commands.ImageSampling {
+    const v = label orelse return .linear;
+    if (std.ascii.eqlIgnoreCase(v, "nearest")) return .nearest;
+    return .linear;
+}
+
+fn labelForImageSampling(s: ui_commands.ImageSampling) []const u8 {
+    return switch (s) {
+        .linear => "linear",
+        .nearest => "nearest",
+    };
+}
+
+fn defaultWindowSizeForPanelKind(kind: workspace.PanelKind) struct { w: c_int, h: c_int } {
+    return switch (kind) {
+        .Chat => .{ .w = 560, .h = 720 },
+        .Control => .{ .w = 960, .h = 720 },
+        .Showcase => .{ .w = 900, .h = 720 },
+        .CodeEditor => .{ .w = 960, .h = 720 },
+        .ToolOutput => .{ .w = 720, .h = 520 },
+    };
+}
+
+fn takeWorkspaceFromManager(allocator: std.mem.Allocator, manager: *panel_manager.PanelManager) workspace.Workspace {
+    const ws = manager.workspace;
+    manager.workspace = workspace.Workspace.initEmpty(allocator);
+    return ws;
+}
+
+fn buildWorkspaceFromTemplate(
+    allocator: std.mem.Allocator,
+    tpl: theme_engine.runtime.WindowTemplate,
+    next_panel_id: *workspace.PanelId,
+) !workspace.Workspace {
+    var manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator), next_panel_id);
+    errdefer manager.deinit();
+
+    var opened_any = false;
+    if (tpl.panels) |labels| {
+        for (labels) |label| {
+            const kind = parsePanelKindLabel(label) orelse continue;
+            manager.ensurePanel(kind);
+            opened_any = true;
+        }
+    }
+
+    if (!opened_any) {
+        manager.ensurePanel(.Control);
+    }
+
+    if (tpl.focused_panel) |label| {
+        if (parsePanelKindLabel(label)) |focus_kind| {
+            for (manager.workspace.panels.items) |panel| {
+                if (panel.kind == focus_kind) {
+                    manager.focusPanel(panel.id);
+                    break;
+                }
+            }
+        }
+    }
+
+    defer manager.deinit();
+    return takeWorkspaceFromManager(allocator, &manager);
+}
+
+fn createUiWindow(
+    allocator: std.mem.Allocator,
+    shared: *multi_renderer.Shared,
+    title: [:0]const u8,
+    width: c_int,
+    height: c_int,
+    flags: sdl.SDL_WindowFlags,
+    initial_workspace: workspace.Workspace,
+    next_panel_id: *workspace.PanelId,
+    persist_in_workspace: bool,
+    apply_theme_layout_preset: bool,
+    profile_override: ?theme_engine.ProfileId,
+    theme_mode_override: ?theme.Mode,
+    image_sampling_override: ?ui_commands.ImageSampling,
+    pixel_snap_textured_override: ?bool,
+) !*UiWindow {
+    var ws = initial_workspace;
+    errdefer ws.deinit(allocator);
+
+    const win = sdl.SDL_CreateWindow(title, width, height, flags) orelse {
+        logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
+        return error.SdlWindowCreateFailed;
+    };
+    errdefer sdl.SDL_DestroyWindow(win);
+    setWindowIcon(win);
+    multi_renderer.cachePlatformHandlesFromWindow(win);
+    logSurfaceBackend(win);
+
+    var swapchain = try multi_renderer.WindowSwapchain.initOwned(shared, win);
+    errdefer swapchain.deinit();
+
+    const title_copy = try allocator.dupe(u8, std.mem.sliceTo(title, 0));
+    errdefer allocator.free(title_copy);
+
+    const out = try allocator.create(UiWindow);
+    errdefer allocator.destroy(out);
+    out.* = .{
+        .window = win,
+        .id = sdl.SDL_GetWindowID(win),
+        .queue = input_state.InputQueue.init(allocator),
+        .swapchain = swapchain,
+        .manager = panel_manager.PanelManager.init(allocator, ws, next_panel_id),
+        .ui_state = .{ .theme_layout_presets_enabled = apply_theme_layout_preset },
+        .title = title_copy,
+        .persist_in_workspace = persist_in_workspace,
+        .profile_override = profile_override,
+        .theme_mode_override = theme_mode_override,
+        .image_sampling_override = image_sampling_override,
+        .pixel_snap_textured_override = pixel_snap_textured_override,
+    };
+    errdefer out.queue.deinit(allocator);
+    return out;
+}
 
 fn setWindowIcon(window: *sdl.SDL_Window) void {
     const icon_png = @embedFile("icons/ZiggyStarClaw_Icon.png");
@@ -1064,9 +1503,49 @@ pub fn main() !void {
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
-    if (cfg.ui_theme) |label| {
-        theme.setMode(theme.modeFromLabel(label));
+    // If the user has never saved a config yet, create one so it's easy to edit by hand.
+    const cfg_missing = blk: {
+        std.fs.cwd().access("ziggystarclaw_config.json", .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk true,
+            else => break :blk false,
+        };
+        break :blk false;
+    };
+    if (cfg_missing) {
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to write default config: {}", .{err});
+        };
     }
+    if (config.migrateThemePackPath(allocator, &cfg)) {
+        logger.info("Migrated ui_theme_pack to: {s}", .{cfg.ui_theme_pack orelse ""});
+        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.err("Failed to save migrated config: {}", .{err});
+        };
+    }
+    {
+        const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+        defer if (cwd) |v| allocator.free(v);
+        const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+        defer if (cfg_path) |v| allocator.free(v);
+        logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse "ziggystarclaw_config.json", cwd orelse "." });
+    }
+    var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
+    defer theme_eng.deinit();
+    theme_eng.applyThemePackDirFromPath(cfg.ui_theme_pack, true) catch |err| {
+        logger.warn("Failed to load theme pack: {}", .{err});
+    };
+    // Apply initial mode after the pack loads so packs can opt out of user light/dark toggles.
+    {
+        const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+        if (theme_engine.runtime.getPackModeLockToDefault()) {
+            theme.setMode(pack_default);
+        } else if (cfg.ui_theme) |label| {
+            theme.setMode(theme.modeFromLabel(label));
+        } else if (theme_engine.runtime.getPackDefaultMode() != null) {
+            theme.setMode(pack_default);
+        }
+    }
+    var theme_pack_watch: ThemePackWatch = .{};
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
@@ -1114,7 +1593,8 @@ pub fn main() !void {
         logger.err("SDL_CreateWindow failed: {s}", .{sdl.SDL_GetError()});
         return error.SdlWindowCreateFailed;
     };
-    defer sdl.SDL_DestroyWindow(window);
+    var main_window_owned_by_ui: bool = false;
+    errdefer if (!main_window_owned_by_ui) sdl.SDL_DestroyWindow(window);
     text_input_backend.init(@ptrCast(window));
     defer text_input_backend.deinit();
     setWindowIcon(window);
@@ -1128,33 +1608,157 @@ pub fn main() !void {
         );
     }
 
-    var renderer = try webgpu_renderer.Renderer.init(allocator, window);
     logSurfaceBackend(window);
+
+    var gpu = try multi_renderer.Shared.init(allocator, window);
+    defer gpu.deinit();
+
+    // Global unique panel id allocator shared across all windows.
+    var next_panel_id_global: workspace.PanelId = 1;
+
+    const main_win = try allocator.create(UiWindow);
+    main_win.* = .{
+        .window = window,
+        .id = sdl.SDL_GetWindowID(window),
+        .queue = input_state.InputQueue.init(allocator),
+        .swapchain = multi_renderer.WindowSwapchain.initMain(&gpu, window),
+        // Initialize immediately so early errors don't trip `destroyUiWindow`.
+        .manager = panel_manager.PanelManager.init(allocator, workspace.Workspace.initEmpty(allocator), &next_panel_id_global),
+        .ui_state = .{ .theme_layout_presets_enabled = true },
+        .title = try allocator.dupe(u8, "ZiggyStarClaw"),
+        .persist_in_workspace = false,
+        .profile_override = null,
+        .theme_mode_override = null,
+        .image_sampling_override = null,
+        .pixel_snap_textured_override = null,
+    };
+    errdefer destroyUiWindow(allocator, main_win);
+    main_window_owned_by_ui = true;
+
+    var ui_windows: std.ArrayList(*UiWindow) = .empty;
+    try ui_windows.append(allocator, main_win);
+    defer {
+        for (ui_windows.items) |w| destroyUiWindow(allocator, w);
+        ui_windows.deinit(allocator);
+    }
 
     const dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(window);
     const dpi_scale: f32 = if (dpi_scale_raw > 0.0) dpi_scale_raw else 1.0;
     if (!font_system.isInitialized()) {
         font_system.init(std.heap.page_allocator);
     }
-    theme.applyTypography(dpi_scale);
+    var fb_w_init: c_int = 0;
+    var fb_h_init: c_int = 0;
+    _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w_init, &fb_h_init);
+    const fb_w_u32: u32 = @intCast(if (fb_w_init > 0) fb_w_init else 1);
+    const fb_h_u32: u32 = @intCast(if (fb_h_init > 0) fb_h_init else 1);
+    theme_eng.resolveProfileFromConfig(fb_w_u32, fb_h_u32, cfg.ui_profile);
+    theme.applyTypography(dpi_scale * theme_eng.active_profile.ui_scale);
     image_cache.init(allocator);
     attachment_cache.init(allocator);
     image_cache.setEnabled(true);
     defer image_cache.deinit();
     defer attachment_cache.deinit();
-    defer renderer.deinit();
+    // renderers are owned by `ui_windows`
+
+    const workspace_file_exists: bool = blk: {
+        std.fs.cwd().access("ziggystarclaw_workspace.json", .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk false,
+            else => break :blk true,
+        };
+        break :blk true;
+    };
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
-    const workspace_state = workspace_store.loadOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
+    var loaded = workspace_store.loadMultiOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
         logger.warn("Failed to load workspace: {}", .{err});
-        break :blk workspace.Workspace.initDefault(allocator) catch |init_err| {
-            logger.err("Failed to init default workspace: {}", .{init_err});
-            return init_err;
+        const fallback = workspace_store.MultiWorkspace{
+            .main = workspace.Workspace.initDefault(allocator) catch |init_err| {
+                logger.err("Failed to init default workspace: {}", .{init_err});
+                return init_err;
+            },
+            .windows = allocator.alloc(workspace_store.DetachedWindow, 0) catch return err,
+            .next_panel_id = 1,
         };
+        break :blk fallback;
     };
-    var manager = panel_manager.PanelManager.init(allocator, workspace_state);
-    defer manager.deinit();
+    defer {
+        // We transfer window workspaces into actual UiWindows below; this cleanup only runs
+        // for any remaining (emptied) workspaces/metadata.
+        for (loaded.windows) |*w| w.deinit(allocator);
+        allocator.free(loaded.windows);
+        loaded.main.deinit(allocator);
+    }
+
+    // Restore the global panel id allocator from disk (and then bump it based on loaded panels).
+    next_panel_id_global = loaded.next_panel_id;
+
+    const workspace_state = loaded.main;
+    loaded.main = workspace.Workspace.initEmpty(allocator);
+
+    main_win.manager.deinit();
+    main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
+    // If we loaded a workspace from disk, do not auto-apply the theme pack's workspace layout preset
+    // for the current profile on startup. (It can re-open panels the user explicitly tore off.)
+    if (workspace_file_exists) {
+        const pid = theme_eng.active_profile.id;
+        const idx: usize = switch (pid) {
+            .desktop => 0,
+            .phone => 1,
+            .tablet => 2,
+            .fullscreen => 3,
+        };
+        main_win.ui_state.theme_layout_applied[idx] = true;
+    }
+
+    // Spawn any persisted secondary windows.
+    if (theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
+        for (loaded.windows) |*w| {
+            var title_buf: [192]u8 = undefined;
+            const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{w.title}) catch "ZiggyStarClaw";
+
+            const profile_override: ?theme_engine.ProfileId = profile.profileFromLabel(w.profile);
+            const mode_override: ?theme.Mode = if (w.variant) |v| theme.modeFromLabel(v) else null;
+            const sampling_override: ?ui_commands.ImageSampling = if (w.image_sampling) |v| parseImageSamplingLabel(v) else null;
+            const pixel_override: ?bool = w.pixel_snap_textured;
+
+            const max_cint_u32: u32 = @intCast(std.math.maxInt(c_int));
+            const width_u32: u32 = std.math.clamp(w.width, @as(u32, 320), max_cint_u32);
+            const height_u32: u32 = std.math.clamp(w.height, @as(u32, 240), max_cint_u32);
+            const width: c_int = @intCast(width_u32);
+            const height: c_int = @intCast(height_u32);
+
+            const ws_for_new = w.ws;
+            w.ws = workspace.Workspace.initEmpty(allocator);
+
+            const new_win = createUiWindow(
+                allocator,
+                &gpu,
+                title_z,
+                width,
+                height,
+                window_flags,
+                ws_for_new,
+                &next_panel_id_global,
+                true,
+                false,
+                profile_override,
+                mode_override,
+                sampling_override,
+                pixel_override,
+            ) catch |create_err| blk2: {
+                logger.warn("Failed to restore window '{s}': {}", .{ w.title, create_err });
+                break :blk2 null;
+            };
+            if (new_win) |uw| {
+                ui_windows.append(allocator, uw) catch {
+                    destroyUiWindow(allocator, uw);
+                };
+            }
+        }
+    }
+
     defer ui.deinit(allocator);
     var command_inbox = ui_command_inbox.UiCommandInbox.init(allocator);
     defer command_inbox.deinit(allocator);
@@ -1222,10 +1826,13 @@ pub fn main() !void {
     }
 
     var should_close = false;
+    var window_close_requests: std.ArrayList(u32) = .empty;
+    defer window_close_requests.deinit(allocator);
     while (!should_close) {
         profiler.frameMark();
         const frame_zone = profiler.zone(@src(), "frame");
         defer frame_zone.end();
+        window_close_requests.clearRetainingCapacity();
         {
             const zone = profiler.zone(@src(), "frame.events");
             defer zone.end();
@@ -1234,8 +1841,15 @@ pub fn main() !void {
                 sdl_input_backend.pushEvent(&event);
                 switch (event.type) {
                     sdl.SDL_EVENT_QUIT,
-                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
                     => should_close = true,
+                    sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
+                        const wid = event.window.windowID;
+                        if (wid == main_win.id) {
+                            should_close = true;
+                        } else {
+                            window_close_requests.append(allocator, wid) catch {};
+                        }
+                    },
                     else => {},
                 }
             }
@@ -1252,12 +1866,6 @@ pub fn main() !void {
                 logger.info("Reconnect scheduled in {d}ms", .{reconnect_backoff_ms});
             }
         }
-
-        var fb_w: c_int = 0;
-        var fb_h: c_int = 0;
-        _ = sdl.SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
-        const fb_width: u32 = if (fb_w > 0) @intCast(fb_w) else 1;
-        const fb_height: u32 = if (fb_h > 0) @intCast(fb_h) else 1;
 
         var drained = message_queue.drain();
         defer {
@@ -1316,47 +1924,440 @@ pub fn main() !void {
             next_ping_at_ms = 0;
         }
 
-        var ui_action: ui.UiAction = undefined;
+        const kb_focus = sdl.SDL_GetKeyboardFocus();
+        const focused_id: u32 = if (kb_focus) |w| sdl.SDL_GetWindowID(w) else main_win.id;
+
+        var ui_action: ui.UiAction = .{};
+        var active_window: *UiWindow = main_win;
+        var any_save_workspace: bool = false;
+        var detach_req: ?struct { wid: u32, panel_ptr: *workspace.Panel } = null;
         {
             const zone = profiler.zone(@src(), "frame.ui");
             defer zone.end();
-            renderer.beginFrame(fb_width, fb_height);
-            ui_action = ui.draw(
-                allocator,
-                &ctx,
-                &cfg,
-                &agents,
-                ws_client.is_connected,
-                build_options.app_version,
-                fb_width,
-                fb_height,
-                true,
-                &manager,
-                &command_inbox,
-            );
+
+            // Apply assistant UI commands to the currently focused window only.
+            // Other windows still render the shared app state (sessions, agents, etc.),
+            // but panel/layout interactions remain independent per window.
+            for (ui_windows.items) |w| {
+                if (w.id == focused_id) {
+                    active_window = w;
+                    break;
+                }
+            }
+            ui.frameBegin(allocator, &ctx, &active_window.manager, &command_inbox);
+            for (ui_windows.items) |w| {
+                var w_fb_w: c_int = 0;
+                var w_fb_h: c_int = 0;
+                _ = sdl.SDL_GetWindowSizeInPixels(w.window, &w_fb_w, &w_fb_h);
+                const w_fb_width: u32 = if (w_fb_w > 0) @intCast(w_fb_w) else 1;
+                const w_fb_height: u32 = if (w_fb_h > 0) @intCast(w_fb_h) else 1;
+
+                // Per-window theme pack override: activate the correct pack before we resolve
+                // profile/mode/typography and emit draw commands for this window.
+                const desired_pack: ?[]const u8 = w.ui_state.theme_pack_override orelse cfg.ui_theme_pack;
+                const force_reload_pack = w.ui_state.theme_pack_reload_requested;
+                if (w.ui_state.theme_pack_reload_requested) w.ui_state.theme_pack_reload_requested = false;
+                theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+
+                // Multi-window: each window can have a different framebuffer size (and potentially DPI),
+                // so resolve profile and typography scale per window before we record its UI commands.
+                // This makes "auto" profile selection (desktop/phone/tablet/fullscreen) window-local,
+                // and keeps hit-target sizing / hover rules correct per window.
+                const w_dpi_scale_raw: f32 = sdl.SDL_GetWindowDisplayScale(w.window);
+                const w_dpi_scale: f32 = if (w_dpi_scale_raw > 0.0) w_dpi_scale_raw else 1.0;
+                const requested_profile: ?[]const u8 = if (w.profile_override) |pid|
+                    profile.labelForProfile(pid)
+                else if (cfg.ui_profile) |label|
+                    label
+                else if (theme_engine.runtime.getPackDefaultProfile()) |pid|
+                    profile.labelForProfile(pid)
+                else
+                    null;
+                theme_eng.resolveProfileFromConfig(w_fb_width, w_fb_height, requested_profile);
+                const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+                const cfg_mode: theme.Mode = if (theme_engine.runtime.getPackModeLockToDefault())
+                    pack_default
+                else if (cfg.ui_theme) |label|
+                    theme.modeFromLabel(label)
+                else
+                    pack_default;
+                theme.setMode(w.theme_mode_override orelse cfg_mode);
+                theme.applyTypography(w_dpi_scale * theme_eng.active_profile.ui_scale);
+
+                w.queue.clear(allocator);
+                sdl_input_backend.setCollectWindow(w.window);
+                input_router.setExternalQueue(&w.queue);
+                input_router.collect(allocator);
+
+                w.swapchain.beginFrame(&gpu, w_fb_width, w_fb_height);
+                const action = ui.drawWindow(
+                    allocator,
+                    &ctx,
+                    &cfg,
+                    &agents,
+                    ws_client.is_connected,
+                    build_options.app_version,
+                    w_fb_width,
+                    w_fb_height,
+                    &w.manager,
+                    &command_inbox,
+                    &w.queue,
+                    &w.ui_state,
+                );
+                if (action.save_workspace) any_save_workspace = true;
+                if (action.detach_panel) |pp| {
+                    // UI already removed the panel from the manager; keep ownership in a heap node
+                    // until we spawn the tear-off window at the end of the frame.
+                    if (detach_req == null) {
+                        detach_req = .{ .wid = w.id, .panel_ptr = pp };
+                    } else {
+                        // Only one detach per frame is supported; don't leak if multiple fire.
+                        const moved = pp.*;
+                        allocator.destroy(pp);
+                        var tmp = moved;
+                        tmp.deinit(allocator);
+                    }
+                }
+                if (w.id == focused_id) {
+                    ui_action = action;
+                    active_window = w;
+                }
+
+                if (command_queue.get()) |list| {
+                    const defaults = theme_engine.runtime.getRenderDefaults();
+                    list.meta.image_sampling = w.image_sampling_override orelse defaults.image_sampling;
+                    list.meta.pixel_snap_textured = w.pixel_snap_textured_override orelse defaults.pixel_snap_textured;
+                    gpu.ui_renderer.beginFrame(w_fb_width, w_fb_height);
+                    w.swapchain.render(&gpu, list);
+                }
+            }
+            sdl_input_backend.setCollectWindow(null);
+            ui.frameEnd();
         }
+        if (any_save_workspace) ui_action.save_workspace = true;
 
         if (ui_action.config_updated) {
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
-            if (cfg.ui_theme) |label| {
+            const pack_default = theme_engine.runtime.getPackDefaultMode() orelse .light;
+            if (theme_engine.runtime.getPackModeLockToDefault()) {
+                theme.setMode(pack_default);
+            } else if (cfg.ui_theme) |label| {
                 theme.setMode(theme.modeFromLabel(label));
+            } else if (theme_engine.runtime.getPackDefaultMode() != null) {
+                theme.setMode(pack_default);
             }
         }
 
+        if (ui_action.clear_theme_pack_override) {
+            if (active_window.ui_state.theme_pack_override) |buf| {
+                allocator.free(buf);
+                active_window.ui_state.theme_pack_override = null;
+            }
+            active_window.ui_state.theme_layout_applied = .{ false, false, false, false };
+        }
+        if (ui_action.reload_theme_pack_override) {
+            active_window.ui_state.theme_pack_reload_requested = true;
+        }
+
+        var pack_applied_this_frame = false;
+        if (ui_action.config_updated or ui_action.reload_theme_pack) {
+            const applied_ok = if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, ui_action.reload_theme_pack))
+                true
+            else |err| blk: {
+                if (cfg.ui_theme_pack) |pack_path| {
+                    logger.warn("Failed to load theme pack '{s}': {}", .{ pack_path, err });
+                } else {
+                    logger.warn("Failed to apply theme pack: {}", .{err});
+                }
+                break :blk false;
+            };
+            if (applied_ok) {
+                pack_applied_this_frame = true;
+                if (cfg.ui_theme_pack) |pack_path| {
+                    if (config.pushRecentThemePack(allocator, &cfg, pack_path)) {
+                        ui_action.save_config = true;
+                    }
+                }
+            }
+            // Profile/typography are resolved per-window during UI draw.
+        }
+
+        updateThemePackWatch(allocator, &theme_pack_watch, &theme_eng, &cfg, pack_applied_this_frame);
+
+        // Theme pack browse dialog (desktop only).
+        if (ui_action.browse_theme_pack or ui_action.browse_theme_pack_override) {
+            if (builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos) {
+                theme_pack_browse.mutex.lock();
+                const can_launch = !theme_pack_browse.in_flight;
+                if (can_launch) {
+                    theme_pack_browse.in_flight = true;
+                    theme_pack_browse.target = if (ui_action.browse_theme_pack_override) .window_override else .config;
+                    theme_pack_browse.target_window_id = if (ui_action.browse_theme_pack_override) active_window.id else 0;
+                }
+                theme_pack_browse.mutex.unlock();
+                if (can_launch) {
+                    const themes_dir_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+                    defer if (themes_dir_abs) |v| allocator.free(v);
+
+                    // SDL copies/consumes the path as needed; safe to pass a temporary null-terminated buffer.
+                    if (themes_dir_abs) |abs_path| {
+                        const z = allocator.alloc(u8, abs_path.len + 1) catch null;
+                        if (z) |buf| {
+                            defer allocator.free(buf);
+                            @memcpy(buf[0..abs_path.len], abs_path);
+                            buf[abs_path.len] = 0;
+                            sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, @ptrCast(buf.ptr), false);
+                        } else {
+                            sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, null, false);
+                        }
+                    } else {
+                        sdl.SDL_ShowOpenFolderDialog(sdlDialogPickThemePack, null, active_window.window, null, false);
+                    }
+                }
+            }
+        }
+
+        // Consume browse dialog result.
+        var picked_c: ?[]u8 = null;
+        var had_error: bool = false;
+        var browse_target: @TypeOf(theme_pack_browse.target) = .config;
+        var browse_target_wid: u32 = 0;
+        {
+            theme_pack_browse.mutex.lock();
+            picked_c = theme_pack_browse.pending_path;
+            theme_pack_browse.pending_path = null;
+            had_error = theme_pack_browse.pending_error;
+            theme_pack_browse.pending_error = false;
+            browse_target = theme_pack_browse.target;
+            browse_target_wid = theme_pack_browse.target_window_id;
+            theme_pack_browse.target = .config;
+            theme_pack_browse.target_window_id = 0;
+            theme_pack_browse.mutex.unlock();
+        }
+        if (picked_c) |picked| {
+            defer std.heap.c_allocator.free(picked);
+
+            const chosen = themePackRootFromSelection(picked);
+            // Prefer storing a portable relative path when the chosen folder is under ./themes.
+            const themes_abs = std.fs.cwd().realpathAlloc(allocator, "themes") catch null;
+            defer if (themes_abs) |v| allocator.free(v);
+
+            var stored: ?[]u8 = null;
+            if (themes_abs) |themes_root| {
+                if (std.mem.startsWith(u8, chosen, themes_root)) {
+                    // Accept both "/themes/<name>" and "/themes/<name>/..."
+                    var rel = chosen[themes_root.len..];
+                    if (rel.len > 0 and (rel[0] == '/' or rel[0] == '\\')) rel = rel[1..];
+                    const first_sep = std.mem.indexOfAny(u8, rel, "/\\") orelse rel.len;
+                    if (first_sep > 0) {
+                        stored = std.fmt.allocPrint(allocator, "themes/{s}", .{rel[0..first_sep]}) catch null;
+                    }
+                }
+            }
+            if (stored == null) {
+                stored = allocator.dupe(u8, chosen) catch null;
+            }
+
+            if (stored) |path| {
+                defer allocator.free(path);
+                switch (browse_target) {
+                    .config => {
+                        const new_value = allocator.dupe(u8, path) catch null;
+                        if (new_value) |owned| {
+                            if (cfg.ui_theme_pack) |v| allocator.free(v);
+                            cfg.ui_theme_pack = owned;
+                            ui.syncSettings(allocator, cfg);
+
+                            // Apply immediately; only persist if apply succeeded.
+                            if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true)) |_| {
+                                if (cfg.ui_theme_pack) |pack_path| {
+                                    _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
+                                }
+                                config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+                                    logger.err("Failed to save config: {}", .{err});
+                                };
+                            } else |err| {
+                                logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
+                            }
+                        }
+                    },
+                    .window_override => {
+                        // Validate/apply first; only set override if it loads.
+                        if (theme_eng.activateThemePackForRender(path, true)) |_| {
+                            var target_window: ?*UiWindow = null;
+                            for (ui_windows.items) |w| {
+                                if (w.id == browse_target_wid) {
+                                    target_window = w;
+                                    break;
+                                }
+                            }
+                            if (target_window) |tw| {
+                                if (tw.ui_state.theme_pack_override) |old| allocator.free(old);
+                                tw.ui_state.theme_pack_override = allocator.dupe(u8, path) catch null;
+                                tw.ui_state.theme_layout_applied = .{ false, false, false, false };
+                            }
+                        } else |err| {
+                            logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
+                        }
+                    },
+                }
+            }
+        } else if (had_error) {
+            logger.warn("Theme pack browse failed: {s}", .{sdl.SDL_GetError()});
+        }
+
         if (ui_action.save_config) {
+            const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+            defer if (cfg_path) |v| allocator.free(v);
+            logger.info("Saving config: {s}", .{cfg_path orelse "ziggystarclaw_config.json"});
             config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
         }
 
-        if (ui_action.save_workspace) {
-            workspace_store.save(allocator, "ziggystarclaw_workspace.json", &manager.workspace) catch |err| {
+        if (detach_req) |req| {
+            // Detach: move the panel from the source window into a new window.
+            detach_block: {
+                var source_window: ?*UiWindow = null;
+                for (ui_windows.items) |w| {
+                    if (w.id == req.wid) {
+                        source_window = w;
+                        break;
+                    }
+                }
+                if (source_window) |src_w| {
+                    const panel = req.panel_ptr.*;
+                    allocator.destroy(req.panel_ptr);
+                    var ws_new = workspace.Workspace.initEmpty(allocator);
+                    // Transfer the panel into the new window workspace.
+                    if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
+                        logger.warn("Failed to allocate detached window workspace: {}", .{err});
+                        // Put the panel back to avoid losing it.
+                        _ = src_w.manager.putPanel(panel) catch {
+                            var tmp = panel;
+                            tmp.deinit(allocator);
+                        };
+                        ws_new.deinit(allocator);
+                        break :detach_block;
+                    }
+                    ws_new.focused_panel_id = panel.id;
+
+                    var title_buf: [192]u8 = undefined;
+                    const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{panel.title}) catch "ZiggyStarClaw";
+                    const size = defaultWindowSizeForPanelKind(panel.kind);
+
+                    const new_win = createUiWindow(
+                        allocator,
+                        &gpu,
+                        title_z,
+                        size.w,
+                        size.h,
+                        window_flags,
+                        ws_new,
+                        &next_panel_id_global,
+                        true,
+                        false,
+                        src_w.profile_override,
+                        src_w.theme_mode_override,
+                        src_w.image_sampling_override,
+                        src_w.pixel_snap_textured_override,
+                    ) catch |err| blk: {
+                        logger.warn("Failed to detach panel into new window: {}", .{err});
+                        // Reattach: pull the panel back out of ws_new before freeing.
+                        const restored = ws_new.panels.pop();
+                        ws_new.deinit(allocator);
+                        if (restored) |p| {
+                            _ = src_w.manager.putPanel(p) catch {
+                                var tmp = p;
+                                tmp.deinit(allocator);
+                            };
+                        }
+                        break :blk null;
+                    };
+                    if (new_win) |wnew| {
+                        var pos_x: c_int = 0;
+                        var pos_y: c_int = 0;
+                        _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
+                        _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
+                        ui_windows.append(allocator, wnew) catch {
+                            destroyUiWindow(allocator, wnew);
+                        };
+                    }
+                } else {
+                    // Source window disappeared; avoid leaking the detached panel.
+                    var tmp = req.panel_ptr.*;
+                    allocator.destroy(req.panel_ptr);
+                    tmp.deinit(allocator);
+                }
+            }
+        }
+
+        if (ui_action.save_workspace) save_ws: {
+            // Persist the main workspace plus any secondary windows.
+            var count: usize = 0;
+            for (ui_windows.items) |w| {
+                if (w.id == main_win.id) continue;
+                if (!w.persist_in_workspace) continue;
+                count += 1;
+            }
+            const views = allocator.alloc(workspace_store.DetachedWindowView, count) catch |err| {
+                logger.err("Failed to allocate workspace save list: {}", .{err});
+                workspace_store.saveMulti(
+                    allocator,
+                    "ziggystarclaw_workspace.json",
+                    &main_win.manager.workspace,
+                    &[_]workspace_store.DetachedWindowView{},
+                    next_panel_id_global,
+                ) catch |save_err| {
+                    logger.err("Failed to save workspace: {}", .{save_err});
+                };
+                for (ui_windows.items) |w| {
+                    w.manager.workspace.markClean();
+                }
+                // Can't include window list this frame.
+                break :save_ws;
+            };
+            defer allocator.free(views);
+
+            var filled: usize = 0;
+            for (ui_windows.items) |w| {
+                if (w.id == main_win.id) continue;
+                if (!w.persist_in_workspace) continue;
+                var size_w: c_int = 0;
+                var size_h: c_int = 0;
+                _ = sdl.SDL_GetWindowSize(w.window, &size_w, &size_h);
+                const w_u32: u32 = @intCast(if (size_w > 0) size_w else 1);
+                const h_u32: u32 = @intCast(if (size_h > 0) size_h else 1);
+
+                views[filled] = .{
+                    .title = w.title,
+                    .width = w_u32,
+                    .height = h_u32,
+                    .profile = if (w.profile_override) |pid| profile.labelForProfile(pid) else null,
+                    .variant = if (w.theme_mode_override) |m| theme.labelForMode(m) else null,
+                    .image_sampling = if (w.image_sampling_override) |s| labelForImageSampling(s) else null,
+                    .pixel_snap_textured = w.pixel_snap_textured_override,
+                    .ws = &w.manager.workspace,
+                };
+                filled += 1;
+            }
+
+            workspace_store.saveMulti(
+                allocator,
+                "ziggystarclaw_workspace.json",
+                &main_win.manager.workspace,
+                views[0..filled],
+                next_panel_id_global,
+            ) catch |err| {
                 logger.err("Failed to save workspace: {}", .{err});
             };
-            manager.workspace.markClean();
+
+            for (ui_windows.items) |w| {
+                w.manager.workspace.markClean();
+            }
         }
 
         if (ui_action.check_updates) {
@@ -1467,7 +2468,7 @@ pub fn main() !void {
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
             ws_client.connect_host_override = cfg.connect_host_override;
-            ui.syncSettings(cfg);
+            ui.syncSettings(allocator, cfg);
         }
 
         if (ui_action.connect) {
@@ -1527,7 +2528,7 @@ pub fn main() !void {
                     if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
                         agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                     }
-                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                    _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1547,7 +2548,7 @@ pub fn main() !void {
                         agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                     }
 
-                    _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
+                    _ = active_window.manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
                     sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1566,7 +2567,7 @@ pub fn main() !void {
             ctx.setCurrentSession(open.session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
-            _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
+            _ = active_window.manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
             }
@@ -1578,9 +2579,9 @@ pub fn main() !void {
                 logger.warn("Failed to set session: {}", .{err});
             };
             if (session_keys.parse(session_key)) |parts| {
-                _ = manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent(parts.agent_id, agentDisplayName(&agents, parts.agent_id), session_key) catch {};
             } else {
-                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
             }
             if (ws_client.is_connected) {
                 sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
@@ -1600,7 +2601,9 @@ pub fn main() !void {
             sendSessionsDeleteRequest(allocator, &ctx, &ws_client, session_key);
             _ = ctx.removeSessionByKey(session_key);
             ctx.clearSessionState(session_key);
-            clearChatPanelsForSession(&manager, allocator, session_key);
+            for (ui_windows.items) |w| {
+                clearChatPanelsForSession(&w.manager, allocator, session_key);
+            }
             if (agents.clearDefaultIfMatches(allocator, session_key)) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
@@ -1619,7 +2622,7 @@ pub fn main() !void {
                 .default_session_key = null,
             })) |_| {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
-                _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+                _ = active_window.manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
             } else |err| {
                 logger.warn("Failed to add agent: {}", .{err});
                 allocator.free(owned.id);
@@ -1632,7 +2635,9 @@ pub fn main() !void {
             defer allocator.free(agent_id);
             if (agents.remove(allocator, agent_id)) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
-                closeAgentChatPanels(&manager, agent_id);
+                for (ui_windows.items) |w| {
+                    closeAgentChatPanels(&w.manager, agent_id);
+                }
             }
         }
 
@@ -1696,7 +2701,9 @@ pub fn main() !void {
             sendChatMessageRequest(allocator, &ctx, &ws_client, payload.session_key, payload.message);
         }
 
-        ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &manager);
+        for (ui_windows.items) |w| {
+            ensureChatPanelsReady(allocator, &ctx, &ws_client, &agents, &w.manager);
+        }
 
         if (ui_action.clear_node_result) {
             ctx.clearNodeResult();
@@ -1764,11 +2771,133 @@ pub fn main() !void {
             }
         }
 
-        {
-            const zone = profiler.zone(@src(), "frame.render");
-            defer zone.end();
-            renderer.render();
+        if ((ui_action.spawn_window or ui_action.spawn_window_template != null) and theme_eng.caps.supports_multi_window) {
+            const index: usize = ui_windows.items.len + 1;
+
+            var cur_w: c_int = 960;
+            var cur_h: c_int = 720;
+            _ = sdl.SDL_GetWindowSize(active_window.window, &cur_w, &cur_h);
+            if (cur_w < 300) cur_w = 960;
+            if (cur_h < 200) cur_h = 720;
+
+            var title_buf: [96]u8 = undefined;
+            var title_z: [:0]const u8 = "ZiggyStarClaw";
+            var profile_override: ?theme_engine.ProfileId = active_window.profile_override;
+            var mode_override: ?theme.Mode = active_window.theme_mode_override;
+            var sampling_override: ?ui_commands.ImageSampling = active_window.image_sampling_override;
+            var pixel_override: ?bool = active_window.pixel_snap_textured_override;
+
+            var ws_for_new: workspace.Workspace = undefined;
+            var ws_owned: bool = false;
+            defer if (ws_owned) ws_for_new.deinit(allocator);
+
+            if (ui_action.spawn_window_template) |tpl_idx| {
+                const templates = theme_engine.runtime.getWindowTemplates();
+                if (tpl_idx < templates.len) {
+                    const tpl = templates[tpl_idx];
+                    const max_cint_u32: u32 = @intCast(std.math.maxInt(c_int));
+                    if (tpl.width > 0) cur_w = @intCast(@min(max_cint_u32, tpl.width));
+                    if (tpl.height > 0) cur_h = @intCast(@min(max_cint_u32, tpl.height));
+                    const base_title = if (tpl.title.len > 0) tpl.title else tpl.id;
+                    title_z = std.fmt.bufPrintZ(&title_buf, "{s} ({d})", .{ base_title, index }) catch "ZiggyStarClaw";
+                    if (profile.profileFromLabel(tpl.profile)) |pid| {
+                        profile_override = pid;
+                    }
+                    if (tpl.variant) |variant| {
+                        mode_override = theme.modeFromLabel(variant);
+                    }
+                    if (tpl.image_sampling) |label| {
+                        sampling_override = parseImageSamplingLabel(label);
+                    }
+                    if (tpl.pixel_snap_textured) |snap| {
+                        pixel_override = snap;
+                    }
+                    if (buildWorkspaceFromTemplate(allocator, tpl, &next_panel_id_global)) |ws_val| {
+                        ws_for_new = ws_val;
+                        ws_owned = true;
+                    } else |_| {}
+                }
+            }
+
+            if (!ws_owned) {
+                title_z = std.fmt.bufPrintZ(&title_buf, "ZiggyStarClaw ({d})", .{index}) catch "ZiggyStarClaw";
+                if (cloneWorkspaceRemap(allocator, &active_window.manager.workspace, &next_panel_id_global)) |ws_val| {
+                    ws_for_new = ws_val;
+                    ws_owned = true;
+                } else |_| {}
+            }
+
+            const new_win = if (ws_owned)
+                createUiWindow(
+                    allocator,
+                    &gpu,
+                    title_z,
+                    cur_w,
+                    cur_h,
+                    window_flags,
+                    ws_for_new,
+                    &next_panel_id_global,
+                    false,
+                    false,
+                    profile_override,
+                    mode_override,
+                    sampling_override,
+                    pixel_override,
+                ) catch |err| blk: {
+                    logger.warn("Failed to create window: {}", .{err});
+                    break :blk null;
+                }
+            else
+                null;
+
+            if (new_win) |w| {
+                // `createUiWindow` owns the workspace; don't free it here.
+                ws_owned = false;
+
+                var pos_x: c_int = 0;
+                var pos_y: c_int = 0;
+                _ = sdl.SDL_GetWindowPosition(active_window.window, &pos_x, &pos_y);
+                const offs: c_int = @intCast(@min(index * 24, 240));
+                _ = sdl.SDL_SetWindowPosition(w.window, pos_x + offs, pos_y + offs);
+                ui_windows.append(allocator, w) catch {
+                    destroyUiWindow(allocator, w);
+                };
+            }
         }
+
+        if (window_close_requests.items.len > 0) {
+            for (window_close_requests.items) |wid| {
+                var i: usize = 0;
+                while (i < ui_windows.items.len) {
+                    const w = ui_windows.items[i];
+                    if (w.id == wid and w.id != main_win.id) {
+                        _ = ui_windows.swapRemove(i);
+                        if (w.persist_in_workspace) {
+                            // Dock panels back into the main window before closing (tear-off window behavior).
+                            var taken = takeWorkspaceFromManager(allocator, &w.manager);
+                            defer taken.deinit(allocator);
+                            while (taken.panels.items.len > 0) {
+                                const moved_panel_opt = taken.panels.pop();
+                                if (moved_panel_opt) |moved_panel| {
+                                    main_win.manager.putPanel(moved_panel) catch {
+                                        // If we can't reattach, drop the panel safely.
+                                        var tmp = moved_panel;
+                                        tmp.deinit(allocator);
+                                    };
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+                        destroyUiWindow(allocator, w);
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+        }
+
+        // Rendering is performed per-window during the UI loop above.
     }
 }
 

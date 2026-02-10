@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "id": "zsc.brushed_metal_example",
+  "name": "Brushed Metal (Example)",
+  "author": "ZiggyStarClaw",
+  "license": "MIT",
+  "defaults": {
+    "variant": "light",
+    "lock_variant": true,
+    "profile": "desktop"
+  },
+  "capabilities": {
+    "requires_multi_window": false,
+    "requires_custom_shaders": false
+  }
+}

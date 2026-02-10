@@ -14,6 +14,9 @@ const Vec2 = command_list.Vec2;
 const Color = command_list.Color;
 const Rect = command_list.Rect;
 const FontRole = command_list.FontRole;
+const Gradient4 = command_list.Gradient4;
+const SoftFxKind = command_list.SoftFxKind;
+const ImageSampling = command_list.ImageSampling;
 
 const ShapeVertex = struct {
     pos: Vec2,
@@ -26,6 +29,26 @@ const TexVertex = struct {
     color: [4]f32,
 };
 
+const SdfVertex = struct {
+    pos: Vec2,
+    // Emscripten wgpu wrapper only exposes float32x2/float32x4 vertex formats,
+    // so we store the param index as a float in `param[0]`.
+    param: [2]f32,
+};
+
+// Must match `FxParams` in `ui.sdf.wgsl` (std430-ish rules; keep 16-byte alignment).
+const SdfFxParams = extern struct {
+    rect_min: Vec2,
+    rect_max: Vec2,
+    radius: f32,
+    kind: u32,
+    thickness: f32,
+    blur_px: f32,
+    color: [4]f32,
+    falloff_exp: f32,
+    _pad: [3]f32 = .{ 0.0, 0.0, 0.0 },
+};
+
 const Scissor = struct {
     x: u32,
     y: u32,
@@ -33,7 +56,7 @@ const Scissor = struct {
     height: u32,
 };
 
-const PipelineKind = enum { shape, textured };
+const PipelineKind = enum { shape, sdf, sdf_additive, textured };
 
 const RenderItem = struct {
     kind: PipelineKind,
@@ -115,8 +138,16 @@ const FontAtlas = struct {
 const ImageTexture = struct {
     texture: zgpu.wgpu.Texture,
     view: zgpu.wgpu.TextureView,
-    sampler: zgpu.wgpu.Sampler,
-    bind_group: zgpu.wgpu.BindGroup,
+    sampler_linear: zgpu.wgpu.Sampler,
+    bind_group_linear: zgpu.wgpu.BindGroup,
+    sampler_nearest: zgpu.wgpu.Sampler,
+    bind_group_nearest: zgpu.wgpu.BindGroup,
+    sampler_repeat_linear: zgpu.wgpu.Sampler,
+    bind_group_repeat_linear: zgpu.wgpu.BindGroup,
+    sampler_repeat_nearest: zgpu.wgpu.Sampler,
+    bind_group_repeat_nearest: zgpu.wgpu.BindGroup,
+    width: u32,
+    height: u32,
 };
 
 pub const Renderer = struct {
@@ -127,19 +158,31 @@ pub const Renderer = struct {
     shape_pipeline: zgpu.wgpu.RenderPipeline,
     shape_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     shape_bind_group: zgpu.wgpu.BindGroup,
+    sdf_pipeline: zgpu.wgpu.RenderPipeline,
+    sdf_additive_pipeline: zgpu.wgpu.RenderPipeline,
+    sdf_bind_group_layout: zgpu.wgpu.BindGroupLayout,
+    sdf_bind_group: zgpu.wgpu.BindGroup,
+    sdf_param_buffer: zgpu.wgpu.Buffer,
+    sdf_param_capacity: usize,
     texture_pipeline: zgpu.wgpu.RenderPipeline,
     texture_bind_group_layout: zgpu.wgpu.BindGroupLayout,
     shape_vertex_buffer: zgpu.wgpu.Buffer,
     shape_vertex_capacity: usize,
+    sdf_vertex_buffer: zgpu.wgpu.Buffer,
+    sdf_vertex_capacity: usize,
     textured_vertex_buffer: zgpu.wgpu.Buffer,
     textured_vertex_capacity: usize,
     shape_vertices: std.ArrayList(ShapeVertex) = .empty,
+    sdf_vertices: std.ArrayList(SdfVertex) = .empty,
+    sdf_params: std.ArrayList(SdfFxParams) = .empty,
     textured_vertices: std.ArrayList(TexVertex) = .empty,
     render_items: std.ArrayList(RenderItem) = .empty,
     scratch_points: std.ArrayList(Vec2) = .empty,
     clip_stack: std.ArrayList(Rect) = .empty,
     font_atlases: std.AutoHashMap(FontKey, FontAtlas),
     image_textures: std.AutoHashMap(u32, ImageTexture),
+    image_sampling: ImageSampling = .linear,
+    pixel_snap_textured: bool = false,
     screen_width: u32 = 1,
     screen_height: u32 = 1,
     ft_ready: bool = false,
@@ -187,6 +230,59 @@ pub const Renderer = struct {
             .entries = &shape_bind_group_entries,
         });
 
+        const sdf_param_capacity: usize = 1024;
+        const sdf_param_buffer = device.createBuffer(.{
+            .label = "ui.sdf.params",
+            .usage = .{ .storage = true, .copy_dst = true },
+            .size = sdf_param_capacity * @sizeOf(SdfFxParams),
+        });
+
+        const sdf_bgl_entries = [_]zgpu.wgpu.BindGroupLayoutEntry{
+            .{
+                .binding = 0,
+                .visibility = .{ .vertex = true, .fragment = true },
+                .buffer = .{
+                    .binding_type = .uniform,
+                    .has_dynamic_offset = .false,
+                    .min_binding_size = @sizeOf(Uniforms),
+                },
+            },
+            .{
+                .binding = 1,
+                .visibility = .{ .fragment = true },
+                .buffer = .{
+                    .binding_type = .read_only_storage,
+                    .has_dynamic_offset = .false,
+                    .min_binding_size = @sizeOf(SdfFxParams),
+                },
+            },
+        };
+        const sdf_bind_group_layout = device.createBindGroupLayout(.{
+            .label = "ui.sdf_bgl",
+            .entry_count = sdf_bgl_entries.len,
+            .entries = &sdf_bgl_entries,
+        });
+        const sdf_bind_group_entries = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .buffer = sdf_param_buffer,
+                .offset = 0,
+                .size = sdf_param_capacity * @sizeOf(SdfFxParams),
+            },
+        };
+        const sdf_bind_group = device.createBindGroup(.{
+            .label = "ui.sdf_bg",
+            .layout = sdf_bind_group_layout,
+            .entry_count = sdf_bind_group_entries.len,
+            .entries = &sdf_bind_group_entries,
+        });
+
         const texture_bgl_entries = [_]zgpu.wgpu.BindGroupLayoutEntry{
             .{
                 .binding = 0,
@@ -220,6 +316,13 @@ pub const Renderer = struct {
             .bind_group_layouts = &[_]zgpu.wgpu.BindGroupLayout{shape_bind_group_layout},
         });
         defer shape_pipeline_layout.release();
+
+        const sdf_pipeline_layout = device.createPipelineLayout(.{
+            .label = "ui.sdf_pipeline_layout",
+            .bind_group_layout_count = 1,
+            .bind_group_layouts = &[_]zgpu.wgpu.BindGroupLayout{sdf_bind_group_layout},
+        });
+        defer sdf_pipeline_layout.release();
 
         const texture_pipeline_layout = device.createPipelineLayout(.{
             .label = "ui.texture_pipeline_layout",
@@ -262,6 +365,76 @@ pub const Renderer = struct {
         ;
         const shape_shader = zgpu.createWgslShaderModule(device, shape_shader_src, "ui.shape.wgsl");
         defer shape_shader.release();
+
+        const sdf_shader_src: [:0]const u8 =
+            \\struct Uniforms {
+            \\    screen_size: vec2<f32>,
+            \\}
+            \\
+            \\struct FxParams {
+            \\    rect_min: vec2<f32>,
+            \\    rect_max: vec2<f32>,
+            \\    radius: f32,
+            \\    kind: u32,
+            \\    thickness: f32,
+            \\    blur_px: f32,
+            \\    color: vec4<f32>,
+            \\    falloff_exp: f32,
+            \\    _pad0: array<f32, 3>,
+            \\}
+            \\
+            \\@group(0) @binding(0) var<uniform> u: Uniforms;
+            \\@group(0) @binding(1) var<storage, read> params: array<FxParams>;
+            \\
+            \\struct VertexInput {
+            \\    @location(0) pos: vec2<f32>,
+            \\    @location(1) param: vec2<f32>,
+            \\};
+            \\
+            \\struct VertexOutput {
+            \\    @builtin(position) pos: vec4<f32>,
+            \\    @location(0) pos_px: vec2<f32>,
+            \\    @location(1) @interpolate(flat) param_index: u32,
+            \\};
+            \\
+            \\fn sdRoundRect(p: vec2<f32>, half_size: vec2<f32>, radius: f32) -> f32 {
+            \\    let r = max(0.0, radius);
+            \\    let hs = max(half_size, vec2<f32>(0.0, 0.0));
+            \\    let q = abs(p) - (hs - vec2<f32>(r, r));
+            \\    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+            \\}
+            \\
+            \\@vertex
+            \\fn vs_main(input: VertexInput) -> VertexOutput {
+            \\    var out: VertexOutput;
+            \\    let ndc_x = (input.pos.x / u.screen_size.x) * 2.0 - 1.0;
+            \\    let ndc_y = 1.0 - (input.pos.y / u.screen_size.y) * 2.0;
+            \\    out.pos = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
+            \\    out.pos_px = input.pos;
+            \\    out.param_index = u32(input.param.x + 0.5);
+            \\    return out;
+            \\}
+            \\
+            \\@fragment
+            \\fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+            \\    let p = params[input.param_index];
+            \\    let center = (p.rect_min + p.rect_max) * 0.5;
+            \\    let half_size = (p.rect_max - p.rect_min) * 0.5;
+            \\    let d = sdRoundRect(input.pos_px - center, half_size, p.radius);
+            \\    let blur = max(0.0001, p.blur_px);
+            \\    var a: f32 = 0.0;
+            \\    if (p.kind == 0u) { // fill_soft
+            \\        a = smoothstep(blur, 0.0, d);
+            \\    } else { // stroke_soft
+            \\        let half_t = max(0.0, p.thickness) * 0.5;
+            \\        a = smoothstep(blur, 0.0, abs(d) - half_t);
+            \\    }
+            \\    a = pow(clamp(a, 0.0, 1.0), max(0.001, p.falloff_exp));
+            \\    return vec4<f32>(p.color.rgb, p.color.a * a);
+            \\}
+        ;
+        const sdf_shader = zgpu.createWgslShaderModule(device, sdf_shader_src, "ui.sdf.wgsl");
+        defer sdf_shader.release();
 
         const textured_shader_src: [:0]const u8 =
             \\struct Uniforms {
@@ -314,6 +487,16 @@ pub const Renderer = struct {
             .attributes = &shape_vertex_attrs,
         }};
 
+        const sdf_vertex_attrs = [_]zgpu.wgpu.VertexAttribute{
+            .{ .format = .float32x2, .offset = 0, .shader_location = 0 },
+            .{ .format = .float32x2, .offset = @sizeOf(Vec2), .shader_location = 1 },
+        };
+        const sdf_vertex_buffers = [_]zgpu.wgpu.VertexBufferLayout{.{
+            .array_stride = @sizeOf(SdfVertex),
+            .attribute_count = sdf_vertex_attrs.len,
+            .attributes = &sdf_vertex_attrs,
+        }};
+
         const textured_vertex_attrs = [_]zgpu.wgpu.VertexAttribute{
             .{ .format = .float32x2, .offset = 0, .shader_location = 0 },
             .{ .format = .float32x2, .offset = @sizeOf(Vec2), .shader_location = 1 },
@@ -325,7 +508,7 @@ pub const Renderer = struct {
             .attributes = &textured_vertex_attrs,
         }};
 
-        const blend = zgpu.wgpu.BlendState{
+        const blend_alpha = zgpu.wgpu.BlendState{
             .color = .{
                 .operation = .add,
                 .src_factor = .src_alpha,
@@ -338,9 +521,28 @@ pub const Renderer = struct {
             },
         };
 
-        const color_target = [_]zgpu.wgpu.ColorTargetState{.{
+        const blend_additive = zgpu.wgpu.BlendState{
+            .color = .{
+                .operation = .add,
+                .src_factor = .src_alpha,
+                .dst_factor = .one,
+            },
+            .alpha = .{
+                .operation = .add,
+                .src_factor = .one,
+                .dst_factor = .one,
+            },
+        };
+
+        const color_target_alpha = [_]zgpu.wgpu.ColorTargetState{.{
             .format = swapchain_format,
-            .blend = &blend,
+            .blend = &blend_alpha,
+            .write_mask = zgpu.wgpu.ColorWriteMask.all,
+        }};
+
+        const color_target_additive = [_]zgpu.wgpu.ColorTargetState{.{
+            .format = swapchain_format,
+            .blend = &blend_additive,
             .write_mask = zgpu.wgpu.ColorWriteMask.all,
         }};
 
@@ -356,8 +558,44 @@ pub const Renderer = struct {
             .fragment = &.{
                 .module = shape_shader,
                 .entry_point = "fs_main",
-                .target_count = color_target.len,
-                .targets = &color_target,
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
+            },
+            .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+        });
+
+        const sdf_pipeline = device.createRenderPipeline(.{
+            .label = "ui.sdf.pipeline",
+            .layout = sdf_pipeline_layout,
+            .vertex = .{
+                .module = sdf_shader,
+                .entry_point = "vs_main",
+                .buffer_count = sdf_vertex_buffers.len,
+                .buffers = &sdf_vertex_buffers,
+            },
+            .fragment = &.{
+                .module = sdf_shader,
+                .entry_point = "fs_main",
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
+            },
+            .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
+        });
+
+        const sdf_additive_pipeline = device.createRenderPipeline(.{
+            .label = "ui.sdf_additive.pipeline",
+            .layout = sdf_pipeline_layout,
+            .vertex = .{
+                .module = sdf_shader,
+                .entry_point = "vs_main",
+                .buffer_count = sdf_vertex_buffers.len,
+                .buffers = &sdf_vertex_buffers,
+            },
+            .fragment = &.{
+                .module = sdf_shader,
+                .entry_point = "fs_main",
+                .target_count = color_target_additive.len,
+                .targets = &color_target_additive,
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
@@ -374,8 +612,8 @@ pub const Renderer = struct {
             .fragment = &.{
                 .module = textured_shader,
                 .entry_point = "fs_main",
-                .target_count = color_target.len,
-                .targets = &color_target,
+                .target_count = color_target_alpha.len,
+                .targets = &color_target_alpha,
             },
             .primitive = .{ .topology = .triangle_list, .cull_mode = .none },
         });
@@ -385,6 +623,11 @@ pub const Renderer = struct {
             .label = "ui.shape.vertices",
             .usage = .{ .vertex = true, .copy_dst = true },
             .size = initial_capacity * @sizeOf(ShapeVertex),
+        });
+        const sdf_vertex_buffer = device.createBuffer(.{
+            .label = "ui.sdf.vertices",
+            .usage = .{ .vertex = true, .copy_dst = true },
+            .size = initial_capacity * @sizeOf(SdfVertex),
         });
         const textured_vertex_buffer = device.createBuffer(.{
             .label = "ui.texture.vertices",
@@ -400,12 +643,22 @@ pub const Renderer = struct {
             .shape_pipeline = shape_pipeline,
             .shape_bind_group_layout = shape_bind_group_layout,
             .shape_bind_group = shape_bind_group,
+            .sdf_pipeline = sdf_pipeline,
+            .sdf_additive_pipeline = sdf_additive_pipeline,
+            .sdf_bind_group_layout = sdf_bind_group_layout,
+            .sdf_bind_group = sdf_bind_group,
+            .sdf_param_buffer = sdf_param_buffer,
+            .sdf_param_capacity = sdf_param_capacity,
             .texture_pipeline = texture_pipeline,
             .texture_bind_group_layout = texture_bind_group_layout,
             .shape_vertex_buffer = shape_vertex_buffer,
             .shape_vertex_capacity = initial_capacity,
+            .sdf_vertex_buffer = sdf_vertex_buffer,
+            .sdf_vertex_capacity = initial_capacity,
             .textured_vertex_buffer = textured_vertex_buffer,
             .textured_vertex_capacity = initial_capacity,
+            .sdf_vertices = std.ArrayList(SdfVertex).empty,
+            .sdf_params = std.ArrayList(SdfFxParams).empty,
             .font_atlases = std.AutoHashMap(FontKey, FontAtlas).init(allocator),
             .image_textures = std.AutoHashMap(u32, ImageTexture).init(allocator),
         };
@@ -420,8 +673,10 @@ pub const Renderer = struct {
 
         var img_it = self.image_textures.iterator();
         while (img_it.next()) |entry| {
-            entry.value_ptr.bind_group.release();
-            entry.value_ptr.sampler.release();
+            entry.value_ptr.bind_group_linear.release();
+            entry.value_ptr.sampler_linear.release();
+            entry.value_ptr.bind_group_nearest.release();
+            entry.value_ptr.sampler_nearest.release();
             entry.value_ptr.view.release();
             entry.value_ptr.texture.release();
         }
@@ -433,14 +688,22 @@ pub const Renderer = struct {
         }
 
         self.shape_vertex_buffer.release();
+        self.sdf_vertex_buffer.release();
         self.textured_vertex_buffer.release();
+        self.sdf_param_buffer.release();
         self.uniform_buffer.release();
         self.shape_bind_group.release();
         self.shape_bind_group_layout.release();
+        self.sdf_bind_group.release();
+        self.sdf_bind_group_layout.release();
         self.texture_bind_group_layout.release();
         self.shape_pipeline.release();
+        self.sdf_pipeline.release();
+        self.sdf_additive_pipeline.release();
         self.texture_pipeline.release();
         self.shape_vertices.deinit(self.allocator);
+        self.sdf_vertices.deinit(self.allocator);
+        self.sdf_params.deinit(self.allocator);
         self.textured_vertices.deinit(self.allocator);
         self.render_items.deinit(self.allocator);
         self.scratch_points.deinit(self.allocator);
@@ -453,6 +716,8 @@ pub const Renderer = struct {
         self.screen_width = if (width > 0) width else 1;
         self.screen_height = if (height > 0) height else 1;
         self.shape_vertices.clearRetainingCapacity();
+        self.sdf_vertices.clearRetainingCapacity();
+        self.sdf_params.clearRetainingCapacity();
         self.textured_vertices.clearRetainingCapacity();
         self.render_items.clearRetainingCapacity();
         self.scratch_points.clearRetainingCapacity();
@@ -462,7 +727,11 @@ pub const Renderer = struct {
     pub fn record(self: *Renderer, list: *command_list.CommandList) void {
         const zone = profiler.zone(@src(), "wgpu.record");
         defer zone.end();
+        self.image_sampling = list.meta.image_sampling;
+        self.pixel_snap_textured = list.meta.pixel_snap_textured;
         self.shape_vertices.clearRetainingCapacity();
+        self.sdf_vertices.clearRetainingCapacity();
+        self.sdf_params.clearRetainingCapacity();
         self.textured_vertices.clearRetainingCapacity();
         self.render_items.clearRetainingCapacity();
         self.clip_stack.clearRetainingCapacity();
@@ -513,6 +782,10 @@ pub const Renderer = struct {
                         self.pushRectStroke(rect_cmd.rect, rect_cmd.style.thickness, stroke, current_scissor);
                     }
                 },
+                .rect_gradient => |rect_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushFilledRectGradient(rect_cmd.rect, rect_cmd.colors, current_scissor);
+                },
                 .rounded_rect => |rect_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     if (rect_cmd.style.fill) |fill| {
@@ -521,6 +794,15 @@ pub const Renderer = struct {
                     if (rect_cmd.style.stroke) |stroke| {
                         self.pushRoundedRectStroke(rect_cmd.rect, rect_cmd.radius, rect_cmd.style.thickness, stroke, current_scissor);
                     }
+                },
+                .rounded_rect_gradient => |rect_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushRoundedRectGradient(rect_cmd.rect, rect_cmd.radius, rect_cmd.colors, current_scissor);
+                },
+                .soft_rounded_rect => |fx_cmd| {
+                    const scissor = if (fx_cmd.respect_clip) current_scissor else full_scissor;
+                    if (scissor.width == 0 or scissor.height == 0) continue;
+                    self.pushSoftRoundedRect(fx_cmd, scissor);
                 },
                 .line => |line_cmd| {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
@@ -534,6 +816,10 @@ pub const Renderer = struct {
                     if (current_scissor.width == 0 or current_scissor.height == 0) continue;
                     self.pushImage(image_cmd, current_scissor);
                 },
+                .nine_slice => |ns_cmd| {
+                    if (current_scissor.width == 0 or current_scissor.height == 0) continue;
+                    self.pushNineSlice(ns_cmd, current_scissor);
+                },
             }
         }
     }
@@ -544,6 +830,8 @@ pub const Renderer = struct {
         if (self.render_items.items.len == 0) return;
 
         self.ensureShapeCapacity(self.shape_vertices.items.len);
+        self.ensureSdfVertexCapacity(self.sdf_vertices.items.len);
+        self.ensureSdfParamCapacity(self.sdf_params.items.len);
         self.ensureTexturedCapacity(self.textured_vertices.items.len);
 
         const uniforms = Uniforms{
@@ -555,6 +843,12 @@ pub const Renderer = struct {
         self.queue.writeBuffer(self.uniform_buffer, 0, Uniforms, &[_]Uniforms{uniforms});
         if (self.shape_vertices.items.len > 0) {
             self.queue.writeBuffer(self.shape_vertex_buffer, 0, ShapeVertex, self.shape_vertices.items);
+        }
+        if (self.sdf_vertices.items.len > 0) {
+            self.queue.writeBuffer(self.sdf_vertex_buffer, 0, SdfVertex, self.sdf_vertices.items);
+        }
+        if (self.sdf_params.items.len > 0) {
+            self.queue.writeBuffer(self.sdf_param_buffer, 0, SdfFxParams, self.sdf_params.items);
         }
         if (self.textured_vertices.items.len > 0) {
             self.queue.writeBuffer(self.textured_vertex_buffer, 0, TexVertex, self.textured_vertices.items);
@@ -574,6 +868,18 @@ pub const Renderer = struct {
                         pass.setBindGroup(0, self.shape_bind_group, null);
                         const shape_bytes: u64 = @intCast(self.shape_vertices.items.len * @sizeOf(ShapeVertex));
                         pass.setVertexBuffer(0, self.shape_vertex_buffer, 0, shape_bytes);
+                    },
+                    .sdf => {
+                        pass.setPipeline(self.sdf_pipeline);
+                        pass.setBindGroup(0, self.sdf_bind_group, null);
+                        const sdf_bytes: u64 = @intCast(self.sdf_vertices.items.len * @sizeOf(SdfVertex));
+                        pass.setVertexBuffer(0, self.sdf_vertex_buffer, 0, sdf_bytes);
+                    },
+                    .sdf_additive => {
+                        pass.setPipeline(self.sdf_additive_pipeline);
+                        pass.setBindGroup(0, self.sdf_bind_group, null);
+                        const sdf_bytes: u64 = @intCast(self.sdf_vertices.items.len * @sizeOf(SdfVertex));
+                        pass.setVertexBuffer(0, self.sdf_vertex_buffer, 0, sdf_bytes);
                     },
                     .textured => {
                         pass.setPipeline(self.texture_pipeline);
@@ -615,6 +921,55 @@ pub const Renderer = struct {
         self.shape_vertex_capacity = next_capacity;
     }
 
+    fn ensureSdfVertexCapacity(self: *Renderer, needed: usize) void {
+        if (needed <= self.sdf_vertex_capacity) return;
+        var next_capacity = if (self.sdf_vertex_capacity > 0) self.sdf_vertex_capacity else 1024;
+        while (next_capacity < needed) : (next_capacity *= 2) {}
+        self.sdf_vertex_buffer.release();
+        self.sdf_vertex_buffer = self.device.createBuffer(.{
+            .label = "ui.sdf.vertices",
+            .usage = .{ .vertex = true, .copy_dst = true },
+            .size = next_capacity * @sizeOf(SdfVertex),
+        });
+        self.sdf_vertex_capacity = next_capacity;
+    }
+
+    fn ensureSdfParamCapacity(self: *Renderer, needed: usize) void {
+        if (needed <= self.sdf_param_capacity) return;
+        var next_capacity = if (self.sdf_param_capacity > 0) self.sdf_param_capacity else 1024;
+        while (next_capacity < needed) : (next_capacity *= 2) {}
+        self.sdf_param_buffer.release();
+        self.sdf_param_buffer = self.device.createBuffer(.{
+            .label = "ui.sdf.params",
+            .usage = .{ .storage = true, .copy_dst = true },
+            .size = next_capacity * @sizeOf(SdfFxParams),
+        });
+        self.sdf_param_capacity = next_capacity;
+
+        // Rebind to the resized params buffer.
+        self.sdf_bind_group.release();
+        const entries = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .buffer = self.sdf_param_buffer,
+                .offset = 0,
+                .size = self.sdf_param_capacity * @sizeOf(SdfFxParams),
+            },
+        };
+        self.sdf_bind_group = self.device.createBindGroup(.{
+            .label = "ui.sdf_bg",
+            .layout = self.sdf_bind_group_layout,
+            .entry_count = entries.len,
+            .entries = &entries,
+        });
+    }
+
     fn ensureTexturedCapacity(self: *Renderer, needed: usize) void {
         if (needed <= self.textured_vertex_capacity) return;
         var next_capacity = if (self.textured_vertex_capacity > 0) self.textured_vertex_capacity else 1024;
@@ -635,6 +990,16 @@ pub const Renderer = struct {
         const p2 = rect.max;
         const p3 = .{ rect.min[0], rect.max[1] };
         self.appendShapeQuad(p0, p1, p2, p3, color);
+        self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
+    fn pushFilledRectGradient(self: *Renderer, rect: Rect, colors: Gradient4, scissor: Scissor) void {
+        const start = self.shape_vertices.items.len;
+        const p0 = rect.min;
+        const p1 = .{ rect.max[0], rect.min[1] };
+        const p2 = rect.max;
+        const p3 = .{ rect.min[0], rect.max[1] };
+        self.appendShapeQuadGradient(p0, p1, p2, p3, colors.tl, colors.tr, colors.br, colors.bl);
         self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
     }
 
@@ -668,6 +1033,60 @@ pub const Renderer = struct {
             self.appendShapeTriangle(center, a, b, color);
         }
         self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
+    fn pushRoundedRectGradient(self: *Renderer, rect: Rect, radius: f32, colors: Gradient4, scissor: Scissor) void {
+        if (radius <= 0.0) {
+            self.pushFilledRectGradient(rect, colors, scissor);
+            return;
+        }
+        const points = self.buildRoundedRectPoints(rect, radius);
+        if (points.len < 3) return;
+        const center = .{
+            (rect.min[0] + rect.max[0]) * 0.5,
+            (rect.min[1] + rect.max[1]) * 0.5,
+        };
+        const start = self.shape_vertices.items.len;
+        const center_color = gradientColorAt(center, rect, colors);
+        var i: usize = 0;
+        while (i < points.len) : (i += 1) {
+            const a = points[i];
+            const b = points[(i + 1) % points.len];
+            const ca = gradientColorAt(a, rect, colors);
+            const cb = gradientColorAt(b, rect, colors);
+            self.appendShapeTriangleColors(center, a, b, center_color, ca, cb);
+        }
+        self.pushRenderItem(.shape, start, self.shape_vertices.items.len - start, scissor, null);
+    }
+
+    fn pushSoftRoundedRect(self: *Renderer, cmd: command_list.SoftRoundedRectCmd, scissor: Scissor) void {
+        const start = self.sdf_vertices.items.len;
+        const param_index: u32 = @intCast(self.sdf_params.items.len);
+        const kind_u32: u32 = switch (cmd.kind) {
+            .fill_soft => 0,
+            .stroke_soft => 1,
+        };
+        _ = self.sdf_params.append(self.allocator, .{
+            .rect_min = cmd.rect.min,
+            .rect_max = cmd.rect.max,
+            .radius = cmd.radius,
+            .kind = kind_u32,
+            .thickness = cmd.thickness,
+            .blur_px = cmd.blur_px,
+            .color = cmd.color,
+            .falloff_exp = cmd.falloff_exp,
+        }) catch {};
+
+        const p0 = cmd.draw_rect.min;
+        const p1 = .{ cmd.draw_rect.max[0], cmd.draw_rect.min[1] };
+        const p2 = cmd.draw_rect.max;
+        const p3 = .{ cmd.draw_rect.min[0], cmd.draw_rect.max[1] };
+        self.appendSdfQuad(p0, p1, p2, p3, param_index);
+        const kind: PipelineKind = switch (cmd.blend) {
+            .alpha => .sdf,
+            .additive => .sdf_additive,
+        };
+        self.pushRenderItem(kind, start, self.sdf_vertices.items.len - start, scissor, null);
     }
 
     fn pushRoundedRectStroke(
@@ -760,17 +1179,310 @@ pub const Renderer = struct {
         const tex_id: u32 = @intCast(image_cmd.texture);
         const texture = self.ensureImageTexture(tex_id) orelse return;
         const start = self.textured_vertices.items.len;
-        const rect = image_cmd.rect;
+        const rect = if (self.pixel_snap_textured) snapRect(image_cmd.rect) else image_cmd.rect;
         self.appendTexturedQuad(
             rect.min,
             .{ rect.max[0], rect.min[1] },
             rect.max,
             .{ rect.min[0], rect.max[1] },
-            .{ 0.0, 0.0 },
-            .{ 1.0, 1.0 },
-            .{ 1.0, 1.0, 1.0, 1.0 },
+            image_cmd.uv0,
+            image_cmd.uv1,
+            image_cmd.tint,
         );
-        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, texture.bind_group);
+        self.pushRenderItem(
+            .textured,
+            start,
+            self.textured_vertices.items.len - start,
+            scissor,
+            textureBindGroup(self, texture, image_cmd.repeat),
+        );
+    }
+
+    fn pushNineSlice(self: *Renderer, cmd: command_list.NineSliceCmd, scissor: Scissor) void {
+        const tex_id: u32 = @intCast(cmd.texture);
+        const texture = self.ensureImageTexture(tex_id) orelse return;
+        if (texture.width == 0 or texture.height == 0) return;
+
+        const w_tex: f32 = @floatFromInt(texture.width);
+        const h_tex: f32 = @floatFromInt(texture.height);
+
+        const left_src = std.math.clamp(cmd.slices_px[0], 0.0, w_tex);
+        const top_src = std.math.clamp(cmd.slices_px[1], 0.0, h_tex);
+        const right_src = std.math.clamp(cmd.slices_px[2], 0.0, w_tex);
+        const bottom_src = std.math.clamp(cmd.slices_px[3], 0.0, h_tex);
+
+        const rect = if (self.pixel_snap_textured) snapRect(cmd.rect) else cmd.rect;
+        const dst_w = rect.max[0] - rect.min[0];
+        const dst_h = rect.max[1] - rect.min[1];
+        if (dst_w <= 0.0 or dst_h <= 0.0) return;
+
+        // If the destination rect is too small to fit corners, proportionally shrink corners.
+        var left = left_src;
+        var right = right_src;
+        var top = top_src;
+        var bottom = bottom_src;
+        if (left + right > dst_w and (left + right) > 0.0001) {
+            const s = dst_w / (left + right);
+            left *= s;
+            right *= s;
+        }
+        if (top + bottom > dst_h and (top + bottom) > 0.0001) {
+            const s = dst_h / (top + bottom);
+            top *= s;
+            bottom *= s;
+        }
+        // For tiled centers, keep the inner edges on integer pixel boundaries so repeated
+        // texels stay aligned and don't shimmer when resizing.
+        if (cmd.tile_center and cmd.draw_center) {
+            left = @round(left);
+            right = @round(right);
+            top = @round(top);
+            bottom = @round(bottom);
+            if (left + right > dst_w) {
+                const overflow = (left + right) - dst_w;
+                // Prefer keeping the left edge stable.
+                right = @max(0.0, right - overflow);
+            }
+            if (top + bottom > dst_h) {
+                const overflow = (top + bottom) - dst_h;
+                bottom = @max(0.0, bottom - overflow);
+            }
+        }
+
+        const x0 = rect.min[0];
+        const x1 = x0 + left;
+        const x3 = rect.max[0];
+        const x2 = x3 - right;
+        const y0 = rect.min[1];
+        const y1 = y0 + top;
+        const y3 = rect.max[1];
+        const y2 = y3 - bottom;
+
+        const u_min: f32 = 0.0;
+        const u_left: f32 = left_src / w_tex;
+        const u_max: f32 = 1.0;
+        const u_right: f32 = (w_tex - right_src) / w_tex;
+        const v_min: f32 = 0.0;
+        const v_top: f32 = top_src / h_tex;
+        const v_max: f32 = 1.0;
+        const v_bottom: f32 = (h_tex - bottom_src) / h_tex;
+
+        const want_tile = cmd.tile_center and cmd.draw_center;
+        const want_tile_x = want_tile and cmd.tile_center_x;
+        const want_tile_y = want_tile and cmd.tile_center_y;
+
+        // Precompute fit-tiling parameters so center and matching edge strips (top/bottom/left/right)
+        // use the same tile distribution. This avoids the edges looking "scaled differently" from the
+        // center pattern.
+        var have_fit: bool = false;
+        var dst_w_i: i32 = 0;
+        var dst_h_i: i32 = 0;
+        var nx: i32 = 1;
+        var ny: i32 = 1;
+        var base_w: i32 = 0;
+        var rem_w: i32 = 0;
+        var base_h: i32 = 0;
+        var rem_h: i32 = 0;
+        const rem_at_start = cmd.tile_anchor_end;
+
+        if (want_tile) {
+            const src_center_w = (w_tex - left_src - right_src);
+            const src_center_h = (h_tex - top_src - bottom_src);
+            const dst_center_w = x2 - x1;
+            const dst_center_h = y2 - y1;
+
+            dst_w_i = @intFromFloat(@round(dst_center_w));
+            dst_h_i = @intFromFloat(@round(dst_center_h));
+            if (dst_w_i > 0 and dst_h_i > 0) {
+                const src_w_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_w)))));
+                const src_h_i: i32 = @max(1, @as(i32, @intFromFloat(@round(@max(1.0, src_center_h)))));
+
+                nx = if (want_tile_x)
+                    @intFromFloat(@round(@as(f32, @floatFromInt(dst_w_i)) / @as(f32, @floatFromInt(src_w_i))))
+                else
+                    1;
+                ny = if (want_tile_y)
+                    @intFromFloat(@round(@as(f32, @floatFromInt(dst_h_i)) / @as(f32, @floatFromInt(src_h_i))))
+                else
+                    1;
+                nx = std.math.clamp(nx, 1, dst_w_i);
+                ny = std.math.clamp(ny, 1, dst_h_i);
+
+                base_w = @divTrunc(dst_w_i, nx);
+                rem_w = dst_w_i - base_w * nx;
+                base_h = @divTrunc(dst_h_i, ny);
+                rem_h = dst_h_i - base_h * ny;
+                have_fit = true;
+            }
+        }
+
+        const start = self.textured_vertices.items.len;
+        const tint = cmd.tint;
+
+        // Top row
+        self.appendTexturedQuad(.{ x0, y0 }, .{ x1, y0 }, .{ x1, y1 }, .{ x0, y1 }, .{ u_min, v_min }, .{ u_left, v_top }, tint);
+        if (want_tile_x and have_fit) {
+            var xx_i: i32 = 0;
+            var x_cursor: f32 = x1;
+            while (xx_i < nx) : (xx_i += 1) {
+                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                const w_i: i32 = base_w + extra_w;
+                const w_f: f32 = @floatFromInt(w_i);
+                self.appendTexturedQuad(
+                    .{ x_cursor, y0 },
+                    .{ x_cursor + w_f, y0 },
+                    .{ x_cursor + w_f, y1 },
+                    .{ x_cursor, y1 },
+                    .{ u_left, v_min },
+                    .{ u_right, v_top },
+                    tint,
+                );
+                x_cursor += w_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x1, y0 }, .{ x2, y0 }, .{ x2, y1 }, .{ x1, y1 }, .{ u_left, v_min }, .{ u_right, v_top }, tint);
+        }
+        self.appendTexturedQuad(.{ x2, y0 }, .{ x3, y0 }, .{ x3, y1 }, .{ x2, y1 }, .{ u_right, v_min }, .{ u_max, v_top }, tint);
+
+        // Middle row
+        if (want_tile_y and have_fit) {
+            var yy_i: i32 = 0;
+            var y_cursor: f32 = y1;
+            while (yy_i < ny) : (yy_i += 1) {
+                const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                const h_i: i32 = base_h + extra_h;
+                const h_f: f32 = @floatFromInt(h_i);
+                self.appendTexturedQuad(
+                    .{ x0, y_cursor },
+                    .{ x1, y_cursor },
+                    .{ x1, y_cursor + h_f },
+                    .{ x0, y_cursor + h_f },
+                    .{ u_min, v_top },
+                    .{ u_left, v_bottom },
+                    tint,
+                );
+                y_cursor += h_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x0, y1 }, .{ x1, y1 }, .{ x1, y2 }, .{ x0, y2 }, .{ u_min, v_top }, .{ u_left, v_bottom }, tint);
+        }
+        if (cmd.draw_center) {
+            if (cmd.tile_center) {
+                const dst_center_w = x2 - x1;
+                const dst_center_h = y2 - y1;
+
+                // If the source center region is larger than the destination center, tiling would
+                // otherwise "crop" the interior (you'd only see the top-left of the center). In
+                // that case, fall back to a single stretched draw so the full interior fits.
+                if (dst_center_w > 0.001 and dst_center_h > 0.001 and have_fit) {
+                    if (dst_w_i <= 0 or dst_h_i <= 0) {
+                        self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+                    } else {
+                        var yy_i: i32 = 0;
+                        var y_cursor: f32 = y1;
+                        while (yy_i < ny) : (yy_i += 1) {
+                            const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                            const h_i: i32 = base_h + extra_h;
+                            const h_f: f32 = @floatFromInt(h_i);
+
+                            var xx_i: i32 = 0;
+                            var x_cursor: f32 = x1;
+                            while (xx_i < nx) : (xx_i += 1) {
+                                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                                const w_i: i32 = base_w + extra_w;
+                                const w_f: f32 = @floatFromInt(w_i);
+
+                                self.appendTexturedQuad(
+                                    .{ x_cursor, y_cursor },
+                                    .{ x_cursor + w_f, y_cursor },
+                                    .{ x_cursor + w_f, y_cursor + h_f },
+                                    .{ x_cursor, y_cursor + h_f },
+                                    .{ u_left, v_top },
+                                    .{ u_right, v_bottom },
+                                    tint,
+                                );
+
+                                x_cursor += w_f;
+                            }
+
+                            y_cursor += h_f;
+                        }
+                    }
+                } else {
+                    self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+                }
+            } else {
+                self.appendTexturedQuad(.{ x1, y1 }, .{ x2, y1 }, .{ x2, y2 }, .{ x1, y2 }, .{ u_left, v_top }, .{ u_right, v_bottom }, tint);
+            }
+        }
+        if (want_tile_y and have_fit) {
+            var yy_i: i32 = 0;
+            var y_cursor: f32 = y1;
+            while (yy_i < ny) : (yy_i += 1) {
+                const extra_h: i32 = if (rem_at_start) (if (yy_i < rem_h) 1 else 0) else (if (yy_i >= (ny - rem_h)) 1 else 0);
+                const h_i: i32 = base_h + extra_h;
+                const h_f: f32 = @floatFromInt(h_i);
+                self.appendTexturedQuad(
+                    .{ x2, y_cursor },
+                    .{ x3, y_cursor },
+                    .{ x3, y_cursor + h_f },
+                    .{ x2, y_cursor + h_f },
+                    .{ u_right, v_top },
+                    .{ u_max, v_bottom },
+                    tint,
+                );
+                y_cursor += h_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x2, y1 }, .{ x3, y1 }, .{ x3, y2 }, .{ x2, y2 }, .{ u_right, v_top }, .{ u_max, v_bottom }, tint);
+        }
+
+        // Bottom row
+        self.appendTexturedQuad(.{ x0, y2 }, .{ x1, y2 }, .{ x1, y3 }, .{ x0, y3 }, .{ u_min, v_bottom }, .{ u_left, v_max }, tint);
+        if (want_tile_x and have_fit) {
+            var xx_i: i32 = 0;
+            var x_cursor: f32 = x1;
+            while (xx_i < nx) : (xx_i += 1) {
+                const extra_w: i32 = if (rem_at_start) (if (xx_i < rem_w) 1 else 0) else (if (xx_i >= (nx - rem_w)) 1 else 0);
+                const w_i: i32 = base_w + extra_w;
+                const w_f: f32 = @floatFromInt(w_i);
+                self.appendTexturedQuad(
+                    .{ x_cursor, y2 },
+                    .{ x_cursor + w_f, y2 },
+                    .{ x_cursor + w_f, y3 },
+                    .{ x_cursor, y3 },
+                    .{ u_left, v_bottom },
+                    .{ u_right, v_max },
+                    tint,
+                );
+                x_cursor += w_f;
+            }
+        } else {
+            self.appendTexturedQuad(.{ x1, y2 }, .{ x2, y2 }, .{ x2, y3 }, .{ x1, y3 }, .{ u_left, v_bottom }, .{ u_right, v_max }, tint);
+        }
+        self.appendTexturedQuad(.{ x2, y2 }, .{ x3, y2 }, .{ x3, y3 }, .{ x2, y3 }, .{ u_right, v_bottom }, .{ u_max, v_max }, tint);
+
+        self.pushRenderItem(.textured, start, self.textured_vertices.items.len - start, scissor, textureBindGroup(self, texture, false));
+    }
+
+    fn snapRect(r: Rect) Rect {
+        return .{
+            .min = .{ @round(r.min[0]), @round(r.min[1]) },
+            .max = .{ @round(r.max[0]), @round(r.max[1]) },
+        };
+    }
+
+    fn textureBindGroup(self: *Renderer, tex: *ImageTexture, repeat: bool) zgpu.wgpu.BindGroup {
+        if (repeat) {
+            return switch (self.image_sampling) {
+                .linear => tex.bind_group_repeat_linear,
+                .nearest => tex.bind_group_repeat_nearest,
+            };
+        }
+        return switch (self.image_sampling) {
+            .linear => tex.bind_group_linear,
+            .nearest => tex.bind_group_nearest,
+        };
     }
 
     fn appendShapeTriangle(self: *Renderer, a: Vec2, b: Vec2, c_point: Vec2, color: Color) void {
@@ -779,9 +1491,49 @@ pub const Renderer = struct {
         _ = self.shape_vertices.append(self.allocator, .{ .pos = c_point, .color = color }) catch {};
     }
 
+    fn appendShapeTriangleColors(
+        self: *Renderer,
+        a: Vec2,
+        b: Vec2,
+        c_point: Vec2,
+        color_a: Color,
+        color_b: Color,
+        color_c: Color,
+    ) void {
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = a, .color = color_a }) catch {};
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = b, .color = color_b }) catch {};
+        _ = self.shape_vertices.append(self.allocator, .{ .pos = c_point, .color = color_c }) catch {};
+    }
+
     fn appendShapeQuad(self: *Renderer, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, color: Color) void {
         self.appendShapeTriangle(p0, p1, p2, color);
         self.appendShapeTriangle(p0, p2, p3, color);
+    }
+
+    fn appendShapeQuadGradient(
+        self: *Renderer,
+        p0: Vec2,
+        p1: Vec2,
+        p2: Vec2,
+        p3: Vec2,
+        c0: Color,
+        c1: Color,
+        c2: Color,
+        c3: Color,
+    ) void {
+        self.appendShapeTriangleColors(p0, p1, p2, c0, c1, c2);
+        self.appendShapeTriangleColors(p0, p2, p3, c0, c2, c3);
+    }
+
+    fn appendSdfQuad(self: *Renderer, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, param_index: u32) void {
+        const idx: f32 = @floatFromInt(param_index);
+        const p = .{ idx, 0.0 };
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p0, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p1, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p2, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p0, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p2, .param = p }) catch {};
+        _ = self.sdf_vertices.append(self.allocator, .{ .pos = p3, .param = p }) catch {};
     }
 
     fn appendShapeLineQuad(self: *Renderer, from: Vec2, to: Vec2, width: f32, color: Color) void {
@@ -872,6 +1624,31 @@ pub const Renderer = struct {
         appendArc(&self.scratch_points, self.allocator, tl, r, 180.0, 270.0, segments, false);
 
         return self.scratch_points.items;
+    }
+
+    fn gradientColorAt(pos: Vec2, rect: Rect, colors: Gradient4) Color {
+        const w = rect.max[0] - rect.min[0];
+        const h = rect.max[1] - rect.min[1];
+        const u: f32 = if (w > 0.0001) (pos[0] - rect.min[0]) / w else 0.0;
+        const v: f32 = if (h > 0.0001) (pos[1] - rect.min[1]) / h else 0.0;
+        return bilerp(colors.tl, colors.tr, colors.bl, colors.br, u, v);
+    }
+
+    fn bilerp(tl: Color, tr: Color, bl: Color, br: Color, u: f32, v: f32) Color {
+        const uu = std.math.clamp(u, 0.0, 1.0);
+        const vv = std.math.clamp(v, 0.0, 1.0);
+        const top = lerp4(tl, tr, uu);
+        const bot = lerp4(bl, br, uu);
+        return lerp4(top, bot, vv);
+    }
+
+    fn lerp4(a: Color, b: Color, t: f32) Color {
+        return .{
+            a[0] + (b[0] - a[0]) * t,
+            a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t,
+        };
     }
 
     fn pushRenderItem(
@@ -1374,8 +2151,14 @@ pub const Renderer = struct {
         const entry_opt = image_cache.getById(id);
         if (entry_opt == null) {
             if (self.image_textures.fetchRemove(id)) |removed| {
-                removed.value.bind_group.release();
-                removed.value.sampler.release();
+                removed.value.bind_group_linear.release();
+                removed.value.sampler_linear.release();
+                removed.value.bind_group_nearest.release();
+                removed.value.sampler_nearest.release();
+                removed.value.bind_group_repeat_linear.release();
+                removed.value.sampler_repeat_linear.release();
+                removed.value.bind_group_repeat_nearest.release();
+                removed.value.sampler_repeat_nearest.release();
                 removed.value.view.release();
                 removed.value.texture.release();
             }
@@ -1400,7 +2183,7 @@ pub const Renderer = struct {
             .dimension = .tdim_2d,
         });
         const view = texture.createView(.{ .format = .rgba8_unorm, .dimension = .tvdim_2d });
-        const sampler = self.device.createSampler(.{
+        const sampler_linear = self.device.createSampler(.{
             .label = "ui.image.sampler",
             .address_mode_u = .clamp_to_edge,
             .address_mode_v = .clamp_to_edge,
@@ -1408,6 +2191,33 @@ pub const Renderer = struct {
             .mag_filter = .linear,
             .min_filter = .linear,
             .mipmap_filter = .linear,
+        });
+        const sampler_nearest = self.device.createSampler(.{
+            .label = "ui.image.sampler.nearest",
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
+        });
+        const sampler_repeat_linear = self.device.createSampler(.{
+            .label = "ui.image.sampler.repeat",
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .mipmap_filter = .linear,
+        });
+        const sampler_repeat_nearest = self.device.createSampler(.{
+            .label = "ui.image.sampler.repeat.nearest",
+            .address_mode_u = .repeat,
+            .address_mode_v = .repeat,
+            .address_mode_w = .repeat,
+            .mag_filter = .nearest,
+            .min_filter = .nearest,
+            .mipmap_filter = .nearest,
         });
 
         const layout = zgpu.wgpu.TextureDataLayout{
@@ -1424,7 +2234,7 @@ pub const Renderer = struct {
         const size = zgpu.wgpu.Extent3D{ .width = entry.width, .height = entry.height, .depth_or_array_layers = 1 };
         self.queue.writeTexture(destination, layout, size, u8, pixels);
 
-        const entries = [_]zgpu.wgpu.BindGroupEntry{
+        const entries_linear = [_]zgpu.wgpu.BindGroupEntry{
             .{
                 .binding = 0,
                 .buffer = self.uniform_buffer,
@@ -1433,7 +2243,7 @@ pub const Renderer = struct {
             },
             .{
                 .binding = 1,
-                .sampler = sampler,
+                .sampler = sampler_linear,
                 .size = 0,
             },
             .{
@@ -1442,22 +2252,109 @@ pub const Renderer = struct {
                 .size = 0,
             },
         };
-        const bind_group = self.device.createBindGroup(.{
+        const bind_group_linear = self.device.createBindGroup(.{
             .label = "ui.image.bg",
             .layout = self.texture_bind_group_layout,
-            .entry_count = entries.len,
-            .entries = &entries,
+            .entry_count = entries_linear.len,
+            .entries = &entries_linear,
+        });
+        const entries_nearest = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_nearest,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_nearest = self.device.createBindGroup(.{
+            .label = "ui.image.bg.nearest",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_nearest.len,
+            .entries = &entries_nearest,
+        });
+
+        const entries_repeat_linear = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_repeat_linear,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_repeat_linear = self.device.createBindGroup(.{
+            .label = "ui.image.bg.repeat",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_repeat_linear.len,
+            .entries = &entries_repeat_linear,
+        });
+        const entries_repeat_nearest = [_]zgpu.wgpu.BindGroupEntry{
+            .{
+                .binding = 0,
+                .buffer = self.uniform_buffer,
+                .offset = 0,
+                .size = @sizeOf(Uniforms),
+            },
+            .{
+                .binding = 1,
+                .sampler = sampler_repeat_nearest,
+                .size = 0,
+            },
+            .{
+                .binding = 2,
+                .texture_view = view,
+                .size = 0,
+            },
+        };
+        const bind_group_repeat_nearest = self.device.createBindGroup(.{
+            .label = "ui.image.bg.repeat.nearest",
+            .layout = self.texture_bind_group_layout,
+            .entry_count = entries_repeat_nearest.len,
+            .entries = &entries_repeat_nearest,
         });
 
         image_cache.releasePixels(id);
         self.image_textures.put(id, .{
             .texture = texture,
             .view = view,
-            .sampler = sampler,
-            .bind_group = bind_group,
+            .sampler_linear = sampler_linear,
+            .bind_group_linear = bind_group_linear,
+            .sampler_nearest = sampler_nearest,
+            .bind_group_nearest = bind_group_nearest,
+            .sampler_repeat_linear = sampler_repeat_linear,
+            .bind_group_repeat_linear = bind_group_repeat_linear,
+            .sampler_repeat_nearest = sampler_repeat_nearest,
+            .bind_group_repeat_nearest = bind_group_repeat_nearest,
+            .width = entry.width,
+            .height = entry.height,
         }) catch {
-            bind_group.release();
-            sampler.release();
+            bind_group_linear.release();
+            sampler_linear.release();
+            bind_group_nearest.release();
+            sampler_nearest.release();
+            bind_group_repeat_linear.release();
+            sampler_repeat_linear.release();
+            bind_group_repeat_nearest.release();
+            sampler_repeat_nearest.release();
             view.release();
             texture.release();
             return null;

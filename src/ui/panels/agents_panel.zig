@@ -9,9 +9,13 @@ const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
+const nav_router = @import("../input/nav_router.zig");
 const cursor = @import("../input/cursor.zig");
 const widgets = @import("../widgets/widgets.zig");
 const text_editor = @import("../widgets/text_editor.zig");
+const panel_chrome = @import("../panel_chrome.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub const AgentSessionAction = struct {
     agent_id: []u8,
@@ -77,7 +81,7 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const gap = t.spacing.md;
     const min_left: f32 = 220.0;
@@ -116,19 +120,23 @@ fn drawAgentList(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    const t = dc.theme;
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
 
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Agents", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     cursor_y += line_height + t.spacing.xs;
 
     const refresh_label = "Refresh Sessions";
@@ -157,7 +165,7 @@ fn drawAgentList(
         return;
     }
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const total_height = @as(f32, @floatFromInt(registry.agents.items.len)) * (row_height + row_gap);
     list_scroll_max = @max(0.0, total_height - list_rect.size()[1]);
@@ -166,6 +174,9 @@ fn drawAgentList(
     dc.pushClip(list_rect);
     var row_y = list_rect.min[1] - list_scroll_y;
     for (registry.agents.items) |agent| {
+        nav_router.pushScope(std.hash.Wyhash.hash(0, agent.id));
+        defer nav_router.popScope();
+
         const row_rect = draw_context.Rect.fromMinSize(.{ list_rect.min[0], row_y }, .{ list_rect.size()[0], row_height });
         if (row_rect.max[1] >= list_rect.min[1] and row_rect.min[1] <= list_rect.max[1]) {
             const selected = if (panel.selected_agent_id) |sel| std.mem.eql(u8, sel, agent.id) else false;
@@ -185,18 +196,30 @@ fn drawAgentRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "agents_panel.agent_row", "row") else 0;
+    if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
+    const nav_active = if (nav_state) |navp| navp.isActive() else false;
+    const focused = if (nav_state) |navp| navp.isFocusedId(nav_id) else false;
+
+    const allow_hover = theme_runtime.allowHover(queue);
+    const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
             },
             else => {},
         }
+    }
+    if (!clicked and nav_active and focused) {
+        clicked = nav_router.wasActivated(queue, nav_id);
     }
 
     if (selected or hovered) {
@@ -222,8 +245,12 @@ fn drawAgentDetailsPane(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    const t = dc.theme;
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const padding = t.spacing.md;
     const inner_rect = draw_context.Rect.fromMinSize(
@@ -267,7 +294,7 @@ fn drawEmptyState(
     pos: [2]f32,
     label: []const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, pos, .{ .color = t.colors.text_secondary });
     return line_height + t.spacing.sm;
@@ -279,7 +306,7 @@ fn drawAgentDetailsCard(
     width: f32,
     agent: *agent_registry.AgentProfile,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const field_gap = t.spacing.sm;
@@ -316,10 +343,10 @@ fn drawAgentActionsCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const content_width = width - padding * 2.0;
     const gap = t.spacing.sm;
 
@@ -386,10 +413,10 @@ fn drawAgentSessionsCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const row_gap = t.spacing.sm;
     const row_height = line_height * 3.0 + t.spacing.xs * 2.0 + t.spacing.sm * 2.0 + button_height;
 
@@ -454,10 +481,10 @@ fn drawAgentSessionRow(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.xs;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = colors.withAlpha(t.colors.surface, 0.6), .stroke = t.colors.border, .thickness = 1.0 });
     const inner_rect = draw_context.Rect.fromMinSize(
         .{ rect.min[0] + padding, rect.min[1] + padding },
@@ -495,6 +522,11 @@ fn drawAgentSessionRow(
     const button_y = inner_rect.max[1] - button_height;
     var button_x = inner_rect.min[0];
 
+    // Scope interactive controls to the session key so repeating labels like "Open"
+    // produce unique/stable nav ids across rows.
+    nav_router.pushScope(std.hash.Wyhash.hash(0, session.key));
+    defer nav_router.popScope();
+
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_width, button_height }), "Open", queue, .{ .variant = .secondary })) {
         if (setSessionAction(allocator, agent.id, session.key)) |session_action| {
             action.open_session = session_action;
@@ -526,11 +558,11 @@ fn drawAddAgentCard(
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const input_height = widgets.text_input.defaultHeight(line_height);
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     const id_text = editorText(add_id_editor);
     const name_text = editorText(add_name_editor);
@@ -598,12 +630,16 @@ fn drawAddAgentCard(
 }
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
 
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-    theme.push(.heading);
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
+    theme.pushFor(t, .heading);
     dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
@@ -617,7 +653,7 @@ fn drawLabelValue(
     label: []const u8,
     value: []const u8,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_secondary });
     dc.drawText(value, .{ x, y + line_height }, .{ .color = t.colors.text_primary });
@@ -635,12 +671,14 @@ fn drawLabeledInput(
     editor: *text_editor.TextEditor,
     opts: widgets.text_input.Options,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
     dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_primary });
-    const input_height = widgets.text_input.defaultHeight(line_height);
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
     const input_rect = draw_context.Rect.fromMinSize(.{ x, y + line_height + t.spacing.xs }, .{ width, input_height });
+    nav_router.pushScope(std.hash.Wyhash.hash(0, label));
     _ = widgets.text_input.draw(editor, allocator, dc, input_rect, queue, opts);
+    nav_router.popScope();
     return labeledInputHeight(input_height, line_height, t);
 }
 
@@ -692,7 +730,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -741,19 +779,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn ensureEditor(

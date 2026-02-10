@@ -40,9 +40,9 @@ pub fn measureHeight(
     args: Args,
     width: f32,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
     var height: f32 = 0.0;
@@ -81,9 +81,9 @@ pub fn draw(
     queue: *input_state.InputQueue,
     args: Args,
 ) Action {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
     var cursor_y = rect.min[1];
@@ -91,7 +91,7 @@ pub fn draw(
 
     if (args.title) |title| {
         if (title.len > 0) {
-            theme.push(.heading);
+            theme.pushFor(t, .heading);
             dc.drawText(title, .{ rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
             theme.pop();
             cursor_y += heading_height + t.spacing.xs;
@@ -116,7 +116,7 @@ pub fn draw(
 
     if (args.show_logs_button) {
         cursor_y += t.spacing.sm;
-        const button_height = line_height + t.spacing.xs * 2.0;
+        const button_height = widgets.button.defaultHeight(t, line_height);
         const button_rect = draw_context.Rect.fromMinSize(
             .{ rect.min[0], cursor_y },
             .{ buttonWidth(dc, "View Logs", t), button_height },

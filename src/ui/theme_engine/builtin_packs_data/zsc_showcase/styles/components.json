@@ -1,0 +1,102 @@
+{
+  "button": {
+    "primary": {
+      "radius": "radius.lg",
+      "fill": {
+        "gradient4": {
+          "tl": "colors.primary",
+          "tr": "colors.primary",
+          "bl": "colors.success",
+          "br": "colors.success"
+        }
+      },
+      "text": "colors.background",
+      "border": "colors.primary"
+    },
+    "secondary": {
+      "radius": "radius.md",
+      "fill": "colors.surface",
+      "text": "colors.text_primary",
+      "border": "colors.border"
+    },
+    "ghost": {
+      "radius": "radius.full",
+      "fill": "#00000000",
+      "text": "colors.primary",
+      "border": "colors.primary"
+    }
+  },
+  "panel": {
+    "radius": "radius.lg",
+    "fill": {
+      "gradient4": {
+        "tl": "colors.surface",
+        "tr": "colors.background",
+        "bl": "colors.background",
+        "br": "colors.surface"
+      }
+    },
+    "border": "colors.divider",
+    "shadow": {
+      "color": "#00000066",
+      "blur_px": 18.0,
+      "spread_px": 2.0,
+      "falloff_exp": 1.35,
+      "offset": [0.0, 8.0],
+      "steps": 12
+    },
+    "frame": {
+      "image": "assets/images/panel_frame.png",
+      "slices_px": [8, 8, 8, 8],
+      "tint": "#FFFFFFCC"
+    }
+  },
+  "focus_ring": {
+    "thickness": 4.0,
+    "color": "colors.primary",
+    "glow": {
+      "color": "#6B6BFFFF",
+      "blend": "additive",
+      "blur_px": 18.0,
+      "spread_px": 2.0,
+      "falloff_exp": 0.85,
+      "offset": [0.0, 0.0],
+      "steps": 12
+    }
+  },
+  "checkbox": {
+    "radius": "radius.sm",
+    "fill": "colors.surface",
+    "border": "colors.border",
+    "fill_checked": {
+      "gradient4": {
+        "tl": "colors.primary",
+        "tr": "colors.primary",
+        "bl": "colors.success",
+        "br": "colors.success"
+      }
+    },
+    "border_checked": "colors.primary",
+    "check": "#FFFFFFFF"
+  },
+  "text_input": {
+    "radius": "radius.md",
+    "fill": {
+      "gradient4": {
+        "tl": "colors.surface",
+        "tr": "colors.background",
+        "bl": "colors.background",
+        "br": "colors.surface"
+      }
+    },
+    "border": "colors.border",
+    "text": "colors.text_primary",
+    "placeholder": "colors.text_secondary",
+    "selection": "#6B6BFF40",
+    "caret": "colors.text_primary"
+  },
+
+  "_notes": {
+    "purpose": "This pack is meant to exercise every implemented theme-engine feature (tokens, light/dark overrides, per-mode stylesheet resolution, focus ring, panel chrome, runtime reload)."
+  }
+}

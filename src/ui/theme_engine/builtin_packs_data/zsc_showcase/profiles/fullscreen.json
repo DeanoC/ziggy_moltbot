@@ -1,0 +1,8 @@
+{
+  "profile": "fullscreen",
+  "overrides": {
+    "ui_scale": 1.4,
+    "hit_target_min_px": 64.0
+  }
+}
+

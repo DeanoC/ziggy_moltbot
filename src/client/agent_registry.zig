@@ -132,7 +132,7 @@ pub const AgentRegistry = struct {
         return changed;
     }
 
-    pub fn toJson(self: *const AgentRegistry, allocator: std.mem.Allocator) ![]u8 {
+pub fn toJson(self: *const AgentRegistry, allocator: std.mem.Allocator) ![]u8 {
         var list = try allocator.alloc(AgentSnapshot, self.agents.items.len);
         defer allocator.free(list);
         for (self.agents.items, 0..) |agent, index| {
@@ -147,7 +147,10 @@ pub const AgentRegistry = struct {
             };
         }
         const snapshot = RegistrySnapshot{ .version = 1, .agents = list };
-        return try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .emit_null_optional_fields = false });
+        return try std.json.Stringify.valueAlloc(allocator, snapshot, .{
+            .emit_null_optional_fields = false,
+            .whitespace = .indent_2,
+        });
     }
 
     pub fn fromJson(allocator: std.mem.Allocator, data: []const u8) !AgentRegistry {

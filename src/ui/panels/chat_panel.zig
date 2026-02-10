@@ -10,6 +10,7 @@ const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const widgets = @import("../widgets/widgets.zig");
 const workspace = @import("../workspace.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
@@ -56,13 +57,13 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var panel_ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer panel_ctx.deinit();
-    panel_ctx.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&panel_ctx, panel_rect);
 
     const queue = input_router.getQueue();
 
     const header_width = panel_rect.size()[0];
     const title = "Chat";
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = panel_ctx.lineHeight();
     theme.pop();
     const subtitle_height = panel_ctx.lineHeight();
@@ -176,14 +177,14 @@ fn drawHeader(
     has_selection_custom: bool,
     control_height: f32,
 ) HeaderAction {
-    const t = theme.activeTheme();
+    const t = ctx.theme;
     const top_pad = t.spacing.xs;
     const title_gap = t.spacing.xs * 0.5;
     const controls_gap = t.spacing.xs;
     const start_x = rect.min[0] + t.spacing.sm;
     const start_y = rect.min[1] + top_pad;
 
-    theme.push(.title);
+    theme.pushFor(t, .title);
     const title_height = ctx.lineHeight();
     ctx.drawText(title, .{ start_x, start_y }, .{ .color = t.colors.text_primary });
     theme.pop();

@@ -6,6 +6,8 @@ const input_router = @import("../../input/input_router.zig");
 const input_state = @import("../../input/input_state.zig");
 const widgets = @import("../../widgets/widgets.zig");
 const cursor = @import("../../input/cursor.zig");
+const theme_runtime = @import("../../theme_engine/runtime.zig");
+const nav_router = @import("../../input/nav_router.zig");
 
 pub const SourceType = enum {
     local,
@@ -102,17 +104,23 @@ fn sourceGroupLabel(source_type: SourceType) []const u8 {
     };
 }
 
-pub fn draw(allocator: std.mem.Allocator, args: Args) Action {
+pub fn draw(allocator: std.mem.Allocator, dc: *draw_context.DrawContext, args: Args) Action {
+    _ = allocator;
     var action = Action{};
-    const t = theme.activeTheme();
+    const t = dc.theme;
+
+    // Scope to this instance so multiple browsers in one window don't collide for controller nav IDs.
+    var instance_scope: u64 = std.hash.Wyhash.hash(0, "source_browser");
+    instance_scope = std.hash.Wyhash.hash(instance_scope, args.id);
+    nav_router.pushScope(instance_scope);
+    defer nav_router.popScope();
+
     var split_state = args.split_state orelse &default_split_state;
     if (split_state.size == 0.0) {
         split_state.size = 220.0;
     }
 
     const panel_rect = args.rect orelse return action;
-    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
-    defer dc.deinit();
     dc.drawRoundedRect(panel_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
@@ -140,10 +148,10 @@ pub fn draw(allocator: std.mem.Allocator, args: Args) Action {
     );
 
     const queue = input_router.getQueue();
-    drawSourcesPane(args, &dc, left_rect, queue, &action);
-    handleSplitter(&dc, content_rect, left_rect, queue, split_state, min_primary, max_primary, splitter_w);
+    drawSourcesPane(args, dc, left_rect, queue, &action);
+    handleSplitter(dc, content_rect, left_rect, queue, split_state, min_primary, max_primary, splitter_w);
     if (right_rect.size()[0] > 0.0) {
-        drawFilesPane(args, &dc, right_rect, queue, &action);
+        drawFilesPane(args, dc, right_rect, queue, &action);
     }
 
     return action;
@@ -156,15 +164,15 @@ fn drawSourcesPane(
     queue: *input_state.InputQueue,
     action: *Action,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     const padding = t.spacing.sm;
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sources", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -186,7 +194,7 @@ fn drawSourcesPane(
 
     var content_height: f32 = 0.0;
     var last_type: ?SourceType = null;
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     for (args.sources) |source| {
         if (last_type == null or last_type.? != source.source_type) {
@@ -235,9 +243,14 @@ fn drawSourcesPane(
                     "{s} ({s}, {s})",
                     .{ source.name, sourceTypeLabel(source.source_type), status },
                 ) catch source.name;
-                if (drawSourceRow(dc, row_rect, label, selected, queue)) {
-                    action.select_source = idx;
-                }
+                var row_scope: u64 = std.hash.Wyhash.hash(0, "source_browser.source_row");
+                row_scope = std.hash.Wyhash.hash(row_scope, source.name);
+                row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&source.source_type));
+                row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&idx));
+                nav_router.pushScope(row_scope);
+                defer nav_router.popScope();
+
+                if (drawSourceRow(dc, row_rect, label, selected, queue)) action.select_source = idx;
             }
             y += row_height + row_gap;
         }
@@ -265,9 +278,9 @@ fn drawFilesPane(
     queue: *input_state.InputQueue,
     action: *Action,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
 
     dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
@@ -300,7 +313,7 @@ fn drawFilesPane(
         .{ list_rect.size()[0] - padding * 2.0, list_rect.size()[1] - padding * 2.0 },
     );
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     var content_height: f32 = 0.0;
     if (args.sections.len > 0) {
@@ -326,6 +339,12 @@ fn drawFilesPane(
     var y = inner_rect.min[1] - scroll_ptr.*;
     if (args.sections.len > 0) {
         for (args.sections) |section| {
+            var section_scope: u64 = std.hash.Wyhash.hash(0, "source_browser.files.section");
+            section_scope = std.hash.Wyhash.hash(section_scope, section.name);
+            section_scope = std.hash.Wyhash.hash(section_scope, std.mem.asBytes(&section.start_index));
+            nav_router.pushScope(section_scope);
+            defer nav_router.popScope();
+
             const header_rect = draw_context.Rect.fromMinSize(.{ inner_rect.min[0], y }, .{ inner_rect.size()[0], row_height });
             if (header_rect.max[1] >= inner_rect.min[1] and header_rect.min[1] <= inner_rect.max[1]) {
                 if (drawSectionHeader(dc, header_rect, section, queue)) {
@@ -338,6 +357,12 @@ fn drawFilesPane(
                     const row_rect = draw_context.Rect.fromMinSize(.{ inner_rect.min[0], y }, .{ inner_rect.size()[0], row_height });
                     if (row_rect.max[1] >= inner_rect.min[1] and row_rect.min[1] <= inner_rect.max[1]) {
                         const global_index = section.start_index + idx;
+                        var row_scope: u64 = std.hash.Wyhash.hash(0, "source_browser.files.file");
+                        row_scope = std.hash.Wyhash.hash(row_scope, file.name);
+                        row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&global_index));
+                        nav_router.pushScope(row_scope);
+                        defer nav_router.popScope();
+
                         const selected = args.selected_file != null and args.selected_file.? == global_index;
                         if (drawFileRow(dc, row_rect, file, selected, queue)) {
                             action.select_file = global_index;
@@ -354,6 +379,12 @@ fn drawFilesPane(
         for (args.files, 0..) |file, idx| {
             const row_rect = draw_context.Rect.fromMinSize(.{ inner_rect.min[0], y }, .{ inner_rect.size()[0], row_height });
             if (row_rect.max[1] >= inner_rect.min[1] and row_rect.min[1] <= inner_rect.max[1]) {
+                var row_scope: u64 = std.hash.Wyhash.hash(0, "source_browser.files.file");
+                row_scope = std.hash.Wyhash.hash(row_scope, file.name);
+                row_scope = std.hash.Wyhash.hash(row_scope, std.mem.asBytes(&idx));
+                nav_router.pushScope(row_scope);
+                defer nav_router.popScope();
+
                 const selected = args.selected_file != null and args.selected_file.? == idx;
                 if (drawFileRow(dc, row_rect, file, selected, queue)) {
                     action.select_file = idx;
@@ -375,15 +406,27 @@ fn drawSourceRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "source_browser.source_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -414,15 +457,27 @@ fn drawSectionHeader(
     section: Section,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "source_browser.section_header", "toggle") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -446,15 +501,27 @@ fn drawFileRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "source_browser.file_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -545,7 +612,7 @@ fn handleSplitter(
     max_primary: f32,
     splitter_w: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const splitter_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0], content_rect.min[1] },
         .{ splitter_w, content_rect.size()[1] },
@@ -592,19 +659,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn buttonWidth(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {

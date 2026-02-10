@@ -12,7 +12,11 @@ const clipboard = @import("../clipboard.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const cursor = @import("../input/cursor.zig");
+const theme_runtime = @import("../theme_engine/runtime.zig");
 const widgets = @import("../widgets/widgets.zig");
+const panel_chrome = @import("../panel_chrome.zig");
+const nav_router = @import("../input/nav_router.zig");
+const surface_chrome = @import("../surface_chrome.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -59,7 +63,7 @@ pub fn draw(
     const panel_rect = rect_override orelse return action;
     var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer dc.deinit();
-    dc.drawRect(panel_rect, .{ .fill = t.colors.background });
+    surface_chrome.drawBackground(&dc, panel_rect);
 
     const gap = t.spacing.md;
     const min_left: f32 = 220.0;
@@ -83,7 +87,7 @@ pub fn draw(
     drawSessionList(allocator, ctx, &dc, left_rect, queue, &action);
     handleSplitResize(&dc, panel_rect, left_rect, queue, gap, min_left, max_left);
     if (right_rect.size()[0] > 0.0) {
-        drawSessionDetailsPane(allocator, ctx, t, right_rect, &action, queue);
+        drawSessionDetailsPane(allocator, ctx, &dc, right_rect, &action, queue);
     }
 
     return action;
@@ -97,18 +101,22 @@ fn drawSessionList(
     queue: *input_state.InputQueue,
     action: *SessionPanelAction,
 ) void {
-    const t = theme.activeTheme();
-    dc.drawRoundedRect(rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
+    const t = dc.theme;
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     const padding = t.spacing.sm;
     const left = rect.min[0] + padding;
     var cursor_y = rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Sessions", .{ left, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     cursor_y += line_height + t.spacing.xs;
 
     const refresh_label = "Refresh";
@@ -151,7 +159,7 @@ fn drawSessionList(
     );
     if (list_rect.size()[0] <= 0.0 or list_rect.size()[1] <= 0.0) return;
 
-    const row_height = line_height + t.spacing.xs * 2.0;
+    const row_height = @max(line_height + t.spacing.xs * 2.0, theme_runtime.getProfile().hit_target_min_px);
     const row_gap = t.spacing.xs;
     const total_height = @as(f32, @floatFromInt(ctx.sessions.items.len)) * (row_height + row_gap);
     list_scroll_max = @max(0.0, total_height - list_rect.size()[1]);
@@ -160,6 +168,11 @@ fn drawSessionList(
     dc.pushClip(list_rect);
     var row_y = list_rect.min[1] - list_scroll_y;
     for (ctx.sessions.items) |session| {
+        var row_scope: u64 = std.hash.Wyhash.hash(0, "sessions_panel.session_row");
+        row_scope = std.hash.Wyhash.hash(row_scope, session.key);
+        nav_router.pushScope(row_scope);
+        defer nav_router.popScope();
+
         const row_rect = draw_context.Rect.fromMinSize(.{ list_rect.min[0], row_y }, .{ list_rect.size()[0], row_height });
         if (row_rect.max[1] >= list_rect.min[1] and row_rect.min[1] <= list_rect.max[1]) {
             const selected = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
@@ -181,15 +194,27 @@ fn drawSessionRow(
     selected: bool,
     queue: *input_state.InputQueue,
 ) bool {
-    const t = theme.activeTheme();
-    const hovered = rect.contains(queue.state.mouse_pos);
+    const t = dc.theme;
+    const nav_state = nav_router.get();
+    const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "sessions_panel.session_row", "row") else 0;
+    if (nav_state) |nav| {
+        nav.registerItem(dc.allocator, nav_id, rect);
+    }
+
+    const focused = if (nav_state) |nav| nav.isFocusedId(nav_id) else false;
+    const hovered = rect.contains(queue.state.mouse_pos) or focused;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_up => |mu| {
                 if (mu.button == .left and rect.contains(mu.pos)) {
-                    clicked = true;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked = true;
+                    }
                 }
+            },
+            .nav_activate => |id| {
+                if (id == nav_id and focused) clicked = true;
             },
             else => {},
         }
@@ -221,14 +246,19 @@ fn drawSessionRow(
 fn drawSessionDetailsPane(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
-    t: *const theme.Theme,
+    dc: *draw_context.DrawContext,
     rect: draw_context.Rect,
     action: *SessionPanelAction,
     queue: *input_state.InputQueue,
 ) void {
     if (rect.size()[0] <= 0.0 or rect.size()[1] <= 0.0) return;
-    var dc = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, rect);
-    defer dc.deinit();
+    const t = dc.theme;
+
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
 
     handleWheelScroll(queue, rect, &details_scroll_y, details_scroll_max, 40.0);
 
@@ -242,7 +272,7 @@ fn drawSessionDetailsPane(
     dc.pushClip(rect);
     var cursor_y = content_rect.min[1] - details_scroll_y;
     const start_y = cursor_y;
-    cursor_y += drawSessionDetailsCustom(allocator, ctx, t, &dc, queue, .{ content_rect.min[0], cursor_y }, content_rect.size()[0], rect.size()[1], action);
+    cursor_y += drawSessionDetailsCustom(allocator, ctx, dc, queue, .{ content_rect.min[0], cursor_y }, content_rect.size()[0], rect.size()[1], action);
     const content_height = cursor_y - start_y;
     details_scroll_max = @max(0.0, content_height - content_rect.size()[1] + padding);
     if (details_scroll_y > details_scroll_max) details_scroll_y = details_scroll_max;
@@ -258,7 +288,7 @@ fn handleSplitResize(
     min_left: f32,
     max_left: f32,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const divider_w: f32 = 6.0;
     const divider_rect = draw_context.Rect.fromMinSize(
         .{ left_rect.max[0] + gap * 0.5 - divider_w * 0.5, rect.min[1] },
@@ -307,19 +337,7 @@ fn handleWheelScroll(
     max_scroll: f32,
     step: f32,
 ) void {
-    if (max_scroll <= 0.0) {
-        scroll_y.* = 0.0;
-        return;
-    }
-    if (!rect.contains(queue.state.mouse_pos)) return;
-    for (queue.events.items) |evt| {
-        if (evt == .mouse_wheel) {
-            const delta = evt.mouse_wheel.delta[1];
-            scroll_y.* -= delta * step;
-        }
-    }
-    if (scroll_y.* < 0.0) scroll_y.* = 0.0;
-    if (scroll_y.* > max_scroll) scroll_y.* = max_scroll;
+    widgets.kinetic_scroll.apply(queue, rect, scroll_y, max_scroll, step);
 }
 
 fn buttonWidth(ctx: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {
@@ -353,7 +371,6 @@ fn drawBadge(
 fn drawSessionDetailsCustom(
     allocator: std.mem.Allocator,
     ctx: *state.ClientContext,
-    t: *const theme.Theme,
     dc: *draw_context.DrawContext,
     queue: *input_state.InputQueue,
     origin: [2]f32,
@@ -361,6 +378,7 @@ fn drawSessionDetailsCustom(
     viewport_height: f32,
     action: *SessionPanelAction,
 ) f32 {
+    const t = dc.theme;
     var cursor_y = origin[1];
     const line_height = dc.lineHeight();
 
@@ -438,7 +456,7 @@ fn drawSessionDetailsCustom(
 
     const source_height = std.math.clamp(viewport_height * 0.5, 260.0, 380.0);
     const source_rect = draw_context.Rect.fromMinSize(.{ origin[0], cursor_y }, .{ width, source_height });
-    const source_action = components.composite.source_browser.draw(allocator, .{
+    const source_action = components.composite.source_browser.draw(allocator, dc, .{
         .id = "session_source_browser",
         .sources = sources_buf[0..sources_len],
         .selected_source = selected_source,
@@ -587,10 +605,10 @@ fn drawAttachmentPreviewCard(
     previews: []AttachmentOpen,
     action: *SessionPanelAction,
 ) f32 {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
-    const button_height = line_height + t.spacing.xs * 2.0;
+    const button_height = widgets.button.defaultHeight(t, line_height);
     const width = rect.size()[0];
     const content_width = width - padding * 2.0;
     const preview = if (selected_file_index != null and selected_file_index.? < previews.len)
@@ -603,7 +621,7 @@ fn drawAttachmentPreviewCard(
         height += line_height + padding;
         const card_rect = draw_context.Rect.fromMinSize(rect.min, .{ width, height });
         dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
-        theme.push(.heading);
+        theme.pushFor(t, .heading);
         dc.drawText("Attachment Preview", .{ card_rect.min[0] + padding, card_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
         theme.pop();
         dc.drawText(
@@ -615,6 +633,15 @@ fn drawAttachmentPreviewCard(
     }
 
     const preview_value = preview.?;
+
+    // Scope interactive actions to the selected attachment so repeating labels like "Open URL"
+    // remain distinct as the user changes selection.
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(preview_value.url);
+    hasher.update(std.mem.asBytes(&preview_value.timestamp));
+    nav_router.pushScope(hasher.final());
+    defer nav_router.popScope();
+
     const meta_lines: usize = 5;
     const meta_height = @as(f32, @floatFromInt(meta_lines)) * line_height + t.spacing.xs * @as(f32, @floatFromInt(meta_lines - 1));
     const preview_box_height: f32 = if (isImageAttachment(preview_value)) 220.0 else 180.0;
@@ -705,7 +732,7 @@ fn drawAttachmentPreviewCard(
     dc.drawRoundedRect(card_rect, t.radius.md, .{ .fill = t.colors.surface, .stroke = t.colors.border, .thickness = 1.0 });
 
     var cursor_y = card_rect.min[1] + padding;
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     dc.drawText("Attachment Preview", .{ card_rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_primary });
     theme.pop();
     cursor_y += line_height + t.spacing.sm;
@@ -919,7 +946,7 @@ fn drawPreviewTextBox(
     text: []const u8,
     format: PreviewFormat,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     dc.drawRoundedRect(rect, t.radius.sm, .{ .fill = t.colors.background, .stroke = t.colors.border, .thickness = 1.0 });
 
     if (format == .markdown) {
@@ -985,13 +1012,13 @@ fn drawMarkdownPreviewBox(
     queue: *input_state.InputQueue,
     text: []const u8,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     var lines = std.ArrayList(RenderedLine).empty;
     defer lines.deinit(allocator);
     buildMarkdownLinesInto(allocator, dc, text, rect.size()[0] - t.spacing.sm * 2.0, &lines);
 
     const body_height = dc.lineHeight();
-    theme.push(.heading);
+    theme.pushFor(t, .heading);
     const heading_height = dc.lineHeight();
     theme.pop();
 
@@ -1016,7 +1043,7 @@ fn drawMarkdownPreviewBox(
         switch (line.style) {
             .blank => {},
             .heading => {
-                theme.push(.heading);
+                theme.pushFor(t, .heading);
                 dc.drawText(line.text, .{ rect.min[0] + t.spacing.sm, y }, .{ .color = t.colors.text_primary });
                 theme.pop();
             },
@@ -1077,7 +1104,7 @@ fn buildMarkdownLinesInto(
     lines: *std.ArrayList(RenderedLine),
 ) void {
     lines.clearRetainingCapacity();
-    const t = theme.activeTheme();
+    const t = dc.theme;
     const bullet_indent = t.spacing.sm * 2.5;
     const quote_indent = t.spacing.sm * 2.0;
     const code_indent = t.spacing.sm;
@@ -1144,7 +1171,7 @@ fn drawImagePreview(
     rect: draw_context.Rect,
     preview: AttachmentOpen,
 ) void {
-    const t = theme.activeTheme();
+    const t = dc.theme;
     if (preview.url.len == 0) {
         dc.drawText("Image preview unavailable.", rect.min, .{ .color = t.colors.text_secondary });
         return;

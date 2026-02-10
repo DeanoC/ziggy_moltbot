@@ -7,14 +7,14 @@ const session_keys = @import("../client/session_keys.zig");
 pub const PanelManager = struct {
     allocator: std.mem.Allocator,
     workspace: workspace.Workspace,
-    next_panel_id: workspace.PanelId,
+    next_panel_id: *workspace.PanelId,
     focus_request_id: ?workspace.PanelId = null,
 
-    pub fn init(allocator: std.mem.Allocator, ws: workspace.Workspace) PanelManager {
+    pub fn init(allocator: std.mem.Allocator, ws: workspace.Workspace, next_panel_id: *workspace.PanelId) PanelManager {
         var manager = PanelManager{
             .allocator = allocator,
             .workspace = ws,
-            .next_panel_id = 1,
+            .next_panel_id = next_panel_id,
             .focus_request_id = null,
         };
         manager.recomputeNextId();
@@ -25,12 +25,60 @@ pub const PanelManager = struct {
         self.workspace.deinit(self.allocator);
     }
 
+    /// The workspace renderer/layout currently treats some panel kinds as singletons per-window
+    /// (one slot per kind). If duplicates exist, behavior is confusing (detach appears to "copy",
+    /// focus routing is ambiguous, etc). Compact them by keeping one and dropping the rest.
+    ///
+    /// Note: this is intentionally conservative (only applies to kinds that are effectively
+    /// singleton in today's UI).
+    pub fn compactSingletonPanels(self: *PanelManager) void {
+        const singleton_kinds = [_]workspace.PanelKind{ .Control, .Chat, .Showcase };
+        for (singleton_kinds) |kind| {
+            var keep_id: ?workspace.PanelId = null;
+            // Prefer keeping the focused instance.
+            if (self.workspace.focused_panel_id) |fid| {
+                for (self.workspace.panels.items) |panel| {
+                    if (panel.kind == kind and panel.id == fid) {
+                        keep_id = fid;
+                        break;
+                    }
+                }
+            }
+            // Otherwise keep the first one we find.
+            if (keep_id == null) {
+                for (self.workspace.panels.items) |panel| {
+                    if (panel.kind == kind) {
+                        keep_id = panel.id;
+                        break;
+                    }
+                }
+            }
+            if (keep_id == null) continue;
+
+            var i: usize = 0;
+            while (i < self.workspace.panels.items.len) {
+                const p = self.workspace.panels.items[i];
+                if (p.kind == kind and p.id != keep_id.?) {
+                    var removed = self.workspace.panels.orderedRemove(i);
+                    removed.deinit(self.allocator);
+                    self.workspace.markDirty();
+                    // Don't increment: orderedRemove compacts.
+                    continue;
+                }
+                i += 1;
+            }
+        }
+    }
+
     pub fn recomputeNextId(self: *PanelManager) void {
         var max_id: workspace.PanelId = 0;
         for (self.workspace.panels.items) |panel| {
             if (panel.id > max_id) max_id = panel.id;
         }
-        self.next_panel_id = max_id + 1;
+        const candidate = max_id + 1;
+        if (candidate > self.next_panel_id.*) {
+            self.next_panel_id.* = candidate;
+        }
     }
 
     pub fn applyUiCommand(self: *PanelManager, cmd: ui_command.UiCommand) !void {
@@ -48,8 +96,8 @@ pub const PanelManager = struct {
         title: []const u8,
         data: workspace.PanelData,
     ) !workspace.PanelId {
-        const id = self.next_panel_id;
-        self.next_panel_id += 1;
+        const id = self.next_panel_id.*;
+        self.next_panel_id.* += 1;
         const title_copy = try self.allocator.dupe(u8, title);
         try self.workspace.panels.append(self.allocator, .{
             .id = id,
@@ -60,6 +108,32 @@ pub const PanelManager = struct {
         });
         self.workspace.markDirty();
         return id;
+    }
+
+    /// Remove a panel from this manager and return it without freeing. Caller owns it.
+    pub fn takePanel(self: *PanelManager, id: workspace.PanelId) ?workspace.Panel {
+        var index: usize = 0;
+        while (index < self.workspace.panels.items.len) : (index += 1) {
+            if (self.workspace.panels.items[index].id == id) {
+                const removed = self.workspace.panels.orderedRemove(index);
+                self.workspace.markDirty();
+                if (self.workspace.focused_panel_id != null and self.workspace.focused_panel_id.? == id) {
+                    self.workspace.focused_panel_id = null;
+                }
+                if (self.focus_request_id != null and self.focus_request_id.? == id) {
+                    self.focus_request_id = null;
+                }
+                return removed;
+            }
+        }
+        return null;
+    }
+
+    /// Insert a panel (previously taken from some other manager) into this manager.
+    pub fn putPanel(self: *PanelManager, panel: workspace.Panel) !void {
+        try self.workspace.panels.append(self.allocator, panel);
+        self.workspace.markDirty();
+        self.recomputeNextId();
     }
 
     pub fn updatePanel(
@@ -105,6 +179,13 @@ pub const PanelManager = struct {
                 }
                 return true;
             }
+        }
+        return false;
+    }
+
+    pub fn closePanelByKind(self: *PanelManager, kind: workspace.PanelKind) bool {
+        if (self.findPanelByKind(kind)) |panel| {
+            return self.closePanel(panel.id);
         }
         return false;
     }
@@ -157,6 +238,11 @@ pub const PanelManager = struct {
             .Control => {
                 for (self.workspace.panels.items) |*panel| {
                     if (panel.kind == .Control) return panel;
+                }
+            },
+            .Showcase => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Showcase) return panel;
                 }
             },
             .ToolOutput => {},
@@ -256,6 +342,10 @@ pub const PanelManager = struct {
                 } };
                 return try self.openPanel(.ToolOutput, "Tool Output", panel_data);
             },
+            .Showcase => {
+                const panel_data = workspace.PanelData{ .Showcase = {} };
+                return try self.openPanel(.Showcase, "Showcase", panel_data);
+            },
         }
     }
 
@@ -347,6 +437,14 @@ pub const PanelManager = struct {
                 const panel_data = workspace.PanelData{ .Control = .{} };
                 _ = try self.openPanel(.Control, open.title orelse "Workspace", panel_data);
             },
+            .Showcase => {
+                if (self.findReusablePanel(.Showcase, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Showcase = {} };
+                _ = try self.openPanel(.Showcase, open.title orelse "Showcase", panel_data);
+            },
         }
     }
 
@@ -403,6 +501,9 @@ pub const PanelManager = struct {
                     if (data.active_tab) |tab| {
                         panel.data.Control.active_tab = parseControlTab(tab);
                     }
+                },
+                .Showcase => {
+                    if (panel.kind != .Showcase) return false;
                 },
             }
             self.workspace.markDirty();

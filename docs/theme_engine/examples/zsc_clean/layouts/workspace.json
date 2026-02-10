@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "desktop": {
+    "open_panels": ["control", "chat"],
+    "focused_panel": "chat",
+    "close_others": false
+  },
+  "phone": {
+    "open_panels": ["control"],
+    "focused_panel": "control",
+    "close_others": false
+  },
+  "tablet": {
+    "open_panels": ["control", "chat"],
+    "focused_panel": "chat",
+    "close_others": false
+  }
+}
+
