@@ -341,11 +341,13 @@ fn drawAppearanceCard(
     height += button_height + padding; // profile picker row + bottom padding
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
 
-    const content_y = drawCardBase(dc, rect, "Appearance");
+    const base = drawCardBase(dc, rect, "Appearance");
+    const inner = base.inner_rect;
+    const content_y = base.cursor_y;
     var use_light = theme_is_light;
     const checkbox_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0] + padding, content_y },
-        .{ width - padding * 2.0, checkbox_height },
+        .{ inner.min[0] + padding, content_y },
+        .{ inner.size()[0] - padding * 2.0, checkbox_height },
     );
     if (widgets.checkbox.draw(dc, checkbox_rect, "Light theme", &use_light, queue, .{})) {
         theme_is_light = use_light;
@@ -358,8 +360,8 @@ fn drawAppearanceCard(
     if (can_watch_pack) {
         var watch = watch_theme_pack_value;
         const watch_rect = draw_context.Rect.fromMinSize(
-            .{ rect.min[0] + padding, cursor_y },
-            .{ width - padding * 2.0, checkbox_height },
+            .{ inner.min[0] + padding, cursor_y },
+            .{ inner.size()[0] - padding * 2.0, checkbox_height },
         );
         if (widgets.checkbox.draw(
             dc,
@@ -378,9 +380,9 @@ fn drawAppearanceCard(
         dc,
         queue,
         allocator,
-        rect.min[0] + padding,
+        inner.min[0] + padding,
         cursor_y,
-        width - padding * 2.0,
+        inner.size()[0] - padding * 2.0,
         "Theme pack path",
         ensureEditor(&theme_pack_editor, allocator),
         .{ .placeholder = "themes/zsc_showcase" },
@@ -396,7 +398,7 @@ fn drawAppearanceCard(
             (std.fmt.bufPrint(&buf0, "This window override: {s}", .{override_text}) catch "This window override: (format error)")
         else
             "This window override: (none)";
-        dc.drawText(ov_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        dc.drawText(ov_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         cursor_y += line_height + t.spacing.xs;
 
         var buf1: [640]u8 = undefined;
@@ -404,12 +406,12 @@ fn drawAppearanceCard(
             (std.fmt.bufPrint(&buf1, "Effective pack: {s}", .{effective_text}) catch "Effective pack: (format error)")
         else
             "Effective pack: (built-in)";
-        dc.drawText(eff_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        dc.drawText(eff_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         cursor_y += line_height + t.spacing.xs;
 
         // Override buttons row.
         const button_y = cursor_y;
-        var bx = rect.min[0] + padding;
+        var bx = inner.min[0] + padding;
         const browse_w = buttonWidth(dc, "Browse override...", t);
         const browse_rect = draw_context.Rect.fromMinSize(.{ bx, button_y }, .{ browse_w, button_height });
         if (widgets.button.draw(dc, browse_rect, "Browse override...", queue, .{ .variant = .secondary })) {
@@ -437,19 +439,19 @@ fn drawAppearanceCard(
         "Edit path then press Apply or Reload (Reload re-fetches)."
     else
         "Edit path then press Apply or Reload (Reload re-reads JSON).";
-    dc.drawText(helper_line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+    dc.drawText(helper_line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     cursor_y += line_height + t.spacing.xs;
 
     if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
         dc.drawText(
             "Config saves to: browser storage",
-            .{ rect.min[0] + padding, cursor_y },
+            .{ inner.min[0] + padding, cursor_y },
             .{ .color = t.colors.text_secondary },
         );
     } else if (config_cwd) |cwd| {
         var buf: [512]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "Config saves to: {s}/ziggystarclaw_config.json", .{cwd}) catch "Config saves to: (unknown)";
-        dc.drawText(line, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+        dc.drawText(line, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
     }
     cursor_y += line_height + t.spacing.xs;
 
@@ -470,7 +472,7 @@ fn drawAppearanceCard(
         };
 
         const badge_sz = badgeSize(dc, badge_label, t);
-        const badge_rect = draw_context.Rect.fromMinSize(.{ rect.min[0] + padding, cursor_y }, badge_sz);
+        const badge_rect = draw_context.Rect.fromMinSize(.{ inner.min[0] + padding, cursor_y }, badge_sz);
         drawBadge(dc, badge_rect, badge_label, badge_variant);
         const msg = if (status.msg.len > 0) status.msg else "(no status)";
         dc.drawText(
@@ -505,16 +507,16 @@ fn drawAppearanceCard(
                 cap_multi,
                 cap_shaders,
             }) catch "Pack: (metadata unavailable)";
-            dc.drawText(msg, .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+            dc.drawText(msg, .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         } else {
-            dc.drawText("Pack: (built-in)", .{ rect.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
+            dc.drawText("Pack: (built-in)", .{ inner.min[0] + padding, cursor_y }, .{ .color = t.colors.text_secondary });
         }
     }
     cursor_y += line_height + t.spacing.xs;
 
     // Pack actions row.
     const button_y = cursor_y;
-    var button_x = rect.min[0] + padding;
+    var button_x = inner.min[0] + padding;
 
     // In browser builds, we can't scan local folders. Keep a few quick picks.
     if (builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi) {
@@ -583,10 +585,10 @@ fn drawAppearanceCard(
     // Recent pack shortcuts (persisted in config).
     {
         const recent_label = "Recent:";
-        const rx0 = rect.min[0] + padding;
+        const rx0 = inner.min[0] + padding;
         dc.drawText(recent_label, .{ rx0, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_secondary });
         var rx = rx0 + dc.measureText(recent_label, 0.0)[0] + t.spacing.sm;
-        const max_x = rect.max[0] - padding;
+        const max_x = inner.max[0] - padding;
 
         const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
         if (recent.len == 0) {
@@ -626,8 +628,8 @@ fn drawAppearanceCard(
     const can_refresh = !(builtin.target.os.tag == .emscripten or builtin.target.os.tag == .wasi);
     const can_browse = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
 
-    const row_min_x = rect.min[0] + padding;
-    const row_max_x = rect.max[0] - padding;
+    const row_min_x = inner.min[0] + padding;
+    const row_max_x = inner.max[0] - padding;
 
     // Right-side controls, anchored so they don't get pushed off-screen.
     var right_x = row_max_x;
@@ -690,7 +692,7 @@ fn drawAppearanceCard(
 
     // Simple profile picker (stored into config, used to choose UI scaling/density/input assumptions).
     const picker_label = "Profile:";
-    const picker_x = rect.min[0] + padding;
+    const picker_x = inner.min[0] + padding;
     dc.drawText(picker_label, .{ picker_x, cursor_y + (button_height - line_height) * 0.5 }, .{ .color = t.colors.text_primary });
 
     var profile_px = picker_x + dc.measureText(picker_label, 0.0)[0] + t.spacing.sm;
@@ -768,9 +770,11 @@ fn drawConnectionCard(
     height += line_height + padding;
 
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Connection");
-    const content_x = rect.min[0] + padding;
-    const content_w = width - padding * 2.0;
+    const base = drawCardBase(dc, rect, "Connection");
+    const inner = base.inner_rect;
+    var cursor_y = base.cursor_y;
+    const content_x = inner.min[0] + padding;
+    const content_w = inner.size()[0] - padding * 2.0;
 
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Server URL", ensureEditor(&server_editor, allocator), .{ .placeholder = "ws://host:port" });
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Connect Host (override)", ensureEditor(&connect_host_editor, allocator), .{});
@@ -896,9 +900,11 @@ fn drawUpdatesCard(
 
     const height = calcUpdatesHeight(snapshot, t, line_height, input_height, button_height, progress_height);
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    var cursor_y = drawCardBase(dc, rect, "Updates");
-    const content_x = rect.min[0] + padding;
-    const content_w = width - padding * 2.0;
+    const base = drawCardBase(dc, rect, "Updates");
+    const inner = base.inner_rect;
+    var cursor_y = base.cursor_y;
+    const content_x = inner.min[0] + padding;
+    const content_w = inner.size()[0] - padding * 2.0;
 
     cursor_y += drawLabeledInput(dc, queue, allocator, content_x, cursor_y, content_w, "Update Manifest URL", ensureEditor(&update_url_editor, allocator), .{});
     dc.drawText("Current version:", .{ content_x, cursor_y }, .{ .color = t.colors.text_secondary });
@@ -1104,7 +1110,12 @@ fn calcUpdatesHeight(
     return height;
 }
 
-fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
+const CardBase = struct {
+    inner_rect: draw_context.Rect,
+    cursor_y: f32,
+};
+
+fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) CardBase {
     const t = dc.theme;
     const ss = theme_runtime.getStyleSheet();
     const padding = t.spacing.md;
@@ -1117,11 +1128,15 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
         .draw_frame = true,
         .draw_border = true,
     });
+    const inner_rect = panel_chrome.contentRect(rect);
     theme.pushFor(t, .heading);
-    dc.drawText(title, .{ rect.min[0] + padding, rect.min[1] + padding }, .{ .color = t.colors.text_primary });
+    dc.drawText(title, .{ inner_rect.min[0] + padding, inner_rect.min[1] + padding }, .{ .color = t.colors.text_primary });
     theme.pop();
 
-    return rect.min[1] + padding + line_height + t.spacing.xs;
+    return .{
+        .inner_rect = inner_rect,
+        .cursor_y = inner_rect.min[1] + padding + line_height + t.spacing.xs,
+    };
 }
 
 fn drawLabeledInput(

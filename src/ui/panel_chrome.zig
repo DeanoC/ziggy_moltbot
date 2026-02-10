@@ -14,6 +14,27 @@ pub const Options = struct {
     draw_border: bool = true,
 };
 
+pub fn contentRect(rect: draw_context.Rect) draw_context.Rect {
+    const ss = theme_runtime.getStyleSheet();
+    const inset = ss.panel.content_inset_px orelse .{ 0.0, 0.0, 0.0, 0.0 };
+
+    const w = rect.size()[0];
+    const h = rect.size()[1];
+    if (w <= 0.0 or h <= 0.0) return rect;
+
+    const left = std.math.clamp(inset[0], 0.0, w);
+    const top = std.math.clamp(inset[1], 0.0, h);
+    const right = std.math.clamp(inset[2], 0.0, w - left);
+    const bottom = std.math.clamp(inset[3], 0.0, h - top);
+
+    const min_x = rect.min[0] + left;
+    const min_y = rect.min[1] + top;
+    const max_x = rect.max[0] - right;
+    const max_y = rect.max[1] - bottom;
+    if (max_x <= min_x or max_y <= min_y) return rect;
+    return .{ .min = .{ min_x, min_y }, .max = .{ max_x, max_y } };
+}
+
 pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Options) void {
     const t = dc.theme;
     const ss = theme_runtime.getStyleSheet();

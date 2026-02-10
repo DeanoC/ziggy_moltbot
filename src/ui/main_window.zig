@@ -1451,10 +1451,14 @@ fn drawPanelFrame(
         };
     }
 
+    // Layout inside the theme-provided content inset so thick 9-slice borders don't overlap text/widgets.
+    const layout_rect = panel_chrome.contentRect(rect);
+    const layout_size = layout_rect.size();
+
     const title_height = dc.lineHeight();
     const pad_y = t.spacing.xs;
-    const header_height = @min(size[1], title_height + pad_y * 2.0);
-    const header_rect = draw_context.Rect.fromMinSize(rect.min, .{ size[0], header_height });
+    const header_height = @min(layout_size[1], title_height + pad_y * 2.0);
+    const header_rect = draw_context.Rect.fromMinSize(layout_rect.min, .{ layout_size[0], header_height });
 
     // Panel background/chrome (supports image fills like brushed metal).
     panel_chrome.draw(dc, rect, .{
@@ -1469,11 +1473,11 @@ fn drawPanelFrame(
 
     // Focus border on top of theme border/frame.
     const border_color = if (focused) t.colors.primary else t.colors.border;
-    dc.drawRect(rect, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+    dc.drawRect(layout_rect, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
 
     const close_size = @min(header_height, @max(12.0, header_height - pad_y * 2.0));
     const close_rect = draw_context.Rect.fromMinSize(
-        .{ rect.max[0] - t.spacing.xs - close_size, rect.min[1] + (header_height - close_size) * 0.5 },
+        .{ layout_rect.max[0] - t.spacing.xs - close_size, layout_rect.min[1] + (header_height - close_size) * 0.5 },
         .{ close_size, close_size },
     );
 
@@ -1496,15 +1500,15 @@ fn drawPanelFrame(
         .radius = t.radius.sm,
     });
 
-    const title_x = rect.min[0] + t.spacing.sm;
-    const title_y = rect.min[1] + (header_height - title_height) * 0.5;
+    const title_x = layout_rect.min[0] + t.spacing.sm;
+    const title_y = layout_rect.min[1] + (header_height - title_height) * 0.5;
     theme.pushFor(t, .title);
     dc.drawText(title, .{ title_x, title_y }, .{ .color = t.colors.text_primary });
     theme.pop();
 
     const divider_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0], header_rect.max[1] - 1.0 },
-        .{ rect.size()[0], 1.0 },
+        .{ layout_rect.min[0], header_rect.max[1] - 1.0 },
+        .{ layout_rect.size()[0], 1.0 },
     );
     dc.drawRect(divider_rect, .{ .fill = t.colors.divider });
 
@@ -1520,10 +1524,10 @@ fn drawPanelFrame(
         }
     }
 
-    const content_height = @max(0.0, size[1] - header_height);
+    const content_height = @max(0.0, layout_size[1] - header_height);
     const content_rect = draw_context.Rect.fromMinSize(
-        .{ rect.min[0], rect.min[1] + header_height },
-        .{ size[0], content_height },
+        .{ layout_rect.min[0], layout_rect.min[1] + header_height },
+        .{ layout_size[0], content_height },
     );
     return .{
         .content_rect = content_rect,

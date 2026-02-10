@@ -106,6 +106,10 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
+    // Optional inset applied to layouts that place content "inside" a panel.
+    // This is separate from visual padding and is meant to keep content out of thick frame borders.
+    // Order: left, top, right, bottom (pixels).
+    content_inset_px: ?[4]f32 = null,
     // Optional paint drawn over the entire panel rect after fill+frame (useful for lighting layers).
     overlay: ?Paint = null,
     shadow: EffectStyle = .{},
@@ -293,6 +297,7 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("content_inset_px")) |iv| out.content_inset_px = parseSlicesPx(iv) orelse out.content_inset_px;
     if (obj.get("overlay")) |ov| out.overlay = parsePaint(ov, theme) orelse out.overlay;
     if (obj.get("shadow")) |sv| {
         parseEffect(&out.shadow, sv, theme);
