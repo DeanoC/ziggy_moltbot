@@ -4,6 +4,7 @@ const draw_context = @import("draw_context.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const widgets = @import("widgets/widgets.zig");
 const input_state = @import("input/input_state.zig");
+const input_events = @import("input/input_events.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 
 const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
@@ -74,28 +75,50 @@ pub fn draw(
     }
 
     // If the emoji picker is open, clicks within the picker should not move the caret in the
-    // underlying text editor (prevent click-through).
-    var saved_mouse_pos: [16]struct { idx: usize, pos: [2]f32 } = undefined;
-    var saved_mouse_pos_len: usize = 0;
+    // underlying text editor (prevent click-through). The editor hit-tests against
+    // `queue.state.mouse_pos`, so we temporarily mask both the pointer state and any left-button
+    // mouse_down events that occur inside the picker.
+    const SavedMouseEvent = struct {
+        idx: usize,
+        is_down: bool,
+        button: input_events.MouseButton,
+        pos: [2]f32,
+    };
+    var saved_mouse_events: [16]SavedMouseEvent = undefined;
+    var saved_mouse_events_len: usize = 0;
+    var saved_queue_mouse_pos: ?[2]f32 = null;
+
     if (emoji_open and editor_enabled) {
         const picker_rect = computeEmojiPickerRect(t, emoji_rect);
+        const offscreen: [2]f32 = .{ -10000.0, -10000.0 };
+
+        if (picker_rect.contains(active_queue.state.mouse_pos)) {
+            saved_queue_mouse_pos = active_queue.state.mouse_pos;
+            active_queue.state.mouse_pos = offscreen;
+        }
+
         for (active_queue.events.items, 0..) |*evt, i| {
             switch (evt.*) {
                 .mouse_down => |md| {
                     if (md.button == .left and picker_rect.contains(md.pos)) {
-                        if (saved_mouse_pos_len < saved_mouse_pos.len) {
-                            saved_mouse_pos[saved_mouse_pos_len] = .{ .idx = i, .pos = md.pos };
-                            saved_mouse_pos_len += 1;
-                            evt.* = .{ .mouse_down = .{ .button = md.button, .pos = .{ -10000.0, -10000.0 } } };
+                        if (saved_queue_mouse_pos == null) {
+                            saved_queue_mouse_pos = active_queue.state.mouse_pos;
+                            active_queue.state.mouse_pos = offscreen;
+                        }
+                        if (saved_mouse_events_len < saved_mouse_events.len) {
+                            saved_mouse_events[saved_mouse_events_len] = .{ .idx = i, .is_down = true, .button = md.button, .pos = md.pos };
+                            saved_mouse_events_len += 1;
+                            // Make the editor ignore this press; the picker will see the restored event.
+                            evt.* = .{ .mouse_down = .{ .button = .right, .pos = offscreen } };
                         }
                     }
                 },
                 .mouse_up => |mu| {
                     if (mu.button == .left and picker_rect.contains(mu.pos)) {
-                        if (saved_mouse_pos_len < saved_mouse_pos.len) {
-                            saved_mouse_pos[saved_mouse_pos_len] = .{ .idx = i, .pos = mu.pos };
-                            saved_mouse_pos_len += 1;
-                            evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = .{ -10000.0, -10000.0 } } };
+                        if (saved_mouse_events_len < saved_mouse_events.len) {
+                            saved_mouse_events[saved_mouse_events_len] = .{ .idx = i, .is_down = false, .button = mu.button, .pos = mu.pos };
+                            saved_mouse_events_len += 1;
+                            evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = offscreen } };
                         }
                     }
                 },
@@ -106,21 +129,21 @@ pub fn draw(
 
     const action = editor.draw(allocator, ctx, editor_rect, active_queue, .{ .submit_on_enter = true });
 
-    // Restore masked mouse event positions so the picker can still handle the click.
-    if (saved_mouse_pos_len > 0) {
+    if (saved_queue_mouse_pos) |pos| {
+        active_queue.state.mouse_pos = pos;
+    }
+
+    // Restore masked mouse events so the picker can handle the click.
+    if (saved_mouse_events_len > 0) {
         var j: usize = 0;
-        while (j < saved_mouse_pos_len) : (j += 1) {
-            const entry = saved_mouse_pos[j];
+        while (j < saved_mouse_events_len) : (j += 1) {
+            const entry = saved_mouse_events[j];
             if (entry.idx < active_queue.events.items.len) {
                 const evt = &active_queue.events.items[entry.idx];
-                switch (evt.*) {
-                    .mouse_down => |md| {
-                        evt.* = .{ .mouse_down = .{ .button = md.button, .pos = entry.pos } };
-                    },
-                    .mouse_up => |mu| {
-                        evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = entry.pos } };
-                    },
-                    else => {},
+                if (entry.is_down) {
+                    evt.* = .{ .mouse_down = .{ .button = entry.button, .pos = entry.pos } };
+                } else {
+                    evt.* = .{ .mouse_up = .{ .button = entry.button, .pos = entry.pos } };
                 }
             }
         }

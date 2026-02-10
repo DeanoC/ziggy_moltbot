@@ -680,14 +680,18 @@ pub fn drawCustom(
     }
 
     const near_bottom = state.scroll_y >= max_scroll - 4.0;
+    const prevent_auto_follow_tail = state.selecting or pending_select;
     // Sticky follow-tail: if we were following at frame start, keep following unless the user
     // explicitly scrolls away from the bottom. This avoids visible jitter while streaming replies
     // grow the document and `max_scroll` shifts during the frame.
-    if (was_follow_tail and !user_scrolled and !state.scrollbar_dragging) {
+    //
+    // Do not auto-enable follow-tail while starting/performing text selection (selection sets
+    // follow_tail = false earlier in the frame).
+    if (!prevent_auto_follow_tail and was_follow_tail and !user_scrolled and !state.scrollbar_dragging) {
         state.follow_tail = true;
     } else if (user_scrolled and !near_bottom) {
         state.follow_tail = false;
-    } else if (near_bottom) {
+    } else if (!prevent_auto_follow_tail and near_bottom) {
         state.follow_tail = true;
     }
 
