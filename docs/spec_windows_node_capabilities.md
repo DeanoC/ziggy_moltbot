@@ -1,52 +1,80 @@
 # Spec: Windows node capabilities (camera/screen/browser)
 
 Goal: Windows node should provide feature parity with Linux node for:
-- camera_list / camera_snap / camera_clip
-- screen_record
+- `camera.list` / `camera.snap` / `camera.clip`
+- `screen.record`
 - browser-like automation via canvas (CDP)
 
-This spec is a roadmap with incremental delivery.
+This document is a **roadmap with incremental delivery**: each slice should be shippable as a PR and safe to enable in node-mode.
 
 ---
 
-## Camera
+## Incremental plan (shippable slices)
 
-### MVP
-- Implement `camera.list` to enumerate available webcams.
-- Implement `camera.snap`:
-  - Capture a single image
-  - Return bytes as base64 (or write to file and return path)
+### 9f1 — Windows `camera.list` (MVP)
 
-### Implementation notes
-- Use Windows Media Foundation APIs.
-- Consider permissions/consent UX via the tray app.
+Deliverables:
+- Advertise `capabilities: ["camera"]` and `commands: ["camera.list"]` **only on Windows**.
+- Implement `camera.list` returning a stable shape:
 
----
+```json
+{
+  "backend": "powershell-cim",
+  "devices": [
+    { "deviceId": "<PNPDeviceID>", "name": "<Name>" }
+  ]
+}
+```
 
-## Screen
+Notes:
+- First pass can be best-effort enumeration (PowerShell/CIM) to de-risk UX and protocol shape.
+- Must log actionable diagnostics when enumeration fails (missing PowerShell, non-zero exit, invalid JSON).
 
-### MVP
-- Implement `screen.record`:
+### 9f2 — Replace enumeration backend with Windows Media Foundation
+
+Deliverables:
+- Enumerate video capture devices using Windows Media Foundation (MF) device APIs.
+- Keep the response shape from 9f1 stable.
+
+### 9f3 — Windows `camera.snap`
+
+Deliverables:
+- Implement `camera.snap` using MF:
+  - capture a single frame
+  - return `{ format: "jpeg"|"png", base64: "..." }` or `{ path: "..." }`
+- Add permission/consent story for user-session node (tray UX).
+
+### 9f4 — Windows `camera.clip`
+
+Deliverables:
+- Implement `camera.clip`:
   - record N seconds
   - encode to mp4/webm if feasible
+- Confirm behavior when camera is busy / in-use.
 
-### Implementation notes
+### 9f5 — Windows `screen.record`
+
+Deliverables:
+- Implement `screen.record`:
+  - record N seconds
+  - return `{ format, path|base64 }`
+
+Implementation notes:
 - Use Desktop Duplication API (DXGI) for capture.
 - Encoding may require Media Foundation or FFmpeg (bundling/licensing considerations).
 
----
+### Canvas / browser automation
 
-## Browser/Canvas
-
-### MVP
+MVP:
 - Implement `canvas.navigate` / `canvas.eval` / `canvas.snapshot` using CDP.
 
-(Tracked in WORK_ITEMS_GLOBAL#12.)
+Tracking:
+- This is tracked separately in WORK_ITEMS_GLOBAL#12.
 
 ---
 
 ## Acceptance
 
 - Capability endpoints work when node is running as a user-session app.
-- Clear error messages when permission denied.
-- Logs are actionable.
+- Clear error messages when permission is denied or the backend is missing.
+- Logs are actionable (include backend + exit codes where applicable).

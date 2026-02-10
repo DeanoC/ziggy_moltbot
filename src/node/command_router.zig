@@ -9,6 +9,11 @@ const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
 
+const windows_camera = if (builtin.target.os.tag == .windows)
+    @import("../windows/camera.zig")
+else
+    struct {};
+
 /// Command handler function signature
 pub const CommandHandler = *const fn (
     allocator: std.mem.Allocator,
@@ -109,6 +114,11 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler);
     try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler);
 
+    // Camera commands (Windows MVP)
+    if (builtin.target.os.tag == .windows) {
+        try router.register(.camera_list, cameraListHandler);
+    }
+
     return router;
 }
 
@@ -145,8 +155,14 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             .canvas_a2ui_reset => try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler),
 
             // Not implemented yet in this codebase (but present in enum)
-            .screen_record,
-            .camera_list,
+            .screen_record => return error.CommandNotSupported,
+            .camera_list => {
+                if (builtin.target.os.tag == .windows) {
+                    try router.register(.camera_list, cameraListHandler);
+                } else {
+                    return error.CommandNotSupported;
+                }
+            },
             .camera_snap,
             .camera_clip,
             .location_get,
@@ -600,6 +616,34 @@ fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: st
     var result = std.json.ObjectMap.init(allocator);
     try result.put("ok", std.json.Value{ .bool = true });
     return std.json.Value{ .object = result };
+}
+
+// ============================================================================
+// Camera Command Handlers
+// ============================================================================
+
+fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
+    if (comptime builtin.target.os.tag != .windows) {
+        return CommandError.CommandNotSupported;
+    }
+
+    const devices = windows_camera.listCameras(allocator) catch |err| {
+        logger.err("camera.list failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+
+    var out_devices = std.ArrayList(std.json.Value).init(allocator);
+    for (devices) |dev| {
+        var obj = std.json.ObjectMap.init(allocator);
+        try obj.put("deviceId", std.json.Value{ .string = try allocator.dupe(u8, dev.deviceId) });
+        try obj.put("name", std.json.Value{ .string = try allocator.dupe(u8, dev.name) });
+        try out_devices.append(std.json.Value{ .object = obj });
+    }
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("backend", std.json.Value{ .string = try allocator.dupe(u8, "powershell-cim") });
+    try out.put("devices", std.json.Value{ .array = out_devices });
+    return std.json.Value{ .object = out };
 }
 
 fn discoverPlaywrightBinaryAlloc(allocator: std.mem.Allocator, prefix: []const u8, subpath: []const []const u8) !?[]u8 {
