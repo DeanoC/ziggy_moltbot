@@ -165,6 +165,12 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
+    // Optional paint for the panel header strip used by the docked panel host chrome
+    // (`drawPanelFrame` in `src/ui/main_window.zig`). If unset, a translucent solid surface
+    // tint is used.
+    header_overlay: ?Paint = null,
+    // Optional override for the focus border drawn around docked panels.
+    focus_border: ?Color = null,
     // Optional inset applied to layouts that place content "inside" a panel.
     // This is separate from visual padding and is meant to keep content out of thick frame borders.
     // Order: left, top, right, bottom (pixels).
@@ -415,6 +421,8 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("header_overlay")) |hv| out.header_overlay = parsePaint(hv, theme) orelse out.header_overlay;
+    if (obj.get("focus_border")) |cv| out.focus_border = parseColor(cv, theme) orelse out.focus_border;
     if (obj.get("content_inset_px")) |iv| out.content_inset_px = parseSlicesPx(iv) orelse out.content_inset_px;
     if (obj.get("overlay")) |ov| out.overlay = parsePaint(ov, theme) orelse out.overlay;
     if (obj.get("shadow")) |sv| {

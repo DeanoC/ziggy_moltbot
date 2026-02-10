@@ -113,7 +113,7 @@ pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Option
     }
 }
 
-fn drawPaintRect(dc: *draw_context.DrawContext, rect: draw_context.Rect, paint: style_sheet.Paint) void {
+pub fn drawPaintRect(dc: *draw_context.DrawContext, rect: draw_context.Rect, paint: style_sheet.Paint) void {
     switch (paint) {
         .solid => |c| dc.drawRect(rect, .{ .fill = c }),
         .gradient4 => |g| dc.drawRectGradient(rect, .{

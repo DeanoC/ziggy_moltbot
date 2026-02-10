@@ -174,6 +174,9 @@ Example (sketch):
   },
   "panel": {
     "fill": "colors.surface",
+    "content_inset_px": [8, 8, 8, 8],
+    "header_overlay": { "image": { "path": "assets/images/surface_tile.png", "mode": "tile", "tint": "#FFFFFFB0" } },
+    "focus_border": "colors.primary",
     "shadow": {
       "color": "#00000066",
       "blur_px": 18.0,
@@ -205,6 +208,11 @@ Pragmatic recommendation:
 - `center_overlay`: paint (optional, drawn into the 9-slice interior after the frame; useful for lighting/highlight layers)
 - `center_mode`: `"stretch"`, `"tile"`, `"tile_x"`, `"tile_y"` (default `"stretch"`)
 - `center_anchor`: `"start"` or `"end"` (default `"start"`, only applies to `center_mode: "tile"`/`"tile_x"`/`"tile_y"`)
+
+Additional `panel` fields (implemented):
+- `content_inset_px`: `[left, top, right, bottom]` pixels. Used by layouts to keep content out of thick frame borders.
+- `header_overlay`: paint. Used by the docked panel host header strip (so textured themes don't get a flat solid header).
+- `focus_border`: color. Used by the docked panel host focus border (fallback: `colors.primary`).
 
 ### Paint Values (Implemented)
 

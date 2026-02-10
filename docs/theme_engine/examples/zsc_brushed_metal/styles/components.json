@@ -22,6 +22,16 @@
   "panel": {
     "radius": 0,
     "content_inset_px": [32, 32, 32, 32],
+    "header_overlay": {
+      "image": {
+        "path": "assets/images/brushed_metal_tile.png",
+        "mode": "tile",
+        "scale": 1.0,
+        "tint": "#FFFFFFB0",
+        "offset_px": [0, 0]
+      }
+    },
+    "focus_border": "#2E6DD6FF",
     "fill": {
       "image": {
         "path": "assets/images/brushed_metal_tile.png",

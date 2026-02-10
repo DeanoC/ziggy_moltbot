@@ -1464,6 +1464,7 @@ fn drawPanelFrame(
     focused: bool,
 ) PanelFrameResult {
     const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
     const size = rect.size();
     if (size[0] <= 0.0 or size[1] <= 0.0) {
         return .{
@@ -1491,11 +1492,18 @@ fn drawPanelFrame(
         .draw_border = false,
     });
 
-    // Header overlay: slightly different tint to separate from content when using textures.
-    dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.55) });
+    // Header overlay: themeable, so texture-based themes can keep the "material" consistent.
+    if (ss.panel.header_overlay) |paint| {
+        panel_chrome.drawPaintRect(dc, header_rect, paint);
+    } else {
+        // Fallback: subtle solid tint to separate header from content.
+        dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.55) });
+    }
 
     // Focus border on top of theme border/frame.
-    const border_color = if (focused) t.colors.primary else t.colors.border;
+    const base_border = ss.panel.border orelse t.colors.border;
+    const focus_border = ss.panel.focus_border orelse t.colors.primary;
+    const border_color = if (focused) focus_border else base_border;
     dc.drawRect(layout_rect, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
 
     const close_size = @min(header_height, @max(12.0, header_height - pad_y * 2.0));
