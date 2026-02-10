@@ -106,6 +106,8 @@ pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
     border: ?Color = null,
+    // Optional paint drawn over the entire panel rect after fill+frame (useful for lighting layers).
+    overlay: ?Paint = null,
     shadow: EffectStyle = .{},
     frame_image: AssetPath = .{},
     frame_slices_px: ?[4]f32 = null,
@@ -291,6 +293,7 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
     if (obj.get("fill")) |cv| out.fill = parsePaint(cv, theme) orelse out.fill;
     if (obj.get("border")) |cv| out.border = parseColor(cv, theme) orelse out.border;
+    if (obj.get("overlay")) |ov| out.overlay = parsePaint(ov, theme) orelse out.overlay;
     if (obj.get("shadow")) |sv| {
         parseEffect(&out.shadow, sv, theme);
     }

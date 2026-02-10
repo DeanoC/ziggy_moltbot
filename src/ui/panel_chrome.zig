@@ -80,6 +80,12 @@ pub fn draw(dc: *draw_context.DrawContext, rect: draw_context.Rect, opts: Option
         drawPanelFrame(dc, rect);
     }
 
+    if (ss.panel.overlay) |overlay| {
+        // Overlay is intentionally drawn after the frame so "lighting" layers can affect edges too.
+        // If a theme needs rounded-corner masking, the overlay image should include alpha in corners.
+        drawPaintRect(dc, rect, overlay);
+    }
+
     if (opts.draw_border) {
         const border = ss.panel.border orelse t.colors.border;
         dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border, .thickness = 1.0 });

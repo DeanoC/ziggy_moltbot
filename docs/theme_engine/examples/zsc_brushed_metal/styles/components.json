@@ -30,6 +30,15 @@
         "offset_px": [0, 0]
       }
     },
+    "overlay": {
+      "image": {
+        "path": "assets/images/brushed_metal_lighting_overlay.png",
+        "mode": "stretch",
+        "scale": 1.0,
+        "tint": "#FFFFFFAA",
+        "offset_px": [0, 0]
+      }
+    },
     "border": "#00000000",
     "shadow": {
       "color": "#00000030",
@@ -44,16 +53,8 @@
       "image": "assets/images/brushed_metal_9slice_bordered.png",
       "slices_px": [32, 32, 32, 32],
       "tint": "#FFFFFFFF",
-      "draw_center": false,
-      "center_overlay": {
-        "image": {
-          "path": "assets/images/panel_center_highlight.png",
-          "mode": "stretch",
-          "scale": 1.0,
-          "tint": "#FFFFFFAA",
-          "offset_px": [0, 0]
-        }
-      }
+      "draw_center": true,
+      "center_mode": "tile"
     }
   },
   "button": {

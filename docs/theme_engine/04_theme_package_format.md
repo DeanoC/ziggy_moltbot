@@ -134,6 +134,9 @@ Notes:
 - Any missing field falls back to the theme tokens (or existing widget defaults).
 - Unknown fields are ignored (so packs can be forward-compatible).
 
+`panel.overlay` (implemented):
+- Optional paint drawn over the entire panel rect after fill+frame (useful for lighting layers that should affect edges too).
+
 `surfaces` is used by views/panels when they need to paint large rectangular backgrounds:
 - `surfaces.background`: replaces common `colors.background` fills
 - `surfaces.surface`: replaces common `colors.surface` fills
