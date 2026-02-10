@@ -1472,6 +1472,14 @@ pub fn main() !void {
     defer attachment_cache.deinit();
     // renderers are owned by `ui_windows`
 
+    const workspace_file_exists: bool = blk: {
+        std.fs.cwd().access("ziggystarclaw_workspace.json", .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk false,
+            else => break :blk true,
+        };
+        break :blk true;
+    };
+
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
     var loaded = workspace_store.loadMultiOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
@@ -1502,6 +1510,18 @@ pub fn main() !void {
 
     main_win.manager.deinit();
     main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
+    // If we loaded a workspace from disk, do not auto-apply the theme pack's workspace layout preset
+    // for the current profile on startup. (It can re-open panels the user explicitly tore off.)
+    if (workspace_file_exists) {
+        const pid = theme_eng.active_profile.id;
+        const idx: usize = switch (pid) {
+            .desktop => 0,
+            .phone => 1,
+            .tablet => 2,
+            .fullscreen => 3,
+        };
+        main_win.ui_state.theme_layout_applied[idx] = true;
+    }
 
     // Spawn any persisted secondary windows.
     if (theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {

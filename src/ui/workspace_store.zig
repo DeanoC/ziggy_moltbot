@@ -147,6 +147,125 @@ fn compactSnapshotSingletonPanels(
     panels_opt.* = new_panels;
 }
 
+fn workspaceHasKind(ws: *const workspace.Workspace, kind: workspace.PanelKind) bool {
+    for (ws.panels.items) |p| {
+        if (p.kind == kind) return true;
+    }
+    return false;
+}
+
+fn workspaceRemoveAllKind(allocator: std.mem.Allocator, ws: *workspace.Workspace, kind: workspace.PanelKind) void {
+    var i: usize = 0;
+    while (i < ws.panels.items.len) {
+        const p = ws.panels.items[i];
+        if (p.kind == kind) {
+            var removed = ws.panels.orderedRemove(i);
+            removed.deinit(allocator);
+            ws.markDirty();
+            continue;
+        }
+        i += 1;
+    }
+    if (ws.focused_panel_id) |fid| {
+        for (ws.panels.items) |p| {
+            if (p.id == fid) return;
+        }
+        ws.focused_panel_id = null;
+    }
+}
+
+/// If a singleton panel kind exists in any detached window, treat that as user intent and
+/// remove it from the main window. Also ensure only one detached window keeps that kind.
+fn compactGlobalSingletonAcrossWindows(
+    allocator: std.mem.Allocator,
+    main_ws: *workspace.Workspace,
+    windows: []DetachedWindow,
+) void {
+    const global_singletons = [_]workspace.PanelKind{ .Chat, .Showcase };
+    for (global_singletons) |kind| {
+        var keeper_idx: ?usize = null;
+        for (windows, 0..) |w, idx| {
+            if (workspaceHasKind(&w.ws, kind)) {
+                keeper_idx = idx;
+                break;
+            }
+        }
+        if (keeper_idx == null) continue;
+
+        workspaceRemoveAllKind(allocator, main_ws, kind);
+        for (windows, 0..) |*w, idx| {
+            if (idx == keeper_idx.?) continue;
+            if (workspaceHasKind(&w.ws, kind)) {
+                workspaceRemoveAllKind(allocator, &w.ws, kind);
+            }
+        }
+    }
+}
+
+fn snapshotRemoveAllKind(
+    allocator: std.mem.Allocator,
+    kind: workspace.PanelKind,
+    panels_opt: *?[]workspace.PanelSnapshot,
+) !void {
+    const panels = panels_opt.* orelse return;
+    if (panels.len == 0) return;
+
+    var keep_count: usize = 0;
+    for (panels) |p| {
+        if (p.kind != kind) keep_count += 1;
+    }
+    if (keep_count == panels.len) return;
+
+    var new_panels = try allocator.alloc(workspace.PanelSnapshot, keep_count);
+    var out: usize = 0;
+    for (panels) |p| {
+        if (p.kind != kind) {
+            new_panels[out] = p; // move ownership
+            out += 1;
+        } else {
+            workspace.freePanelSnapshot(allocator, p);
+        }
+    }
+    allocator.free(panels);
+    panels_opt.* = new_panels;
+}
+
+fn snapshotHasKind(panels_opt: ?[]const workspace.PanelSnapshot, kind: workspace.PanelKind) bool {
+    const panels = panels_opt orelse return false;
+    for (panels) |p| {
+        if (p.kind == kind) return true;
+    }
+    return false;
+}
+
+fn compactGlobalSingletonAcrossWindowsSnapshot(
+    allocator: std.mem.Allocator,
+    main: *workspace.WorkspaceSnapshot,
+    wins_opt: *?[]workspace.DetachedWindowSnapshot,
+) !void {
+    const wins = wins_opt.* orelse return;
+    const global_singletons = [_]workspace.PanelKind{ .Chat, .Showcase };
+
+    for (global_singletons) |kind| {
+        var keeper_idx: ?usize = null;
+        for (wins, 0..) |w, idx| {
+            if (snapshotHasKind(w.panels, kind)) {
+                keeper_idx = idx;
+                break;
+            }
+        }
+        if (keeper_idx == null) continue;
+
+        try snapshotRemoveAllKind(allocator, kind, &main.panels);
+        for (wins, 0..) |*w, idx| {
+            if (idx == keeper_idx.?) continue;
+            if (snapshotHasKind(w.panels, kind)) {
+                try snapshotRemoveAllKind(allocator, kind, &w.panels);
+            }
+        }
+    }
+}
+
 pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.Workspace {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return workspace.Workspace.initDefault(allocator),
@@ -239,6 +358,8 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
         filled += 1;
     }
 
+    compactGlobalSingletonAcrossWindows(allocator, &main_ws, windows);
+
     return .{
         .main = main_ws,
         .windows = windows,
@@ -322,6 +443,8 @@ pub fn saveMulti(
 
         snapshot.detached_windows = win_snaps;
     }
+
+    try compactGlobalSingletonAcrossWindowsSnapshot(allocator, &snapshot, &snapshot.detached_windows);
 
     const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
