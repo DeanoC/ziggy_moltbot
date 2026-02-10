@@ -334,7 +334,28 @@ fn handleCommand(cmd_id: u16) void {
 const Action = enum { start, stop, status };
 
 fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
-    // Prefer the supervisor control pipe if available.
+    // Prefer SCM when the service exists. (The node process may expose a control pipe even when
+    // running as an SCM service, so the pipe is not a reliable indicator of runner type.)
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const q = scm_service.queryService(allocator, svc_name) catch null;
+    if (q) |qq| {
+        if (qq.state != .not_installed) {
+            switch (action) {
+                .start => scm_service.startService(allocator, svc_name) catch |err| switch (err) {
+                    scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                    else => return error.CommandFailed,
+                },
+                .stop => scm_service.stopService(allocator, svc_name) catch |err| switch (err) {
+                    scm_service.ServiceError.AccessDenied => return error.AccessDenied,
+                    else => return error.CommandFailed,
+                },
+                .status => return,
+            }
+            return;
+        }
+    }
+
+    // Otherwise prefer the supervisor control pipe if available.
     if (try tryRunPipeServiceAction(allocator, action)) |ok| {
         if (ok) return;
     }
@@ -344,27 +365,7 @@ fn runServiceAction(allocator: std.mem.Allocator, action: Action) !void {
         if (ok) return;
     }
 
-    // Fallback: talk to SCM directly.
-    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
-
-    switch (action) {
-        .start => scm_service.startService(allocator, svc_name) catch |err| switch (err) {
-            scm_service.ServiceError.AccessDenied => return error.AccessDenied,
-            scm_service.ServiceError.NotInstalled => return error.NotInstalled,
-            else => return error.CommandFailed,
-        },
-        .stop => scm_service.stopService(allocator, svc_name) catch |err| switch (err) {
-            scm_service.ServiceError.AccessDenied => return error.AccessDenied,
-            scm_service.ServiceError.NotInstalled => return error.NotInstalled,
-            else => return error.CommandFailed,
-        },
-        .status => {
-            _ = scm_service.queryService(allocator, svc_name) catch |err| switch (err) {
-                scm_service.ServiceError.AccessDenied => return error.AccessDenied,
-                else => return error.CommandFailed,
-            };
-        },
-    }
+    return error.NotInstalled;
 }
 
 fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
