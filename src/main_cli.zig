@@ -18,6 +18,7 @@ const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
 const win_scm = if (builtin.os.tag == .windows) @import("windows/scm_service.zig") else struct {};
 const win_scm_host = if (builtin.os.tag == .windows) @import("windows/scm_host.zig") else struct {};
+const win_control_pipe = if (builtin.os.tag == .windows) @import("windows/control_pipe_client.zig") else struct {};
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
@@ -295,6 +296,11 @@ const usage =
     \\  --wait-for-approval      With --node-register: keep retrying until approved
     \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
     \\
+    \\Node runner (Windows)
+    \\  node runner install --mode <m>  Switch runner mode: service|session
+    \\  node runner start|stop|status   Control the active runner mode
+    \\  node session <action>           Manage user-session runner: install|uninstall|start|stop|status
+    \\
     \\Node service helpers (Windows SCM service / Linux systemd)
     \\  node service <action>      Convenience: install|uninstall|start|stop|status
     \\  --node-service-install    Install and enable node-mode background service
@@ -395,6 +401,20 @@ pub fn main() !void {
     var node_service_mode: win_service.InstallMode = if (builtin.os.tag == .windows) .onstart else .onlogon;
     var node_service_name: ?[]const u8 = null;
 
+    // Windows-only: user-session runner (Scheduled Task / wrapper)
+    var node_session_install = false;
+    var node_session_uninstall = false;
+    var node_session_start = false;
+    var node_session_stop = false;
+    var node_session_status = false;
+
+    const RunnerInstallMode = enum { service, session };
+    var node_runner_install = false;
+    var node_runner_start = false;
+    var node_runner_stop = false;
+    var node_runner_status = false;
+    var node_runner_mode: ?RunnerInstallMode = null;
+
     // Internal: when invoked by Windows Service Control Manager (SCM).
     var windows_service_run = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
@@ -428,11 +448,71 @@ pub fn main() !void {
             const noun = args[i + 1];
 
             if (std.mem.eql(u8, noun, "supervise")) {
-                // Legacy headless supervisor (used by the older Task Scheduler service MVP).
+                // Headless supervisor wrapper (used for user-session runners on Windows).
                 // Usage:
                 //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
                 try runNodeSupervisor(allocator, args[(i + 2)..]);
                 return;
+            }
+
+            if (std.mem.eql(u8, noun, "session")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    node_session_install = true;
+                } else if (std.mem.eql(u8, action, "uninstall")) {
+                    node_session_uninstall = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    node_session_start = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    node_session_stop = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    node_session_status = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node session action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node session <action>".
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "runner")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    node_runner_install = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    node_runner_start = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    node_runner_stop = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    node_runner_status = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node runner action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node runner <action>".
+                i += 2;
+                continue;
             }
 
             if (!std.mem.eql(u8, noun, "service")) {
@@ -615,6 +695,17 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_service_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "--runner-mode")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "service")) {
+                node_runner_mode = .service;
+            } else if (std.mem.eql(u8, v, "session")) {
+                node_runner_mode = .session;
+            } else {
+                return error.InvalidArguments;
+            }
         } else if (std.mem.eql(u8, arg, "--windows-service")) {
             // handled by pre-scan; keep parsing so we accept --config/--log-level/etc.
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
@@ -645,7 +736,9 @@ pub fn main() !void {
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
         check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
-        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status;
+        node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
+        node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
+        node_runner_install or node_runner_start or node_runner_stop or node_runner_status;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
@@ -665,6 +758,257 @@ pub fn main() !void {
             return;
         };
         return;
+    }
+
+    // Node runner helpers (Windows): select between SCM service mode and user-session runner mode.
+    if (node_runner_status or node_runner_start or node_runner_stop) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node runner helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const name = node_service_name orelse win_scm.defaultServiceName();
+
+        const svc_q = win_scm.queryService(allocator, name) catch null;
+        const has_svc = if (svc_q) |q| q.state != .not_installed else false;
+
+        const has_task = win_service.taskInstalled(allocator, name) catch |err| switch (err) {
+            win_service.ServiceError.AccessDenied => {
+                logger.err("Scheduled Task query failed: access denied", .{});
+                return error.AccessDenied;
+            },
+            else => false,
+        };
+
+        if (has_svc and has_task) {
+            _ = std.fs.File.stdout().write("Runner: configuration error (both service and session runner are installed)\n") catch {};
+            _ = std.fs.File.stdout().write("Fix: ziggystarclaw-cli node runner install --mode service\n") catch {};
+            _ = std.fs.File.stdout().write("  or: ziggystarclaw-cli node runner install --mode session\n") catch {};
+            return error.InvalidArguments;
+        }
+
+        if (node_runner_status) {
+            if (has_svc) {
+                const q = svc_q.?;
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print("Runner: service ({s})\n", .{win_scm.stateLabel(q.state)});
+                return;
+            }
+            if (has_task) {
+                _ = std.fs.File.stdout().write("Runner: user session runner (Scheduled Task)\n") catch {};
+                return;
+            }
+            _ = std.fs.File.stdout().write("Runner: not installed\n") catch {};
+            return;
+        }
+
+        if (node_runner_start) {
+            if (has_svc) {
+                win_scm.startService(allocator, name) catch |err| switch (err) {
+                    win_scm.ServiceError.AccessDenied => {
+                        logger.err("Start failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Started node runner (service).\n") catch {};
+                return;
+            }
+            if (has_task) {
+                win_service.startTask(allocator, name) catch |err| switch (err) {
+                    win_service.ServiceError.AccessDenied => {
+                        logger.err("Start failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    win_service.ServiceError.NotInstalled => {
+                        logger.err("Start failed: not installed", .{});
+                        return error.InvalidArguments;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Started node runner (user session).\n") catch {};
+                return;
+            }
+            logger.err("Runner is not installed", .{});
+            return error.InvalidArguments;
+        }
+
+        if (node_runner_stop) {
+            if (has_svc) {
+                win_scm.stopService(allocator, name) catch |err| switch (err) {
+                    win_scm.ServiceError.AccessDenied => {
+                        logger.err("Stop failed: access denied", .{});
+                        return error.AccessDenied;
+                    },
+                    else => return err,
+                };
+                _ = std.fs.File.stdout().write("Stopped node runner (service).\n") catch {};
+                return;
+            }
+            if (has_task) {
+                // Stop the running task instance (best-effort).
+                _ = win_service.stopTask(allocator, name) catch {};
+                _ = std.fs.File.stdout().write("Stopped node runner (user session).\n") catch {};
+                return;
+            }
+            logger.err("Runner is not installed", .{});
+            return error.InvalidArguments;
+        }
+    }
+
+    if (node_runner_install) {
+        if (node_runner_mode == null) {
+            logger.err("node runner install requires --mode service|session", .{});
+            return error.InvalidArguments;
+        }
+        switch (node_runner_mode.?) {
+            .service => node_service_install = true,
+            .session => node_session_install = true,
+        }
+    }
+
+    // User-session runner helpers (Windows Scheduled Task wrapper)
+    if (node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node session helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        const runner_name = node_service_name orelse win_scm.defaultServiceName();
+
+        const node_cfg_path = if (config_path_set) blk: {
+            break :blk try allocator.dupe(u8, config_path);
+        } else blk: {
+            break :blk try unified_config.defaultConfigPath(allocator);
+        };
+        defer allocator.free(node_cfg_path);
+
+        const cfg_exists = blk: {
+            std.fs.cwd().access(node_cfg_path, .{}) catch |err| switch (err) {
+                error.FileNotFound => break :blk false,
+                else => return err,
+            };
+            break :blk true;
+        };
+        const storage_scope: node_register.StorageScope = .user;
+
+        if (!cfg_exists) {
+            if (override_url != null and override_token != null) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
+            } else if (override_url != null and override_token == null) {
+                const secret_prompt = @import("utils/secret_prompt.zig");
+                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
+                defer allocator.free(tok);
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+            } else if (override_url == null and override_token != null) {
+                logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            }
+        }
+
+        if (node_session_install) {
+            // Migrate away from SCM service mode first; otherwise we'd start two runners.
+            const q = win_scm.queryService(allocator, runner_name) catch null;
+            if (q) |qq| {
+                if (qq.state != .not_installed) {
+                    // Try to stop + uninstall the service.
+                    win_scm.stopService(allocator, runner_name) catch |err| switch (err) {
+                        win_scm.ServiceError.AccessDenied => {
+                            logger.err("Cannot switch to user session runner: Windows service is installed and requires elevation to remove.", .{});
+                            logger.err("Fix: run in an elevated PowerShell: ziggystarclaw-cli node service uninstall", .{});
+                            return error.AccessDenied;
+                        },
+                        else => {},
+                    };
+
+                    win_scm.uninstallService(allocator, runner_name) catch |err| switch (err) {
+                        win_scm.ServiceError.AccessDenied => {
+                            logger.err("Cannot switch to user session runner: Windows service uninstall requires elevation.", .{});
+                            logger.err("Fix: run in an elevated PowerShell: ziggystarclaw-cli node service uninstall", .{});
+                            return error.AccessDenied;
+                        },
+                        else => return err,
+                    };
+                }
+            }
+
+            // Ensure config has a valid node token/id before installing the runner.
+            try node_register.run(allocator, node_cfg_path, override_insecure orelse false, true, null, storage_scope);
+
+            // Ensure any existing task instance is stopped before overwriting.
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+
+            win_service.installTask(allocator, node_cfg_path, .onlogon, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Scheduled Task install failed: access denied. Try re-running from an elevated (Administrator) PowerShell.", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+
+            // Best-effort: start immediately (otherwise it starts on next logon).
+            _ = win_service.startTask(allocator, runner_name) catch {};
+
+            _ = std.fs.File.stdout().write("Installed user session runner (Scheduled Task).\n") catch {};
+            _ = std.fs.File.stdout().write("Mode: User session runner (interactive desktop access)\n") catch {};
+            return;
+        }
+
+        if (node_session_uninstall) {
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+            win_service.uninstallTask(allocator, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Scheduled Task uninstall failed: access denied", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Uninstalled user session runner (Scheduled Task).\n") catch {};
+            return;
+        }
+
+        if (node_session_start) {
+            win_service.startTask(allocator, runner_name) catch |err| {
+                if (err == win_service.ServiceError.AccessDenied) {
+                    logger.err("Start failed: access denied", .{});
+                    return error.AccessDenied;
+                }
+                if (err == win_service.ServiceError.NotInstalled) {
+                    logger.err("Start failed: not installed", .{});
+                    return error.InvalidArguments;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Started user session runner.\n") catch {};
+            return;
+        }
+
+        if (node_session_stop) {
+            // Stop the task instance (kills the wrapper).
+            _ = win_service.stopTask(allocator, runner_name) catch {};
+            _ = std.fs.File.stdout().write("Stopped user session runner.\n") catch {};
+            return;
+        }
+
+        if (node_session_status) {
+            const has_task = win_service.taskInstalled(allocator, runner_name) catch false;
+            if (!has_task) {
+                _ = std.fs.File.stdout().write("User session runner: not installed\n") catch {};
+                return;
+            }
+
+            const svc_q = win_scm.queryService(allocator, runner_name) catch null;
+            if (svc_q) |qq| {
+                if (qq.state != .not_installed) {
+                    _ = std.fs.File.stdout().write("WARNING: Windows service is also installed (modes should be mutually exclusive).\n") catch {};
+                    _ = std.fs.File.stdout().write("Fix: ziggystarclaw-cli node runner install --mode service\n") catch {};
+                    _ = std.fs.File.stdout().write("  or: ziggystarclaw-cli node runner install --mode session\n") catch {};
+                }
+            }
+
+            _ = std.fs.File.stdout().write("User session runner: installed (Scheduled Task)\n") catch {};
+            return;
+        }
     }
 
     // Node service helpers (Windows SCM service, Linux systemd)
@@ -789,6 +1133,17 @@ pub fn main() !void {
 
         if (builtin.os.tag == .windows) {
             if (node_service_install) {
+                // Enforce mutual exclusivity: disable/remove any user-session runner artifacts first.
+                const runner_name = node_service_name orelse win_scm.defaultServiceName();
+                _ = win_service.stopTask(allocator, runner_name) catch {};
+                win_service.uninstallTask(allocator, runner_name) catch |err| switch (err) {
+                    win_service.ServiceError.AccessDenied => logger.warn("Scheduled Task cleanup failed (access denied); continuing", .{}),
+                    else => {},
+                };
+
+                // Best-effort: if a user-session supervisor is still running, ask it to stop its child node.
+                _ = win_control_pipe.requestOk(allocator, "stop") catch null;
+
                 // Ensure the node is registered/persisted in the SAME config.json the service will use.
                 // This keeps manual runs and the installed service deterministic.
                 //
@@ -814,7 +1169,7 @@ pub fn main() !void {
                 win_scm.installService(allocator, node_cfg_path, node_service_mode, node_service_name) catch |err| {
                     if (err == win_scm.ServiceError.AccessDenied) {
                         logger.err("Windows service install failed: access denied. Re-run this command from an elevated (Administrator) PowerShell.", .{});
-                        return;
+                        return error.AccessDenied;
                     }
                     return err;
                 };
@@ -836,7 +1191,7 @@ pub fn main() !void {
                 win_scm.uninstallService(allocator, node_service_name) catch |err| {
                     if (err == win_scm.ServiceError.AccessDenied) {
                         logger.err("Windows service uninstall failed: access denied. Re-run from an elevated (Administrator) PowerShell.", .{});
-                        return;
+                        return error.AccessDenied;
                     }
                     return err;
                 };
@@ -848,7 +1203,7 @@ pub fn main() !void {
                 win_scm.startService(allocator, node_service_name) catch |err| {
                     if (err == win_scm.ServiceError.AccessDenied) {
                         logger.err("Windows service start failed: access denied. If you installed the service without the tray-control permissions, re-install it from an elevated shell.", .{});
-                        return;
+                        return error.AccessDenied;
                     }
                     return err;
                 };
@@ -860,7 +1215,7 @@ pub fn main() !void {
                 win_scm.stopService(allocator, node_service_name) catch |err| {
                     if (err == win_scm.ServiceError.AccessDenied) {
                         logger.err("Windows service stop failed: access denied.\n", .{});
-                        return;
+                        return error.AccessDenied;
                     }
                     return err;
                 };
