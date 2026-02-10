@@ -675,7 +675,7 @@ fn sendNodesListRequest() void {
     }
 }
 
-const chat_history_fetch_limit_default: u32 = 50;
+const chat_history_fetch_limit_default: u32 = 20;
 
 fn sendChatHistoryRequest(session_key: []const u8) void {
     if (!ws_connected or ctx.state != .connected) return;

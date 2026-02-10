@@ -398,7 +398,7 @@ fn sendNodesListRequest(
     ctx.setPendingNodesRequest(request.id);
 }
 
-const chat_history_fetch_limit_default: u32 = 50;
+const chat_history_fetch_limit_default: u32 = 20;
 const chat_history_fetch_limit_min: u32 = 10;
 // Backed off when the gateway sends a chat.history payload that exceeds the client's WS max_size.
 var chat_history_fetch_limit: u32 = chat_history_fetch_limit_default;
@@ -1101,6 +1101,33 @@ fn run() !void {
         if (read_loop.too_large.swap(false, .monotonic)) {
             // If the server sent a WS message exceeding our max_size (commonly chat.history),
             // reduce the history limit so the next reconnect can succeed.
+
+            var pending_history: usize = 0;
+            var it = ctx.session_states.iterator();
+            while (it.next()) |entry| {
+                const state_ptr = entry.value_ptr;
+                if (state_ptr.pending_history_request_id) |pending| {
+                    pending_history += 1;
+                    if (pending_history <= 3) {
+                        logger.warn("Pending chat.history: session={s} request_id={s}", .{ entry.key_ptr.*, pending });
+                    }
+                }
+            }
+
+            logger.warn(
+                "WS error.TooLarge while pending: sessions={} nodes={} send={} node_invoke={} node_describe={} approval_resolve={} history_count={d} history_limit={d}",
+                .{
+                    ctx.pending_sessions_request_id != null,
+                    ctx.pending_nodes_request_id != null,
+                    ctx.pending_send_request_id != null,
+                    ctx.pending_node_invoke_request_id != null,
+                    ctx.pending_node_describe_request_id != null,
+                    ctx.pending_approval_resolve_request_id != null,
+                    pending_history,
+                    chat_history_fetch_limit,
+                },
+            );
+
             const next = @max(chat_history_fetch_limit_min, chat_history_fetch_limit / 2);
             if (next != chat_history_fetch_limit) {
                 logger.warn("Backing off chat.history limit: {d} -> {d}", .{ chat_history_fetch_limit, next });
