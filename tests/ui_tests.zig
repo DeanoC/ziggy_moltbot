@@ -52,8 +52,9 @@ test "ui command parse open code editor" {
 
 test "panel manager reuses code editor" {
     const allocator = std.testing.allocator;
+    var next_panel_id: moltbot.ui.workspace.PanelId = 1;
     const ws = try moltbot.ui.workspace.Workspace.initDefault(allocator);
-    var manager = moltbot.ui.panel_manager.PanelManager.init(allocator, ws);
+    var manager = moltbot.ui.panel_manager.PanelManager.init(allocator, ws, &next_panel_id);
     defer manager.deinit();
 
     const json = "{\"type\":\"OpenPanel\",\"kind\":\"CodeEditor\",\"file\":\"main.zig\",\"language\":\"zig\",\"content\":\"updated\"}";

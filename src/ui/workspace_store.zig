@@ -358,7 +358,8 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
         filled += 1;
     }
 
-    compactGlobalSingletonAcrossWindows(allocator, &main_ws, windows);
+    // NOTE: Chat/Showcase singletons are enforced per-window (see compactWorkspaceSingletonPanels).
+    // Do not compact across windows here; that can cause persistent layout data loss.
 
     return .{
         .main = main_ws,
@@ -443,8 +444,6 @@ pub fn saveMulti(
 
         snapshot.detached_windows = win_snaps;
     }
-
-    try compactGlobalSingletonAcrossWindowsSnapshot(allocator, &snapshot, &snapshot.detached_windows);
 
     const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
     defer allocator.free(json);

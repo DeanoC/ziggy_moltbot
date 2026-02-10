@@ -96,7 +96,7 @@ fn hashFileMaybe(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, rel: []const u8) vo
     hashStat(hasher, st);
 }
 
-fn hashSubdirJsonFiles(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []const u8) void {
+fn hashSubdirJsonFiles(allocator: std.mem.Allocator, hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []const u8) void {
     hasher.update(subdir);
     var d = dir.openDir(subdir, .{ .iterate = true }) catch {
         hasher.update("!no_dir");
@@ -104,13 +104,37 @@ fn hashSubdirJsonFiles(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []con
     };
     defer d.close();
 
+    var names = std.ArrayList([]u8).init(allocator);
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit();
+    }
+
     var it = d.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
 
-        hasher.update(entry.name);
-        const st = d.statFile(entry.name) catch {
+        const name_copy = allocator.dupe(u8, entry.name) catch {
+            hasher.update("!oom");
+            return;
+        };
+        names.append(name_copy) catch {
+            allocator.free(name_copy);
+            hasher.update("!oom");
+            return;
+        };
+    }
+
+    std.mem.sortUnstable([]u8, names.items, {}, struct {
+        fn lessThan(_: void, a: []u8, b: []u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    for (names.items) |name| {
+        hasher.update(name);
+        const st = d.statFile(name) catch {
             hasher.update("!stat_err");
             continue;
         };
@@ -118,7 +142,7 @@ fn hashSubdirJsonFiles(hasher: *std.hash.Wyhash, dir: *std.fs.Dir, subdir: []con
     }
 }
 
-fn computeThemePackJsonSignature(root_path: []const u8) u64 {
+fn computeThemePackJsonSignature(allocator: std.mem.Allocator, root_path: []const u8) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update("zsc.theme_pack.sig.v1");
 
@@ -130,10 +154,10 @@ fn computeThemePackJsonSignature(root_path: []const u8) u64 {
 
     hashFileMaybe(&hasher, &dir, "manifest.json");
     hashFileMaybe(&hasher, &dir, "windows.json");
-    hashSubdirJsonFiles(&hasher, &dir, "tokens");
-    hashSubdirJsonFiles(&hasher, &dir, "profiles");
-    hashSubdirJsonFiles(&hasher, &dir, "styles");
-    hashSubdirJsonFiles(&hasher, &dir, "layouts");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "tokens");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "profiles");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "styles");
+    hashSubdirJsonFiles(allocator, &hasher, &dir, "layouts");
     return hasher.final();
 }
 
@@ -192,7 +216,7 @@ fn updateThemePackWatch(
     const root_hash = std.hash.Wyhash.hash(0, root);
     if (root_hash != watch.last_root_hash or watch.last_sig == 0 or pack_applied_this_frame) {
         watch.last_root_hash = root_hash;
-        watch.last_sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(root);
+        watch.last_sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(allocator, root);
         watch.pending_sig = 0;
         watch.pending_at_ms = 0;
         watch.next_poll_ms = 0;
@@ -203,7 +227,7 @@ fn updateThemePackWatch(
     if (watch.next_poll_ms != 0 and now_ms < watch.next_poll_ms) return;
     watch.next_poll_ms = now_ms + 500;
 
-    const sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(root);
+    const sig = if (is_zip) computeFileSignature(root) else computeThemePackJsonSignature(allocator, root);
     if (sig == 0 or sig == watch.last_sig) {
         watch.pending_sig = 0;
         watch.pending_at_ms = 0;
@@ -2147,16 +2171,16 @@ pub fn main() !void {
                             ui.syncSettings(allocator, cfg);
 
                             // Apply immediately; only persist if apply succeeded.
-                    if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true)) |_| {
-                        if (cfg.ui_theme_pack) |pack_path| {
-                            _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
-                        }
-                        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
-                            logger.err("Failed to save config: {}", .{err});
-                        };
-                    } else |err| {
-                        logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
-                    }
+                            if (theme_eng.activateThemePackForRender(cfg.ui_theme_pack, true)) |_| {
+                                if (cfg.ui_theme_pack) |pack_path| {
+                                    _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
+                                }
+                                config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+                                    logger.err("Failed to save config: {}", .{err});
+                                };
+                            } else |err| {
+                                logger.warn("Failed to load theme pack '{s}': {}", .{ path, err });
+                            }
                         }
                     },
                     .window_override => {
