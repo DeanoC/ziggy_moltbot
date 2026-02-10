@@ -50,6 +50,10 @@ pub const WindowUiState = struct {
     nav: nav.NavState = .{},
 
     fullscreen_page: FullscreenPage = .home,
+    // When true, the first frame for a given profile applies the theme pack's `layouts/workspace.json`
+    // preset (open panels, focus, optional sizing). For tear-off / template windows we keep the
+    // workspace exactly as authored/saved and do not auto-open extra panels.
+    theme_layout_presets_enabled: bool = true,
     // Track which profile layouts have been applied for this window so theme layout
     // presets don't fight user-driven layout changes every frame.
     theme_layout_applied: [4]bool = .{ false, false, false, false },
@@ -649,7 +653,9 @@ fn drawWorkspaceHost(
         return;
     }
 
-    applyThemeWorkspaceLayoutPreset(manager, win_state);
+    if (win_state.theme_layout_presets_enabled) {
+        applyThemeWorkspaceLayoutPreset(manager, win_state);
+    }
 
     const line_height = dc.lineHeight();
     const menu_height = customMenuHeight(line_height, t);
