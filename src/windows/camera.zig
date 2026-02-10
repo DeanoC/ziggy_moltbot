@@ -49,30 +49,17 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
             script,
         };
 
-        var child = std.process.Child.init(argv, allocator);
-        child.stdin_behavior = .Ignore;
-        child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
-
-        child.spawn() catch |err| switch (err) {
+        const res = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = argv,
+            .max_output_bytes = 1024 * 1024,
+        }) catch |err| switch (err) {
+            // Try the next candidate.
             error.FileNotFound => continue,
             else => return err,
         };
 
-        const stdout_bytes = child.stdout.?.reader().readAllAlloc(allocator, 1024 * 1024) catch |err| {
-            _ = child.kill() catch {};
-            return err;
-        };
-        const stderr_bytes = child.stderr.?.reader().readAllAlloc(allocator, 1024 * 1024) catch |err| {
-            _ = child.kill() catch {};
-            return err;
-        };
-
-        const term = child.wait() catch |err| {
-            logger.err("powershell wait failed: {s}", .{@errorName(err)});
-            return err;
-        };
-
+        const term = res.term;
         const exit_code: i32 = switch (term) {
             .Exited => |code| @intCast(code),
             .Signal => |sig| @intCast(sig),
@@ -81,13 +68,15 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
         };
 
         if (exit_code != 0) {
-            logger.warn("powershell camera list failed: exit={d} stderr={s}", .{ exit_code, stderr_bytes });
+            defer allocator.free(res.stdout);
+            defer allocator.free(res.stderr);
+            logger.warn("powershell camera list failed: exit={d} stderr={s}", .{ exit_code, res.stderr });
             return error.CommandFailed;
         }
 
         // Ignore stderr if exit code is 0; some PS setups may emit warnings.
-        _ = stderr_bytes;
-        return stdout_bytes;
+        allocator.free(res.stderr);
+        return res.stdout;
     }
 
     return error.FileNotFound;
