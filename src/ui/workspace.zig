@@ -511,7 +511,9 @@ fn parseControlTab(label: []const u8) ControlTab {
     return .Agents;
 }
 
-fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
+/// Free any allocations owned by a `PanelSnapshot` created via `panelToSnapshot`
+/// or JSON parsing. Useful for snapshot sanitation/compaction.
+pub fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) void {
     allocator.free(panel.title);
     if (panel.chat) |chat| {
         if (chat.agent_id) |agent| allocator.free(agent);

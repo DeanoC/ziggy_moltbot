@@ -47,6 +47,106 @@ pub const MultiWorkspace = struct {
     }
 };
 
+fn compactWorkspaceSingletonPanels(allocator: std.mem.Allocator, ws: *workspace.Workspace) void {
+    const singleton_kinds = [_]workspace.PanelKind{ .Control, .Chat, .Showcase };
+    for (singleton_kinds) |kind| {
+        var keep_id: ?workspace.PanelId = null;
+
+        // Prefer keeping the focused instance.
+        if (ws.focused_panel_id) |fid| {
+            for (ws.panels.items) |panel| {
+                if (panel.kind == kind and panel.id == fid) {
+                    keep_id = fid;
+                    break;
+                }
+            }
+        }
+        // Otherwise keep the first one we find.
+        if (keep_id == null) {
+            for (ws.panels.items) |panel| {
+                if (panel.kind == kind) {
+                    keep_id = panel.id;
+                    break;
+                }
+            }
+        }
+        if (keep_id == null) continue;
+
+        var i: usize = 0;
+        while (i < ws.panels.items.len) {
+            const p = ws.panels.items[i];
+            if (p.kind == kind and p.id != keep_id.?) {
+                var removed = ws.panels.orderedRemove(i);
+                removed.deinit(allocator);
+                ws.markDirty();
+                continue;
+            }
+            i += 1;
+        }
+    }
+}
+
+fn firstOrFocusedSingletonKeepId(
+    panels: []const workspace.PanelSnapshot,
+    kind: workspace.PanelKind,
+    focused_panel_id: ?workspace.PanelId,
+) ?workspace.PanelId {
+    if (focused_panel_id) |fid| {
+        for (panels) |p| {
+            if (p.kind == kind and p.id == fid) return fid;
+        }
+    }
+    for (panels) |p| {
+        if (p.kind == kind) return p.id;
+    }
+    return null;
+}
+
+fn compactSnapshotSingletonPanels(
+    allocator: std.mem.Allocator,
+    focused_panel_id: ?workspace.PanelId,
+    panels_opt: *?[]workspace.PanelSnapshot,
+) !void {
+    const panels = panels_opt.* orelse return;
+    if (panels.len == 0) return;
+
+    const keep_control = firstOrFocusedSingletonKeepId(panels, .Control, focused_panel_id);
+    const keep_chat = firstOrFocusedSingletonKeepId(panels, .Chat, focused_panel_id);
+    const keep_showcase = firstOrFocusedSingletonKeepId(panels, .Showcase, focused_panel_id);
+
+    var keep_count: usize = 0;
+    for (panels) |p| {
+        const keep = switch (p.kind) {
+            .Control => keep_control != null and p.id == keep_control.?,
+            .Chat => keep_chat != null and p.id == keep_chat.?,
+            .Showcase => keep_showcase != null and p.id == keep_showcase.?,
+            else => true,
+        };
+        if (keep) keep_count += 1;
+    }
+    if (keep_count == panels.len) return;
+
+    var new_panels = try allocator.alloc(workspace.PanelSnapshot, keep_count);
+    var out: usize = 0;
+    for (panels) |p| {
+        const keep = switch (p.kind) {
+            .Control => keep_control != null and p.id == keep_control.?,
+            .Chat => keep_chat != null and p.id == keep_chat.?,
+            .Showcase => keep_showcase != null and p.id == keep_showcase.?,
+            else => true,
+        };
+        if (keep) {
+            new_panels[out] = p; // move ownership
+            out += 1;
+        } else {
+            workspace.freePanelSnapshot(allocator, p);
+        }
+    }
+
+    allocator.free(panels);
+    panels_opt.* = new_panels;
+}
+
 pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.Workspace {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return workspace.Workspace.initDefault(allocator),
@@ -62,7 +162,8 @@ pub fn loadOrDefault(allocator: std.mem.Allocator, path: []const u8) !workspace.
     };
     defer parsed.deinit();
 
-    const ws = try workspace.Workspace.fromSnapshot(allocator, parsed.value);
+    var ws = try workspace.Workspace.fromSnapshot(allocator, parsed.value);
+    compactWorkspaceSingletonPanels(allocator, &ws);
     return ws;
 }
 
@@ -92,6 +193,7 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
     const snap = parsed.value;
     var main_ws = try workspace.Workspace.fromSnapshot(allocator, snap);
     errdefer main_ws.deinit(allocator);
+    compactWorkspaceSingletonPanels(allocator, &main_ws);
 
     const windows_src = snap.detached_windows orelse &[_]workspace.DetachedWindowSnapshot{};
     var windows = try allocator.alloc(DetachedWindow, windows_src.len);
@@ -122,6 +224,7 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
         };
         var ws = try workspace.Workspace.fromSnapshot(allocator, tmp_snap);
         errdefer ws.deinit(allocator);
+        compactWorkspaceSingletonPanels(allocator, &ws);
 
         windows[filled] = .{
             .title = title_copy,
@@ -147,6 +250,8 @@ pub fn save(allocator: std.mem.Allocator, path: []const u8, ws: *const workspace
     var snapshot = try ws.toSnapshot(allocator);
     defer snapshot.deinit(allocator);
 
+    try compactSnapshotSingletonPanels(allocator, snapshot.focused_panel_id, &snapshot.panels);
+
     const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
 
@@ -167,6 +272,8 @@ pub fn saveMulti(
     snapshot.next_panel_id = next_panel_id;
     errdefer snapshot.deinit(allocator);
 
+    try compactSnapshotSingletonPanels(allocator, snapshot.focused_panel_id, &snapshot.panels);
+
     if (windows.len > 0) {
         var win_snaps = try allocator.alloc(workspace.DetachedWindowSnapshot, windows.len);
         var filled: usize = 0;
@@ -181,6 +288,8 @@ pub fn saveMulti(
             _ = idx;
             var ws_snap = try w.ws.toSnapshot(allocator);
             errdefer ws_snap.deinit(allocator);
+
+            try compactSnapshotSingletonPanels(allocator, ws_snap.focused_panel_id, &ws_snap.panels);
 
             const title_copy = try allocator.dupe(u8, w.title);
             errdefer allocator.free(title_copy);

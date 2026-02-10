@@ -19,6 +19,13 @@ Desktop multi-window is implemented on the `feature/theme_engine` branch:
 - Panels can be "torn off" into a new window via the `[]` button in a panel header (desktop only).
   - Tear-off windows are persisted into `ziggystarclaw_workspace.json` and restored on next launch.
   - Closing a tear-off window docks its panels back into the main window.
+- Some panel kinds are treated as **singletons per window** in the current UI/layout:
+  - `Control` (Workspace), `Chat`, `Showcase`
+  - Other kinds (`CodeEditor`, `ToolOutput`) can exist multiple times.
+  - If duplicates of a singleton kind exist (for example due to older workspace files or rapid detach/reattach),
+    the app compacts them by keeping the focused instance (fallback: first) and dropping the rest.
+  - This compaction happens at runtime after load, and again when saving `ziggystarclaw_workspace.json`
+    so the file does not accumulate duplicates over time.
 
 WASM/Android remain single-window.
 
