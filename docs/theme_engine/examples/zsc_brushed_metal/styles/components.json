@@ -68,6 +68,35 @@
       "center_mode": "tile"
     }
   },
+  "menu": {
+    "item": {
+      "radius": 8,
+      "text": "colors.text_primary",
+      "states": {
+        "hover": { "fill": "#2E6DD61A" },
+        "pressed": { "fill": "#2E6DD633" },
+        "focused": { "fill": "#2E6DD61A" },
+        "selected": { "text": "#0A0A0AFF" },
+        "selected_hover": { "fill": "#2E6DD633" },
+        "disabled": { "text": "colors.text_secondary" }
+      }
+    }
+  },
+  "tabs": {
+    "radius": 12,
+    "border": "#00000000",
+    "underline_thickness": 2,
+    "states": {
+      "hover": { "fill": "#00000010" },
+      "pressed": { "fill": "#00000018" },
+      "active": {
+        "fill": "#2E6DD620",
+        "text": "#2E6DD6FF",
+        "underline": "#2E6DD6FF"
+      },
+      "active_hover": { "fill": "#2E6DD633" }
+    }
+  },
   "button": {
     "primary": {
       "radius": 0,

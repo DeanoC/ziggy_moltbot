@@ -198,6 +198,67 @@ pub const PanelStyle = struct {
     frame_tile_anchor_end: bool = false,
 };
 
+pub const MenuItemStateStyle = struct {
+    fill: ?Paint = null,
+    text: ?Color = null,
+    border: ?Color = null,
+
+    pub fn isSet(self: *const MenuItemStateStyle) bool {
+        return self.fill != null or self.text != null or self.border != null;
+    }
+};
+
+pub const MenuItemStates = struct {
+    hover: MenuItemStateStyle = .{},
+    pressed: MenuItemStateStyle = .{},
+    focused: MenuItemStateStyle = .{},
+    disabled: MenuItemStateStyle = .{},
+    selected: MenuItemStateStyle = .{},
+    selected_hover: MenuItemStateStyle = .{},
+};
+
+pub const MenuItemStyle = struct {
+    radius: ?f32 = null,
+    fill: ?Paint = null,
+    text: ?Color = null,
+    border: ?Color = null,
+    states: MenuItemStates = .{},
+};
+
+pub const MenuStyle = struct {
+    item: MenuItemStyle = .{},
+};
+
+pub const TabStateStyle = struct {
+    fill: ?Paint = null,
+    text: ?Color = null,
+    border: ?Color = null,
+    underline: ?Color = null,
+
+    pub fn isSet(self: *const TabStateStyle) bool {
+        return self.fill != null or self.text != null or self.border != null or self.underline != null;
+    }
+};
+
+pub const TabStates = struct {
+    hover: TabStateStyle = .{},
+    pressed: TabStateStyle = .{},
+    focused: TabStateStyle = .{},
+    disabled: TabStateStyle = .{},
+    active: TabStateStyle = .{},
+    active_hover: TabStateStyle = .{},
+};
+
+pub const TabsStyle = struct {
+    radius: ?f32 = null,
+    fill: ?Paint = null,
+    text: ?Color = null,
+    border: ?Color = null,
+    underline: ?Color = null,
+    underline_thickness: ?f32 = null,
+    states: TabStates = .{},
+};
+
 pub const FocusRingStyle = struct {
     thickness: ?f32 = null,
     color: ?Color = null,
@@ -227,6 +288,8 @@ pub const StyleSheet = struct {
     checkbox: CheckboxStyle = .{},
     text_input: TextInputStyle = .{},
     panel: PanelStyle = .{},
+    menu: MenuStyle = .{},
+    tabs: TabsStyle = .{},
     focus_ring: FocusRingStyle = .{},
 };
 
@@ -302,6 +365,12 @@ pub fn parseResolved(
     }
     if (root.get("panel")) |panel_val| {
         parsePanel(&out.panel, panel_val, theme);
+    }
+    if (root.get("menu")) |menu_val| {
+        parseMenu(&out.menu, menu_val, theme);
+    }
+    if (root.get("tabs")) |tabs_val| {
+        parseTabs(&out.tabs, tabs_val, theme);
     }
     if (root.get("focus_ring")) |focus_val| {
         parseFocusRing(&out.focus_ring, focus_val, theme);
@@ -485,6 +554,73 @@ fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_toke
             if (std.ascii.eqlIgnoreCase(av.string, "start")) out.frame_tile_anchor_end = false;
         }
     }
+}
+
+fn parseMenu(out: *MenuStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("item")) |iv| parseMenuItem(&out.item, iv, theme);
+}
+
+fn parseMenuItem(out: *MenuItemStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
+    if (obj.get("fill")) |fv| out.fill = parsePaint(fv, theme) orelse out.fill;
+    if (obj.get("text")) |tv| out.text = parseColor(tv, theme) orelse out.text;
+    if (obj.get("border")) |bv| out.border = parseColor(bv, theme) orelse out.border;
+    if (obj.get("states")) |sv| parseMenuItemStates(&out.states, sv, theme);
+}
+
+fn parseMenuItemStates(out: *MenuItemStates, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("hover")) |hv| parseMenuItemStateStyle(&out.hover, hv, theme);
+    if (obj.get("pressed")) |pv| parseMenuItemStateStyle(&out.pressed, pv, theme);
+    if (obj.get("focused")) |fv| parseMenuItemStateStyle(&out.focused, fv, theme);
+    if (obj.get("disabled")) |dv| parseMenuItemStateStyle(&out.disabled, dv, theme);
+    if (obj.get("selected")) |sv| parseMenuItemStateStyle(&out.selected, sv, theme);
+    if (obj.get("selected_hover")) |sv| parseMenuItemStateStyle(&out.selected_hover, sv, theme);
+}
+
+fn parseMenuItemStateStyle(out: *MenuItemStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("fill")) |fv| out.fill = parsePaint(fv, theme) orelse out.fill;
+    if (obj.get("text")) |tv| out.text = parseColor(tv, theme) orelse out.text;
+    if (obj.get("border")) |bv| out.border = parseColor(bv, theme) orelse out.border;
+}
+
+fn parseTabs(out: *TabsStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("radius")) |rv| out.radius = parseRadius(rv, theme) orelse out.radius;
+    if (obj.get("fill")) |fv| out.fill = parsePaint(fv, theme) orelse out.fill;
+    if (obj.get("text")) |tv| out.text = parseColor(tv, theme) orelse out.text;
+    if (obj.get("border")) |bv| out.border = parseColor(bv, theme) orelse out.border;
+    if (obj.get("underline")) |uv| out.underline = parseColor(uv, theme) orelse out.underline;
+    if (obj.get("underline_thickness")) |tv| out.underline_thickness = parseFloat(tv) orelse out.underline_thickness;
+    if (obj.get("states")) |sv| parseTabStates(&out.states, sv, theme);
+}
+
+fn parseTabStates(out: *TabStates, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("hover")) |hv| parseTabStateStyle(&out.hover, hv, theme);
+    if (obj.get("pressed")) |pv| parseTabStateStyle(&out.pressed, pv, theme);
+    if (obj.get("focused")) |fv| parseTabStateStyle(&out.focused, fv, theme);
+    if (obj.get("disabled")) |dv| parseTabStateStyle(&out.disabled, dv, theme);
+    if (obj.get("active")) |av| parseTabStateStyle(&out.active, av, theme);
+    if (obj.get("active_hover")) |av| parseTabStateStyle(&out.active_hover, av, theme);
+}
+
+fn parseTabStateStyle(out: *TabStateStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("fill")) |fv| out.fill = parsePaint(fv, theme) orelse out.fill;
+    if (obj.get("text")) |tv| out.text = parseColor(tv, theme) orelse out.text;
+    if (obj.get("border")) |bv| out.border = parseColor(bv, theme) orelse out.border;
+    if (obj.get("underline")) |uv| out.underline = parseColor(uv, theme) orelse out.underline;
 }
 
 fn parseSlicesPx(v: std.json.Value) ?[4]f32 {

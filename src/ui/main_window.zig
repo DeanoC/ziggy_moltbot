@@ -22,6 +22,7 @@ const cursor = @import("input/cursor.zig");
 const nav = @import("input/nav.zig");
 const nav_router = @import("input/nav_router.zig");
 const colors = @import("theme/colors.zig");
+const style_sheet = @import("theme_engine/style_sheet.zig");
 const agent_registry = @import("../client/agent_registry.zig");
 const session_keys = @import("../client/session_keys.zig");
 const types = @import("../protocol/types.zig");
@@ -211,7 +212,14 @@ fn drawCustomMenuBar(
     const has_chat = manager.hasPanel(.Chat);
     const has_showcase = manager.hasPanel(.Showcase);
     var cursor_y = menu_rect.min[1] + menu_padding;
-    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Workspace", has_control)) {
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Workspace",
+        has_control,
+        false,
+    )) {
         if (has_control) {
             _ = manager.closePanelByKind(.Control);
         } else {
@@ -220,7 +228,14 @@ fn drawCustomMenuBar(
         win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
-    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Chat", has_chat)) {
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Chat",
+        has_chat,
+        false,
+    )) {
         if (has_chat) {
             _ = manager.closePanelByKind(.Chat);
         } else {
@@ -229,7 +244,14 @@ fn drawCustomMenuBar(
         win_state.custom_window_menu_open = false;
     }
     cursor_y += item_height;
-    if (drawMenuItem(dc, queue, draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }), "Showcase", has_showcase)) {
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Showcase",
+        has_showcase,
+        false,
+    )) {
         if (has_showcase) {
             _ = manager.closePanelByKind(.Showcase);
         } else {
@@ -249,6 +271,7 @@ fn drawCustomMenuBar(
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
         "Theme pack: Global",
         win_state.theme_pack_override == null,
+        false,
     )) {
         if (win_state.theme_pack_override) |buf| {
             dc.allocator.free(buf);
@@ -265,6 +288,7 @@ fn drawCustomMenuBar(
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
         "Theme pack: Browse...",
         false,
+        !can_browse_pack,
     )) {
         if (can_browse_pack) {
             action.browse_theme_pack_override = true;
@@ -279,6 +303,7 @@ fn drawCustomMenuBar(
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
         "Theme pack: Reload",
         false,
+        effective_pack.len == 0,
     )) {
         if (effective_pack.len > 0) {
             win_state.theme_pack_reload_requested = true;
@@ -293,6 +318,7 @@ fn drawCustomMenuBar(
             queue,
             draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
             "Theme pack: Clear override",
+            false,
             false,
         )) {
             if (win_state.theme_pack_override) |buf| {
@@ -326,6 +352,7 @@ fn drawCustomMenuBar(
                 draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
                 item_label,
                 win_state.theme_pack_override != null and std.mem.eql(u8, win_state.theme_pack_override.?, item),
+                false,
             )) {
                 const owned = dc.allocator.dupe(u8, item) catch null;
                 if (owned) |buf| {
@@ -346,6 +373,7 @@ fn drawCustomMenuBar(
             draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
             "New Window",
             false,
+            false,
         )) {
             action.spawn_window = true;
             win_state.custom_window_menu_open = false;
@@ -361,6 +389,7 @@ fn drawCustomMenuBar(
                 queue,
                 draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
                 label2,
+                false,
                 false,
             )) {
                 action.spawn_window_template = @intCast(idx);
@@ -391,8 +420,12 @@ fn drawMenuItem(
     rect: draw_context.Rect,
     label: []const u8,
     selected: bool,
+    disabled: bool,
 ) bool {
     const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const item_style = ss.menu.item;
+    const cs = ss.checkbox;
     const nav_state = nav_router.get();
     const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "main_window.menu_item", label) else 0;
     if (nav_state) |navp| navp.registerItem(dc.allocator, nav_id, rect);
@@ -401,9 +434,68 @@ fn drawMenuItem(
 
     const allow_hover = theme_runtime.allowHover(queue);
     const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
-    if (hovered) {
-        dc.drawRect(rect, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
+
+    const radius = item_style.radius orelse t.radius.sm;
+    const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+    var fill: ?style_sheet.Paint = item_style.fill;
+    var text_color: colors.Color = item_style.text orelse t.colors.text_primary;
+    var border_color: colors.Color = item_style.border orelse transparent;
+
+    // Apply selection + interaction state overrides (most-specific last).
+    if (selected and item_style.states.selected.isSet()) {
+        const st = item_style.states.selected;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
     }
+    if (focused and item_style.states.focused.isSet()) {
+        const st = item_style.states.focused;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (hovered and item_style.states.hover.isSet()) {
+        const st = item_style.states.hover;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (pressed and item_style.states.pressed.isSet()) {
+        const st = item_style.states.pressed;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (selected and hovered and item_style.states.selected_hover.isSet()) {
+        const st = item_style.states.selected_hover;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+    if (disabled and item_style.states.disabled.isSet()) {
+        const st = item_style.states.disabled;
+        if (st.fill) |v| fill = v;
+        if (st.text) |v| text_color = v;
+        if (st.border) |v| border_color = v;
+    }
+
+    if (!disabled) {
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        } else if (hovered) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.08) });
+        }
+    } else {
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        }
+        text_color = t.colors.text_secondary;
+    }
+    if (border_color[3] > 0.001) {
+        dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+    }
+
     const line_height = dc.lineHeight();
     const text_y = rect.min[1] + (rect.size()[1] - line_height) * 0.5;
     const box_size = @min(rect.size()[1], line_height) * 0.9;
@@ -415,16 +507,16 @@ fn drawMenuItem(
         .min = box_min,
         .max = .{ box_min[0] + box_size, box_min[1] + box_size },
     };
-    const box_fill = if (selected) t.colors.primary else t.colors.surface;
-    const box_border = if (selected)
-        colors.blend(t.colors.primary, colors.rgba(255, 255, 255, 255), 0.1)
-    else
-        t.colors.border;
-    dc.drawRoundedRect(box_rect, t.radius.sm, .{
-        .fill = box_fill,
-        .stroke = box_border,
-        .thickness = 1.0,
-    });
+    const unchecked_fill = cs.fill orelse style_sheet.Paint{ .solid = t.colors.surface };
+    const checked_fill = cs.fill_checked orelse style_sheet.Paint{ .solid = t.colors.primary };
+    const box_fill = if (selected) checked_fill else unchecked_fill;
+    var box_border = cs.border orelse t.colors.border;
+    if (selected) {
+        box_border = cs.border_checked orelse box_border;
+    }
+    const box_radius = cs.radius orelse t.radius.sm;
+    panel_chrome.drawPaintRoundedRect(dc, box_rect, box_radius, box_fill);
+    dc.drawRoundedRect(box_rect, box_radius, .{ .fill = null, .stroke = box_border, .thickness = 1.0 });
     if (selected) {
         const inset = box_size * 0.2;
         const x0 = box_rect.min[0] + inset;
@@ -434,29 +526,31 @@ fn drawMenuItem(
         const x2 = box_rect.min[0] + box_size * 0.8;
         const y2 = box_rect.min[1] + box_size * 0.3;
         const thickness = @max(1.5, box_size * 0.12);
-        const check_color = colors.rgba(255, 255, 255, 255);
+        const check_color = cs.check orelse colors.rgba(255, 255, 255, 255);
         dc.drawLine(.{ x0, y0 }, .{ x1, y1 }, thickness, check_color);
         dc.drawLine(.{ x1, y1 }, .{ x2, y2 }, thickness, check_color);
     }
 
     const label_x = box_rect.max[0] + t.spacing.xs;
-    dc.drawText(label, .{ label_x, text_y }, .{ .color = t.colors.text_primary });
+    dc.drawText(label, .{ label_x, text_y }, .{ .color = text_color });
 
     var clicked = false;
-    for (queue.events.items) |evt| {
-        switch (evt) {
-            .mouse_up => |mu| {
-                if (mu.button == .left and rect.contains(mu.pos)) {
-                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
-                        clicked = true;
+    if (!disabled) {
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_up => |mu| {
+                    if (mu.button == .left and rect.contains(mu.pos)) {
+                        if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                            clicked = true;
+                        }
                     }
-                }
-            },
-            else => {},
+                },
+                else => {},
+            }
         }
-    }
-    if (!clicked and nav_active and focused) {
-        clicked = nav_router.wasActivated(queue, nav_id);
+        if (!clicked and nav_active and focused) {
+            clicked = nav_router.wasActivated(queue, nav_id);
+        }
     }
     return clicked;
 }

@@ -13,6 +13,7 @@ const colors = @import("../theme/colors.zig");
 const input_router = @import("../input/input_router.zig");
 const input_state = @import("../input/input_state.zig");
 const theme_runtime = @import("../theme_engine/runtime.zig");
+const style_sheet = @import("../theme_engine/style_sheet.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 const surface_chrome = @import("../surface_chrome.zig");
 const nav_router = @import("../input/nav_router.zig");
@@ -266,6 +267,8 @@ fn drawTab(
     queue: *input_state.InputQueue,
 ) bool {
     const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const tab_style = ss.tabs;
     const nav_state = nav_router.get();
     const nav_id = if (nav_state != null) nav_router.makeWidgetId(@returnAddress(), "tab", label) else 0;
     if (nav_state) |nav| nav.registerItem(dc.allocator, nav_id, rect);
@@ -274,6 +277,7 @@ fn drawTab(
 
     const allow_hover = theme_runtime.allowHover(queue);
     const hovered = (allow_hover and rect.contains(queue.state.mouse_pos)) or (nav_active and focused);
+    const pressed = rect.contains(queue.state.mouse_pos) and queue.state.mouse_down_left and queue.state.pointer_kind != .nav;
     var clicked = false;
     for (queue.events.items) |evt| {
         switch (evt) {
@@ -291,24 +295,108 @@ fn drawTab(
         clicked = nav_router.wasActivated(queue, nav_id);
     }
 
-    const base = if (active) t.colors.primary else t.colors.surface;
-    const alpha: f32 = if (active) 0.2 else if (hovered) 0.1 else 0.0;
-    dc.drawRoundedRect(rect, t.radius.lg, .{
-        .fill = colors.withAlpha(base, alpha),
-        .stroke = colors.withAlpha(t.colors.border, 0.4),
-        .thickness = 1.0,
-    });
+    const custom =
+        tab_style.radius != null or tab_style.fill != null or tab_style.text != null or tab_style.border != null or
+        tab_style.underline != null or tab_style.underline_thickness != null or
+        tab_style.states.hover.isSet() or tab_style.states.pressed.isSet() or tab_style.states.focused.isSet() or
+        tab_style.states.disabled.isSet() or tab_style.states.active.isSet() or tab_style.states.active_hover.isSet();
 
-    const text_color = if (active) t.colors.primary else t.colors.text_secondary;
-    const text_size = dc.measureText(label, 0.0);
-    dc.drawText(
-        label,
-        .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 },
-        .{ .color = text_color },
-    );
+    if (!custom) {
+        const base = if (active) t.colors.primary else t.colors.surface;
+        const alpha: f32 = if (active) 0.2 else if (hovered) 0.1 else 0.0;
+        dc.drawRoundedRect(rect, t.radius.lg, .{
+            .fill = colors.withAlpha(base, alpha),
+            .stroke = colors.withAlpha(t.colors.border, 0.4),
+            .thickness = 1.0,
+        });
 
-    if (active) {
-        dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, 2.0, t.colors.primary);
+        const text_color = if (active) t.colors.primary else t.colors.text_secondary;
+        const text_size = dc.measureText(label, 0.0);
+        dc.drawText(
+            label,
+            .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 },
+            .{ .color = text_color },
+        );
+
+        if (active) {
+            dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, 2.0, t.colors.primary);
+        }
+    } else {
+        const transparent: colors.Color = .{ 0.0, 0.0, 0.0, 0.0 };
+        const radius = tab_style.radius orelse t.radius.lg;
+        var fill: ?style_sheet.Paint = tab_style.fill;
+        var text_color: colors.Color = tab_style.text orelse t.colors.text_secondary;
+        var border_color: colors.Color = tab_style.border orelse colors.withAlpha(t.colors.border, 0.4);
+        var underline_color: colors.Color = tab_style.underline orelse transparent;
+
+        // Base active overrides.
+        if (active) {
+            if (tab_style.states.active.isSet()) {
+                const st = tab_style.states.active;
+                if (st.fill) |v| fill = v;
+                if (st.text) |v| text_color = v;
+                if (st.border) |v| border_color = v;
+                if (st.underline) |v| underline_color = v;
+            } else {
+                // Reasonable defaults if the theme opted in but didn't specify active state.
+                text_color = tab_style.text orelse t.colors.primary;
+                underline_color = tab_style.underline orelse t.colors.primary;
+                if (fill == null) fill = style_sheet.Paint{ .solid = colors.withAlpha(t.colors.primary, 0.12) };
+            }
+        }
+
+        // Interaction overrides.
+        if (focused and tab_style.states.focused.isSet()) {
+            const st = tab_style.states.focused;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (hovered and tab_style.states.hover.isSet()) {
+            const st = tab_style.states.hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (pressed and tab_style.states.pressed.isSet()) {
+            const st = tab_style.states.pressed;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+        if (active and hovered and tab_style.states.active_hover.isSet()) {
+            const st = tab_style.states.active_hover;
+            if (st.fill) |v| fill = v;
+            if (st.text) |v| text_color = v;
+            if (st.border) |v| border_color = v;
+            if (st.underline) |v| underline_color = v;
+        }
+
+        if (fill) |paint| {
+            panel_chrome.drawPaintRoundedRect(dc, rect, radius, paint);
+        } else if (hovered) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = colors.withAlpha(t.colors.primary, 0.06) });
+        }
+        if (border_color[3] > 0.001) {
+            dc.drawRoundedRect(rect, radius, .{ .fill = null, .stroke = border_color, .thickness = 1.0 });
+        }
+
+        const text_size = dc.measureText(label, 0.0);
+        dc.drawText(
+            label,
+            .{ rect.min[0] + (rect.size()[0] - text_size[0]) * 0.5, rect.min[1] + (rect.size()[1] - text_size[1]) * 0.5 },
+            .{ .color = text_color },
+        );
+
+        const th = tab_style.underline_thickness orelse 2.0;
+        if (underline_color[3] > 0.001 and th > 0.0) {
+            dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, th, underline_color);
+        } else if (active and !tab_style.states.active.isSet()) {
+            dc.drawLine(.{ rect.min[0], rect.max[1] }, .{ rect.max[0], rect.max[1] }, th, t.colors.primary);
+        }
     }
 
     if (focused) {

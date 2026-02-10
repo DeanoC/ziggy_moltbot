@@ -214,6 +214,27 @@ Additional `panel` fields (implemented):
 - `header_overlay`: paint. Used by the docked panel host header strip (so textured themes don't get a flat solid header).
 - `focus_border`: color. Used by the docked panel host focus border (fallback: `colors.primary`).
 
+`menu.item` fields (implemented):
+- `radius`: number or token (optional)
+- `fill`: paint (optional)
+- `text`: color (optional)
+- `border`: color (optional)
+- `states`: optional per-state overrides:
+  - `hover`, `pressed`, `focused`, `disabled`, `selected`, `selected_hover`
+
+Notes:
+- The menu's check indicator uses the `checkbox` style (`checkbox.fill`, `checkbox.fill_checked`, `checkbox.border`, `checkbox.border_checked`, `checkbox.check`).
+
+`tabs` fields (implemented):
+- `radius`: number or token (optional)
+- `fill`: paint (optional, inactive tabs)
+- `text`: color (optional, inactive tabs)
+- `border`: color (optional)
+- `underline`: color (optional)
+- `underline_thickness`: number (optional)
+- `states`: optional per-state overrides:
+  - `hover`, `pressed`, `focused`, `disabled`, `active`, `active_hover`
+
 ### Paint Values (Implemented)
 
 Where a component field expects a `fill`, ZiggyStarClaw currently supports:
