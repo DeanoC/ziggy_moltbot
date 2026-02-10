@@ -29,6 +29,15 @@ pub const Query = struct {
     win32_exit_code: u32 = 0,
 };
 
+pub const StartType = enum {
+    unknown,
+    boot,
+    system,
+    auto,
+    demand,
+    disabled,
+};
+
 const win = @cImport({
     @cDefine("WIN32_LEAN_AND_MEAN", "1");
     @cDefine("NOMINMAX", "1");
@@ -329,6 +338,35 @@ pub fn queryService(allocator: std.mem.Allocator, name_opt: ?[]const u8) Service
     };
 }
 
+pub fn queryStartType(allocator: std.mem.Allocator, name_opt: ?[]const u8) ServiceError!StartType {
+    if (builtin.os.tag != .windows) return ServiceError.Unsupported;
+    const service_name = name_opt orelse defaultServiceName();
+
+    const wname = try utf16Z(allocator, service_name);
+    defer allocator.free(wname);
+
+    const h_scm = try openSCM(win.SC_MANAGER_CONNECT);
+    defer _ = win.CloseServiceHandle(h_scm);
+
+    const h_svc = try openService(h_scm, wname.ptr, win.SERVICE_QUERY_CONFIG);
+    defer _ = win.CloseServiceHandle(h_svc);
+
+    var needed: u32 = 0;
+    _ = win.QueryServiceConfigW(h_svc, null, 0, &needed);
+    const e = win.GetLastError();
+    if (e != win.ERROR_INSUFFICIENT_BUFFER) return mapWinErr(e);
+
+    const buf = try allocator.alloc(u8, needed);
+    defer allocator.free(buf);
+
+    const cfg: *win.QUERY_SERVICE_CONFIGW = @ptrCast(@alignCast(buf.ptr));
+    if (win.QueryServiceConfigW(h_svc, cfg, needed, &needed) == 0) {
+        return mapWinErr(win.GetLastError());
+    }
+
+    return startTypeFromWin(cfg.dwStartType);
+}
+
 fn stateFromWin(s: u32) State {
     return switch (s) {
         win.SERVICE_STOPPED => .stopped,
@@ -336,6 +374,17 @@ fn stateFromWin(s: u32) State {
         win.SERVICE_STOP_PENDING => .stop_pending,
         win.SERVICE_RUNNING => .running,
         win.SERVICE_PAUSED => .paused,
+        else => .unknown,
+    };
+}
+
+fn startTypeFromWin(s: u32) StartType {
+    return switch (s) {
+        win.SERVICE_BOOT_START => .boot,
+        win.SERVICE_SYSTEM_START => .system,
+        win.SERVICE_AUTO_START => .auto,
+        win.SERVICE_DEMAND_START => .demand,
+        win.SERVICE_DISABLED => .disabled,
         else => .unknown,
     };
 }

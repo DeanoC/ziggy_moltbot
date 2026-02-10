@@ -39,6 +39,7 @@ const NODE_CONTROL_PIPE: []const u8 = "\\\\.\\pipe\\ZiggyStarClaw.NodeControl";
 const IDM_COPY_VERSION: u16 = 998;
 const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
+const IDM_MODE: u16 = 1006;
 const IDM_START: u16 = 1001;
 const IDM_STOP: u16 = 1002;
 const IDM_RESTART: u16 = 1003;
@@ -51,6 +52,17 @@ const ServiceState = enum {
     not_installed,
     running,
     stopped,
+};
+
+const RunnerMode = enum {
+    unknown,
+    not_installed,
+    supervisor_pipe,
+    windows_service_auto,
+    windows_service_manual,
+    windows_service_disabled,
+    windows_service_other,
+    scheduled_task,
 };
 
 var g_allocator: std.mem.Allocator = undefined;
@@ -180,10 +192,13 @@ fn showContextMenu() void {
         .unknown => "Status: Unknown",
     };
 
+    const mode_label = runnerModeLabel(queryRunnerMode(g_allocator));
+
     const version_label = std.fmt.comptimePrint("ZSC Tray {s}+{s}", .{ build_options.app_version, build_options.git_rev });
     appendMenuItem(hMenu, IDM_VERSION, version_label, true);
     appendMenuItem(hMenu, IDM_COPY_VERSION, "Copy Version", false);
     appendMenuItem(hMenu, IDM_STATUS, status_label, true);
+    appendMenuItem(hMenu, IDM_MODE, mode_label, true);
     _ = win.AppendMenuW(hMenu, win.MF_SEPARATOR, 0, null);
 
     // Be permissive: if status is unknown (common when task query is restricted/localized),
@@ -366,6 +381,51 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
         .stopped => .stopped,
         // Pending states: show unknown so the menu stays permissive.
         else => .unknown,
+    };
+}
+
+fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
+    // If the supervisor pipe responds, we're almost certainly in the legacy wrapper mode.
+    if (queryServiceStatePipe(allocator) catch null != null) {
+        return .supervisor_pipe;
+    }
+
+    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
+    const st = scm_service.queryStartType(allocator, svc_name) catch |err| switch (err) {
+        scm_service.ServiceError.NotInstalled => null,
+        else => return .unknown,
+    };
+
+    if (st) |start_type| {
+        return switch (start_type) {
+            .auto => .windows_service_auto,
+            .demand => .windows_service_manual,
+            .disabled => .windows_service_disabled,
+            .boot, .system => .windows_service_other,
+            .unknown => .unknown,
+        };
+    }
+
+    // Fallback for older installs: Scheduled Task at logon.
+    const task_state = queryServiceStatePowerShell(allocator) catch null;
+    if (task_state) |ts| {
+        if (ts != .not_installed) return .scheduled_task;
+        return .not_installed;
+    }
+
+    return .unknown;
+}
+
+fn runnerModeLabel(mode: RunnerMode) []const u8 {
+    return switch (mode) {
+        .unknown => "Runner: Unknown",
+        .not_installed => "Runner: Not installed",
+        .supervisor_pipe => "Runner: Supervisor (pipe)",
+        .windows_service_auto => "Runner: Windows service (auto-start)",
+        .windows_service_manual => "Runner: Windows service (manual)",
+        .windows_service_disabled => "Runner: Windows service (disabled)",
+        .windows_service_other => "Runner: Windows service (boot/system)",
+        .scheduled_task => "Runner: Scheduled Task (logon)",
     };
 }
 
