@@ -821,6 +821,7 @@ const ReadLoop = struct {
     queue: *MessageQueue,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    too_large: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_receive_ms: i64 = 0,
     last_payload_len: usize = 0,
 };
@@ -915,6 +916,13 @@ fn readLoopMain(loop: *ReadLoop) void {
             defer zone.end();
             break :blk loop.ws_client.receive() catch |err| {
                 if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.TooLarge) {
+                    // Commonly triggered by a huge chat.history response being sent as a single WS message.
+                    loop.too_large.store(true, .monotonic);
+                    logger.warn("WebSocket receive failed (thread): payload too large (error.TooLarge)", .{});
+                    loop.ws_client.disconnect();
                     return;
                 }
                 if (err == error.ReadFailed) {
@@ -1074,6 +1082,11 @@ fn sendNodesListRequest(
     ctx.setPendingNodesRequest(request.id);
 }
 
+const chat_history_fetch_limit_default: u32 = 50;
+const chat_history_fetch_limit_min: u32 = 10;
+// Backed off when the gateway sends a chat.history payload that exceeds the client's WS max_size.
+var chat_history_fetch_limit: u32 = chat_history_fetch_limit_default;
+
 fn sendChatHistoryRequest(
     allocator: std.mem.Allocator,
     ctx: *client_state.ClientContext,
@@ -1088,7 +1101,7 @@ fn sendChatHistoryRequest(
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
-        .limit = 200,
+        .limit = chat_history_fetch_limit,
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
@@ -1879,8 +1892,24 @@ pub fn main() !void {
         if (read_thread != null and !read_loop.running.load(.monotonic)) {
             stopReadThread(&read_loop, &read_thread);
         }
+
+        if (read_loop.too_large.swap(false, .monotonic)) {
+            // If the server sent a WS message exceeding our max_size (commonly chat.history),
+            // reduce the history limit so the next reconnect can succeed.
+            const next = @max(chat_history_fetch_limit_min, chat_history_fetch_limit / 2);
+            if (next != chat_history_fetch_limit) {
+                logger.warn("Backing off chat.history limit: {d} -> {d}", .{ chat_history_fetch_limit, next });
+                chat_history_fetch_limit = next;
+            }
+            ctx.setOperatorNotice("Gateway response too large; reducing chat history fetch limit and retrying.") catch {};
+            ctx.clearPendingRequests();
+        }
+
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
+            // Requests may have been in-flight when the connection dropped.
+            // Clear them so history can be requested again after reconnect.
+            ctx.clearPendingRequests();
             if (should_reconnect and next_reconnect_at_ms == 0) {
                 const now_ms = std.time.milliTimestamp();
                 next_reconnect_at_ms = now_ms + reconnect_backoff_ms;

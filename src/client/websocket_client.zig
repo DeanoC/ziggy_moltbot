@@ -153,7 +153,10 @@ pub const WebSocketClient = struct {
             .tls = parsed.tls,
             .verify_host = !self.insecure_tls,
             .verify_cert = !self.insecure_tls,
-            .max_size = 1024 * 1024,
+            // Gateway responses like chat.history can be several MB for long sessions.
+            // Keep a firm cap to avoid unbounded memory use, but allow enough headroom
+            // that the UI can still load history without tripping error.TooLarge.
+            .max_size = 8 * 1024 * 1024,
             .buffer_size = 64 * 1024,
         });
         errdefer client.deinit();
