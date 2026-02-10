@@ -676,6 +676,8 @@ fn sendNodesListRequest() void {
     }
 }
 
+const chat_history_fetch_limit_default: u32 = 20;
+
 fn sendChatHistoryRequest(session_key: []const u8) void {
     if (!ws_connected or ctx.state != .connected) return;
     if (ctx.findSessionState(session_key)) |state_ptr| {
@@ -684,7 +686,7 @@ fn sendChatHistoryRequest(session_key: []const u8) void {
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
-        .limit = 200,
+        .limit = chat_history_fetch_limit_default,
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
@@ -1169,6 +1171,7 @@ export fn molt_ws_on_close(code: c_int) void {
     clearConnectNonce();
     ws_opened_ms = 0;
     ctx.state = .disconnected;
+    ctx.clearPendingRequests();
     logger.warn("WebSocket closed (code={d})", .{code});
 }
 
@@ -1179,6 +1182,7 @@ export fn molt_ws_on_error() void {
     connect_sent = false;
     ws_opened_ms = 0;
     ctx.state = .error_state;
+    ctx.clearPendingRequests();
     logger.warn("WebSocket error", .{});
 }
 
