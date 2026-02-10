@@ -765,8 +765,19 @@ fn drawWorkspaceHost(
             if (frame.close_clicked) {
                 close_panel_id = panel.id;
             }
-            if (frame.detach_clicked) {
-                action.detach_panel_id = panel.id;
+            if (frame.detach_clicked and action.detach_panel == null) {
+                // Tear off: remove from this manager immediately so the source window updates.
+                // We intentionally skip drawing contents this frame to avoid using a stale pointer.
+                if (manager.takePanel(panel.id)) |moved| {
+                    if (allocator.create(workspace.Panel)) |pp| {
+                        pp.* = moved;
+                        action.detach_panel = pp;
+                    } else |_| {
+                        // Restore on allocation failure.
+                        _ = manager.putPanel(moved) catch {};
+                    }
+                }
+                continue;
             }
             const draw_result = drawPanelContents(
                 allocator,
@@ -789,23 +800,6 @@ fn drawWorkspaceHost(
                     active_agent_id = draw_result.agent_id;
                 }
             }
-        }
-    }
-
-    // If a panel was detached, remove it from this manager *now* so the source window updates
-    // immediately. We pass ownership to the native main loop via `action.detach_panel`.
-    if (action.detach_panel_id) |pid| {
-        if (manager.takePanel(pid)) |moved| {
-            if (allocator.create(workspace.Panel)) |p| {
-                p.* = moved;
-                action.detach_panel = p;
-            } else |_| {
-                // Restore on allocation failure.
-                _ = manager.putPanel(moved) catch {};
-            }
-            action.detach_panel_id = null;
-        } else {
-            action.detach_panel_id = null;
         }
     }
 
