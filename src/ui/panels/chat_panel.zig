@@ -38,13 +38,20 @@ pub fn draw(
     var action = ChatPanelAction{};
     const t = theme.activeTheme();
 
+    const status_suffix: []const u8 = if (session_state) |st| blk: {
+        if (st.messages_loading) break :blk " • loading…";
+        if (st.stream_run_id != null) break :blk " • replying…";
+        if (st.awaiting_reply) break :blk " • waiting…";
+        break :blk "";
+    } else "";
+
     var subtitle_buf: [256]u8 = undefined;
     const subtitle = if (session_key) |key| blk: {
         const label = session_label orelse key;
         break :blk std.fmt.bufPrint(
             &subtitle_buf,
-            "{s} {s} — {s}",
-            .{ agent_icon, agent_name, label },
+            "{s} {s} — {s}{s}",
+            .{ agent_icon, agent_name, label, status_suffix },
         ) catch label;
     } else "No session selected.";
 
@@ -157,7 +164,8 @@ pub fn draw(
     cursor_y = sep2_rect.max[1] + separator_gap;
 
     const input_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], input_height });
-    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, has_session)) |message| {
+    // Allow typing even when no session is selected; disable Send until a session is chosen.
+    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, true, has_session)) |message| {
         action.send_message = message;
     }
 

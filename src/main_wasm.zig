@@ -854,6 +854,7 @@ fn buildUserMessage(id: []const u8, content: []const u8) !types.ChatMessage {
         .content = content_copy,
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
+        .local_state = .sending,
     };
 }
 
@@ -1038,26 +1039,41 @@ fn sendChatMessageRequest(session_key: []const u8, message: []const u8) void {
         logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
-    errdefer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
 
     var msg = buildUserMessage(idempotency, message) catch |err| {
         logger.warn("Failed to build user message: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
         return;
     };
+
     ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(&msg);
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
     };
+
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = true;
+    }
 
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
-        ctx.setPendingSendRequest(request.id);
+        ctx.setPendingSendRequest(request.id, session_key, msg.id);
     } else {
         allocator.free(request.payload);
         allocator.free(request.id);
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            for (state_ptr.messages.items) |*m| {
+                if (std.mem.eql(u8, m.id, msg.id)) {
+                    m.local_state = .failed;
+                    break;
+                }
+            }
+            state_ptr.awaiting_reply = false;
+        }
     }
 }
 

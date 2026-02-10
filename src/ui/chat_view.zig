@@ -413,6 +413,8 @@ pub fn drawCustom(
     const view_height = rect.size()[1];
     var max_scroll: f32 = @max(0.0, content_height - view_height);
 
+    const was_follow_tail = state.follow_tail;
+
     // If content shrank (or we just rebuilt estimates), clamp scroll before searching.
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
     if (state.scroll_y > max_scroll) state.scroll_y = max_scroll;
@@ -465,12 +467,23 @@ pub fn drawCustom(
                 const align_right = std.mem.eql(u8, msg.role, "user");
 
                 if (visible) {
+                    const status: ?[]const u8 = if (align_right) blk: {
+                        if (msg.local_state) |st| {
+                            break :blk switch (st) {
+                                .sending => "sending…",
+                                .failed => "failed",
+                            };
+                        }
+                        break :blk null;
+                    } else null;
+
                     const layout = drawMessage(
                         allocator,
                         ctx,
                         rect,
                         msg.id,
                         msg.role,
+                        status,
                         msg.content,
                         msg.timestamp,
                         now_ms,
@@ -519,6 +532,7 @@ pub fn drawCustom(
                             rect,
                             "streaming",
                             "assistant",
+                            null,
                             stream,
                             now_ms,
                             now_ms,
@@ -678,9 +692,18 @@ pub fn drawCustom(
     }
 
     const near_bottom = state.scroll_y >= max_scroll - 4.0;
-    if (user_scrolled and !near_bottom) {
+    const prevent_auto_follow_tail = state.selecting or pending_select;
+    // Sticky follow-tail: if we were following at frame start, keep following unless the user
+    // explicitly scrolls away from the bottom. This avoids visible jitter while streaming replies
+    // grow the document and `max_scroll` shifts during the frame.
+    //
+    // Do not auto-enable follow-tail while starting/performing text selection (selection sets
+    // follow_tail = false earlier in the frame).
+    if (!prevent_auto_follow_tail and was_follow_tail and !user_scrolled and !state.scrollbar_dragging) {
+        state.follow_tail = true;
+    } else if (user_scrolled and !near_bottom) {
         state.follow_tail = false;
-    } else if (near_bottom) {
+    } else if (!prevent_auto_follow_tail and near_bottom) {
         state.follow_tail = true;
     }
 
@@ -1065,6 +1088,7 @@ fn drawMessage(
     rect: draw_context.Rect,
     id: []const u8,
     role: []const u8,
+    status: ?[]const u8,
     content: []const u8,
     timestamp_ms: ?i64,
     now_ms: i64,
@@ -1142,11 +1166,17 @@ fn drawMessage(
         const label_pos = .{ bubble_x + padding, bubble_y + padding };
         ctx.drawText(label, label_pos, .{ .color = bubble.accent });
 
+        var header_x = label_pos[0] + ctx.measureText(label, 0.0)[0];
+        if (status) |status_label| {
+            header_x += t.spacing.sm;
+            ctx.drawText(status_label, .{ header_x, label_pos[1] }, .{ .color = t.colors.text_secondary });
+            header_x += ctx.measureText(status_label, 0.0)[0];
+        }
+
         if (timestamp_ms) |ts| {
             var time_buf: [32]u8 = undefined;
             const time_label = components.composite.message_bubble.formatRelativeTime(now_ms, ts, &time_buf);
-            const label_w = ctx.measureText(label, 0.0)[0];
-            const time_pos = .{ label_pos[0] + label_w + t.spacing.sm, label_pos[1] };
+            const time_pos = .{ header_x + t.spacing.sm, label_pos[1] };
             ctx.drawText(time_label, time_pos, .{ .color = t.colors.text_secondary });
         }
 

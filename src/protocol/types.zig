@@ -6,12 +6,20 @@ pub const ChatAttachment = struct {
     name: ?[]const u8 = null,
 };
 
+pub const LocalChatMessageState = enum {
+    sending,
+    failed,
+};
+
 pub const ChatMessage = struct {
     id: []const u8,
     role: []const u8,
     content: []const u8,
     timestamp: i64,
     attachments: ?[]ChatAttachment = null,
+
+    // Client-only metadata (not provided by the gateway). Useful for optimistic UI.
+    local_state: ?LocalChatMessageState = null,
 };
 
 pub const Session = struct {
