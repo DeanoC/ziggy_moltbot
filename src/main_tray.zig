@@ -479,10 +479,14 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
 
     const has_pipe = (queryServiceStatePipe(allocator) catch null) != null;
 
+    // NOTE: The node may expose the control pipe even when running as an SCM service.
+    // Treat the Scheduled Task as the install-time indicator for session mode.
     const has_session = has_task or has_pipe;
 
-    if (has_service and has_session) return .conflict;
-    if (has_service) return .service;
+    if (has_service) {
+        if (has_task) return .conflict;
+        return .service;
+    }
     if (has_session) return .session;
 
     if (task_state) |ts| {
@@ -500,51 +504,6 @@ fn runnerModeLabel(mode: RunnerMode) []const u8 {
         .service => "Mode: Always-on service (reliable, limited desktop access)",
         .session => "Mode: User session runner (interactive desktop access)",
         .conflict => "Mode: ERROR (both enabled) — run: ziggystarclaw-cli node runner install --mode service|session",
-    };
-}
-
-fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
-    // If the supervisor pipe responds, we're almost certainly in the legacy wrapper mode.
-    if (queryServiceStatePipe(allocator) catch null != null) {
-        return .supervisor_pipe;
-    }
-
-    const svc_name: ?[]const u8 = "ZiggyStarClaw Node";
-    const st = scm_service.queryStartType(allocator, svc_name) catch |err| switch (err) {
-        scm_service.ServiceError.NotInstalled => null,
-        else => return .unknown,
-    };
-
-    if (st) |start_type| {
-        return switch (start_type) {
-            .auto => .windows_service_auto,
-            .demand => .windows_service_manual,
-            .disabled => .windows_service_disabled,
-            .boot, .system => .windows_service_other,
-            .unknown => .unknown,
-        };
-    }
-
-    // Fallback for older installs: Scheduled Task at logon.
-    const task_state = queryServiceStatePowerShell(allocator) catch null;
-    if (task_state) |ts| {
-        if (ts != .not_installed) return .scheduled_task;
-        return .not_installed;
-    }
-
-    return .unknown;
-}
-
-fn runnerModeLabel(mode: RunnerMode) []const u8 {
-    return switch (mode) {
-        .unknown => "Runner: Unknown",
-        .not_installed => "Runner: Not installed",
-        .supervisor_pipe => "Runner: User session (wrapper)",
-        .windows_service_auto => "Runner: Windows service (auto-start)",
-        .windows_service_manual => "Runner: Windows service (manual start)",
-        .windows_service_disabled => "Runner: Windows service (disabled)",
-        .windows_service_other => "Runner: Windows service (boot/system)",
-        .scheduled_task => "Runner: User session (Scheduled Task)",
     };
 }
 
