@@ -157,7 +157,8 @@ pub fn draw(
     cursor_y = sep2_rect.max[1] + separator_gap;
 
     const input_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], input_height });
-    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, has_session)) |message| {
+    // Allow typing even when no session is selected; disable Send until a session is chosen.
+    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, true, has_session)) |message| {
         action.send_message = message;
     }
 

@@ -39,7 +39,8 @@ pub fn draw(
     ctx: *draw_context.DrawContext,
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
-    enabled: bool,
+    editor_enabled: bool,
+    send_enabled: bool,
 ) ?[]u8 {
     if (editor_state == null) {
         editor_state = text_editor.TextEditor.init(allocator) catch null;
@@ -61,13 +62,13 @@ pub fn draw(
 
     var disabled_queue = input_state.InputQueue{ .events = .empty, .state = .{} };
     disabled_queue.state.mouse_pos = .{ -10000.0, -10000.0 };
-    const active_queue = if (enabled) queue else &disabled_queue;
+    const active_queue = if (editor_enabled) queue else &disabled_queue;
 
     const emoji_label = "😀";
     const emoji_width = button_height;
     const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
 
-    if (!enabled) {
+    if (!editor_enabled) {
         editor.focused = false;
         editor.dragging = false;
     }
@@ -76,7 +77,7 @@ pub fn draw(
     // underlying text editor (prevent click-through).
     var saved_mouse_pos: [16]struct { idx: usize, pos: [2]f32 } = undefined;
     var saved_mouse_pos_len: usize = 0;
-    if (emoji_open and enabled) {
+    if (emoji_open and editor_enabled) {
         const picker_rect = computeEmojiPickerRect(t, emoji_rect);
         for (active_queue.events.items, 0..) |*evt, i| {
             switch (evt.*) {
@@ -138,12 +139,12 @@ pub fn draw(
     var send = action.send;
     if (widgets.button.draw(ctx, emoji_rect, emoji_label, active_queue, .{
         .variant = .ghost,
-        .disabled = !enabled,
+        .disabled = !editor_enabled,
         .radius = t.radius.sm,
     })) {
         emoji_open = !emoji_open;
     }
-    if (!enabled) {
+    if (!editor_enabled) {
         emoji_open = false;
     }
 
@@ -155,17 +156,18 @@ pub fn draw(
     );
     if (widgets.button.draw(ctx, send_rect, send_label, active_queue, .{
         .variant = .primary,
-        .disabled = !enabled,
+        .disabled = !editor_enabled or !send_enabled,
         .radius = t.radius.sm,
     })) {
         send = true;
     }
 
-    if (emoji_open and enabled) {
+    if (emoji_open and editor_enabled) {
         drawEmojiPicker(allocator, ctx, active_queue, emoji_rect, editor);
     }
 
-    if (!send or !enabled) return null;
+    if (!send_enabled) send = false;
+    if (!send or !editor_enabled) return null;
     return editor.takeText(allocator);
 }
 
