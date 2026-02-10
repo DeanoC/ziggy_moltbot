@@ -39,7 +39,7 @@ Implementation status:
 - Implemented: `StyleSheet` + JSON parsing (see `src/ui/theme_engine/style_sheet.zig`).
 - Implemented: Button/Checkbox/TextInput/Panel/FocusRing all read style sheet (see `src/ui/widgets/*`, `src/ui/panel_chrome.zig`, `src/ui/surface_chrome.zig`).
 - Remaining polish:
-  - Add explicit state styles (hover/pressed/disabled/focused) so packs can fully control interaction visuals.
+  - Done: explicit state styles (hover/pressed/disabled/focused) for Button/Checkbox/TextInput.
   - Extend style sheet coverage to more UI components (menus, tabs, list rows, scrollbars, status bar, etc).
 
 ## Phase 2: Theme Packages (data loading)
@@ -60,6 +60,7 @@ Implementation status:
 - Implemented: dir + zip packs, manifest/tokens/styles/profiles/layouts/windows loading, safe fallback status reporting.
 - Implemented: Android writable install of embedded packs under `themes/<id>`.
 - Implemented: WASM fetch-based pipeline.
+- Implemented: packs can opt out of user light/dark switching via `defaults.lock_variant` (useful for "single-variant" textured chrome packs).
 
 ## Phase 3: GPU Materials and New Draw Commands
 
@@ -109,6 +110,7 @@ Acceptance:
 Implementation status:
 - Deprioritized for now.
 - Note: “Winamp-style” theme packs are supported without importing `.wsz` (see `themes/zsc_winamp*`).
+ - Note: if we ever revisit this, aim to keep it as a separate tool or offline converter, not a runtime dependency.
 
 ## Phase 6: Controller Navigation + Fullscreen Polish
 
