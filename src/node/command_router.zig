@@ -631,8 +631,16 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
         logger.err("camera.list failed: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
+    defer {
+        // `listCameras` returns owned strings + slice.
+        for (devices) |dev| {
+            allocator.free(@constCast(dev.name));
+            allocator.free(@constCast(dev.deviceId));
+        }
+        allocator.free(devices);
+    }
 
-    var out_devices = std.ArrayList(std.json.Value).init(allocator);
+    var out_devices = std.json.Array.init(allocator);
     for (devices) |dev| {
         var obj = std.json.ObjectMap.init(allocator);
         const id = try allocator.dupe(u8, dev.deviceId);
