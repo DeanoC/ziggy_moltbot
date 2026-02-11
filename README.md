@@ -2,13 +2,11 @@
 ![ZiggyStarClaw](assets/ZiggyStarClaw.png)
 
 
-Ziggy StarClaw and the Lobsters From Mars AKA ZiggyStartClaw is a implementation of ![OpenClaw](https://github.com/openclaw/openclaw) operator client.
+Ziggy StarClaw and the Lobsters From Mars AKA ZiggyStartClaw is a implementation of [OpenClaw](https://github.com/openclaw/openclaw) operator and client.
 
-Built with Zig (hence Ziggy) using Imgui UI, its runs on Linux, Windows, Android and WASM (web) and talks via OpenClaw websocket interface. 
+Built with Zig (hence Ziggy), its runs on Linux, Windows, Android and WASM (web) and talks via OpenClaw websocket interface. 
 
-Designed  to be used over tailscale VPS (not tested outside that). 
-
-The aim is to provide a small alternative to the offical companion apps (hence Lobsters From Mars, they are aliens!), at the moment its just chat but hoping to provide other services including node usage.
+The aim is to provide a small alternative to the offical companion apps (hence Lobsters From Mars, they are aliens!)
 
 
 ## Status
@@ -16,6 +14,7 @@ Active development (latest release: v0.2.28).
 
 Highlights:
 - Cross-platform client (Linux, Windows, Android, WASM).
+- Windows installer for nodes services or task and the GUI
 - CLI approvals management and interactive REPL mode (`--interactive`).
 - `--run` supports default node from config when `--node` is not provided.
 - Auto-connect on launch toggle in Settings.
