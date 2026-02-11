@@ -30,7 +30,8 @@ Goal: ship ZiggyStarClaw for Windows as a single download that installs and imme
 1. Build Windows binaries:
    - `scripts/build-windows.ps1`
 2. Build installer:
-   - `scripts/windows/Build-ZscInstaller.ps1 -Version <x.y.z>`
+   - `scripts/windows/Build-ZscInstaller.ps1`
+   - (optional) override with `-Version <x.y.z>`
 3. Upload generated EXE from `dist/inno-out/`.
 
 ## Packaged files
