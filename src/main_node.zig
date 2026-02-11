@@ -78,6 +78,8 @@ pub const usage =
 
 pub const NodeCliOptions = struct {
     gateway_url: ?[]const u8 = null,
+    // Internal: true when launched by Windows SCM via --windows-service.
+    windows_service: bool = false,
     // Token for the initial websocket handshake (gateway auth).
     gateway_token: ?[]const u8 = null,
     // Token for the node connect auth (role=node). Required when the gateway enforces node auth.
@@ -172,6 +174,9 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             } else if (std.mem.eql(u8, level_str, "error")) {
                 opts.log_level = .err;
             }
+        } else if (std.mem.eql(u8, arg, "--windows-service")) {
+            // Internal flag used when launched by SCM service host.
+            opts.windows_service = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.writeAll(usage);
@@ -384,11 +389,17 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     allocator.free(node_ctx.exec_approvals_path);
     node_ctx.exec_approvals_path = approvals_path;
 
-    // Register capabilities (currently always-on for node-mode)
+    // Register capabilities.
+    // In Windows SCM service mode (Session 0), keep the surface conservative:
+    // interactive desktop capabilities are unreliable and should not be advertised.
     try node_ctx.registerSystemCapabilities();
     try node_ctx.registerProcessCapabilities();
-    try node_ctx.registerCanvasCapabilities();
-    try node_ctx.registerWindowsCameraCapabilities();
+    if (!opts.windows_service) {
+        try node_ctx.registerCanvasCapabilities();
+        try node_ctx.registerWindowsCameraCapabilities();
+    } else {
+        logger.info("Windows service mode detected: skipping interactive capabilities (canvas/camera)", .{});
+    }
 
     // Initialize command router from the exact advertised command set.
     // This avoids command-surface drift between node metadata and routing.
