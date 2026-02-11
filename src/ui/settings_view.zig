@@ -963,8 +963,14 @@ fn drawWindowsNodeServiceCard(
     var cursor_y = base.cursor_y;
 
     const content_x = base.inner_rect.min[0] + padding;
-    const server_text = std.mem.trim(u8, editorText(server_editor), " \t\r\n");
-    const has_url = server_text.len > 0;
+    const server_editor_value = editorText(server_editor);
+    const server_text = std.mem.trim(u8, server_editor_value, " \t\r\n");
+    const persisted_server_text = std.mem.trim(u8, cfg.server_url, " \t\r\n");
+    const server_url_dirty = !std.mem.eql(u8, cfg.server_url, server_editor_value);
+    const has_url = if (profile_only)
+        server_text.len > 0
+    else
+        persisted_server_text.len > 0 and !server_url_dirty;
 
     if (profile_only) {
         const content_w = base.inner_rect.size()[0] - padding * 2.0;
@@ -1166,9 +1172,13 @@ fn drawWindowsNodeServiceCard(
     }
 
     if (!has_url) {
+        const hint = if (!profile_only and server_url_dirty)
+            "(Apply/Save Server URL changes before applying service/session profiles)"
+        else
+            "(Set Server URL above before applying service/session profiles)";
         // Tiny hint; keep it subtle.
         dc.drawText(
-            "(Set Server URL above before applying service/session profiles)",
+            hint,
             .{ content_x, cursor_y + button_height + t.spacing.xs },
             .{ .color = t.colors.text_secondary },
         );
