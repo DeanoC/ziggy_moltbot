@@ -13,21 +13,23 @@ Each slice should be safe to ship independently in node-mode.
 ## Current status (2026-02-11)
 
 Implemented now:
-- Windows-only advertisement of camera capability/command for MVP:
-  - `capabilities` includes `"camera"`
-  - `commands` includes `"camera.list"`
 - Router wiring is command-surface driven (node advertises only what router can execute).
+- Windows camera advertisement is executable-aware:
+  - `camera.list` is advertised only when PowerShell is runnable.
+  - `camera.snap` is advertised only when both PowerShell + ffmpeg are runnable.
 - `camera.list` is implemented with a PowerShell/CIM backend (`powershell-cim`) and returns device objects with stable IDs and optional position hints.
+- `camera.snap` is implemented with an ffmpeg+dshow capture backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
+  - `{ format: "jpeg"|"png", base64, width, height }`
+  - supports `deviceId` selection using IDs returned by `camera.list`.
 
 Not yet implemented on Windows:
-- `camera.snap`
 - `camera.clip`
 - `screen.record`
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
 ---
 
-## Command + payload contract (current MVP)
+## Command + payload contract (current Windows surface)
 
 `camera.list` response shape:
 
@@ -49,6 +51,30 @@ Notes:
 - `id` and `deviceId` are both emitted for compatibility with existing OpenClaw tooling.
 - `position` is best-effort and may be omitted when unknown.
 
+`camera.snap` request params (supported subset):
+
+```json
+{
+  "deviceId": "<PNPDeviceID>",
+  "format": "jpeg|jpg|png"
+}
+```
+
+`camera.snap` response shape:
+
+```json
+{
+  "format": "jpeg|png",
+  "base64": "<image bytes base64>",
+  "width": 1280,
+  "height": 720
+}
+```
+
+Notes:
+- If `deviceId` is omitted, the backend selects the first enumerated camera.
+- Current backend is `ffmpeg-dshow`; `format` defaults to `jpeg`.
+
 ---
 
 ## Incremental plan (shippable slices)
@@ -60,7 +86,7 @@ Deliverables:
 - Only advertise commands/capabilities that are executable on the current platform.
 
 Status:
-- Landed for current surface, including Windows-only `camera.list` advertisement.
+- Landed for current surface with executable-aware advertisement (`camera.list`, `camera.snap`).
 
 ### 9f2 — Windows `camera.list` backend hardening
 
@@ -82,6 +108,10 @@ Deliverables:
   - `{ format: "jpeg"|"png", base64, width, height }`
 - Device selection support via `deviceId` from `camera.list`.
 - Permission/consent UX story for user-session node (tray integration).
+
+Status:
+- Landed with ffmpeg+dshow backend.
+- Command registration/advertisement is executable-aware (`camera.snap` is exposed only when ffmpeg + PowerShell are runnable).
 
 ### 9f4 — Windows `screen.record`
 
