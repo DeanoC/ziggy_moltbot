@@ -21,10 +21,13 @@ Implemented now:
 - `camera.snap` is implemented with an ffmpeg+dshow capture backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
   - `{ format: "jpeg"|"png", base64, width, height }`
   - supports `deviceId` selection using IDs returned by `camera.list`.
+- `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
+  - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
+  - current MVP supports `screenIndex=0` (desktop) and video-only capture (`hasAudio=false`).
 
 Not yet implemented on Windows:
 - `camera.clip`
-- `screen.record`
+- advanced `screen.record` coverage (multi-monitor index mapping + audio capture)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
 ---
@@ -75,6 +78,37 @@ Notes:
 - If `deviceId` is omitted, the backend selects the first enumerated camera.
 - Current backend is `ffmpeg-dshow`; `format` defaults to `jpeg`.
 
+`screen.record` request params (supported subset):
+
+```json
+{
+  "durationMs": 5000,
+  "duration": "5s",      // optional shorthand alternative to durationMs
+  "fps": 12,
+  "screenIndex": 0,
+  "format": "mp4",
+  "includeAudio": false
+}
+```
+
+`screen.record` response shape:
+
+```json
+{
+  "format": "mp4",
+  "base64": "<video bytes base64>",
+  "durationMs": 5000,
+  "fps": 12,
+  "screenIndex": 0,
+  "hasAudio": false
+}
+```
+
+Notes:
+- Current backend is `ffmpeg-gdigrab`.
+- `screenIndex=0` is currently supported; non-zero indices are rejected with actionable errors.
+- `includeAudio` is accepted for compatibility but current MVP emits video-only output (`hasAudio=false`).
+
 ---
 
 ## Incremental plan (shippable slices)
@@ -119,6 +153,11 @@ Deliverables:
 - Implement `screen.record` with OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
 - Start with ffmpeg-first approach if needed; keep native DXGI/MF path as follow-up.
+
+Status:
+- MVP landed with `ffmpeg-gdigrab` backend and executable-aware registration/advertisement (`screen.record` is exposed only when ffmpeg is runnable).
+- Current slice supports primary desktop capture (`screenIndex=0`) and video-only output (`hasAudio=false`).
+- Follow-up slice: monitor-index mapping and optional audio capture.
 
 ### Post-9f4 follow-up — Windows `camera.clip`
 
