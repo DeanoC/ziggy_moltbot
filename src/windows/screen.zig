@@ -491,9 +491,15 @@ fn movePrimaryMonitorFirst(monitors: []ScreenMonitor) void {
 
     if (primary_idx == null or primary_idx.? == 0) return;
 
-    const first = monitors[0];
-    monitors[0] = monitors[primary_idx.?];
-    monitors[primary_idx.?] = first;
+    const idx = primary_idx.?;
+    const primary = monitors[idx];
+
+    var i = idx;
+    while (i > 0) : (i -= 1) {
+        monitors[i] = monitors[i - 1];
+    }
+
+    monitors[0] = primary;
 }
 
 fn freeMonitors(allocator: std.mem.Allocator, monitors: []ScreenMonitor) void {
@@ -681,4 +687,19 @@ test "movePrimaryMonitorFirst keeps order when no primary exists" {
     movePrimaryMonitorFirst(monitors[0..]);
     try std.testing.expectEqualStrings("A", monitors[0].deviceName);
     try std.testing.expectEqualStrings("B", monitors[1].deviceName);
+}
+
+test "movePrimaryMonitorFirst promotes primary and preserves relative order" {
+    var monitors = [_]ScreenMonitor{
+        .{ .deviceName = "A", .x = 0, .y = 0, .width = 100, .height = 100, .primary = false },
+        .{ .deviceName = "B", .x = 100, .y = 0, .width = 100, .height = 100, .primary = false },
+        .{ .deviceName = "P", .x = 200, .y = 0, .width = 100, .height = 100, .primary = true },
+        .{ .deviceName = "C", .x = 300, .y = 0, .width = 100, .height = 100, .primary = false },
+    };
+
+    movePrimaryMonitorFirst(monitors[0..]);
+    try std.testing.expectEqualStrings("P", monitors[0].deviceName);
+    try std.testing.expectEqualStrings("A", monitors[1].deviceName);
+    try std.testing.expectEqualStrings("B", monitors[2].deviceName);
+    try std.testing.expectEqualStrings("C", monitors[3].deviceName);
 }
