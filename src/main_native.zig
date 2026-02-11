@@ -644,8 +644,8 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = if (inherit_stdio) .Inherit else .Ignore;
-    child.stderr_behavior = if (inherit_stdio) .Inherit else .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
     if (builtin.os.tag == .windows) {
         child.create_no_window = true;
     }
@@ -655,10 +655,29 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
         return false;
     };
 
+    var stdout_buf = std.ArrayList(u8).empty;
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayList(u8).empty;
+    defer stderr_buf.deinit(allocator);
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 256 * 1024) catch |err| {
+        logger.err("node service: collect output failed: {}", .{err});
+        _ = child.kill() catch {};
+        return false;
+    };
+
     const term = child.wait() catch |err| {
         logger.err("node service: wait failed: {}", .{err});
         return false;
     };
+
+    if (inherit_stdio) {
+        if (stdout_buf.items.len > 0) {
+            _ = std.fs.File.stdout().write(stdout_buf.items) catch {};
+        }
+        if (stderr_buf.items.len > 0) {
+            _ = std.fs.File.stderr().write(stderr_buf.items) catch {};
+        }
+    }
 
     switch (term) {
         .Exited => |code| {
@@ -667,6 +686,12 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
                 return true;
             } else {
                 logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+                if (stdout_buf.items.len > 0) {
+                    logger.err("node service: {s} stdout: {s}", .{ @tagName(job.kind), stdout_buf.items });
+                }
+                if (stderr_buf.items.len > 0) {
+                    logger.err("node service: {s} stderr: {s}", .{ @tagName(job.kind), stderr_buf.items });
+                }
                 return false;
             }
         },

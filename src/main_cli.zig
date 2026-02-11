@@ -115,6 +115,172 @@ fn runSelfCliCommand(allocator: std.mem.Allocator, sub_args: []const []const u8)
     if (code != 0) return error.CommandFailed;
 }
 
+const SelfCliCommandResult = struct {
+    exit_code: u8,
+    stdout: []u8,
+    stderr: []u8,
+
+    fn deinit(self: *SelfCliCommandResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runSelfCliCommandCapture(allocator: std.mem.Allocator, sub_args: []const []const u8) !SelfCliCommandResult {
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, self_exe);
+    try argv.appendSlice(allocator, sub_args);
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+
+    try child.spawn();
+    errdefer _ = child.kill() catch {};
+
+    var stdout_buf = std.ArrayList(u8).empty;
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayList(u8).empty;
+    defer stderr_buf.deinit(allocator);
+    try child.collectOutput(allocator, &stdout_buf, &stderr_buf, 256 * 1024);
+
+    const term = try child.wait();
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
+
+    return .{
+        .exit_code = code,
+        .stdout = try stdout_buf.toOwnedSlice(allocator),
+        .stderr = try stderr_buf.toOwnedSlice(allocator),
+    };
+}
+
+fn writeCapturedOutput(result: *const SelfCliCommandResult) void {
+    if (result.stdout.len > 0) {
+        _ = std.fs.File.stdout().write(result.stdout) catch {};
+    }
+    if (result.stderr.len > 0) {
+        _ = std.fs.File.stderr().write(result.stderr) catch {};
+    }
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            const a = std.ascii.toLower(haystack[i + j]);
+            const b = std.ascii.toLower(needle[j]);
+            if (a != b) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
+fn outputSuggestsAccessDenied(buf: []const u8) bool {
+    return containsIgnoreCase(buf, "access denied") or
+        containsIgnoreCase(buf, "requires elevation") or
+        containsIgnoreCase(buf, "elevation required") or
+        containsIgnoreCase(buf, "error_access_denied");
+}
+
+fn appendPowershellSingleQuoted(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    try out.append(allocator, '\'');
+    for (value) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    try out.append(allocator, '\'');
+}
+
+fn runSelfCliCommandElevatedWindows(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    var quoted_exe = std.ArrayList(u8).empty;
+    defer quoted_exe.deinit(allocator);
+    try appendPowershellSingleQuoted(allocator, &quoted_exe, self_exe);
+
+    var quoted_args = std.ArrayList(u8).empty;
+    defer quoted_args.deinit(allocator);
+    for (sub_args, 0..) |arg, idx| {
+        if (idx != 0) try quoted_args.append(allocator, ',');
+        try appendPowershellSingleQuoted(allocator, &quoted_args, arg);
+    }
+
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath {s} -ArgumentList @({s}) -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        .{ quoted_exe.items, quoted_args.items },
+    );
+    defer allocator.free(script);
+
+    const argv = &[_][]const u8{
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    };
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    child.create_no_window = true;
+    try child.spawn();
+
+    const term = try child.wait();
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
+    if (code != 0) return error.CommandFailed;
+}
+
+fn runSelfCliCommandWithWindowsElevationFallback(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    var result = try runSelfCliCommandCapture(allocator, sub_args);
+    defer result.deinit(allocator);
+
+    writeCapturedOutput(&result);
+    if (result.exit_code == 0) return;
+
+    if (builtin.os.tag == .windows and
+        (outputSuggestsAccessDenied(result.stderr) or outputSuggestsAccessDenied(result.stdout)))
+    {
+        logger.warn("Command needs elevation; re-running with UAC prompt.", .{});
+        try runSelfCliCommandElevatedWindows(allocator, sub_args);
+        return;
+    }
+
+    return error.CommandFailed;
+}
+
 fn appendProfileCommonArgs(
     allocator: std.mem.Allocator,
     argv: *std.ArrayList([]const u8),
@@ -1101,12 +1267,50 @@ pub fn main() !void {
                 _ = std.fs.File.stdout().write("Applied profile: client (no node runner, no tray startup)\n") catch {};
                 return;
             },
-            .service, .session => |mode| {
-                const mode_label: []const u8 = if (mode == .service) "service" else "session";
-
+            .service => {
                 var install_cmd = std.ArrayList([]const u8).empty;
                 defer install_cmd.deinit(allocator);
-                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", mode_label });
+                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", "service" });
+                try appendProfileCommonArgs(
+                    allocator,
+                    &install_cmd,
+                    config_path_set,
+                    config_path,
+                    override_url,
+                    override_token,
+                    override_insecure,
+                    node_service_name,
+                );
+                try runSelfCliCommandWithWindowsElevationFallback(allocator, install_cmd.items);
+
+                var start_cmd = std.ArrayList([]const u8).empty;
+                defer start_cmd.deinit(allocator);
+                try start_cmd.appendSlice(allocator, &.{ "node", "runner", "start" });
+                if (node_service_name) |name| {
+                    try start_cmd.appendSlice(allocator, &.{ "--node-service-name", name });
+                }
+                try runSelfCliCommand(allocator, start_cmd.items);
+
+                installTrayStartup(allocator) catch |err| {
+                    if (err == error.AccessDenied) {
+                        logger.err("Tray startup install failed: access denied.", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+                _ = startTrayStartupTask(allocator) catch {};
+
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print(
+                    "Applied profile: {s} (runner active, tray startup installed)\n",
+                    .{"service"},
+                );
+                return;
+            },
+            .session => {
+                var install_cmd = std.ArrayList([]const u8).empty;
+                defer install_cmd.deinit(allocator);
+                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", "session" });
                 try appendProfileCommonArgs(
                     allocator,
                     &install_cmd,
@@ -1139,7 +1343,7 @@ pub fn main() !void {
                 var out = std.fs.File.stdout().deprecatedWriter();
                 try out.print(
                     "Applied profile: {s} (runner active, tray startup installed)\n",
-                    .{mode_label},
+                    .{"session"},
                 );
                 return;
             },
