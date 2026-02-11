@@ -226,9 +226,14 @@ fn runSelfCliCommandElevatedWindows(allocator: std.mem.Allocator, sub_args: []co
 
     var quoted_args = std.ArrayList(u8).empty;
     defer quoted_args.deinit(allocator);
-    for (sub_args, 0..) |arg, idx| {
-        if (idx != 0) try quoted_args.append(allocator, ',');
+    var first_arg = true;
+    for (sub_args) |arg| {
+        // PowerShell Start-Process rejects null/empty elements in -ArgumentList.
+        // Skip empty entries when elevating; profile apply already persists config before this path.
+        if (arg.len == 0) continue;
+        if (!first_arg) try quoted_args.append(allocator, ',');
         try appendPowershellSingleQuoted(allocator, &quoted_args, arg);
+        first_arg = false;
     }
 
     const script = try std.fmt.allocPrint(
