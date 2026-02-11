@@ -1200,11 +1200,27 @@ pub fn main() !void {
 
                 const svc_name = node_service_name orelse win_scm.defaultServiceName();
 
+                // UX: when installing boot mode, start it immediately so users can verify
+                // success without waiting for a reboot.
+                if (node_service_mode == .onstart) {
+                    win_scm.startService(allocator, svc_name) catch |err| switch (err) {
+                        win_scm.ServiceError.AccessDenied => {
+                            logger.warn("Installed service, but immediate start was denied (service will still start at boot).", .{});
+                        },
+                        else => {
+                            logger.warn("Installed service, but immediate start failed: {s}", .{@errorName(err)});
+                        },
+                    };
+                }
+
                 logger.info("Installed Windows SCM service for node-mode.", .{});
                 _ = std.fs.File.stdout().write("Installed Windows service for node-mode.\n") catch {};
                 _ = std.fs.File.stdout().write("Service name: ") catch {};
                 _ = std.fs.File.stdout().write(svc_name) catch {};
                 _ = std.fs.File.stdout().write("\n") catch {};
+                if (node_service_mode == .onstart) {
+                    _ = std.fs.File.stdout().write("Start: attempted immediate service start (in addition to Auto start at boot).\n") catch {};
+                }
                 _ = std.fs.File.stdout().write("Node logs: ") catch {};
                 _ = std.fs.File.stdout().write(log_path) catch {};
                 _ = std.fs.File.stdout().write("\n") catch {};

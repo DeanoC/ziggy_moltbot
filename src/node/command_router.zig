@@ -648,6 +648,9 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
         // Alias for tool/client compatibility.
         try obj.put("deviceId", std.json.Value{ .string = id });
         try obj.put("name", std.json.Value{ .string = try allocator.dupe(u8, dev.name) });
+        if (dev.position) |position| {
+            try obj.put("position", std.json.Value{ .string = try allocator.dupe(u8, position.toString()) });
+        }
         try out_devices.append(std.json.Value{ .object = obj });
     }
 
