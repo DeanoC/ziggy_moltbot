@@ -368,6 +368,71 @@ log "Running local build: zig build (required before auto-merge)"
 zig build
 
 for pr in "${merge_queue[@]}"; do
+  # Re-validate remote gates right before merge to avoid race windows where
+  # late-arriving review comments/check changes appear after queueing.
+  author=$(gh pr view "$pr" --repo "$REPO" --json author --jq '.author.login')
+  if [[ -z "$author" ]]; then
+    log "PR #$pr author lookup failed during pre-merge recheck; skipping"
+    continue
+  fi
+
+  isDraft=$(gh pr view "$pr" --repo "$REPO" --json isDraft --jq '.isDraft')
+  if [[ "$isDraft" == "true" ]]; then
+    log "PR #$pr became draft before merge; skipping"
+    continue
+  fi
+
+  has_no_auto=$(gh pr view "$pr" --repo "$REPO" --json labels --jq '[.labels[].name] | any(.=="no-auto-merge")')
+  if [[ "$has_no_auto" == "true" ]]; then
+    log "PR #$pr gained label no-auto-merge before merge; skipping"
+    continue
+  fi
+
+  mergeable=$(gh pr view "$pr" --repo "$REPO" --json mergeable --jq '.mergeable')
+  if [[ "$mergeable" != "MERGEABLE" ]]; then
+    log "PR #$pr no longer mergeable ($mergeable); skipping"
+    continue
+  fi
+
+  if ! gh pr checks "$pr" --repo "$REPO" >/tmp/zsc-pr-${pr}-checks-premerge.txt 2>&1; then
+    log "PR #$pr checks no longer green at pre-merge recheck; skipping"
+    continue
+  fi
+
+  if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
+    log "PR #$pr has unresolved blocking review threads at pre-merge recheck; skipping"
+    continue
+  fi
+
+  if ! has_min_age_for_self_merge "$pr" "$author"; then
+    log "PR #$pr failed min-age gate at pre-merge recheck; skipping"
+    continue
+  fi
+
+  reviewDecision=$(gh pr view "$pr" --repo "$REPO" --json reviewDecision --jq '.reviewDecision // ""')
+  if [[ "$reviewDecision" == "CHANGES_REQUESTED" ]]; then
+    log "PR #$pr reviewDecision=CHANGES_REQUESTED at pre-merge recheck; skipping"
+    continue
+  fi
+
+  if [[ -n "$reviewDecision" && "$reviewDecision" != "APPROVED" && "$author" != "DeanoC" ]]; then
+    log "PR #$pr reviewDecision=$reviewDecision at pre-merge recheck; skipping"
+    continue
+  fi
+
+  if [[ -z "$reviewDecision" && "$author" != "DeanoC" ]]; then
+    bot_lgtm_comment=$(gh api "repos/$REPO/issues/$pr/comments" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]") | .body) | any(test("👍"))')
+
+    bot_lgtm_reaction=$(gh api -H "Accept: application/vnd.github+json" "repos/$REPO/issues/$pr/reactions" \
+      --jq 'map(select(.user.login == "chatgpt-codex-connector[bot]" and .content == "+1")) | length > 0')
+
+    if [[ "$bot_lgtm_comment" != "true" && "$bot_lgtm_reaction" != "true" ]]; then
+      log "PR #$pr has no GitHub APPROVED review and no bot LGTM at pre-merge recheck; skipping"
+      continue
+    fi
+  fi
+
   url=$(gh pr view "$pr" --repo "$REPO" --json url --jq '.url')
   title=$(gh pr view "$pr" --repo "$REPO" --json title --jq '.title')
   log "Merging PR #$pr: $title ($url)"
