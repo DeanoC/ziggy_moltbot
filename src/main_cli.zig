@@ -681,6 +681,7 @@ pub fn main() !void {
     var config_path_set = false;
     var override_url: ?[]const u8 = null;
     var override_token: ?[]const u8 = null;
+    var override_token_set = false;
     var override_update_url: ?[]const u8 = null;
     var override_insecure: ?bool = null;
     var read_timeout_ms: u32 = 15_000;
@@ -944,7 +945,8 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--gateway-token")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
-            override_token = if (args[i].len > 0) args[i] else null;
+            override_token = args[i];
+            override_token_set = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1519,13 +1521,13 @@ pub fn main() !void {
         const storage_scope: node_register.StorageScope = .user;
 
         if (!cfg_exists or cfg_invalid) {
-            if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
-            } else if (override_url != null and override_token == null) {
+            if (override_url != null and override_token_set) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token orelse "", storage_scope);
+            } else if (override_url != null and !override_token_set) {
                 // Non-interactive-friendly behavior: allow empty token when URL is provided.
                 // Gateway deployments that require auth token will reject at connect/register time.
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
-            } else if (override_url == null and override_token != null) {
+            } else if (override_url == null and override_token_set) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
                 return error.InvalidArguments;
             } else if (cfg_invalid) {
@@ -1704,13 +1706,13 @@ pub fn main() !void {
             //
             // If only --url is provided, prompt only for the auth token (so users don't get stuck
             // at a URL prompt even though they already passed one).
-            if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
-            } else if (override_url != null and override_token == null) {
+            if (override_url != null and override_token_set) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token orelse "", storage_scope);
+            } else if (override_url != null and !override_token_set) {
                 // Non-interactive-friendly behavior: allow empty token when URL is provided.
                 // Gateway deployments that require auth token will reject at connect/register time.
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
-            } else if (override_url == null and override_token != null) {
+            } else if (override_url == null and override_token_set) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
                 return error.InvalidArguments;
             } else if (cfg_invalid) {
@@ -1934,7 +1936,8 @@ pub fn main() !void {
             cfg.server_url = url;
         }
     }
-    if (override_token) |token| {
+    if (override_token_set) {
+        const token = override_token orelse "";
         allocator.free(cfg.token);
         cfg.token = try allocator.dupe(u8, token);
     } else {
