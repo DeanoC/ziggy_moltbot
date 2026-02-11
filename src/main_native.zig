@@ -2314,6 +2314,7 @@ pub fn main() !void {
 
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
+            ctx.clearGatewayIdentity();
             // Requests may have been in-flight when the connection dropped.
             // Clear them so history can be requested again after reconnect.
             ctx.clearPendingRequests();
@@ -3017,6 +3018,7 @@ pub fn main() !void {
             next_reconnect_at_ms = 0;
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
+            ctx.clearGatewayIdentity();
             ctx.clearPendingRequests();
             ctx.clearAllSessionStates();
             ctx.clearNodes();
@@ -3238,6 +3240,7 @@ pub fn main() !void {
                 }
                 ws_client.disconnect();
                 ctx.state = .disconnected;
+                ctx.clearGatewayIdentity();
                 ctx.clearError();
                 next_ping_at_ms = 0;
             } else if (result.ok) {

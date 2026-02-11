@@ -14,6 +14,67 @@ test "client context init" {
     try std.testing.expectEqual(@as(usize, 0), ctx.sessions.items.len);
 }
 
+test "hello-ok response captures gateway identity compatibility" {
+    const allocator = std.testing.allocator;
+    var ctx = try state.ClientContext.init(allocator);
+    defer ctx.deinit();
+
+    const raw =
+        "{" ++
+        "\"type\":\"res\"," ++
+        "\"id\":\"req1\"," ++
+        "\"ok\":true," ++
+        "\"payload\":{" ++
+        "\"type\":\"hello-ok\"," ++
+        "\"server\":{" ++
+        "\"identity\":{" ++
+        "\"kind\":\"gateway\"," ++
+        "\"mode\":\"upstream\"," ++
+        "\"source\":\"openclaw/openclaw\"" ++
+        "}" ++
+        "}," ++
+        "\"auth\":{" ++
+        "\"deviceToken\":\"tok\"" ++
+        "}" ++
+        "}" ++
+        "}";
+
+    const update = try event_handler.handleRawMessage(&ctx, raw);
+    defer if (update) |u| u.deinit(allocator);
+
+    try std.testing.expect(update != null);
+    try std.testing.expectEqual(state.ClientState.connected, ctx.state);
+    try std.testing.expectEqual(state.GatewayCompatibilityMode.upstream, ctx.gateway_compatibility);
+    try std.testing.expect(ctx.gateway_identity.mode != null);
+    try std.testing.expectEqualStrings("upstream", ctx.gateway_identity.mode.?);
+}
+
+test "hello-ok response without identity keeps compatibility unknown" {
+    const allocator = std.testing.allocator;
+    var ctx = try state.ClientContext.init(allocator);
+    defer ctx.deinit();
+
+    const raw =
+        "{" ++
+        "\"type\":\"res\"," ++
+        "\"id\":\"req1\"," ++
+        "\"ok\":true," ++
+        "\"payload\":{" ++
+        "\"type\":\"hello-ok\"," ++
+        "\"auth\":{" ++
+        "\"deviceToken\":\"tok\"" ++
+        "}" ++
+        "}" ++
+        "}";
+
+    const update = try event_handler.handleRawMessage(&ctx, raw);
+    defer if (update) |u| u.deinit(allocator);
+
+    try std.testing.expect(update != null);
+    try std.testing.expectEqual(state.GatewayCompatibilityMode.unknown, ctx.gateway_compatibility);
+    try std.testing.expect(ctx.gateway_identity.mode == null);
+}
+
 test "client context message removal" {
     const allocator = std.testing.allocator;
     var ctx = try state.ClientContext.init(allocator);

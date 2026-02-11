@@ -10,6 +10,18 @@ pub const ClientState = enum {
     error_state,
 };
 
+pub const GatewayCompatibilityMode = enum {
+    unknown,
+    fork,
+    upstream,
+};
+
+pub const GatewayIdentity = struct {
+    kind: ?[]const u8 = null,
+    mode: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+};
+
 pub const NodeDescribe = struct {
     node_id: []const u8,
     payload_json: []const u8,
@@ -69,6 +81,8 @@ pub const ClientContext = struct {
     node_result: ?[]const u8 = null,
     sessions_updated: bool = false,
     update_state: update_checker.UpdateState = .{},
+    gateway_identity: GatewayIdentity = .{},
+    gateway_compatibility: GatewayCompatibilityMode = .unknown,
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
         return .{
@@ -101,11 +115,14 @@ pub const ClientContext = struct {
             .node_result = null,
             .sessions_updated = false,
             .update_state = .{},
+            .gateway_identity = .{},
+            .gateway_compatibility = .unknown,
         };
     }
 
     pub fn deinit(self: *ClientContext) void {
         self.update_state.deinit(self.allocator);
+        self.clearGatewayIdentity();
         if (self.current_session) |session| {
             self.allocator.free(session);
             self.current_session = null;
@@ -712,6 +729,40 @@ pub const ClientContext = struct {
         self.clearPendingApprovalResolveRequest();
     }
 
+    pub fn setGatewayIdentity(
+        self: *ClientContext,
+        kind: ?[]const u8,
+        mode: ?[]const u8,
+        source: ?[]const u8,
+    ) !void {
+        self.clearGatewayIdentity();
+
+        if (kind) |value| {
+            self.gateway_identity.kind = try self.allocator.dupe(u8, value);
+        }
+        if (mode) |value| {
+            self.gateway_identity.mode = try self.allocator.dupe(u8, value);
+        }
+        if (source) |value| {
+            self.gateway_identity.source = try self.allocator.dupe(u8, value);
+        }
+
+        self.gateway_compatibility = classifyGatewayCompatibility(
+            self.gateway_identity.kind,
+            self.gateway_identity.mode,
+            self.gateway_identity.source,
+        );
+    }
+
+    pub fn clearGatewayIdentity(self: *ClientContext) void {
+        if (self.gateway_identity.kind) |value| self.allocator.free(value);
+        if (self.gateway_identity.mode) |value| self.allocator.free(value);
+        if (self.gateway_identity.source) |value| self.allocator.free(value);
+
+        self.gateway_identity = .{};
+        self.gateway_compatibility = .unknown;
+    }
+
     pub fn setError(self: *ClientContext, message: []const u8) !void {
         self.clearError();
         self.last_error = try self.allocator.dupe(u8, message);
@@ -980,6 +1031,29 @@ fn freeStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) void 
         }
         allocator.free(items);
     }
+}
+
+fn classifyGatewayCompatibility(
+    kind: ?[]const u8,
+    mode: ?[]const u8,
+    source: ?[]const u8,
+) GatewayCompatibilityMode {
+    if (mode) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "fork")) return .fork;
+        if (std.ascii.eqlIgnoreCase(value, "upstream")) return .upstream;
+    }
+
+    if (kind) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "fork")) return .fork;
+        if (std.ascii.eqlIgnoreCase(value, "upstream")) return .upstream;
+    }
+
+    if (source) |value| {
+        if (std.ascii.eqlIgnoreCase(value, "fork")) return .fork;
+        if (std.ascii.eqlIgnoreCase(value, "upstream")) return .upstream;
+    }
+
+    return .unknown;
 }
 
 fn cloneUser(allocator: std.mem.Allocator, user: types.User) !types.User {

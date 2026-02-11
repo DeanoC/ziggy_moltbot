@@ -984,6 +984,7 @@ fn drawWorkspaceHost(
         agent_name,
         session_label,
         message_count,
+        ctx.gateway_compatibility,
         ctx.last_error,
     );
 
@@ -1220,6 +1221,7 @@ fn drawFullscreenHost(
         null,
         null,
         0,
+        ctx.gateway_compatibility,
         ctx.last_error,
     );
 }
