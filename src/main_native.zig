@@ -1804,7 +1804,6 @@ fn ensureWritableWorkingDirOnWindows(allocator: std.mem.Allocator, fallback_dir:
     probe.close();
     _ = std.fs.cwd().deleteFile(probe_name) catch {};
 }
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
@@ -1891,6 +1890,7 @@ pub fn main() !void {
     const install_profile_only = install_profile_only_requested;
     var install_profile_user_interacted = !install_profile_only;
     const install_profile_close_guard_until_ms: i64 = if (install_profile_only) std.time.milliTimestamp() + 3000 else 0;
+    var install_profile_action_armed_at_ms: i64 = 0;
     ui.setInstallerProfileOnlyMode(install_profile_only);
     logger.info(
         "Windows profile setup mode: requested={} effective={} setup_completed={}",
@@ -2202,6 +2202,10 @@ pub fn main() !void {
             }
         }
         auto_connect_pending = false;
+    }
+
+    if (install_profile_only) {
+        install_profile_action_armed_at_ms = std.time.milliTimestamp() + 900;
     }
 
     var should_close = false;
@@ -2892,6 +2896,10 @@ pub fn main() !void {
                 if (install_profile_only) {
                     if (!install_profile_user_interacted) {
                         logger.info("Ignoring onboarding profile action before explicit user interaction.", .{});
+                        continue;
+                    }
+                    if (std.time.milliTimestamp() < install_profile_action_armed_at_ms) {
+                        logger.info("Ignoring startup profile action before onboarding UI is armed.", .{});
                         continue;
                     }
                     const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
