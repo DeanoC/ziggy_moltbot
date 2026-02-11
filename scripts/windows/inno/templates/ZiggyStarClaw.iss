@@ -72,13 +72,13 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profi
 ; Service node profile (system service in elevated context)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode service --url ""{code:GetServerUrl}"" --gateway-token ""{code:GetGatewayToken}"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
-; Tray startup should be per-user; run this part as the original user context.
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileService
+; Tray startup task installation is handled during installer apply flow.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session --url ""{code:GetServerUrl}"" --gateway-token ""{code:GetGatewayToken}"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
