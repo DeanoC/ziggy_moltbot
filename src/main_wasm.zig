@@ -1171,6 +1171,7 @@ export fn molt_ws_on_close(code: c_int) void {
     clearConnectNonce();
     ws_opened_ms = 0;
     ctx.state = .disconnected;
+    ctx.clearGatewayIdentity();
     ctx.clearPendingRequests();
     logger.warn("WebSocket closed (code={d})", .{code});
 }
@@ -1446,6 +1447,7 @@ fn frame() callconv(.c) void {
     if (ui_action.disconnect) {
         closeWebSocket();
         ctx.state = .disconnected;
+        ctx.clearGatewayIdentity();
         app_state_state.last_connected = false;
         saveAppStateToStorage();
         ctx.clearPendingRequests();
