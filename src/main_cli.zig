@@ -68,6 +68,136 @@ fn linuxHomeDirForUser(allocator: std.mem.Allocator, username: []const u8) ![]u8
     return error.FileNotFound;
 }
 
+fn resolveSiblingExecutablePath(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    const dir = std.fs.path.dirname(self_exe) orelse ".";
+    const candidate = try std.fs.path.join(allocator, &.{ dir, name });
+
+    std.fs.cwd().access(candidate, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            allocator.free(candidate);
+            return allocator.dupe(u8, name);
+        },
+        else => {
+            allocator.free(candidate);
+            return err;
+        },
+    };
+
+    return candidate;
+}
+
+fn runSelfCliCommand(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, self_exe);
+    try argv.appendSlice(allocator, sub_args);
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+
+    try child.spawn();
+    const term = try child.wait();
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
+    if (code != 0) return error.CommandFailed;
+}
+
+fn appendProfileCommonArgs(
+    allocator: std.mem.Allocator,
+    argv: *std.ArrayList([]const u8),
+    config_path_set: bool,
+    config_path: []const u8,
+    override_url: ?[]const u8,
+    override_token: ?[]const u8,
+    override_insecure: ?bool,
+    node_service_name: ?[]const u8,
+) !void {
+    if (config_path_set) {
+        try argv.append(allocator, "--config");
+        try argv.append(allocator, config_path);
+    }
+    if (override_url) |url| {
+        try argv.append(allocator, "--url");
+        try argv.append(allocator, url);
+    }
+    if (override_token) |tok| {
+        try argv.append(allocator, "--gateway-token");
+        try argv.append(allocator, tok);
+    }
+    if (override_insecure orelse false) {
+        try argv.append(allocator, "--insecure-tls");
+    }
+    if (node_service_name) |name| {
+        try argv.append(allocator, "--node-service-name");
+        try argv.append(allocator, name);
+    }
+}
+
+const tray_startup_task_name = "ZiggyStarClaw Tray";
+
+fn installTrayStartup(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+
+    const tray_exe = try resolveSiblingExecutablePath(allocator, "ziggystarclaw-tray.exe");
+    defer allocator.free(tray_exe);
+
+    const task_run = try std.fmt.allocPrint(allocator, "\"{s}\"", .{tray_exe});
+    defer allocator.free(task_run);
+
+    win_service.installTaskCommand(allocator, task_run, .onlogon, tray_startup_task_name) catch |err| switch (err) {
+        win_service.ServiceError.AccessDenied => return error.AccessDenied,
+        else => return err,
+    };
+}
+
+fn uninstallTrayStartup(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+    _ = win_service.stopTask(allocator, tray_startup_task_name) catch {};
+    win_service.uninstallTask(allocator, tray_startup_task_name) catch |err| switch (err) {
+        win_service.ServiceError.AccessDenied => return error.AccessDenied,
+        else => return err,
+    };
+}
+
+fn startTrayStartupTask(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+    win_service.startTask(allocator, tray_startup_task_name) catch |err| switch (err) {
+        win_service.ServiceError.AccessDenied => return error.AccessDenied,
+        win_service.ServiceError.NotInstalled => return error.NotInstalled,
+        else => return err,
+    };
+}
+
+fn stopTrayStartupTask(allocator: std.mem.Allocator) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+    win_service.stopTask(allocator, tray_startup_task_name) catch |err| switch (err) {
+        win_service.ServiceError.AccessDenied => return error.AccessDenied,
+        win_service.ServiceError.NotInstalled => return error.NotInstalled,
+        else => return err,
+    };
+}
+
+fn trayStartupInstalled(allocator: std.mem.Allocator) !bool {
+    if (builtin.os.tag != .windows) return false;
+    return win_service.taskInstalled(allocator, tray_startup_task_name) catch |err| switch (err) {
+        win_service.ServiceError.AccessDenied => return error.AccessDenied,
+        else => false,
+    };
+}
+
 fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Windows-only: legacy headless supervisor (used by the older Task Scheduler service MVP).
     // Keeps a named-pipe control channel so the tray app can query status and request
@@ -301,6 +431,10 @@ const usage =
     \\  node runner install --mode <m>  Switch runner mode: service|session
     \\  node runner start|stop|status   Control the active runner mode
     \\  node session <action>           Manage user-session runner: install|uninstall|start|stop|status
+    \\  node profile apply --profile <p> Installer profile apply: client|service|session
+    \\
+    \\Tray startup (Windows)
+    \\  tray install-startup|uninstall-startup|start|stop|status
     \\
     \\Node service helpers (Windows SCM service / Linux systemd)
     \\  node service <action>      Convenience: install|uninstall|start|stop|status
@@ -420,6 +554,16 @@ pub fn main() !void {
     var node_runner_status = false;
     var node_runner_mode: ?RunnerInstallMode = null;
 
+    const ProfileInstallMode = enum { client, service, session };
+    var node_profile_apply = false;
+    var node_profile_mode: ?ProfileInstallMode = null;
+
+    var tray_install_startup = false;
+    var tray_uninstall_startup = false;
+    var tray_start_startup = false;
+    var tray_stop_startup = false;
+    var tray_status_startup = false;
+
     // Internal: when invoked by Windows Service Control Manager (SCM).
     var windows_service_run = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
@@ -520,6 +664,29 @@ pub fn main() !void {
                 continue;
             }
 
+            if (std.mem.eql(u8, noun, "profile")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "apply")) {
+                    node_profile_apply = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node profile action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node profile <action>".
+                i += 2;
+                continue;
+            }
+
             if (!std.mem.eql(u8, noun, "service")) {
                 logger.err("Unknown subcommand: node {s}", .{noun});
                 return error.InvalidArguments;
@@ -551,6 +718,34 @@ pub fn main() !void {
 
             // Skip "node service <action>".
             i += 2;
+        } else if (i == 1 and std.mem.eql(u8, arg, "tray")) {
+            if (i + 1 >= args.len) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            }
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "install-startup")) {
+                tray_install_startup = true;
+            } else if (std.mem.eql(u8, action, "uninstall-startup")) {
+                tray_uninstall_startup = true;
+            } else if (std.mem.eql(u8, action, "start")) {
+                tray_start_startup = true;
+            } else if (std.mem.eql(u8, action, "stop")) {
+                tray_stop_startup = true;
+            } else if (std.mem.eql(u8, action, "status")) {
+                tray_status_startup = true;
+            } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                var stdout = std.fs.File.stdout().deprecatedWriter();
+                try stdout.writeAll(usage);
+                return;
+            } else {
+                logger.err("Unknown tray action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
+            // Skip "tray <action>".
+            i += 1;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -719,6 +914,19 @@ pub fn main() !void {
             } else {
                 return error.InvalidArguments;
             }
+        } else if (std.mem.eql(u8, arg, "--profile")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "client")) {
+                node_profile_mode = .client;
+            } else if (std.mem.eql(u8, v, "service")) {
+                node_profile_mode = .service;
+            } else if (std.mem.eql(u8, v, "session")) {
+                node_profile_mode = .session;
+            } else {
+                return error.InvalidArguments;
+            }
         } else if (std.mem.eql(u8, arg, "--windows-service")) {
             // handled by pre-scan; keep parsing so we accept --config/--log-level/etc.
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
@@ -751,7 +959,8 @@ pub fn main() !void {
         extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
         node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
-        node_runner_install or node_runner_start or node_runner_stop or node_runner_status;
+        node_runner_install or node_runner_start or node_runner_stop or node_runner_status or
+        node_profile_apply or tray_install_startup or tray_uninstall_startup or tray_start_startup or tray_stop_startup or tray_status_startup;
     if (!has_action) {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
@@ -782,6 +991,159 @@ pub fn main() !void {
             return;
         };
         return;
+    }
+
+    if (tray_install_startup or tray_uninstall_startup or tray_start_startup or tray_stop_startup or tray_status_startup) {
+        if (builtin.os.tag != .windows) {
+            logger.err("tray startup helpers are only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+
+        if (tray_install_startup) {
+            installTrayStartup(allocator) catch |err| {
+                if (err == error.AccessDenied) {
+                    logger.err("Tray startup install failed: access denied (try elevated PowerShell).", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+            _ = startTrayStartupTask(allocator) catch {};
+            _ = std.fs.File.stdout().write("Tray startup installed.\n") catch {};
+            return;
+        }
+        if (tray_uninstall_startup) {
+            uninstallTrayStartup(allocator) catch |err| {
+                if (err == error.AccessDenied) {
+                    logger.err("Tray startup uninstall failed: access denied (try elevated PowerShell).", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Tray startup uninstalled.\n") catch {};
+            return;
+        }
+        if (tray_start_startup) {
+            startTrayStartupTask(allocator) catch |err| {
+                if (err == error.AccessDenied) {
+                    logger.err("Tray startup task start failed: access denied.", .{});
+                    return error.AccessDenied;
+                }
+                if (err == error.NotInstalled) {
+                    logger.err("Tray startup task is not installed.", .{});
+                    return error.InvalidArguments;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write("Started tray startup task.\n") catch {};
+            return;
+        }
+        if (tray_stop_startup) {
+            _ = stopTrayStartupTask(allocator) catch {};
+            _ = std.fs.File.stdout().write("Stopped tray startup task.\n") catch {};
+            return;
+        }
+        if (tray_status_startup) {
+            const installed = trayStartupInstalled(allocator) catch |err| {
+                if (err == error.AccessDenied) {
+                    logger.err("Tray startup task query failed: access denied.", .{});
+                    return error.AccessDenied;
+                }
+                return err;
+            };
+            _ = std.fs.File.stdout().write(if (installed) "Tray startup: installed\n" else "Tray startup: not installed\n") catch {};
+            return;
+        }
+    }
+
+    if (node_profile_apply) {
+        if (builtin.os.tag != .windows) {
+            logger.err("node profile apply is only supported on Windows", .{});
+            return error.InvalidArguments;
+        }
+        if (node_profile_mode == null) {
+            logger.err("node profile apply requires --profile client|service|session", .{});
+            return error.InvalidArguments;
+        }
+
+        switch (node_profile_mode.?) {
+            .client => {
+                const runner_name = node_service_name orelse win_scm.defaultServiceName();
+                _ = win_control_pipe.requestOk(allocator, "stop") catch null;
+
+                _ = win_service.stopTask(allocator, runner_name) catch {};
+                win_service.uninstallTask(allocator, runner_name) catch |err| switch (err) {
+                    win_service.ServiceError.AccessDenied => {
+                        logger.err("Cannot remove user-session runner: access denied.", .{});
+                        return error.AccessDenied;
+                    },
+                    else => {},
+                };
+
+                _ = win_scm.stopService(allocator, runner_name) catch {};
+                win_scm.uninstallService(allocator, runner_name) catch |err| switch (err) {
+                    win_scm.ServiceError.AccessDenied => {
+                        logger.err("Cannot remove Windows service runner: access denied.", .{});
+                        logger.err("Fix: run in elevated PowerShell: ziggystarclaw-cli node service uninstall", .{});
+                        return error.AccessDenied;
+                    },
+                    else => {},
+                };
+
+                _ = stopTrayStartupTask(allocator) catch {};
+                uninstallTrayStartup(allocator) catch |err| {
+                    if (err == error.AccessDenied) {
+                        logger.err("Cannot remove tray startup task: access denied.", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+
+                _ = std.fs.File.stdout().write("Applied profile: client (no node runner, no tray startup)\n") catch {};
+                return;
+            },
+            .service, .session => |mode| {
+                const mode_label: []const u8 = if (mode == .service) "service" else "session";
+
+                var install_cmd = std.ArrayList([]const u8).empty;
+                defer install_cmd.deinit(allocator);
+                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", mode_label });
+                try appendProfileCommonArgs(
+                    allocator,
+                    &install_cmd,
+                    config_path_set,
+                    config_path,
+                    override_url,
+                    override_token,
+                    override_insecure,
+                    node_service_name,
+                );
+                try runSelfCliCommand(allocator, install_cmd.items);
+
+                var start_cmd = std.ArrayList([]const u8).empty;
+                defer start_cmd.deinit(allocator);
+                try start_cmd.appendSlice(allocator, &.{ "node", "runner", "start" });
+                if (node_service_name) |name| {
+                    try start_cmd.appendSlice(allocator, &.{ "--node-service-name", name });
+                }
+                try runSelfCliCommand(allocator, start_cmd.items);
+
+                installTrayStartup(allocator) catch |err| {
+                    if (err == error.AccessDenied) {
+                        logger.err("Tray startup install failed: access denied.", .{});
+                        return error.AccessDenied;
+                    }
+                    return err;
+                };
+                _ = startTrayStartupTask(allocator) catch {};
+
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print(
+                    "Applied profile: {s} (runner active, tray startup installed)\n",
+                    .{mode_label},
+                );
+                return;
+            },
+        }
     }
 
     // Node runner helpers (Windows): select between SCM service mode and user-session runner mode.

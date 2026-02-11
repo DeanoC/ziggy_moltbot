@@ -32,7 +32,12 @@ pub const SettingsAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
-    // Windows node runner helpers (SCM service)
+    // Windows install profile helpers
+    node_profile_apply_client: bool = false,
+    node_profile_apply_service: bool = false,
+    node_profile_apply_session: bool = false,
+
+    // Windows node runner helpers (advanced/manual)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
     node_service_stop: bool = false,
@@ -100,6 +105,7 @@ pub fn draw(
     app_version: []const u8,
     rect_override: ?draw_context.Rect,
     window_theme_pack_override: ?[]const u8,
+    install_profile_only_mode: bool,
 ) SettingsAction {
     var action = SettingsAction{};
     const t = theme.activeTheme();
@@ -133,8 +139,10 @@ pub fn draw(
     const start_y = cursor_y;
     const card_x = content_rect.min[0] + t.spacing.md;
 
-    cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, window_theme_pack_override, card_x, cursor_y, card_width, &action);
-    cursor_y += t.spacing.md;
+    if (!install_profile_only_mode) {
+        cursor_y += drawAppearanceCard(&dc, queue, allocator, cfg, window_theme_pack_override, card_x, cursor_y, card_width, &action);
+        cursor_y += t.spacing.md;
+    }
 
     const server_text = editorText(server_editor);
     const connect_host_text = editorText(connect_host_editor);
@@ -163,7 +171,7 @@ pub fn draw(
 
     // Appearance toggles (theme mode / quick pack buttons / profile buttons) should feel persistent.
     // If they changed, apply + request save immediately.
-    if (appearance_changed) {
+    if (!install_profile_only_mode and appearance_changed) {
         appearance_changed = false;
         if (applyAppearanceConfig(allocator, cfg, theme_pack_text, profileLabel(profile_choice))) {
             action.config_updated = true;
@@ -171,40 +179,45 @@ pub fn draw(
         }
     }
 
-    cursor_y += drawConnectionCard(
-        &dc,
-        queue,
-        allocator,
-        cfg,
-        card_x,
-        cursor_y,
-        card_width,
-        client_state,
-        is_connected,
-        show_insecure_tls,
-        dirty,
-        &action,
-    );
-    cursor_y += t.spacing.md;
+    const snapshot = update_state.snapshot();
 
-    if (builtin.os.tag == .windows) {
-        cursor_y += drawWindowsNodeServiceCard(&dc, queue, allocator, cfg, card_x, cursor_y, card_width, &action);
+    if (!install_profile_only_mode) {
+        cursor_y += drawConnectionCard(
+            &dc,
+            queue,
+            allocator,
+            cfg,
+            card_x,
+            cursor_y,
+            card_width,
+            client_state,
+            is_connected,
+            show_insecure_tls,
+            dirty,
+            &action,
+        );
         cursor_y += t.spacing.md;
     }
 
-    const snapshot = update_state.snapshot();
-    cursor_y += drawUpdatesCard(
-        &dc,
-        queue,
-        allocator,
-        cfg,
-        card_x,
-        cursor_y,
-        card_width,
-        snapshot,
-        app_version,
-        &action,
-    );
+    if (builtin.os.tag == .windows) {
+        cursor_y += drawWindowsNodeServiceCard(&dc, queue, allocator, cfg, card_x, cursor_y, card_width, &action, install_profile_only_mode);
+        if (!install_profile_only_mode) cursor_y += t.spacing.md;
+    }
+
+    if (!install_profile_only_mode) {
+        cursor_y += drawUpdatesCard(
+            &dc,
+            queue,
+            allocator,
+            cfg,
+            card_x,
+            cursor_y,
+            card_width,
+            snapshot,
+            app_version,
+            &action,
+        );
+    }
 
     const content_height = cursor_y + scroll_y - start_y;
     scroll_max = @max(0.0, content_height - content_rect.size()[1] + t.spacing.md);
@@ -920,6 +933,7 @@ fn drawWindowsNodeServiceCard(
     y: f32,
     width: f32,
     action: *SettingsAction,
+    profile_only: bool,
 ) f32 {
     _ = allocator;
     const t = dc.theme;
@@ -932,89 +946,130 @@ fn drawWindowsNodeServiceCard(
     height += line_height + t.spacing.xs;
     height += line_height + t.spacing.sm;
     height += button_height + t.spacing.sm;
-    height += button_height + padding;
+    if (!profile_only) {
+        height += line_height + t.spacing.sm;
+        height += button_height + t.spacing.sm;
+        height += button_height + padding;
+    } else {
+        height += padding;
+    }
 
     const rect = draw_context.Rect.fromMinSize(.{ x, y }, .{ width, height });
-    const base = drawCardBase(dc, rect, "Windows Node Runner");
+    const base = drawCardBase(dc, rect, "Windows Install Profile");
     var cursor_y = base.cursor_y;
 
     const content_x = base.inner_rect.min[0] + padding;
+    const has_url = cfg.server_url.len > 0;
 
     dc.drawText(
-        "Installs a Scheduled Task that runs node-mode at user logon (recommended for camera/screen/browser).",
+        "Client is always installed. Choose one profile; the app migrates runner mode automatically.",
         .{ content_x, cursor_y },
         .{ .color = t.colors.text_secondary },
     );
     cursor_y += line_height + t.spacing.xs;
 
     dc.drawText(
-        "Logs: node-service.log (next to config.json)",
+        "Service profile is reliable (limited desktop access). Session profile is interactive (camera/screen/browser).",
         .{ content_x, cursor_y },
         .{ .color = t.colors.text_secondary },
     );
     cursor_y += line_height + t.spacing.sm;
 
-    const has_url = cfg.server_url.len > 0;
-
     var cursor_x = content_x;
-    const install_label = "Install (Start on login)";
-    const install_w = buttonWidth(dc, install_label, t);
+    const client_label = "Pure Client";
+    const client_w = buttonWidth(dc, client_label, t);
     if (widgets.button.draw(
         dc,
-        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ install_w, button_height }),
-        install_label,
-        queue,
-        .{ .variant = .primary, .disabled = !has_url },
-    )) {
-        action.node_service_install_onlogon = true;
-    }
-    cursor_x += install_w + t.spacing.sm;
-
-    const open_logs_label = "Open logs";
-    const open_logs_w = buttonWidth(dc, open_logs_label, t);
-    if (widgets.button.draw(
-        dc,
-        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ open_logs_w, button_height }),
-        open_logs_label,
+        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ client_w, button_height }),
+        client_label,
         queue,
         .{ .variant = .secondary },
     )) {
-        action.open_node_logs = true;
+        action.node_profile_apply_client = true;
+    }
+    cursor_x += client_w + t.spacing.sm;
+
+    const service_label = "Service Node";
+    const service_w = buttonWidth(dc, service_label, t);
+    if (widgets.button.draw(
+        dc,
+        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ service_w, button_height }),
+        service_label,
+        queue,
+        .{ .variant = .primary, .disabled = !has_url },
+    )) {
+        action.node_profile_apply_service = true;
+    }
+    cursor_x += service_w + t.spacing.sm;
+    const session_label = "User Session Node";
+    const session_w = buttonWidth(dc, session_label, t);
+    if (widgets.button.draw(
+        dc,
+        draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ session_w, button_height }),
+        session_label,
+        queue,
+        .{ .variant = .primary, .disabled = !has_url },
+    )) {
+        action.node_profile_apply_session = true;
     }
     cursor_y += button_height + t.spacing.sm;
 
-    cursor_x = content_x;
-    const start_label = "Start";
-    const start_w = buttonWidth(dc, start_label, t);
-    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ start_w, button_height }), start_label, queue, .{ .variant = .secondary })) {
-        action.node_service_start = true;
-    }
-    cursor_x += start_w + t.spacing.sm;
+    if (!profile_only) {
+        dc.drawText(
+            "Advanced manual controls",
+            .{ content_x, cursor_y },
+            .{ .color = t.colors.text_secondary },
+        );
+        cursor_y += line_height + t.spacing.sm;
 
-    const stop_label = "Stop";
-    const stop_w = buttonWidth(dc, stop_label, t);
-    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ stop_w, button_height }), stop_label, queue, .{ .variant = .secondary })) {
-        action.node_service_stop = true;
-    }
-    cursor_x += stop_w + t.spacing.sm;
+        cursor_x = content_x;
+        const install_label = "Install session task";
+        const install_w = buttonWidth(dc, install_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ install_w, button_height }), install_label, queue, .{ .variant = .secondary })) {
+            action.node_service_install_onlogon = true;
+        }
+        cursor_x += install_w + t.spacing.sm;
 
-    const status_label = "Status";
-    const status_w = buttonWidth(dc, status_label, t);
-    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ status_w, button_height }), status_label, queue, .{ .variant = .ghost })) {
-        action.node_service_status = true;
-    }
-    cursor_x += status_w + t.spacing.sm;
+        const open_logs_label = "Open logs";
+        const open_logs_w = buttonWidth(dc, open_logs_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ open_logs_w, button_height }), open_logs_label, queue, .{ .variant = .secondary })) {
+            action.open_node_logs = true;
+        }
+        cursor_y += button_height + t.spacing.sm;
 
-    const uninstall_label = "Uninstall";
-    const uninstall_w = buttonWidth(dc, uninstall_label, t);
-    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ uninstall_w, button_height }), uninstall_label, queue, .{ .variant = .ghost })) {
-        action.node_service_uninstall = true;
+        cursor_x = content_x;
+        const start_label = "Start";
+        const start_w = buttonWidth(dc, start_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ start_w, button_height }), start_label, queue, .{ .variant = .secondary })) {
+            action.node_service_start = true;
+        }
+        cursor_x += start_w + t.spacing.sm;
+
+        const stop_label = "Stop";
+        const stop_w = buttonWidth(dc, stop_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ stop_w, button_height }), stop_label, queue, .{ .variant = .secondary })) {
+            action.node_service_stop = true;
+        }
+        cursor_x += stop_w + t.spacing.sm;
+
+        const status_label = "Status";
+        const status_w = buttonWidth(dc, status_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ status_w, button_height }), status_label, queue, .{ .variant = .ghost })) {
+            action.node_service_status = true;
+        }
+        cursor_x += status_w + t.spacing.sm;
+
+        const uninstall_label = "Uninstall";
+        const uninstall_w = buttonWidth(dc, uninstall_label, t);
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ uninstall_w, button_height }), uninstall_label, queue, .{ .variant = .ghost })) {
+            action.node_service_uninstall = true;
+        }
     }
 
     if (!has_url) {
         // Tiny hint; keep it subtle.
         dc.drawText(
-            "(Set Server URL above before installing)",
+            "(Set Server URL above before applying service/session profiles)",
             .{ content_x, cursor_y + button_height + t.spacing.xs },
             .{ .color = t.colors.text_secondary },
         );

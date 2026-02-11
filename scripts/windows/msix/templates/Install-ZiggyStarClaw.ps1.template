@@ -1,0 +1,59 @@
+param(
+  [switch]$SkipCertInstall,
+  [switch]$SkipLaunchProfileSetup
+)
+
+$ErrorActionPreference = 'Stop'
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$certPath = Join-Path $scriptDir 'DeanoC.cer'
+$appinstallerPath = Join-Path $scriptDir 'ZiggyStarClaw.appinstaller'
+$packageName = '@@PACKAGE_NAME@@'
+$appId = '@@APP_ID@@'
+$launchArgs = '--install-profile-only'
+
+if (-not (Test-Path $appinstallerPath)) {
+  throw "Missing appinstaller file: $appinstallerPath"
+}
+
+if (-not $SkipCertInstall) {
+  if (-not (Test-Path $certPath)) {
+    throw "Missing cert file: $certPath"
+  }
+  Write-Host "Installing test cert into CurrentUser\\TrustedPeople..." -ForegroundColor Cyan
+  Import-Certificate -FilePath $certPath -CertStoreLocation 'Cert:\CurrentUser\TrustedPeople' | Out-Null
+}
+
+Write-Host "Opening App Installer..." -ForegroundColor Cyan
+$installerProc = Start-Process -FilePath $appinstallerPath -PassThru
+if ($installerProc) {
+  try { $installerProc.WaitForExit() } catch {}
+}
+
+$pkg = $null
+$deadline = (Get-Date).AddMinutes(2)
+while ((Get-Date) -lt $deadline) {
+  $pkg = Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue
+  if ($pkg) { break }
+  Start-Sleep -Milliseconds 500
+}
+
+if (-not $pkg) {
+  throw "Package '$packageName' was not detected as installed."
+}
+
+if ($SkipLaunchProfileSetup) {
+  Write-Host "Install complete. Skipped profile setup launch." -ForegroundColor Green
+  exit 0
+}
+
+$exePath = Join-Path $pkg.InstallLocation 'ziggystarclaw-client.exe'
+if (Test-Path $exePath) {
+  Write-Host "Launching profile setup..." -ForegroundColor Cyan
+  Start-Process -FilePath $exePath -ArgumentList $launchArgs | Out-Null
+  exit 0
+}
+
+# Fallback activation (if direct exe launch path is unavailable).
+$appUserModelId = "$($pkg.PackageFamilyName)!$appId"
+Write-Warning "Executable path not accessible; launching via shell app id: $appUserModelId"
+Start-Process -FilePath "shell:AppsFolder\$appUserModelId" | Out-Null

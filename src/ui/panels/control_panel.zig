@@ -48,6 +48,10 @@ pub const ControlPanelAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
+    node_profile_apply_client: bool = false,
+    node_profile_apply_service: bool = false,
+    node_profile_apply_session: bool = false,
+
     // Windows node runner helpers (SCM service)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
@@ -93,6 +97,7 @@ pub fn draw(
     panel: *workspace.ControlPanel,
     rect_override: ?draw_context.Rect,
     window_theme_pack_override: ?[]const u8,
+    install_profile_only_mode: bool,
 ) ControlPanelAction {
     var action = ControlPanelAction{};
     const t = theme.activeTheme();
@@ -156,6 +161,7 @@ pub fn draw(
                 app_version,
                 content_rect,
                 window_theme_pack_override,
+                install_profile_only_mode,
             );
             action.connect = settings_action.connect;
             action.disconnect = settings_action.disconnect;
@@ -173,6 +179,9 @@ pub fn draw(
             action.open_download = settings_action.open_download;
             action.install_update = settings_action.install_update;
 
+            action.node_profile_apply_client = settings_action.node_profile_apply_client;
+            action.node_profile_apply_service = settings_action.node_profile_apply_service;
+            action.node_profile_apply_session = settings_action.node_profile_apply_session;
             action.node_service_install_onlogon = settings_action.node_service_install_onlogon;
             action.node_service_start = settings_action.node_service_start;
             action.node_service_stop = settings_action.node_service_stop;

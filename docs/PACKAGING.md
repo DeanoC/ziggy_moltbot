@@ -8,14 +8,15 @@ ZiggyStarClaw ships release bundles for Linux, Windows, Android, and WASM.
 scripts/package-release.sh
 ```
 
-## Windows MSIX + App Installer (MVP)
+## Windows Inno Setup Installer (current)
 
-MSIX packaging is currently driven by PowerShell scripts intended to run on a Windows packaging machine:
+Windows installer packaging is driven by Inno Setup scripts intended to run on a Windows packaging machine:
 
-- `scripts/windows/msix/README.md`
-- `scripts/windows/msix/Build-ZscMsix.ps1`
+- `scripts/windows/Build-ZscInstaller.ps1`
+- `scripts/windows/inno/README.md`
+- `scripts/windows/inno/Build-ZscInnoInstaller.ps1`
 
-See: `docs/spec_windows_msix_appinstaller_mvp.md`
+See: `docs/spec_windows_inno_installer_mvp.md`
 
 This will:
 - Build all targets (native, Windows, WASM, Android).
