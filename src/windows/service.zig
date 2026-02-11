@@ -176,9 +176,15 @@ pub fn installTaskCommand(
         try argv.append(allocator, "SYSTEM");
     }
 
-    // Best-effort: run at highest privileges when available.
+    // Run level:
+    // - ONLOGON tasks should stay in user context (LIMITED) so non-admin startup installs work.
+    // - ONSTART tasks run as SYSTEM and use HIGHEST.
+    const run_level = switch (mode) {
+        .onlogon => "LIMITED",
+        .onstart => "HIGHEST",
+    };
     try argv.append(allocator, "/RL");
-    try argv.append(allocator, "HIGHEST");
+    try argv.append(allocator, run_level);
 
     const res = try runCommandCapture(allocator, argv.items);
     defer res.deinit(allocator);
