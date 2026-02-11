@@ -301,12 +301,16 @@ fn appendProfileCommonArgs(
         try argv.append(allocator, config_path);
     }
     if (override_url) |url| {
-        try argv.append(allocator, "--url");
-        try argv.append(allocator, url);
+        if (url.len > 0) {
+            try argv.append(allocator, "--url");
+            try argv.append(allocator, url);
+        }
     }
     if (override_token) |tok| {
-        try argv.append(allocator, "--gateway-token");
-        try argv.append(allocator, tok);
+        if (tok.len > 0) {
+            try argv.append(allocator, "--gateway-token");
+            try argv.append(allocator, tok);
+        }
     }
     if (override_insecure orelse false) {
         try argv.append(allocator, "--insecure-tls");
@@ -925,11 +929,11 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
-            override_url = args[i];
+            override_url = if (args[i].len > 0) args[i] else null;
         } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--gateway-token")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
-            override_token = args[i];
+            override_token = if (args[i].len > 0) args[i] else null;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;

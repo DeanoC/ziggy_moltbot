@@ -628,11 +628,16 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
     argv.append(allocator, cli) catch return false;
     argv.appendSlice(allocator, action_args) catch return false;
 
-    // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
-    argv.append(allocator, "--url") catch return false;
-    argv.append(allocator, job.url) catch return false;
-    argv.append(allocator, "--gateway-token") catch return false;
-    argv.append(allocator, job.token) catch return false;
+    // Avoid passing empty string args into the profile-apply chain; empty values can
+    // break elevated re-launch argument handling on Windows.
+    if (job.url.len > 0) {
+        argv.append(allocator, "--url") catch return false;
+        argv.append(allocator, job.url) catch return false;
+    }
+    if (job.token.len > 0) {
+        argv.append(allocator, "--gateway-token") catch return false;
+        argv.append(allocator, job.token) catch return false;
+    }
 
     if (job.insecure_tls) {
         argv.append(allocator, "--insecure-tls") catch {};
