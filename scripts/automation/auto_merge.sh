@@ -250,32 +250,29 @@ has_blocking_feedback_after_head() {
   # the PR author. This catches plain PR comments and inline review comments that may not
   # appear as unresolved threads yet due to eventual consistency.
   issue_count=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" \
-    --jq --arg since "$head_ts" --arg author "$pr_author" \
-    '[.[]
-      | select(.created_at > $since)
-      | select(.user.login != $author)
+    --jq "[.[]
+      | select(.created_at > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
       | .user.login
-      | select(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))
-    ] | length')
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
 
   review_comment_count=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" \
-    --jq --arg since "$head_ts" --arg author "$pr_author" \
-    '[.[]
-      | select(.created_at > $since)
-      | select(.user.login != $author)
+    --jq "[.[]
+      | select(.created_at > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
       | .user.login
-      | select(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))
-    ] | length')
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
 
   review_count=$(gh api "repos/$owner/$repo/pulls/$pr_number/reviews" \
-    --jq --arg since "$head_ts" --arg author "$pr_author" \
-    '[.[]
-      | select((.submitted_at // "") > $since)
-      | select(.user.login != $author)
-      | select((.state // "") == "COMMENTED" or (.state // "") == "CHANGES_REQUESTED")
+    --jq "[.[]
+      | select((.submitted_at // \"\") > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
+      | select((.state // \"\") == \"COMMENTED\" or (.state // \"\") == \"CHANGES_REQUESTED\")
       | .user.login
-      | select(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))
-    ] | length')
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
 
   total=$((issue_count + review_comment_count + review_count))
   [[ "$total" -gt 0 ]]
