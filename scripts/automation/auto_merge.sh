@@ -26,8 +26,8 @@ ALLOWED_AUTHORS=("DeanoC")
 # register a moment after the first green poll, etc.), require a minimum age before
 # merging self-authored PRs.
 #
-# Default: 180 seconds. Override with ZIGGY_SELF_MERGE_MIN_AGE_SECONDS.
-SELF_MERGE_MIN_AGE_SECONDS="${ZIGGY_SELF_MERGE_MIN_AGE_SECONDS:-180}"
+# Default: 600 seconds (10 minutes). Override with ZIGGY_SELF_MERGE_MIN_AGE_SECONDS.
+SELF_MERGE_MIN_AGE_SECONDS="${ZIGGY_SELF_MERGE_MIN_AGE_SECONDS:-600}"
 
 # Ensure we always run from the ZiggyStarClaw worktree root even if invoked from elsewhere.
 repo_root=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || true)
