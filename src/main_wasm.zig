@@ -1183,6 +1183,7 @@ export fn molt_ws_on_error() void {
     connect_sent = false;
     ws_opened_ms = 0;
     ctx.state = .error_state;
+    ctx.clearGatewayIdentity();
     ctx.clearPendingRequests();
     logger.warn("WebSocket error", .{});
 }
