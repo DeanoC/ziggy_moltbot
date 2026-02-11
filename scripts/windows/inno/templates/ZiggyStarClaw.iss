@@ -75,15 +75,18 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetClientConfigArgs}
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode service {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
-; Tray startup task installation is handled during installer apply flow.
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileService
 
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+
+; Tray startup task installation:
+; 1) prefer original user context
+; 2) fallback to installer context if still missing
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldInstallTrayStartup
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -220,6 +223,15 @@ begin
     Result := (ResultCode = 0);
 end;
 
+function TrayStartupInstalled: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "ZiggyStarClaw Tray"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
+
 procedure InitializeWizard;
 var
   UserCfg, CommonCfg, UserLegacyCfg, UrlValue, TokenValue: String;
@@ -299,6 +311,11 @@ end;
 function IsProfileSession: Boolean;
 begin
   Result := Assigned(ProfilePage) and ProfilePage.Values[ProfileSession];
+end;
+
+function ShouldInstallTrayStartup: Boolean;
+begin
+  Result := (IsProfileService or IsProfileSession) and (not TrayStartupInstalled);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
