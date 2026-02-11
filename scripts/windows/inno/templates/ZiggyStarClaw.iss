@@ -79,17 +79,13 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetSessionConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldSaveSessionConfig
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeDeleteArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeCreateArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeRunArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session install {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
-; user-context only (installer-context ONLOGON task creation can block on credential prompts)
+; user-context only
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayDeleteArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayCreateArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayRunArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -106,11 +102,6 @@ var
   ExistingServerUrl: String;
   ExistingGatewayToken: String;
   ExistingConfigHasConnection: Boolean;
-  SessionTaskScriptsReady: Boolean;
-  SessionNodeScriptPath: String;
-  SessionTrayScriptPath: String;
-
-procedure EnsureSessionTaskScripts; forward;
 
 function IsWhitespace(const C: Char): Boolean;
 begin
@@ -276,9 +267,6 @@ begin
   ExistingServerUrl := '';
   ExistingGatewayToken := '';
   ExistingConfigHasConnection := False;
-  SessionTaskScriptsReady := False;
-  SessionNodeScriptPath := '';
-  SessionTrayScriptPath := '';
 
   UserCfg := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
   CommonCfg := ExpandConstant('{commonappdata}\ZiggyStarClaw\config.json');
@@ -426,90 +414,4 @@ end;
 function ShouldSaveClientConfig: Boolean;
 begin
   Result := IsProfileClient and (GetClientConfigArgs('') <> '');
-end;
-
-function GetSessionConfigArgs(Param: String): String;
-var
-  ConnArgs: String;
-  ConfigPath: String;
-begin
-  ConnArgs := GetConnectionArgs('');
-  if ConnArgs = '' then
-  begin
-    Result := '';
-    Exit;
-  end;
-
-  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
-  Result := '--save-config --config "' + ConfigPath + '" ' + ConnArgs;
-end;
-
-function ShouldSaveSessionConfig: Boolean;
-begin
-  Result := IsProfileSession and (GetSessionConfigArgs('') <> '');
-end;
-
-function GetSessionNodeDeleteArgs(Param: String): String;
-begin
-  Result := '/Delete /F /TN "ZiggyStarClaw Node"';
-end;
-
-function GetSessionNodeCreateArgs(Param: String): String;
-begin
-  EnsureSessionTaskScripts;
-  Result := '/Create /F /TN "ZiggyStarClaw Node" /TR "' + SessionNodeScriptPath + '" /SC ONLOGON /IT /RL LIMITED';
-end;
-
-function GetSessionNodeRunArgs(Param: String): String;
-begin
-  Result := '/Run /TN "ZiggyStarClaw Node"';
-end;
-
-function GetSessionTrayDeleteArgs(Param: String): String;
-begin
-  Result := '/Delete /F /TN "ZiggyStarClaw Tray"';
-end;
-
-function GetSessionTrayCreateArgs(Param: String): String;
-begin
-  EnsureSessionTaskScripts;
-  Result := '/Create /F /TN "ZiggyStarClaw Tray" /TR "' + SessionTrayScriptPath + '" /SC ONLOGON /IT /RL LIMITED';
-end;
-
-function GetSessionTrayRunArgs(Param: String): String;
-begin
-  Result := '/Run /TN "ZiggyStarClaw Tray"';
-end;
-
-procedure EnsureSessionTaskScripts;
-var
-  ScriptDir, CliPath, TrayPath: String;
-  NodeScript, TrayScript: String;
-begin
-  if SessionTaskScriptsReady then
-    Exit;
-
-  ScriptDir := ExpandConstant('{commonappdata}\ZiggyStarClaw');
-  if (not DirExists(ScriptDir)) then
-    ForceDirectories(ScriptDir);
-
-  SessionNodeScriptPath := ScriptDir + '\session-node.cmd';
-  SessionTrayScriptPath := ScriptDir + '\session-tray.cmd';
-
-  CliPath := ExpandConstant('{app}\ziggystarclaw-cli.exe');
-  TrayPath := ExpandConstant('{app}\ziggystarclaw-tray.exe');
-
-  NodeScript :=
-    '@echo off' + #13#10 +
-    '"' + CliPath + '" node supervise --as-node --no-operator --log-level info' + #13#10;
-  TrayScript :=
-    '@echo off' + #13#10 +
-    '"' + TrayPath + '"' + #13#10;
-
-  if (not SaveStringToFile(SessionNodeScriptPath, NodeScript, False)) then
-    RaiseException('Failed to write session task script: ' + SessionNodeScriptPath);
-  if (not SaveStringToFile(SessionTrayScriptPath, TrayScript, False)) then
-    RaiseException('Failed to write tray task script: ' + SessionTrayScriptPath);
-
-  SessionTaskScriptsReady := True;
 end;
