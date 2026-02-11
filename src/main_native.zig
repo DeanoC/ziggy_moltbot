@@ -1700,7 +1700,7 @@ pub fn main() !void {
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     const install_profile_only = install_profile_only_requested or
         (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
-    const install_profile_action_armed_at_ms: i64 = if (install_profile_only) std.time.milliTimestamp() + 900 else 0;
+    var install_profile_action_armed_at_ms: i64 = 0;
     ui.setInstallerProfileOnlyMode(install_profile_only);
     logger.info(
         "Windows profile setup mode: requested={} effective={} setup_completed={}",
@@ -2014,6 +2014,10 @@ pub fn main() !void {
             }
         }
         auto_connect_pending = false;
+    }
+
+    if (install_profile_only) {
+        install_profile_action_armed_at_ms = std.time.milliTimestamp() + 900;
     }
 
     var should_close = false;
