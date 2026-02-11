@@ -109,6 +109,47 @@ pub fn draw(
     surface_chrome.drawBackground(&dc, panel_rect);
 
     const queue = input_router.getQueue();
+    if (install_profile_only_mode) {
+        panel.active_tab = .Settings;
+        const settings_action = settings_panel.draw(
+            allocator,
+            cfg,
+            ctx.state,
+            is_connected,
+            &ctx.update_state,
+            app_version,
+            panel_rect,
+            window_theme_pack_override,
+            true,
+        );
+        action.connect = settings_action.connect;
+        action.disconnect = settings_action.disconnect;
+        action.save_config = settings_action.save;
+        action.reload_theme_pack = settings_action.reload_theme_pack;
+        action.browse_theme_pack = settings_action.browse_theme_pack;
+        action.browse_theme_pack_override = settings_action.browse_theme_pack_override;
+        action.clear_theme_pack_override = settings_action.clear_theme_pack_override;
+        action.reload_theme_pack_override = settings_action.reload_theme_pack_override;
+        action.clear_saved = settings_action.clear_saved;
+        action.config_updated = settings_action.config_updated;
+        action.check_updates = settings_action.check_updates;
+        action.open_release = settings_action.open_release;
+        action.download_update = settings_action.download_update;
+        action.open_download = settings_action.open_download;
+        action.install_update = settings_action.install_update;
+
+        action.node_profile_apply_client = settings_action.node_profile_apply_client;
+        action.node_profile_apply_service = settings_action.node_profile_apply_service;
+        action.node_profile_apply_session = settings_action.node_profile_apply_session;
+        action.node_service_install_onlogon = settings_action.node_service_install_onlogon;
+        action.node_service_start = settings_action.node_service_start;
+        action.node_service_stop = settings_action.node_service_stop;
+        action.node_service_status = settings_action.node_service_status;
+        action.node_service_uninstall = settings_action.node_service_uninstall;
+        action.open_node_logs = settings_action.open_node_logs;
+        return action;
+    }
+
     if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .ApprovalsInbox and panel.active_tab != .Inbox and panel.active_tab != .Settings) {
         panel.active_tab = .Agents;
     }

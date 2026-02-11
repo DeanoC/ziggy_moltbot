@@ -25,8 +25,36 @@ const RunResult = struct {
     }
 };
 
+fn systemSchtasksPath(allocator: std.mem.Allocator) ![]u8 {
+    const win_dir = std.process.getEnvVarOwned(allocator, "WINDIR") catch null;
+    if (win_dir) |dir| {
+        defer allocator.free(dir);
+        return std.fs.path.join(allocator, &.{ dir, "System32", "schtasks.exe" });
+    }
+    return allocator.dupe(u8, "C:\\Windows\\System32\\schtasks.exe");
+}
+
 fn runCommandCapture(allocator: std.mem.Allocator, argv: []const []const u8) ServiceError!RunResult {
-    var child = std.process.Child.init(argv, allocator);
+    var effective_argv = std.ArrayList([]const u8).empty;
+    defer effective_argv.deinit(allocator);
+
+    var schtasks_abs: ?[]u8 = null;
+    defer if (schtasks_abs) |p| allocator.free(p);
+
+    if (argv.len > 0 and std.mem.eql(u8, argv[0], "schtasks")) {
+        schtasks_abs = systemSchtasksPath(allocator) catch null;
+    }
+
+    if (schtasks_abs) |p| {
+        effective_argv.append(allocator, p) catch return ServiceError.ExecFailed;
+        if (argv.len > 1) {
+            effective_argv.appendSlice(allocator, argv[1..]) catch return ServiceError.ExecFailed;
+        }
+    } else {
+        effective_argv.appendSlice(allocator, argv) catch return ServiceError.ExecFailed;
+    }
+
+    var child = std.process.Child.init(effective_argv.items, allocator);
     child.stdin_behavior = .Ignore;
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Pipe;
@@ -128,7 +156,7 @@ pub fn installTask(
     const task_run = try std.fmt.allocPrint(
         allocator,
         // NOTE: schtasks expects a single command line string.
-        "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level info",
+        "\"{s}\" node supervise --hide-console --config \"{s}\" --as-node --no-operator --log-level info",
         .{ exe_path, config_path },
     );
     defer allocator.free(task_run);
@@ -176,9 +204,15 @@ pub fn installTaskCommand(
         try argv.append(allocator, "SYSTEM");
     }
 
-    // Best-effort: run at highest privileges when available.
+    // Run level:
+    // - ONLOGON tasks should stay in user context (LIMITED) so non-admin startup installs work.
+    // - ONSTART tasks run as SYSTEM and use HIGHEST.
+    const run_level = switch (mode) {
+        .onlogon => "LIMITED",
+        .onstart => "HIGHEST",
+    };
     try argv.append(allocator, "/RL");
-    try argv.append(allocator, "HIGHEST");
+    try argv.append(allocator, run_level);
 
     const res = try runCommandCapture(allocator, argv.items);
     defer res.deinit(allocator);
