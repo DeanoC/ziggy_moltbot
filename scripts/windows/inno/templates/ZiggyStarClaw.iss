@@ -79,17 +79,17 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetSessionConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldSaveSessionConfig
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeDeleteArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeCreateArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeRunArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetSessionConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldSaveSessionConfig
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeDeleteArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeCreateArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeRunArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
 ; user-context only (installer-context ONLOGON task creation can block on credential prompts)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayDeleteArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayCreateArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayRunArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayDeleteArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayCreateArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayRunArgs}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
