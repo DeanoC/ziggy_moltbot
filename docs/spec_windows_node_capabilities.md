@@ -16,18 +16,22 @@ Implemented now:
 - Router wiring is command-surface driven (node advertises only what router can execute).
 - Windows camera advertisement is executable-aware:
   - `camera.list` is advertised only when PowerShell is runnable.
-  - `camera.snap` is advertised only when both PowerShell + ffmpeg are runnable.
+  - `camera.snap`/`camera.clip` are advertised only when both PowerShell + ffmpeg are runnable.
 - `camera.list` is implemented with a PowerShell/CIM backend (`powershell-cim`) and returns device objects with stable IDs and optional position hints.
 - `camera.snap` is implemented with an ffmpeg+dshow capture backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
   - `{ format: "jpeg"|"png", base64, width, height }`
   - supports `deviceId` selection using IDs returned by `camera.list`.
+- `camera.clip` is implemented with an ffmpeg+dshow backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
+  - `{ format, base64, durationMs, hasAudio }`
+  - supports `deviceId` selection and best-effort `facing` routing via inferred camera `position`.
+  - current backend is video-only (`hasAudio=false` when `includeAudio=true`).
 - `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
   - supports monitor index mapping via PowerShell Forms monitor metadata (primary monitor normalized to `screenIndex=0`).
   - current backend is still video-only (`hasAudio=false`).
 
 Not yet implemented on Windows:
-- `camera.clip`
+- advanced `camera.clip` coverage (audio capture + optional webm output)
 - advanced `screen.record` coverage (audio capture + non-PowerShell monitor discovery fallback improvements)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
@@ -79,6 +83,36 @@ Notes:
 - If `deviceId` is omitted, the backend selects the first enumerated camera.
 - Current backend is `ffmpeg-dshow`; `format` defaults to `jpeg`.
 
+`camera.clip` request params (supported subset):
+
+```json
+{
+  "durationMs": 3000,
+  "duration": "3s",      // optional shorthand alternative to durationMs
+  "format": "mp4",
+  "includeAudio": true,
+  "deviceId": "<PNPDeviceID>",
+  "facing": "front|back" // optional best-effort device routing
+}
+```
+
+`camera.clip` response shape:
+
+```json
+{
+  "format": "mp4",
+  "base64": "<video bytes base64>",
+  "durationMs": 3000,
+  "hasAudio": false
+}
+```
+
+Notes:
+- Current backend is `ffmpeg-dshow`.
+- If `deviceId` is provided, it takes precedence over `facing`.
+- `facing` is best-effort using inferred camera `position`; if no match is found, the backend falls back to the first enumerated camera.
+- `includeAudio` is accepted for compatibility but current MVP emits video-only output (`hasAudio=false`).
+
 `screen.record` request params (supported subset):
 
 ```json
@@ -124,7 +158,7 @@ Deliverables:
 - Only advertise commands/capabilities that are executable on the current platform.
 
 Status:
-- Landed for current surface with executable-aware advertisement (`camera.list`, `camera.snap`).
+- Landed for current surface with executable-aware advertisement (`camera.list`, `camera.snap`, `camera.clip`).
 
 ### 9f2 — Windows `camera.list` backend hardening
 
@@ -173,6 +207,12 @@ Deliverables:
   - record N seconds
   - encode to mp4/webm
   - confirm busy/in-use behavior and error messages
+
+Status:
+- MVP landed with `ffmpeg-dshow` backend and executable-aware registration/advertisement (`camera.clip` is exposed only when ffmpeg + PowerShell are runnable).
+- Current remaining gaps for this slice:
+  - optional audio capture (`includeAudio=true` currently logs warning and returns `hasAudio=false`)
+  - optional `webm` output format
 
 ### Canvas / browser automation
 
