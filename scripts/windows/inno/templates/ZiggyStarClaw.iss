@@ -68,6 +68,7 @@ Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe";
 [Run]
 ; Pure client profile (no node runner)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileClient
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetClientConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldSaveClientConfig
 
 ; Service node profile (system service in elevated context)
 ; Ensure clean swap from user-session mode.
@@ -75,14 +76,14 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session uninstall"; W
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode service {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 ; Tray startup task installation is handled during installer apply flow.
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileService
 
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -303,8 +304,6 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  if Assigned(ConnectionPage) and (PageID = ConnectionPage.ID) then
-    Result := IsProfileClient;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -317,7 +316,7 @@ begin
     ServerURL := Trim(ConnectionPage.Values[0]);
     if ((ServerURL = '') and (not ExistingConfigHasConnection)) then
     begin
-      MsgBox('Server URL is required for Service Node and User Session Node profiles (unless an existing config is detected).', mbError, MB_OK);
+      MsgBox('Server URL is required (unless an existing config is detected).', mbError, MB_OK);
       Result := False;
       Exit;
     end;
@@ -363,4 +362,26 @@ begin
   Result := '--url "' + UrlValue + '"';
   if (TokenValue <> '') then
     Result := Result + ' --gateway-token "' + TokenValue + '"';
+end;
+
+function GetClientConfigArgs(Param: String): String;
+var
+  ConnArgs: String;
+  ConfigPath: String;
+begin
+  ConnArgs := GetConnectionArgs('');
+  if ConnArgs = '' then
+  begin
+    // Preserve existing client config when URL is intentionally left blank.
+    Result := '';
+    Exit;
+  end;
+
+  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\ziggystarclaw_config.json');
+  Result := '--save-config --config "' + ConfigPath + '" ' + ConnArgs;
+end;
+
+function ShouldSaveClientConfig: Boolean;
+begin
+  Result := IsProfileClient and (GetClientConfigArgs('') <> '');
 end;

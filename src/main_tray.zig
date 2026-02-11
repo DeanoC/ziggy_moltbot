@@ -430,11 +430,27 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
 fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     const name: ?[]const u8 = "ZiggyStarClaw Node";
 
-    const st = scm_service.queryStartType(allocator, name) catch |err| switch (err) {
+    var has_service = false;
+    var service_missing_confirmed = false;
+    var service_query_denied = false;
+
+    const svc = scm_service.queryService(allocator, name) catch |err| switch (err) {
         scm_service.ServiceError.NotInstalled => null,
+        scm_service.ServiceError.AccessDenied => blk: {
+            service_query_denied = true;
+            break :blk null;
+        },
         else => return .unknown,
     };
-    const has_service = (st != null);
+    if (svc) |q| {
+        if (q.state == .not_installed) {
+            service_missing_confirmed = true;
+        } else {
+            has_service = true;
+        }
+    } else if (!service_query_denied) {
+        service_missing_confirmed = true;
+    }
 
     // Session mode is indicated by either:
     // - the Scheduled Task being present (install-time artifact)
@@ -454,9 +470,14 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     }
     if (has_session) return .session;
 
+    if (service_query_denied) {
+        // Avoid false "not installed" when service query was blocked by permissions.
+        return .unknown;
+    }
+
     if (task_state) |ts| {
-        // PowerShell was available, and it confirmed the task is missing.
-        if (ts == .not_installed) return .not_installed;
+        // Only report "not installed" when both service + task are confirmed absent.
+        if (ts == .not_installed and service_missing_confirmed) return .not_installed;
     }
 
     return .unknown;
