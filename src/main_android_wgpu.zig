@@ -1121,6 +1121,7 @@ fn run() !void {
             const started = connect_job.start() catch |err| blk: {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1421,6 +1422,7 @@ fn run() !void {
             const started = connect_job.start() catch |err| blk: {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1668,6 +1670,7 @@ fn run() !void {
                 };
             } else {
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 if (result.err) |err_msg| {
                     ctx.setError(err_msg) catch {};
                     allocator.free(err_msg);
