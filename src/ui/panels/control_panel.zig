@@ -153,7 +153,7 @@ pub fn draw(
     if (panel.active_tab != .Agents and panel.active_tab != .Operator and panel.active_tab != .ApprovalsInbox and panel.active_tab != .Inbox and panel.active_tab != .Settings) {
         panel.active_tab = .Agents;
     }
-    const tab_height = drawTabs(&dc, panel_rect, queue, &panel.active_tab);
+    const tab_height = drawTabs(&dc, panel_rect, queue, &panel.active_tab, ctx.gateway_compatibility);
     const content_gap = t.spacing.sm;
     const content_top = panel_rect.min[1] + tab_height + content_gap;
     const content_height = panel_rect.max[1] - content_top;
@@ -175,19 +175,27 @@ pub fn draw(
             action.remove_agent_id = agents_action.remove_agent_id;
         },
         .Operator => {
-            const op_action = operator_view.draw(allocator, ctx, is_connected, content_rect);
-            action.refresh_nodes = op_action.refresh_nodes;
-            action.select_node = op_action.select_node;
-            action.invoke_node = op_action.invoke_node;
-            action.describe_node = op_action.describe_node;
-            action.resolve_approval = op_action.resolve_approval;
-            action.clear_node_describe = op_action.clear_node_describe;
-            action.clear_node_result = op_action.clear_node_result;
-            action.clear_operator_notice = op_action.clear_operator_notice;
+            if (ctx.gateway_compatibility == .upstream) {
+                drawForkFeatureBlockedMessage(&dc, content_rect, "Operator tools are available on fork gateways.");
+            } else {
+                const op_action = operator_view.draw(allocator, ctx, is_connected, content_rect);
+                action.refresh_nodes = op_action.refresh_nodes;
+                action.select_node = op_action.select_node;
+                action.invoke_node = op_action.invoke_node;
+                action.describe_node = op_action.describe_node;
+                action.resolve_approval = op_action.resolve_approval;
+                action.clear_node_describe = op_action.clear_node_describe;
+                action.clear_node_result = op_action.clear_node_result;
+                action.clear_operator_notice = op_action.clear_operator_notice;
+            }
         },
         .ApprovalsInbox => {
-            const approvals_action = approvals_inbox_view.draw(allocator, ctx, content_rect);
-            action.resolve_approval = approvals_action.resolve_approval;
+            if (ctx.gateway_compatibility == .upstream) {
+                drawForkFeatureBlockedMessage(&dc, content_rect, "Approvals inbox is available on fork gateways.");
+            } else {
+                const approvals_action = approvals_inbox_view.draw(allocator, ctx, content_rect);
+                action.resolve_approval = approvals_action.resolve_approval;
+            }
         },
         .Inbox => {
             _ = inbox_panel.draw(allocator, ctx, panel, content_rect);
@@ -241,6 +249,7 @@ fn drawTabs(
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     active: *workspace.ControlTab,
+    gateway_compatibility: state.GatewayCompatibilityMode,
 ) f32 {
     const t = dc.theme;
     const line_height = dc.lineHeight();
@@ -258,7 +267,8 @@ fn drawTabs(
     const tab_gap = t.spacing.xs;
     var total_width: f32 = 0.0;
     for (tabs) |tab| {
-        total_width += tabWidth(dc, tab.label, t) + tab_gap;
+        const label = tabDisplayLabel(tab, gateway_compatibility);
+        total_width += tabWidth(dc, label, t) + tab_gap;
     }
     if (total_width > 0.0) total_width -= tab_gap;
 
@@ -320,9 +330,10 @@ fn drawTabs(
     const cursor_y = bar_rect.min[1] + (bar_rect.size()[1] - tab_height) * 0.5;
     dc.pushClip(bar_rect);
     for (tabs) |tab| {
-        const width = tabWidth(dc, tab.label, t);
+        const label = tabDisplayLabel(tab, gateway_compatibility);
+        const width = tabWidth(dc, label, t);
         const tab_rect = draw_context.Rect.fromMinSize(.{ cursor_x, cursor_y }, .{ width, tab_height });
-        if (drawTab(dc, tab_rect, tab.label, active.* == tab.kind, queue)) {
+        if (drawTab(dc, tab_rect, label, active.* == tab.kind, queue)) {
             active.* = tab.kind;
         }
         if (active.* == tab.kind) {
@@ -341,6 +352,42 @@ fn drawTabs(
     dc.popClip();
 
     return bar_height;
+}
+
+fn tabDisplayLabel(tab: Tab, gateway_compatibility: state.GatewayCompatibilityMode) []const u8 {
+    if (gateway_compatibility == .upstream) {
+        return switch (tab.kind) {
+            .Operator => "Operator (fork)",
+            .ApprovalsInbox => "Approvals (fork)",
+            else => tab.label,
+        };
+    }
+    return tab.label;
+}
+
+fn drawForkFeatureBlockedMessage(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    feature_label: []const u8,
+) void {
+    const t = dc.theme;
+    const padding = t.spacing.md;
+
+    panel_chrome.draw(dc, rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = false,
+        .draw_frame = true,
+    });
+
+    const title = "Compatibility mode: upstream gateway";
+    var y = rect.min[1] + padding;
+    dc.drawText(title, .{ rect.min[0] + padding, y }, .{ .color = t.colors.warning });
+    y += dc.lineHeight() + t.spacing.xs;
+
+    dc.drawText(feature_label, .{ rect.min[0] + padding, y }, .{ .color = t.colors.text_primary });
+    y += dc.lineHeight() + t.spacing.xs;
+
+    dc.drawText("Core chat and basic connection flows stay available.", .{ rect.min[0] + padding, y }, .{ .color = t.colors.text_secondary });
 }
 
 fn tabWidth(dc: *draw_context.DrawContext, label: []const u8, t: *const theme.Theme) f32 {

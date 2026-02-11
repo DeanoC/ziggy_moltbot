@@ -174,6 +174,13 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 {
                     ctx.state = .connected;
                     logger.info("Gateway connected", .{});
+
+                    if (extractGatewayIdentity(payload)) |identity| {
+                        try ctx.setGatewayIdentity(identity.kind, identity.mode, identity.source);
+                    } else {
+                        ctx.clearGatewayIdentity();
+                    }
+
                     if (try extractAuthUpdate(ctx.allocator, payload)) |update| {
                         return update;
                     }
@@ -528,6 +535,44 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
             freeChatMessageOwned(ctx.allocator, &message);
         };
     }
+}
+
+const GatewayIdentitySignal = struct {
+    kind: ?[]const u8 = null,
+    mode: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+};
+
+fn extractGatewayIdentity(payload: std.json.Value) ?GatewayIdentitySignal {
+    if (payload != .object) return null;
+    const payload_obj = payload.object;
+
+    var identity_obj: ?std.json.ObjectMap = null;
+
+    if (payload_obj.get("server")) |server_val| {
+        if (server_val == .object) {
+            if (server_val.object.get("identity")) |identity_val| {
+                if (identity_val == .object) {
+                    identity_obj = identity_val.object;
+                }
+            }
+        }
+    }
+
+    if (identity_obj == null) {
+        if (payload_obj.get("identity")) |identity_val| {
+            if (identity_val == .object) {
+                identity_obj = identity_val.object;
+            }
+        }
+    }
+
+    const obj = identity_obj orelse return null;
+    return GatewayIdentitySignal{
+        .kind = if (obj.get("kind")) |value| if (value == .string) value.string else null else null,
+        .mode = if (obj.get("mode")) |value| if (value == .string) value.string else null else null,
+        .source = if (obj.get("source")) |value| if (value == .string) value.string else null else null,
+    };
 }
 
 fn extractAuthUpdate(allocator: std.mem.Allocator, payload: std.json.Value) !?AuthUpdate {
