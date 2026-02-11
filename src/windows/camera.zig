@@ -91,6 +91,7 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
             },
             else => {
                 logger.warn("camera.list backend={s}: failed to start {s}: {s}", .{ backend_name, exe, @errorName(err) });
+                saw_executable = true;
                 last_error = err;
                 continue;
             },
