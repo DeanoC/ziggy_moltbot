@@ -935,14 +935,18 @@ fn drawWindowsNodeServiceCard(
     action: *SettingsAction,
     profile_only: bool,
 ) f32 {
-    _ = allocator;
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
     const button_height = line_height + t.spacing.xs * 2.0;
+    const input_height = widgets.text_input.defaultHeight(t, line_height);
 
     var height: f32 = 0.0;
     height += padding + line_height + t.spacing.sm;
+    if (profile_only) {
+        height += labeledInputHeight(input_height, line_height, t) * 2.0;
+        height += button_height + t.spacing.sm;
+    }
     height += line_height + t.spacing.xs;
     height += line_height + t.spacing.sm;
     height += button_height + t.spacing.sm;
@@ -959,7 +963,63 @@ fn drawWindowsNodeServiceCard(
     var cursor_y = base.cursor_y;
 
     const content_x = base.inner_rect.min[0] + padding;
-    const has_url = cfg.server_url.len > 0;
+    const server_text = std.mem.trim(u8, editorText(server_editor), " \t\r\n");
+    const has_url = server_text.len > 0;
+
+    if (profile_only) {
+        const content_w = base.inner_rect.size()[0] - padding * 2.0;
+        cursor_y += drawLabeledInput(
+            dc,
+            queue,
+            allocator,
+            content_x,
+            cursor_y,
+            content_w,
+            "Server URL",
+            ensureEditor(&server_editor, allocator),
+            .{ .placeholder = "ws://host:port" },
+        );
+        cursor_y += drawLabeledInput(
+            dc,
+            queue,
+            allocator,
+            content_x,
+            cursor_y,
+            content_w,
+            "Token (optional)",
+            ensureEditor(&token_editor, allocator),
+            .{
+                .placeholder = "token",
+                .mask_char = '*',
+            },
+        );
+
+        const onboarding_dirty = !std.mem.eql(u8, cfg.server_url, editorText(server_editor)) or
+            !std.mem.eql(u8, cfg.token, editorText(token_editor));
+        const apply_conn_w = buttonWidth(dc, "Apply Connection", t);
+        if (widgets.button.draw(
+            dc,
+            draw_context.Rect.fromMinSize(.{ content_x, cursor_y }, .{ apply_conn_w, button_height }),
+            "Apply Connection",
+            queue,
+            .{ .variant = .secondary, .disabled = !onboarding_dirty },
+        )) {
+            if (applyConfig(
+                allocator,
+                cfg,
+                editorText(server_editor),
+                editorText(connect_host_editor),
+                editorText(token_editor),
+                editorText(update_url_editor),
+                editorText(theme_pack_editor),
+                profileLabel(profile_choice),
+            )) {
+                action.config_updated = true;
+                action.save = true;
+            }
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
 
     dc.drawText(
         "Client is always installed. Choose one profile; the app migrates runner mode automatically.",
@@ -985,6 +1045,19 @@ fn drawWindowsNodeServiceCard(
         queue,
         .{ .variant = .secondary },
     )) {
+        if (profile_only and applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+            action.save = true;
+        }
         action.node_profile_apply_client = true;
     }
     cursor_x += client_w + t.spacing.sm;
@@ -998,6 +1071,19 @@ fn drawWindowsNodeServiceCard(
         queue,
         .{ .variant = .primary, .disabled = !has_url },
     )) {
+        if (profile_only and applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+            action.save = true;
+        }
         action.node_profile_apply_service = true;
     }
     cursor_x += service_w + t.spacing.sm;
@@ -1010,6 +1096,19 @@ fn drawWindowsNodeServiceCard(
         queue,
         .{ .variant = .primary, .disabled = !has_url },
     )) {
+        if (profile_only and applyConfig(
+            allocator,
+            cfg,
+            editorText(server_editor),
+            editorText(connect_host_editor),
+            editorText(token_editor),
+            editorText(update_url_editor),
+            editorText(theme_pack_editor),
+            profileLabel(profile_choice),
+        )) {
+            action.config_updated = true;
+            action.save = true;
+        }
         action.node_profile_apply_session = true;
     }
     cursor_y += button_height + t.spacing.sm;
