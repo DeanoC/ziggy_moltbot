@@ -1621,6 +1621,16 @@ fn clearChatPanelsForSession(
     }
 }
 
+fn isInstallProfileOnlyArg(raw_arg: []const u8) bool {
+    const arg = std.mem.trim(u8, raw_arg, " \t\r\n\"'");
+    return std.ascii.eqlIgnoreCase(arg, "--install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "--installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-installer-profile-only");
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
@@ -1636,13 +1646,7 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
     var install_profile_only_requested = false;
     for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--install-profile-only") or
-            std.mem.eql(u8, arg, "--installer-profile-only") or
-            std.mem.eql(u8, arg, "/install-profile-only") or
-            std.mem.eql(u8, arg, "/installer-profile-only") or
-            std.mem.eql(u8, arg, "-install-profile-only") or
-            std.mem.eql(u8, arg, "-installer-profile-only"))
-        {
+        if (isInstallProfileOnlyArg(arg)) {
             install_profile_only_requested = true;
         }
     }
@@ -1696,6 +1700,7 @@ pub fn main() !void {
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     const install_profile_only = install_profile_only_requested or
         (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
+    var install_profile_action_armed_at_ms: i64 = 0;
     ui.setInstallerProfileOnlyMode(install_profile_only);
     logger.info(
         "Windows profile setup mode: requested={} effective={} setup_completed={}",
@@ -2009,6 +2014,10 @@ pub fn main() !void {
             }
         }
         auto_connect_pending = false;
+    }
+
+    if (install_profile_only) {
+        install_profile_action_armed_at_ms = std.time.milliTimestamp() + 900;
     }
 
     var should_close = false;
@@ -2666,6 +2675,10 @@ pub fn main() !void {
 
             if (profile_job_kind) |kind| {
                 if (install_profile_only) {
+                    if (std.time.milliTimestamp() < install_profile_action_armed_at_ms) {
+                        logger.info("Ignoring startup profile action before onboarding UI is armed.", .{});
+                        continue;
+                    }
                     const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
                     if (ok) {
                         app_state_state.windows_setup_completed = true;
