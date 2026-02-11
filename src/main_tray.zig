@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const scm_service = @import("windows/scm_service.zig");
+const win_task = @import("windows/service.zig");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
@@ -391,7 +392,11 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
 
     if (mode == .session) {
         if (try queryServiceStatePipe(allocator)) |st| return st;
+
+        const task_installed = win_task.taskInstalled(allocator, name) catch false;
         if (try queryServiceStatePowerShell(allocator)) |ts| {
+            // PowerShell task-state probing can fail/lie in some environments.
+            if (ts == .not_installed and task_installed) return .stopped;
             return switch (ts) {
                 .not_installed => .not_installed,
                 .running => .running,
@@ -399,6 +404,7 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
                 else => .unknown,
             };
         }
+        if (task_installed) return .stopped;
         return .unknown;
     }
 
@@ -456,7 +462,13 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     // - the Scheduled Task being present (install-time artifact)
     // - the supervisor control pipe responding (runtime artifact)
     const task_state = queryServiceStatePowerShell(allocator) catch null;
-    const has_task = if (task_state) |ts| ts != .not_installed else false;
+    const task_installed_opt: ?bool = win_task.taskInstalled(allocator, name) catch null;
+    const has_task = if (task_installed_opt) |installed|
+        installed
+    else if (task_state) |ts|
+        ts != .not_installed
+    else
+        false;
 
     const has_pipe = (queryServiceStatePipe(allocator) catch null) != null;
 
@@ -475,9 +487,12 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
         return .unknown;
     }
 
-    if (task_state) |ts| {
-        // Only report "not installed" when both service + task are confirmed absent.
-        if (ts == .not_installed and service_missing_confirmed) return .not_installed;
+    if (service_missing_confirmed) {
+        if (task_installed_opt) |installed| {
+            if (!installed) return .not_installed;
+        } else if (task_state) |ts| {
+            if (ts == .not_installed) return .not_installed;
+        }
     }
 
     return .unknown;

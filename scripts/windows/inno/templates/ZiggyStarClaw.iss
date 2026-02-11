@@ -79,8 +79,12 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+; Try user-context install first (preferred), then installer-context fallback if still missing.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession and (not SessionRunnerInstalled)
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession and (not SessionRunnerInstalled)
+; Start with the same fallback pattern.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession and SessionRunnerInstalled
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession and SessionRunnerInstalled
 
 ; Tray startup task installation:
 ; 1) prefer original user context
@@ -334,6 +338,20 @@ begin
     if ((ServerURL = '') and (not ExistingConfigHasConnection)) then
     begin
       MsgBox('Server URL is required (unless an existing config is detected).', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    if (ServerURL <> '') and ((Pos('ws://', Lowercase(ServerURL)) <> 1) and (Pos('wss://', Lowercase(ServerURL)) <> 1)) then
+    begin
+      MsgBox('Server URL must start with ws:// or wss://', mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+
+    if (Lowercase(ServerURL) = 'ws://') or (Lowercase(ServerURL) = 'wss://') then
+    begin
+      MsgBox('Server URL must include a host (example: wss://your-gateway.example)', mbError, MB_OK);
       Result := False;
       Exit;
     end;
