@@ -84,6 +84,7 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session install {code
 
 ; Tray startup task installation:
 ; user-context only
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray uninstall-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldConfigureTrayStartup
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
@@ -315,6 +316,11 @@ end;
 function ShouldInstallTrayStartup: Boolean;
 begin
   Result := IsProfileService and (not TrayStartupInstalled);
+end;
+
+function ShouldConfigureTrayStartup: Boolean;
+begin
+  Result := IsProfileService or IsProfileSession;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;

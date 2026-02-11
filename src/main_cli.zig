@@ -1493,9 +1493,21 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        var cfg_invalid = false;
+        if (cfg_exists) {
+            var parsed = unified_config.load(allocator, node_cfg_path) catch |err| switch (err) {
+                error.ConfigNotFound => null,
+                error.SyntaxError, error.UnknownField => blk: {
+                    cfg_invalid = true;
+                    break :blk null;
+                },
+                else => return err,
+            };
+            if (parsed) |*loaded| loaded.deinit(allocator);
+        }
         const storage_scope: node_register.StorageScope = .user;
 
-        if (!cfg_exists) {
+        if (!cfg_exists or cfg_invalid) {
             if (override_url != null and override_token != null) {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
             } else if (override_url != null and override_token == null) {
@@ -1504,6 +1516,9 @@ pub fn main() !void {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
             } else if (override_url == null and override_token != null) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            } else if (cfg_invalid) {
+                logger.err("Config is invalid at {s}; pass --url (and optional --gateway-token) to repair non-interactively.", .{node_cfg_path});
                 return error.InvalidArguments;
             }
         }
@@ -1656,12 +1671,24 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        var cfg_invalid = false;
+        if (cfg_exists) {
+            var parsed = unified_config.load(allocator, node_cfg_path) catch |err| switch (err) {
+                error.ConfigNotFound => null,
+                error.SyntaxError, error.UnknownField => blk: {
+                    cfg_invalid = true;
+                    break :blk null;
+                },
+                else => return err,
+            };
+            if (parsed) |*loaded| loaded.deinit(allocator);
+        }
         const storage_scope: node_register.StorageScope = if (builtin.os.tag == .windows and node_service_mode == .onstart)
             .system
         else
             .user;
 
-        if (!cfg_exists) {
+        if (!cfg_exists or cfg_invalid) {
             // Bootstrap config non-interactively when possible.
             //
             // If only --url is provided, prompt only for the auth token (so users don't get stuck
@@ -1674,6 +1701,9 @@ pub fn main() !void {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
             } else if (override_url == null and override_token != null) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            } else if (cfg_invalid) {
+                logger.err("Config is invalid at {s}; pass --url (and optional --gateway-token) to repair non-interactively.", .{node_cfg_path});
                 return error.InvalidArguments;
             }
         }
