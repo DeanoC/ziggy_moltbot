@@ -558,6 +558,8 @@ const WinNodeServiceJobKind = enum {
     profile_apply_client,
     profile_apply_service,
     profile_apply_session,
+    tray_install_startup,
+    tray_start_startup,
     install_onlogon,
     uninstall,
     start,
@@ -614,6 +616,8 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
         .profile_apply_client => &.{ "node", "profile", "apply", "--profile", "client" },
         .profile_apply_service => &.{ "node", "profile", "apply", "--profile", "service" },
         .profile_apply_session => &.{ "node", "profile", "apply", "--profile", "session" },
+        .tray_install_startup => &.{ "tray", "install-startup" },
+        .tray_start_startup => &.{ "tray", "start" },
         .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
         .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
         .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
@@ -628,11 +632,16 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
     argv.append(allocator, cli) catch return false;
     argv.appendSlice(allocator, action_args) catch return false;
 
-    // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
-    argv.append(allocator, "--url") catch return false;
-    argv.append(allocator, job.url) catch return false;
-    argv.append(allocator, "--gateway-token") catch return false;
-    argv.append(allocator, job.token) catch return false;
+    // Avoid passing empty string args into the profile-apply chain; empty values can
+    // break elevated re-launch argument handling on Windows.
+    if (job.url.len > 0) {
+        argv.append(allocator, "--url") catch return false;
+        argv.append(allocator, job.url) catch return false;
+    }
+    if (job.token.len > 0) {
+        argv.append(allocator, "--gateway-token") catch return false;
+        argv.append(allocator, job.token) catch return false;
+    }
 
     if (job.insecure_tls) {
         argv.append(allocator, "--insecure-tls") catch {};
@@ -644,8 +653,8 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = if (inherit_stdio) .Inherit else .Ignore;
-    child.stderr_behavior = if (inherit_stdio) .Inherit else .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
     if (builtin.os.tag == .windows) {
         child.create_no_window = true;
     }
@@ -655,10 +664,29 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
         return false;
     };
 
+    var stdout_buf = std.ArrayList(u8).empty;
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayList(u8).empty;
+    defer stderr_buf.deinit(allocator);
+    child.collectOutput(allocator, &stdout_buf, &stderr_buf, 256 * 1024) catch |err| {
+        logger.err("node service: collect output failed: {}", .{err});
+        _ = child.kill() catch {};
+        return false;
+    };
+
     const term = child.wait() catch |err| {
         logger.err("node service: wait failed: {}", .{err});
         return false;
     };
+
+    if (inherit_stdio) {
+        if (stdout_buf.items.len > 0) {
+            _ = std.fs.File.stdout().write(stdout_buf.items) catch {};
+        }
+        if (stderr_buf.items.len > 0) {
+            _ = std.fs.File.stderr().write(stderr_buf.items) catch {};
+        }
+    }
 
     switch (term) {
         .Exited => |code| {
@@ -667,6 +695,12 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
                 return true;
             } else {
                 logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+                if (stdout_buf.items.len > 0) {
+                    logger.err("node service: {s} stdout: {s}", .{ @tagName(job.kind), stdout_buf.items });
+                }
+                if (stderr_buf.items.len > 0) {
+                    logger.err("node service: {s} stderr: {s}", .{ @tagName(job.kind), stderr_buf.items });
+                }
                 return false;
             }
         },
@@ -1621,6 +1655,155 @@ fn clearChatPanelsForSession(
     }
 }
 
+fn isInstallProfileOnlyArg(raw_arg: []const u8) bool {
+    const arg = std.mem.trim(u8, raw_arg, " \t\r\n\"'");
+    return std.ascii.eqlIgnoreCase(arg, "--install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "--installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-installer-profile-only");
+}
+
+const ClientDataPaths = struct {
+    config: []u8,
+    agents: []u8,
+    state: []u8,
+    workspace: []u8,
+    dir: ?[]u8 = null,
+
+    fn deinit(self: *ClientDataPaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.config);
+        allocator.free(self.agents);
+        allocator.free(self.state);
+        allocator.free(self.workspace);
+        if (self.dir) |d| allocator.free(d);
+    }
+};
+
+fn windowsClientDataDirAlloc(allocator: std.mem.Allocator) ?[]u8 {
+    const appdata = std.process.getEnvVarOwned(allocator, "APPDATA") catch null;
+    if (appdata) |root| {
+        defer allocator.free(root);
+        return std.fs.path.join(allocator, &.{ root, "ZiggyStarClaw" }) catch null;
+    }
+
+    const localapp = std.process.getEnvVarOwned(allocator, "LOCALAPPDATA") catch null;
+    if (localapp) |root| {
+        defer allocator.free(root);
+        return std.fs.path.join(allocator, &.{ root, "ZiggyStarClaw" }) catch null;
+    }
+
+    const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch null;
+    if (userprofile) |root| {
+        defer allocator.free(root);
+        return std.fs.path.join(allocator, &.{ root, "AppData", "Roaming", "ZiggyStarClaw" }) catch null;
+    }
+
+    return null;
+}
+
+fn initClientDataPaths(allocator: std.mem.Allocator) !ClientDataPaths {
+    var paths = ClientDataPaths{
+        .config = try allocator.dupe(u8, "ziggystarclaw_config.json"),
+        .agents = try allocator.dupe(u8, "ziggystarclaw_agents.json"),
+        .state = try allocator.dupe(u8, "ziggystarclaw_state.json"),
+        .workspace = try allocator.dupe(u8, "ziggystarclaw_workspace.json"),
+    };
+    errdefer paths.deinit(allocator);
+
+    if (builtin.os.tag != .windows) return paths;
+
+    const dir = windowsClientDataDirAlloc(allocator) orelse return paths;
+    errdefer allocator.free(dir);
+    std.fs.cwd().makePath(dir) catch {};
+
+    const config_path = try std.fs.path.join(allocator, &.{ dir, "ziggystarclaw_config.json" });
+    errdefer allocator.free(config_path);
+    const agents_path = try std.fs.path.join(allocator, &.{ dir, "ziggystarclaw_agents.json" });
+    errdefer allocator.free(agents_path);
+    const state_path = try std.fs.path.join(allocator, &.{ dir, "ziggystarclaw_state.json" });
+    errdefer allocator.free(state_path);
+    const workspace_path = try std.fs.path.join(allocator, &.{ dir, "ziggystarclaw_workspace.json" });
+    errdefer allocator.free(workspace_path);
+
+    allocator.free(paths.config);
+    allocator.free(paths.agents);
+    allocator.free(paths.state);
+    allocator.free(paths.workspace);
+    paths.config = config_path;
+    paths.agents = agents_path;
+    paths.state = state_path;
+    paths.workspace = workspace_path;
+    paths.dir = dir;
+    return paths;
+}
+
+fn migrateLegacyClientDataFile(allocator: std.mem.Allocator, legacy_name: []const u8, target_path: []const u8) void {
+    if (std.mem.eql(u8, legacy_name, target_path)) return;
+
+    const target_exists = blk: {
+        std.fs.cwd().access(target_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk false,
+            else => break :blk true,
+        };
+        break :blk true;
+    };
+    if (target_exists) return;
+
+    const legacy_exists = blk: {
+        std.fs.cwd().access(legacy_name, .{}) catch |err| switch (err) {
+            error.FileNotFound => break :blk false,
+            else => break :blk false,
+        };
+        break :blk true;
+    };
+    if (!legacy_exists) return;
+
+    const source = std.fs.cwd().openFile(legacy_name, .{}) catch |err| {
+        logger.warn("Failed to open legacy client data file '{s}': {}", .{ legacy_name, err });
+        return;
+    };
+    defer source.close();
+
+    const data = source.readToEndAlloc(allocator, 16 * 1024 * 1024) catch |err| {
+        logger.warn("Failed reading legacy client data file '{s}': {}", .{ legacy_name, err });
+        return;
+    };
+    defer allocator.free(data);
+
+    const target = std.fs.cwd().createFile(target_path, .{ .truncate = true }) catch |err| {
+        logger.warn("Failed creating migrated client data file '{s}': {}", .{ target_path, err });
+        return;
+    };
+    defer target.close();
+
+    target.writeAll(data) catch |err| {
+        logger.warn("Failed writing migrated client data file '{s}': {}", .{ target_path, err });
+        return;
+    };
+    logger.info("Migrated legacy client data file: {s} -> {s}", .{ legacy_name, target_path });
+}
+
+fn ensureWritableWorkingDirOnWindows(allocator: std.mem.Allocator, fallback_dir: ?[]const u8) void {
+    if (builtin.os.tag != .windows) return;
+    const target_dir = fallback_dir orelse return;
+
+    const probe_name = "__zsc_write_probe__.tmp";
+    const probe = std.fs.cwd().createFile(probe_name, .{ .truncate = true }) catch |err| {
+        logger.warn("Current working directory is not writable ({}); switching to {s}", .{ err, target_dir });
+        std.process.changeCurDir(target_dir) catch |chdir_err| {
+            logger.err("Failed to switch working directory to {s}: {}", .{ target_dir, chdir_err });
+            return;
+        };
+        const new_cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
+        defer if (new_cwd) |v| allocator.free(v);
+        logger.info("Working directory switched to: {s}", .{new_cwd orelse target_dir});
+        return;
+    };
+    probe.close();
+    _ = std.fs.cwd().deleteFile(probe_name) catch {};
+}
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
@@ -1636,43 +1819,53 @@ pub fn main() !void {
     defer std.process.argsFree(allocator, args);
     var install_profile_only_requested = false;
     for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--install-profile-only") or
-            std.mem.eql(u8, arg, "--installer-profile-only") or
-            std.mem.eql(u8, arg, "/install-profile-only") or
-            std.mem.eql(u8, arg, "/installer-profile-only") or
-            std.mem.eql(u8, arg, "-install-profile-only") or
-            std.mem.eql(u8, arg, "-installer-profile-only"))
-        {
+        if (isInstallProfileOnlyArg(arg)) {
             install_profile_only_requested = true;
         }
     }
-    var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
+    for (args, 0..) |arg, i| {
+        logger.info("arg[{d}]={s}", .{ i, arg });
+    }
+    var client_paths = try initClientDataPaths(allocator);
+    defer client_paths.deinit(allocator);
+    ensureWritableWorkingDirOnWindows(allocator, client_paths.dir);
+    if (builtin.os.tag == .windows and client_paths.dir != null) {
+        migrateLegacyClientDataFile(allocator, "ziggystarclaw_config.json", client_paths.config);
+        migrateLegacyClientDataFile(allocator, "ziggystarclaw_agents.json", client_paths.agents);
+        migrateLegacyClientDataFile(allocator, "ziggystarclaw_state.json", client_paths.state);
+        migrateLegacyClientDataFile(allocator, "ziggystarclaw_workspace.json", client_paths.workspace);
+    }
+
+    var cfg = try config.loadOrDefault(allocator, client_paths.config);
     defer cfg.deinit(allocator);
     // If the user has never saved a config yet, create one so it's easy to edit by hand.
     const cfg_missing = blk: {
-        std.fs.cwd().access("ziggystarclaw_config.json", .{}) catch |err| switch (err) {
+        std.fs.cwd().access(client_paths.config, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk true,
             else => break :blk false,
         };
         break :blk false;
     };
     if (cfg_missing) {
-        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+        config.save(allocator, client_paths.config, cfg) catch |err| {
             logger.err("Failed to write default config: {}", .{err});
         };
     }
     if (config.migrateThemePackPath(allocator, &cfg)) {
         logger.info("Migrated ui_theme_pack to: {s}", .{cfg.ui_theme_pack orelse ""});
-        config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+        config.save(allocator, client_paths.config, cfg) catch |err| {
             logger.err("Failed to save migrated config: {}", .{err});
         };
     }
     {
         const cwd = std.fs.cwd().realpathAlloc(allocator, ".") catch null;
         defer if (cwd) |v| allocator.free(v);
-        const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+        const cfg_path = std.fs.cwd().realpathAlloc(allocator, client_paths.config) catch null;
         defer if (cfg_path) |v| allocator.free(v);
-        logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse "ziggystarclaw_config.json", cwd orelse "." });
+        logger.info("Config file: {s} (cwd: {s})", .{ cfg_path orelse client_paths.config, cwd orelse "." });
+        if (client_paths.dir) |v| {
+            logger.info("Client data dir: {s}", .{v});
+        }
     }
     var theme_eng = theme_engine.ThemeEngine.init(allocator, theme_engine.PlatformCaps.defaultForTarget());
     defer theme_eng.deinit();
@@ -1691,11 +1884,13 @@ pub fn main() !void {
         }
     }
     var theme_pack_watch: ThemePackWatch = .{};
-    var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
+    var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, client_paths.agents);
     defer agents.deinit(allocator);
-    var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
-    const install_profile_only = install_profile_only_requested or
-        (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
+    var app_state_state = app_state.loadOrDefault(allocator, client_paths.state) catch app_state.initDefault();
+    const install_profile_only = install_profile_only_requested;
+    var install_profile_user_interacted = !install_profile_only;
+    const install_profile_close_guard_until_ms: i64 = if (install_profile_only) std.time.milliTimestamp() + 3000 else 0;
+    var install_profile_action_armed_at_ms: i64 = 0;
     ui.setInstallerProfileOnlyMode(install_profile_only);
     logger.info(
         "Windows profile setup mode: requested={} effective={} setup_completed={}",
@@ -1818,7 +2013,7 @@ pub fn main() !void {
     // renderers are owned by `ui_windows`
 
     const workspace_file_exists: bool = blk: {
-        std.fs.cwd().access("ziggystarclaw_workspace.json", .{}) catch |err| switch (err) {
+        std.fs.cwd().access(client_paths.workspace, .{}) catch |err| switch (err) {
             error.FileNotFound => break :blk false,
             else => break :blk true,
         };
@@ -1827,7 +2022,7 @@ pub fn main() !void {
 
     var ctx = try client_state.ClientContext.init(allocator);
     defer ctx.deinit();
-    var loaded = workspace_store.loadMultiOrDefault(allocator, "ziggystarclaw_workspace.json") catch |err| blk: {
+    var loaded = workspace_store.loadMultiOrDefault(allocator, client_paths.workspace) catch |err| blk: {
         logger.warn("Failed to load workspace: {}", .{err});
         const fallback = workspace_store.MultiWorkspace{
             .main = workspace.Workspace.initDefault(allocator) catch |init_err| {
@@ -1855,17 +2050,15 @@ pub fn main() !void {
 
     main_win.manager.deinit();
     main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
-    if (builtin.os.tag == .windows and (install_profile_only or !app_state_state.windows_setup_completed)) {
-        if (install_profile_only) {
-            var idx: usize = 0;
-            while (idx < main_win.manager.workspace.panels.items.len) {
-                const panel = main_win.manager.workspace.panels.items[idx];
-                if (panel.kind == .Control) {
-                    idx += 1;
-                    continue;
-                }
-                _ = main_win.manager.closePanel(panel.id);
+    if (builtin.os.tag == .windows and install_profile_only) {
+        var idx: usize = 0;
+        while (idx < main_win.manager.workspace.panels.items.len) {
+            const panel = main_win.manager.workspace.panels.items[idx];
+            if (panel.kind == .Control) {
+                idx += 1;
+                continue;
             }
+            _ = main_win.manager.closePanel(panel.id);
         }
 
         var found_control = false;
@@ -1979,7 +2172,7 @@ pub fn main() !void {
             app_state_state.window_pos_y = pos_y;
         }
         app_state_state.window_maximized = (flags & sdl.SDL_WINDOW_MAXIMIZED) != 0;
-        app_state.save(allocator, "ziggystarclaw_state.json", app_state_state) catch |err| {
+        app_state.save(allocator, client_paths.state, app_state_state) catch |err| {
             logger.warn("Failed to save app state: {}", .{err});
         };
     }
@@ -2011,7 +2204,12 @@ pub fn main() !void {
         auto_connect_pending = false;
     }
 
+    if (install_profile_only) {
+        install_profile_action_armed_at_ms = std.time.milliTimestamp() + 900;
+    }
+
     var should_close = false;
+    var close_reason: ?[]const u8 = null;
     var window_close_requests: std.ArrayList(u32) = .empty;
     defer window_close_requests.deinit(allocator);
     while (!should_close) {
@@ -2026,12 +2224,42 @@ pub fn main() !void {
             while (sdl.SDL_PollEvent(&event)) {
                 sdl_input_backend.pushEvent(&event);
                 switch (event.type) {
-                    sdl.SDL_EVENT_QUIT,
-                    => should_close = true,
+                    sdl.SDL_EVENT_QUIT => {
+                        const now_ms = std.time.milliTimestamp();
+                        if (install_profile_only and !install_profile_user_interacted and now_ms < install_profile_close_guard_until_ms) {
+                            logger.warn("Ignoring early SDL quit event during installer onboarding guard window.", .{});
+                        } else {
+                            should_close = true;
+                            close_reason = "sdl_quit_event";
+                        }
+                    },
+                    sdl.SDL_EVENT_MOUSE_BUTTON_DOWN,
+                    sdl.SDL_EVENT_FINGER_DOWN,
+                    sdl.SDL_EVENT_PEN_DOWN,
+                    => {
+                        if (install_profile_only) {
+                            install_profile_user_interacted = true;
+                        }
+                    },
+                    sdl.SDL_EVENT_KEY_DOWN => {
+                        if (install_profile_only and
+                            !event.key.repeat and
+                            event.key.scancode != sdl.SDL_SCANCODE_RETURN and
+                            event.key.scancode != sdl.SDL_SCANCODE_KP_ENTER)
+                        {
+                            install_profile_user_interacted = true;
+                        }
+                    },
                     sdl.SDL_EVENT_WINDOW_CLOSE_REQUESTED => {
                         const wid = event.window.windowID;
                         if (wid == main_win.id) {
-                            should_close = true;
+                            const now_ms = std.time.milliTimestamp();
+                            if (install_profile_only and !install_profile_user_interacted and now_ms < install_profile_close_guard_until_ms) {
+                                logger.warn("Ignoring early main window close-request during installer onboarding guard window.", .{});
+                            } else {
+                                should_close = true;
+                                close_reason = "main_window_close_requested";
+                            }
                         } else {
                             window_close_requests.append(allocator, wid) catch {};
                         }
@@ -2137,7 +2365,7 @@ pub fn main() !void {
         if (ctx.sessions_updated) {
             const defaults_changed = syncRegistryDefaults(allocator, &agents, ctx.sessions.items);
             if (defaults_changed) {
-                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
             }
             _ = ensureSafeCurrentSession(allocator, &ctx);
             ctx.clearSessionsUpdated();
@@ -2414,7 +2642,7 @@ pub fn main() !void {
                                 if (cfg.ui_theme_pack) |pack_path| {
                                     _ = config.pushRecentThemePack(allocator, &cfg, pack_path);
                                 }
-                                config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+                                config.save(allocator, client_paths.config, cfg) catch |err| {
                                     logger.err("Failed to save config: {}", .{err});
                                 };
                             } else |err| {
@@ -2448,10 +2676,10 @@ pub fn main() !void {
         }
 
         if (ui_action.save_config) {
-            const cfg_path = std.fs.cwd().realpathAlloc(allocator, "ziggystarclaw_config.json") catch null;
+            const cfg_path = std.fs.cwd().realpathAlloc(allocator, client_paths.config) catch null;
             defer if (cfg_path) |v| allocator.free(v);
-            logger.info("Saving config: {s}", .{cfg_path orelse "ziggystarclaw_config.json"});
-            config.save(allocator, "ziggystarclaw_config.json", cfg) catch |err| {
+            logger.info("Saving config: {s}", .{cfg_path orelse client_paths.config});
+            config.save(allocator, client_paths.config, cfg) catch |err| {
                 logger.err("Failed to save config: {}", .{err});
             };
         }
@@ -2545,7 +2773,7 @@ pub fn main() !void {
                 logger.err("Failed to allocate workspace save list: {}", .{err});
                 workspace_store.saveMulti(
                     allocator,
-                    "ziggystarclaw_workspace.json",
+                    client_paths.workspace,
                     &main_win.manager.workspace,
                     &[_]workspace_store.DetachedWindowView{},
                     next_panel_id_global,
@@ -2585,7 +2813,7 @@ pub fn main() !void {
 
             workspace_store.saveMulti(
                 allocator,
-                "ziggystarclaw_workspace.json",
+                client_paths.workspace,
                 &main_win.manager.workspace,
                 views[0..filled],
                 next_panel_id_global,
@@ -2666,10 +2894,27 @@ pub fn main() !void {
 
             if (profile_job_kind) |kind| {
                 if (install_profile_only) {
+                    if (!install_profile_user_interacted) {
+                        logger.info("Ignoring onboarding profile action before explicit user interaction.", .{});
+                        continue;
+                    }
+                    if (std.time.milliTimestamp() < install_profile_action_armed_at_ms) {
+                        logger.info("Ignoring startup profile action before onboarding UI is armed.", .{});
+                        continue;
+                    }
                     const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
                     if (ok) {
+                        if (kind == .profile_apply_service or kind == .profile_apply_session) {
+                            const tray_install_ok = runWinNodeServiceJobBlocking(.tray_install_startup, "", "", false);
+                            if (!tray_install_ok) {
+                                logger.warn("Tray startup install was skipped/failed after profile apply; continuing.", .{});
+                            } else {
+                                _ = runWinNodeServiceJobBlocking(.tray_start_startup, "", "", false);
+                            }
+                        }
                         app_state_state.windows_setup_completed = true;
                         should_close = true;
+                        close_reason = "install_profile_apply_success";
                     } else {
                         logger.err("Windows profile apply failed; staying in onboarding flow.", .{});
                         ctx.setOperatorNotice("Failed to apply install profile. Please check logs and try again.") catch {};
@@ -2714,6 +2959,7 @@ pub fn main() !void {
             if (snapshot.download_path) |path| {
                 if (installUpdate(allocator, path)) {
                     should_close = true;
+                    close_reason = "install_update_requested_restart";
                 }
             }
         }
@@ -2726,11 +2972,11 @@ pub fn main() !void {
             if (cfg.ui_theme) |label| {
                 theme.setMode(theme.modeFromLabel(label));
             }
-            _ = std.fs.cwd().deleteFile("ziggystarclaw_config.json") catch {};
+            _ = std.fs.cwd().deleteFile(client_paths.config) catch {};
             app_state_state.last_connected = false;
             auto_connect_enabled = false;
             auto_connect_pending = false;
-            _ = std.fs.cwd().deleteFile("ziggystarclaw_state.json") catch {};
+            _ = std.fs.cwd().deleteFile(client_paths.state) catch {};
             ws_client.url = cfg.server_url;
             ws_client.token = cfg.token;
             ws_client.insecure_tls = cfg.insecure_tls;
@@ -2793,7 +3039,7 @@ pub fn main() !void {
                     defer allocator.free(session_key);
                     sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
                     if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
-                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                        agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
                     }
                     _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
                     ctx.clearSessionState(session_key);
@@ -2812,7 +3058,7 @@ pub fn main() !void {
                     defer allocator.free(session_key);
                     sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
                     if (agents.setDefaultSession(allocator, agent_id, session_key) catch false) {
-                        agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                        agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
                     }
 
                     _ = active_window.manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
@@ -2859,7 +3105,7 @@ pub fn main() !void {
             defer allocator.free(choice.agent_id);
             defer allocator.free(choice.session_key);
             if (agents.setDefaultSession(allocator, choice.agent_id, choice.session_key) catch false) {
-                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
             }
         }
 
@@ -2872,7 +3118,7 @@ pub fn main() !void {
                 clearChatPanelsForSession(&w.manager, allocator, session_key);
             }
             if (agents.clearDefaultIfMatches(allocator, session_key)) {
-                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
             }
             sendSessionsListRequest(allocator, &ctx, &ws_client);
         }
@@ -2888,7 +3134,7 @@ pub fn main() !void {
                 .personality_path = null,
                 .default_session_key = null,
             })) |_| {
-                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
                 _ = active_window.manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
             } else |err| {
                 logger.warn("Failed to add agent: {}", .{err});
@@ -2901,7 +3147,7 @@ pub fn main() !void {
         if (ui_action.remove_agent_id) |agent_id| {
             defer allocator.free(agent_id);
             if (agents.remove(allocator, agent_id)) {
-                agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                agent_registry.AgentRegistry.save(allocator, client_paths.agents, agents) catch {};
                 for (ui_windows.items) |w| {
                     closeAgentChatPanels(&w.manager, agent_id);
                 }
@@ -3166,6 +3412,8 @@ pub fn main() !void {
 
         // Rendering is performed per-window during the UI loop above.
     }
+
+    logger.info("Client exiting. reason={s}", .{close_reason orelse "unknown"});
 }
 
 fn approvalDecisionLabel(decision: operator_view.ExecApprovalDecision) []const u8 {
@@ -3198,9 +3446,31 @@ fn initLogging(allocator: std.mem.Allocator) !void {
             logger.warn("Failed to open log file: {}", .{err});
         };
     } else {
-        logger.initFile(startup_log_path) catch |err| {
-            logger.warn("Failed to open startup log: {}", .{err});
-        };
+        if (builtin.os.tag == .windows) {
+            if (windowsClientDataDirAlloc(allocator)) |dir| {
+                defer allocator.free(dir);
+                std.fs.cwd().makePath(dir) catch {};
+                const log_path = std.fs.path.join(allocator, &.{ dir, startup_log_path }) catch null;
+                if (log_path) |p| {
+                    defer allocator.free(p);
+                    logger.initFile(p) catch |err| {
+                        logger.warn("Failed to open startup log '{s}': {}", .{ p, err });
+                    };
+                } else {
+                    logger.initFile(startup_log_path) catch |err| {
+                        logger.warn("Failed to open startup log: {}", .{err});
+                    };
+                }
+            } else {
+                logger.initFile(startup_log_path) catch |err| {
+                    logger.warn("Failed to open startup log: {}", .{err});
+                };
+            }
+        } else {
+            logger.initFile(startup_log_path) catch |err| {
+                logger.warn("Failed to open startup log: {}", .{err});
+            };
+        }
     }
     logger.initAsync(allocator) catch |err| {
         logger.warn("Failed to start async logger: {}", .{err});

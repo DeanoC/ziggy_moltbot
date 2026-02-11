@@ -743,6 +743,40 @@ fn drawWorkspaceHost(
 
     surface_chrome.drawBackground(&dc, host_rect);
 
+    if (installer_profile_only_mode) {
+        ensureOnlyPanelKind(manager, .Control);
+        if (selectPanelForKind(manager, .Control)) |panel| {
+            panel.data.Control.active_tab = .Settings;
+            const inset = t.spacing.md;
+            const content_rect = draw_context.Rect.fromMinSize(
+                .{ host_rect.min[0] + inset, host_rect.min[1] + inset },
+                .{
+                    @max(1.0, host_rect.size()[0] - inset * 2.0),
+                    @max(1.0, host_rect.size()[1] - inset * 2.0),
+                },
+            );
+            _ = drawPanelContents(
+                allocator,
+                ctx,
+                cfg,
+                registry,
+                is_connected,
+                app_version,
+                panel,
+                content_rect,
+                inbox,
+                manager,
+                action,
+                pending_attachment,
+                win_state,
+                true,
+            );
+        }
+        drawControllerFocusOverlay(&dc, queue, host_rect);
+        ui_systems.endFrame(&dc);
+        return;
+    }
+
     if (theme_runtime.getProfile().id == .fullscreen) {
         drawFullscreenHost(
             allocator,
