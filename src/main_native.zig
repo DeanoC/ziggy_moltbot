@@ -1888,8 +1888,7 @@ pub fn main() !void {
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, client_paths.agents);
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, client_paths.state) catch app_state.initDefault();
-    const install_profile_only = install_profile_only_requested or
-        (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
+    const install_profile_only = install_profile_only_requested;
     var install_profile_user_interacted = !install_profile_only;
     const install_profile_close_guard_until_ms: i64 = if (install_profile_only) std.time.milliTimestamp() + 3000 else 0;
     ui.setInstallerProfileOnlyMode(install_profile_only);
@@ -2051,17 +2050,15 @@ pub fn main() !void {
 
     main_win.manager.deinit();
     main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
-    if (builtin.os.tag == .windows and (install_profile_only or !app_state_state.windows_setup_completed)) {
-        if (install_profile_only) {
-            var idx: usize = 0;
-            while (idx < main_win.manager.workspace.panels.items.len) {
-                const panel = main_win.manager.workspace.panels.items[idx];
-                if (panel.kind == .Control) {
-                    idx += 1;
-                    continue;
-                }
-                _ = main_win.manager.closePanel(panel.id);
+    if (builtin.os.tag == .windows and install_profile_only) {
+        var idx: usize = 0;
+        while (idx < main_win.manager.workspace.panels.items.len) {
+            const panel = main_win.manager.workspace.panels.items[idx];
+            if (panel.kind == .Control) {
+                idx += 1;
+                continue;
             }
+            _ = main_win.manager.closePanel(panel.id);
         }
 
         var found_control = false;
