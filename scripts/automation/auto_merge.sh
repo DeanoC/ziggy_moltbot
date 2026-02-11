@@ -225,11 +225,57 @@ has_blocking_review_threads() {
         }
       }
     }' \
-    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]? 
+    --jq '[.data.repository.pullRequest.reviewThreads.nodes[]?
             | select(.isResolved == false)
             | (.comments.nodes[]?.author.login // "")
           ]
           | any(. == "chatgpt-codex-connector[bot]" or (endswith("[bot]") | not))'
+}
+
+has_blocking_feedback_after_head() {
+  local pr_number="$1"
+  local pr_author="$2"
+  local owner repo head_sha head_ts issue_count review_comment_count review_count total
+  owner=${REPO%%/*}
+  repo=${REPO##*/}
+
+  # Fail closed: if we cannot determine head commit timestamp, do not merge.
+  head_sha=$(gh api "repos/$owner/$repo/pulls/$pr_number" --jq '.head.sha')
+  head_ts=$(gh api "repos/$owner/$repo/commits/$head_sha" --jq '.commit.committer.date')
+  if [[ -z "$head_ts" || "$head_ts" == "null" ]]; then
+    return 0
+  fi
+
+  # Block on actionable feedback posted *after* the PR head commit, unless authored by
+  # the PR author. This catches plain PR comments and inline review comments that may not
+  # appear as unresolved threads yet due to eventual consistency.
+  issue_count=$(gh api "repos/$owner/$repo/issues/$pr_number/comments" \
+    --jq "[.[]
+      | select(.created_at > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
+      | .user.login
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
+
+  review_comment_count=$(gh api "repos/$owner/$repo/pulls/$pr_number/comments" \
+    --jq "[.[]
+      | select(.created_at > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
+      | .user.login
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
+
+  review_count=$(gh api "repos/$owner/$repo/pulls/$pr_number/reviews" \
+    --jq "[.[]
+      | select((.submitted_at // \"\") > \"$head_ts\")
+      | select(.user.login != \"$pr_author\")
+      | select((.state // \"\") == \"COMMENTED\" or (.state // \"\") == \"CHANGES_REQUESTED\")
+      | .user.login
+      | select(. == \"chatgpt-codex-connector[bot]\" or (endswith(\"[bot]\") | not))
+    ] | length")
+
+  total=$((issue_count + review_comment_count + review_count))
+  [[ "$total" -gt 0 ]]
 }
 
 prs=$(gh pr list --repo "$REPO" --state open --json number --jq '.[].number')
@@ -300,6 +346,11 @@ for pr in $prs; do
   # This is more robust than scanning raw inline review comments.
   if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
     log "PR #$pr has unresolved blocking review threads (human and/or codex bot); skipping"
+    continue
+  fi
+
+  if has_blocking_feedback_after_head "$pr" "$author"; then
+    log "PR #$pr has new actionable feedback after current head commit (comments/reviews); skipping"
     continue
   fi
 
@@ -401,6 +452,11 @@ for pr in "${merge_queue[@]}"; do
 
   if [[ "$(has_blocking_review_threads "$pr")" == "true" ]]; then
     log "PR #$pr has unresolved blocking review threads at pre-merge recheck; skipping"
+    continue
+  fi
+
+  if has_blocking_feedback_after_head "$pr" "$author"; then
+    log "PR #$pr has new actionable feedback after current head commit at pre-merge recheck; skipping"
     continue
   fi
 
