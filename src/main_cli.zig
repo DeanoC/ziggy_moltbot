@@ -426,20 +426,47 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
     const self_exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_exe);
 
-    // Guard against multiple supervisors fighting over the pipe / child process.
-    const mutex = win_single_instance.acquireNodeSupervisorMutex(allocator) catch |err| {
-        wrap.print("{d} [wrapper] supervisor mutex error: {}\n", .{ std.time.timestamp(), err }) catch {};
+    const owner_pid: u32 = std.os.windows.GetCurrentProcessId();
+
+    // Guard against duplicate runner/service owners at startup.
+    const mutex = win_single_instance.acquireNodeOwnerMutex(allocator) catch |err| {
+        wrap.print(
+            "{d} [wrapper] single_instance_error mode=runner pid={d} err={s}\n",
+            .{ std.time.timestamp(), owner_pid, @errorName(err) },
+        ) catch {};
         return err;
     };
-    // Keep handle open for lifetime of supervisor.
-    defer std.os.windows.CloseHandle(mutex.handle);
+    const owns_single_instance = !mutex.already_running;
+
+    // Keep handle open for the lifetime of this process.
+    defer {
+        if (owns_single_instance) {
+            wrap.print(
+                "{d} [wrapper] single_instance_owner_released mode=runner pid={d} lock={s}\n",
+                .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+            ) catch {};
+        }
+        std.os.windows.CloseHandle(mutex.handle);
+    }
 
     if (mutex.already_running) {
         wrap.print(
-            "{d} [wrapper] supervisor already running (mutex {s}); exiting\n",
-            .{ std.time.timestamp(), mutex.name_used_utf8 },
+            "{d} [wrapper] single_instance_denied_existing_owner mode=runner pid={d} lock={s}\n",
+            .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
         ) catch {};
         return;
+    }
+
+    wrap.print(
+        "{d} [wrapper] single_instance_acquired mode=runner pid={d} lock={s}\n",
+        .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+    ) catch {};
+
+    if (std.mem.startsWith(u8, mutex.name_used_utf8, "Local\\")) {
+        wrap.print(
+            "{d} [wrapper] single_instance_scope_local mode=runner pid={d} lock={s}\n",
+            .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+        ) catch {};
     }
 
     wrap.print(

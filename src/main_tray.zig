@@ -75,17 +75,19 @@ var g_tip_buf: [128]u16 = undefined;
 fn trayMain(allocator: std.mem.Allocator) !void {
     g_allocator = allocator;
 
-    // Single instance (best-effort)
-    const mutex_name = try utf16Z(allocator, "ZiggyStarClaw.Tray.Singleton");
+    // Single instance guard (best-effort).
+    const tray_lock_name = "ZiggyStarClaw.Tray.Singleton";
+    const mutex_name = try utf16Z(allocator, tray_lock_name);
     defer allocator.free(mutex_name);
     const hMutex = win.CreateMutexW(null, win.TRUE, mutex_name.ptr);
     if (hMutex != null) {
         // ERROR_ALREADY_EXISTS = 183
         if (win.GetLastError() == 183) {
-            // Another instance is running.
+            logLine("single_instance_denied_existing_owner mode=tray lock=ZiggyStarClaw.Tray.Singleton");
             _ = win.CloseHandle(hMutex);
             return;
         }
+        logLine("single_instance_acquired mode=tray lock=ZiggyStarClaw.Tray.Singleton");
     }
 
     const hInstance = win.GetModuleHandleW(null);
@@ -151,7 +153,10 @@ fn trayMain(allocator: std.mem.Allocator) !void {
         _ = win.DispatchMessageW(&msg);
     }
 
-    if (hMutex != null) _ = win.CloseHandle(hMutex);
+    if (hMutex != null) {
+        logLine("single_instance_owner_released mode=tray lock=ZiggyStarClaw.Tray.Singleton");
+        _ = win.CloseHandle(hMutex);
+    }
 }
 
 fn refreshStatus() void {
