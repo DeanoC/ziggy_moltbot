@@ -1,0 +1,41 @@
+Options:
+  --url <ws/wss url>       Override server URL
+  --token <token>          Override auth token (alias: --auth-token)
+  --gateway-token <token>  Alias for --token
+  --log-level <level>      Log level (debug|info|warn|error)
+  --config <path>          Config file path (default: ~/.config/ziggystarclaw/config.json or %APPDATA%\ZiggyStarClaw\config.json)
+  --update-url <url>       Override update manifest URL
+  --print-update-url       Print normalized update manifest URL and exit
+  --insecure-tls           Disable TLS verification
+  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
+  --send <message>         Send a chat message and exit
+  --session <key>          Target session for send (uses default if not set)
+  --list-sessions          List available sessions and exit
+  --use-session <key>      Set default session and exit
+  --list-nodes             List available nodes and exit
+  --node <id>              Target node for node commands
+  --use-node <id>          Set default node and exit
+  --run <command>          Run a command on the target node (system.run)
+  --which <name>           Locate executable on node PATH (system.which)
+  --notify <title>         Show a notification on the node (system.notify)
+  --ps                     List node background processes (process.list)
+  --spawn <command>        Spawn background process on node (process.spawn)
+  --poll <processId>       Poll background process status (process.poll)
+  --stop <processId>       Stop background process (process.stop)
+  --canvas-present         Show canvas (canvas.present)
+  --canvas-hide            Hide canvas (canvas.hide)
+  --canvas-navigate <url>  Navigate canvas to URL (canvas.navigate)
+  --canvas-eval <js>       Eval JS in canvas (canvas.eval)
+  --canvas-snapshot <path> Save canvas snapshot to path on node (canvas.snapshot)
+  --exec-approvals-get     Show node exec approvals (system.execApprovals.get)
+  --exec-allow <command>   Add an entry to node exec allowlist (system.execApprovals.set)
+  --exec-allow-file <path> Add entries from JSON file to node exec allowlist
+  --list-approvals         List pending approvals and exit
+  --approve <id>           Approve an exec request by ID
+  --deny <id>              Deny an exec request by ID
+  --check-update-only      Fetch update manifest and exit
+  --interactive            Start interactive REPL mode
+  --node-mode              Run as a capability node (see --node-mode-help)
+  --node-register          Interactive: pair as node (connect role=node and persist token)
+  --wait-for-approval      With --node-register: keep retrying until approved
+  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)

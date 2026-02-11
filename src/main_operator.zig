@@ -3,19 +3,7 @@ const logger = @import("utils/logger.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const requests = @import("protocol/requests.zig");
 
-pub const usage =
-    \\ZiggyStarClaw Operator Mode
-    \\
-    \\Usage:
-    \\  ziggystarclaw-cli --operator-mode [options]
-    \\
-    \\Actions:
-    \\  --pair-list                 List pending/paired devices
-    \\  --pair-approve <requestId>  Approve a pairing request
-    \\  --nodes                      List connected nodes
-    \\  --watch-pairing              Watch for device.pair.* events
-    \\
-;
+pub const usage = @embedFile("../docs/cli/operator-mode.md");
 
 pub const OperatorCliOptions = struct {
     url: []const u8 = "ws://127.0.0.1:18789/ws",
