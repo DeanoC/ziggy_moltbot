@@ -313,7 +313,9 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
     };
     defer file.close();
 
-    const video_bytes = file.readToEndAlloc(allocator, 150 * 1024 * 1024) catch |err| switch (err) {
+    const max_clip_bytes: usize = 300 * 1024;
+
+    const video_bytes = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             logger.err("camera.clip backend={s} failed to read output video: {s}", .{ clip_backend_name, @errorName(err) });
@@ -321,6 +323,14 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
         },
     };
     defer allocator.free(video_bytes);
+
+    if (video_bytes.len > max_clip_bytes) {
+        logger.warn(
+            "camera.clip backend={s} output too large for gateway frame (bytes={d}, cap={d})",
+            .{ clip_backend_name, video_bytes.len, max_clip_bytes },
+        );
+        return error.CommandFailed;
+    }
 
     const b64_len = std.base64.standard.Encoder.calcSize(video_bytes.len);
     const b64_buf = allocator.alloc(u8, b64_len) catch return error.OutOfMemory;
@@ -623,10 +633,18 @@ fn runFfmpegCameraClip(
             "-an",
             "-pix_fmt",
             "yuv420p",
+            "-r",
+            "10",
             "-c:v",
             "mpeg4",
+            "-b:v",
+            "450k",
+            "-maxrate",
+            "450k",
+            "-bufsize",
+            "900k",
             "-q:v",
-            "5",
+            "7",
             "-movflags",
             "+faststart",
             "-y",
