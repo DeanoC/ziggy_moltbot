@@ -79,16 +79,17 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Node"" /TR """"{app}\ziggystarclaw-cli.exe"" node supervise --config ""{userappdata}\ZiggyStarClaw\config.json"" --as-node --no-operator --log-level info"" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetSessionConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldSaveSessionConfig
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Node"" /TR """"{app}\ziggystarclaw-cli.exe"" node supervise --config ""{userappdata}\ZiggyStarClaw\config.json"" --as-node --no-operator --log-level info"" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
 ; user-context only (installer-context ONLOGON task creation can block on credential prompts)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Tray"" /TR """"{app}\ziggystarclaw-tray.exe"""" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTasks
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Tray"" /TR """"{app}\ziggystarclaw-tray.exe"""" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -105,8 +106,6 @@ var
   ExistingServerUrl: String;
   ExistingGatewayToken: String;
   ExistingConfigHasConnection: Boolean;
-  SessionConfigPrepared: Boolean;
-  SessionConfigReady: Boolean;
 
 function IsWhitespace(const C: Char): Boolean;
 begin
@@ -272,8 +271,6 @@ begin
   ExistingServerUrl := '';
   ExistingGatewayToken := '';
   ExistingConfigHasConnection := False;
-  SessionConfigPrepared := False;
-  SessionConfigReady := False;
 
   UserCfg := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
   CommonCfg := ExpandConstant('{commonappdata}\ZiggyStarClaw\config.json');
@@ -322,89 +319,6 @@ end;
 function ShouldInstallTrayStartup: Boolean;
 begin
   Result := IsProfileService and (not TrayStartupInstalled);
-end;
-
-function JsonEscape(Value: String): String;
-begin
-  Result := Value;
-  StringChangeEx(Result, '\', '\\', True);
-  StringChangeEx(Result, '"', '\"', True);
-  StringChangeEx(Result, #13#10, '\n', True);
-  StringChangeEx(Result, #13, '\n', True);
-  StringChangeEx(Result, #10, '\n', True);
-end;
-
-function EnsureSessionNodeConfig: Boolean;
-var
-  UrlValue, TokenValue, ConfigPath, ConfigDir, JsonDoc: String;
-begin
-  if SessionConfigPrepared then
-  begin
-    Result := SessionConfigReady;
-    Exit;
-  end;
-  SessionConfigPrepared := True;
-  SessionConfigReady := False;
-
-  if Assigned(ConnectionPage) then
-  begin
-    UrlValue := Trim(ConnectionPage.Values[0]);
-    TokenValue := Trim(ConnectionPage.Values[1]);
-  end
-  else
-  begin
-    UrlValue := '';
-    TokenValue := '';
-  end;
-  StringChangeEx(UrlValue, '"', '', True);
-  StringChangeEx(TokenValue, '"', '', True);
-  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
-  ConfigDir := ExpandConstant('{userappdata}\ZiggyStarClaw');
-
-  if UrlValue = '' then
-  begin
-    SessionConfigReady := FileExists(ConfigPath);
-    if (not SessionConfigReady) then
-      MsgBox('Session Node configuration is missing. Please provide a Server URL.', mbError, MB_OK);
-    Result := SessionConfigReady;
-    Exit;
-  end;
-
-  if (not DirExists(ConfigDir)) then
-    ForceDirectories(ConfigDir);
-
-  JsonDoc :=
-    '{' + #13#10 +
-    '  "gateway": {' + #13#10 +
-    '    "wsUrl": "' + JsonEscape(UrlValue) + '",' + #13#10 +
-    '    "authToken": "' + JsonEscape(TokenValue) + '"' + #13#10 +
-    '  },' + #13#10 +
-    '  "node": {' + #13#10 +
-    '    "enabled": true,' + #13#10 +
-    '    "nodeId": "",' + #13#10 +
-    '    "nodeToken": "",' + #13#10 +
-    '    "displayName": "ZiggyStarClaw Node",' + #13#10 +
-    '    "deviceIdentityPath": "%APPDATA%\\ZiggyStarClaw\\node-device.json",' + #13#10 +
-    '    "execApprovalsPath": "%APPDATA%\\ZiggyStarClaw\\exec-approvals.json"' + #13#10 +
-    '  },' + #13#10 +
-    '  "operator": {' + #13#10 +
-    '    "enabled": false' + #13#10 +
-    '  },' + #13#10 +
-    '  "logging": {' + #13#10 +
-    '    "level": "info"' + #13#10 +
-    '  }' + #13#10 +
-    '}' + #13#10;
-
-  SessionConfigReady := SaveStringToFile(ConfigPath, JsonDoc, False);
-  if (not SessionConfigReady) then
-    MsgBox('Failed to save session node config: ' + ConfigPath, mbError, MB_OK);
-
-  Result := SessionConfigReady;
-end;
-
-function ShouldInstallSessionTasks: Boolean;
-begin
-  Result := IsProfileSession and EnsureSessionNodeConfig;
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -504,4 +418,25 @@ end;
 function ShouldSaveClientConfig: Boolean;
 begin
   Result := IsProfileClient and (GetClientConfigArgs('') <> '');
+end;
+
+function GetSessionConfigArgs(Param: String): String;
+var
+  ConnArgs: String;
+  ConfigPath: String;
+begin
+  ConnArgs := GetConnectionArgs('');
+  if ConnArgs = '' then
+  begin
+    Result := '';
+    Exit;
+  end;
+
+  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
+  Result := '--save-config --config "' + ConfigPath + '" ' + ConnArgs;
+end;
+
+function ShouldSaveSessionConfig: Boolean;
+begin
+  Result := IsProfileSession and (GetSessionConfigArgs('') <> '');
 end;
