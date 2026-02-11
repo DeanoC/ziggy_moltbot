@@ -70,13 +70,17 @@ Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe";
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileClient
 
 ; Service node profile (system service in elevated context)
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode service --url ""{code:GetServerUrl}"" --gateway-token ""{code:GetGatewayToken}"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
+; Ensure clean swap from user-session mode.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode service {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 ; Tray startup task installation is handled during installer apply flow.
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
 
 ; User session node profile (user Scheduled Task + tray startup in original user context)
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session --url ""{code:GetServerUrl}"" --gateway-token ""{code:GetGatewayToken}"""; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+; Ensure clean swap from service mode (requires installer elevation).
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 
@@ -92,8 +96,132 @@ const
 var
   ProfilePage: TInputOptionWizardPage;
   ConnectionPage: TInputQueryWizardPage;
+  ExistingServerUrl: String;
+  ExistingGatewayToken: String;
+  ExistingConfigHasConnection: Boolean;
+
+function IsWhitespace(const C: Char): Boolean;
+begin
+  Result := (C = ' ') or (C = #9) or (C = #10) or (C = #13);
+end;
+
+function ExtractJsonStringValue(const Json, Key: String; var Value: String): Boolean;
+var
+  Pattern: String;
+  P, I, L: Integer;
+  C: Char;
+  OutValue: String;
+begin
+  Result := False;
+  Value := '';
+  Pattern := '"' + Key + '"';
+  P := Pos(Pattern, Json);
+  if P = 0 then
+    Exit;
+
+  I := P + Length(Pattern);
+  L := Length(Json);
+  while (I <= L) and (Json[I] <> ':') do
+    I := I + 1;
+  if I > L then
+    Exit;
+
+  I := I + 1;
+  while (I <= L) and IsWhitespace(Json[I]) do
+    I := I + 1;
+  if (I > L) or (Json[I] <> '"') then
+    Exit;
+
+  I := I + 1;
+  OutValue := '';
+  while I <= L do
+  begin
+    C := Json[I];
+    if C = '"' then
+    begin
+      Value := OutValue;
+      Result := True;
+      Exit;
+    end;
+
+    if C = '\' then
+    begin
+      I := I + 1;
+      if I > L then
+        Break;
+      C := Json[I];
+    end;
+
+    OutValue := OutValue + C;
+    I := I + 1;
+  end;
+end;
+
+function TryLoadConnectionFromConfig(const ConfigPath: String; var Url, Token: String): Boolean;
+var
+  Content: AnsiString;
+  TmpUrl, TmpToken: String;
+begin
+  Result := False;
+  Url := '';
+  Token := '';
+  if (not FileExists(ConfigPath)) then
+    Exit;
+  if (not LoadStringFromFile(ConfigPath, Content)) then
+    Exit;
+
+  if ExtractJsonStringValue(String(Content), 'wsUrl', TmpUrl) then
+  begin
+    Url := Trim(TmpUrl);
+    Result := Url <> '';
+  end;
+  if ExtractJsonStringValue(String(Content), 'authToken', TmpToken) then
+    Token := TmpToken;
+end;
+
+function TryLoadConnectionFromLegacyClientConfig(const ConfigPath: String; var Url, Token: String): Boolean;
+var
+  Content: AnsiString;
+  TmpUrl, TmpToken: String;
+begin
+  Result := False;
+  Url := '';
+  Token := '';
+  if (not FileExists(ConfigPath)) then
+    Exit;
+  if (not LoadStringFromFile(ConfigPath, Content)) then
+    Exit;
+
+  if ExtractJsonStringValue(String(Content), 'server_url', TmpUrl) then
+  begin
+    Url := Trim(TmpUrl);
+    Result := Url <> '';
+  end;
+  if ExtractJsonStringValue(String(Content), 'token', TmpToken) then
+    Token := TmpToken;
+end;
+
+function ServiceRunnerInstalled: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\sc.exe'), 'query "ZiggyStarClaw Node"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
+
+function SessionRunnerInstalled: Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{sys}\schtasks.exe'), '/Query /TN "ZiggyStarClaw Node"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Result := (ResultCode = 0);
+end;
 
 procedure InitializeWizard;
+var
+  UserCfg, CommonCfg, UserLegacyCfg, UrlValue, TokenValue: String;
 begin
   ProfilePage := CreateInputOptionPage(
     wpSelectTasks,
@@ -106,7 +234,12 @@ begin
   ProfilePage.Add('Pure Client (no node runner)');
   ProfilePage.Add('Service Node (starts at boot, recommended for always-on)');
   ProfilePage.Add('User Session Node (interactive desktop access)');
-  ProfilePage.Values[ProfileClient] := True;
+  if ServiceRunnerInstalled then
+    ProfilePage.Values[ProfileService] := True
+  else if SessionRunnerInstalled then
+    ProfilePage.Values[ProfileSession] := True
+  else
+    ProfilePage.Values[ProfileClient] := True;
 
   ConnectionPage := CreateInputQueryPage(
     ProfilePage.ID,
@@ -118,6 +251,38 @@ begin
   ConnectionPage.Add('Gateway Token (optional)', True);
   ConnectionPage.Values[0] := 'wss://';
   ConnectionPage.Values[1] := '';
+
+  ExistingServerUrl := '';
+  ExistingGatewayToken := '';
+  ExistingConfigHasConnection := False;
+
+  UserCfg := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
+  CommonCfg := ExpandConstant('{commonappdata}\ZiggyStarClaw\config.json');
+  UserLegacyCfg := ExpandConstant('{userappdata}\ZiggyStarClaw\ziggystarclaw_config.json');
+
+  UrlValue := '';
+  TokenValue := '';
+  if ProfilePage.Values[ProfileService] then
+  begin
+    if (not TryLoadConnectionFromConfig(CommonCfg, UrlValue, TokenValue)) then
+      if (not TryLoadConnectionFromConfig(UserCfg, UrlValue, TokenValue)) then
+        TryLoadConnectionFromLegacyClientConfig(UserLegacyCfg, UrlValue, TokenValue);
+  end
+  else
+  begin
+    if (not TryLoadConnectionFromConfig(UserCfg, UrlValue, TokenValue)) then
+      if (not TryLoadConnectionFromConfig(CommonCfg, UrlValue, TokenValue)) then
+        TryLoadConnectionFromLegacyClientConfig(UserLegacyCfg, UrlValue, TokenValue);
+  end;
+
+  if UrlValue <> '' then
+  begin
+    ExistingConfigHasConnection := True;
+    ExistingServerUrl := UrlValue;
+    ExistingGatewayToken := TokenValue;
+    ConnectionPage.Values[0] := ExistingServerUrl;
+    ConnectionPage.Values[1] := ExistingGatewayToken;
+  end;
 end;
 
 function IsProfileClient: Boolean;
@@ -150,9 +315,9 @@ begin
   if Assigned(ConnectionPage) and (CurPageID = ConnectionPage.ID) then
   begin
     ServerURL := Trim(ConnectionPage.Values[0]);
-    if (ServerURL = '') then
+    if ((ServerURL = '') and (not ExistingConfigHasConnection)) then
     begin
-      MsgBox('Server URL is required for Service Node and User Session Node profiles.', mbError, MB_OK);
+      MsgBox('Server URL is required for Service Node and User Session Node profiles (unless an existing config is detected).', mbError, MB_OK);
       Result := False;
       Exit;
     end;
@@ -179,4 +344,23 @@ begin
     Result := SanitizeArg(ConnectionPage.Values[1])
   else
     Result := '';
+end;
+
+function GetConnectionArgs(Param: String): String;
+var
+  UrlValue, TokenValue: String;
+begin
+  UrlValue := SanitizeArg(GetServerUrl(''));
+  TokenValue := SanitizeArg(GetGatewayToken(''));
+
+  if (UrlValue = '') then
+  begin
+    // Preserve existing config on upgrades when URL is left blank.
+    Result := '';
+    Exit;
+  end;
+
+  Result := '--url "' + UrlValue + '"';
+  if (TokenValue <> '') then
+    Result := Result + ' --gateway-token "' + TokenValue + '"';
 end;
