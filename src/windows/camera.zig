@@ -371,24 +371,7 @@ fn resolveCameraNameForCapture(
 }
 
 fn formatDshowVideoInputAlloc(allocator: std.mem.Allocator, camera_name: []const u8) ![]u8 {
-    const escaped = try escapeDoubleQuotesAlloc(allocator, camera_name);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, "video=\"{s}\"", .{escaped});
-}
-
-fn escapeDoubleQuotesAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-
-    for (input) |ch| {
-        if (ch == '"') {
-            try out.appendSlice(allocator, "\\\"");
-        } else {
-            try out.append(allocator, ch);
-        }
-    }
-
-    return out.toOwnedSlice(allocator);
+    return std.fmt.allocPrint(allocator, "video={s}", .{camera_name});
 }
 
 fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -546,6 +529,8 @@ fn runFfmpegSingleFrame(
             "1",
             "-q:v",
             "2",
+            "-update",
+            "1",
             "-y",
             out_path,
         };
@@ -560,6 +545,8 @@ fn runFfmpegSingleFrame(
             "-i",
             input_spec,
             "-frames:v",
+            "1",
+            "-update",
             "1",
             "-y",
             out_path,
