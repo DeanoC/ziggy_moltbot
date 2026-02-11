@@ -114,9 +114,15 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler);
     try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler);
 
-    // Camera commands (Windows MVP)
+    // Camera commands (Windows only, advertised when executable)
     if (builtin.target.os.tag == .windows) {
-        try router.register(.camera_list, cameraListHandler);
+        const support = windows_camera.detectBackendSupport(allocator);
+        if (support.list) {
+            try router.register(.camera_list, cameraListHandler);
+        }
+        if (support.snap) {
+            try router.register(.camera_snap, cameraSnapHandler);
+        }
     }
 
     return router;
@@ -129,6 +135,14 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
 pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Command) !CommandRouter {
     var router = CommandRouter.init(allocator);
     errdefer router.deinit();
+
+    const camera_support = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const support = windows_camera.detectBackendSupport(allocator);
+            break :blk .{ .list = support.list, .snap = support.snap };
+        }
+        break :blk .{ .list = false, .snap = false };
+    };
 
     for (cmds) |cmd| {
         switch (cmd) {
@@ -157,13 +171,17 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             // Not implemented yet in this codebase (but present in enum)
             .screen_record => return error.CommandNotSupported,
             .camera_list => {
-                if (builtin.target.os.tag == .windows) {
-                    try router.register(.camera_list, cameraListHandler);
-                } else {
+                if (builtin.target.os.tag != .windows or !camera_support.list) {
                     return error.CommandNotSupported;
                 }
+                try router.register(.camera_list, cameraListHandler);
             },
-            .camera_snap,
+            .camera_snap => {
+                if (builtin.target.os.tag != .windows or !camera_support.snap) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.camera_snap, cameraSnapHandler);
+            },
             .camera_clip,
             .location_get,
             => return error.CommandNotSupported,
@@ -631,14 +649,7 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
         logger.err("camera.list failed: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
-    defer {
-        // `listCameras` returns owned strings + slice.
-        for (devices) |dev| {
-            allocator.free(@constCast(dev.name));
-            allocator.free(@constCast(dev.deviceId));
-        }
-        allocator.free(devices);
-    }
+    defer windows_camera.freeCameraDevices(allocator, devices);
 
     var out_devices = std.json.Array.init(allocator);
     for (devices) |dev| {
@@ -657,6 +668,60 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
     var out = std.json.ObjectMap.init(allocator);
     try out.put("backend", std.json.Value{ .string = try allocator.dupe(u8, "powershell-cim") });
     try out.put("devices", std.json.Value{ .array = out_devices });
+    return std.json.Value{ .object = out };
+}
+
+fn cameraSnapHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (comptime builtin.target.os.tag != .windows) {
+        return CommandError.CommandNotSupported;
+    }
+
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const format = blk: {
+        if (params.object.get("format")) |format_param| {
+            if (format_param != .string) return CommandError.InvalidParams;
+            break :blk windows_camera.CameraSnapFormat.fromString(format_param.string) orelse return CommandError.InvalidParams;
+        }
+        break :blk windows_camera.CameraSnapFormat.jpeg;
+    };
+
+    const device_id = blk: {
+        if (params.object.get("deviceId")) |device_id_param| {
+            if (device_id_param != .string) return CommandError.InvalidParams;
+            if (device_id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk device_id_param.string;
+        }
+
+        if (params.object.get("id")) |id_param| {
+            if (id_param != .string) return CommandError.InvalidParams;
+            if (id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk id_param.string;
+        }
+
+        break :blk null;
+    };
+
+    const snap = windows_camera.snapCamera(allocator, .{
+        .format = format,
+        .deviceId = device_id,
+    }) catch |err| {
+        logger.err("camera.snap failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.DeviceNotFound => CommandError.InvalidParams,
+            error.PowershellNotFound, error.FfmpegNotFound => CommandError.CommandNotSupported,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, snap.format.toString()) });
+    // `snap.base64` is allocated from the per-invocation arena allocator.
+    try out.put("base64", std.json.Value{ .string = snap.base64 });
+    try out.put("width", std.json.Value{ .integer = @as(i64, @intCast(snap.width)) });
+    try out.put("height", std.json.Value{ .integer = @as(i64, @intCast(snap.height)) });
     return std.json.Value{ .object = out };
 }
 

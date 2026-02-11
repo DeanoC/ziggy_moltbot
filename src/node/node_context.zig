@@ -4,6 +4,11 @@ const types = @import("../protocol/types.zig");
 const ProcessManager = @import("process_manager.zig").ProcessManager;
 const CanvasManager = @import("canvas.zig").CanvasManager;
 
+const windows_camera = if (builtin.target.os.tag == .windows)
+    @import("../windows/camera.zig")
+else
+    struct {};
+
 /// Node capability categories
 pub const Capability = enum {
     system,
@@ -87,7 +92,7 @@ pub const Command = enum {
     }
 
     pub fn fromString(str: []const u8) ?Command {
-        inline for (@typeInfo(Command).Enum.fields) |field| {
+        inline for (@typeInfo(Command).@"enum".fields) |field| {
             const cmd = @field(Command, field.name);
             if (std.mem.eql(u8, str, cmd.toString())) {
                 return cmd;
@@ -288,15 +293,38 @@ pub const NodeContext = struct {
         try self.addCommand(.process_list);
     }
 
-    /// Register Windows camera capabilities.
+    /// Register Windows camera capabilities that are executable on this host.
     ///
-    /// MVP: advertise `camera.list` only.
+    /// In Windows Session 0 service mode, callers should skip this entirely.
     pub fn registerWindowsCameraCapabilities(self: *NodeContext) !void {
         if (builtin.target.os.tag != .windows) return;
 
+        const support = windows_camera.detectBackendSupport(self.allocator);
+        try self.registerWindowsCameraCapabilitiesForSupport(.{
+            .list = support.list,
+            .snap = support.snap,
+        });
+    }
+
+    pub const WindowsCameraCapabilitySupport = struct {
+        list: bool,
+        snap: bool,
+    };
+
+    pub fn registerWindowsCameraCapabilitiesForSupport(self: *NodeContext, support: WindowsCameraCapabilitySupport) !void {
+        if (!support.list and !support.snap) return;
+
         try self.addCapability(.camera);
-        try self.addCommand(.camera_list);
-        try self.setPermission("camera.list", true);
+
+        if (support.list) {
+            try self.addCommand(.camera_list);
+            try self.setPermission("camera.list", true);
+        }
+
+        if (support.snap) {
+            try self.addCommand(.camera_snap);
+            try self.setPermission("camera.snap", true);
+        }
     }
 };
 
@@ -322,4 +350,36 @@ pub fn generateNodeId(buf: *[64]u8) ![]const u8 {
 // Free arrays returned by getCapabilitiesArray/getCommandsArray
 pub fn freeStringArray(allocator: std.mem.Allocator, arr: []const []const u8) void {
     allocator.free(arr);
+}
+
+test "registerWindowsCameraCapabilitiesForSupport registers list-only support" {
+    var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
+    defer ctx.deinit();
+
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = false });
+
+    try std.testing.expect(ctx.supportsCommand("camera.list"));
+    try std.testing.expect(!ctx.supportsCommand("camera.snap"));
+    try std.testing.expectEqual(@as(usize, 1), ctx.capabilities.items.len);
+    try std.testing.expect(ctx.capabilities.items[0] == .camera);
+}
+
+test "registerWindowsCameraCapabilitiesForSupport registers list+snap support" {
+    var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
+    defer ctx.deinit();
+
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = true });
+
+    try std.testing.expect(ctx.supportsCommand("camera.list"));
+    try std.testing.expect(ctx.supportsCommand("camera.snap"));
+}
+
+test "registerWindowsCameraCapabilitiesForSupport skips camera capability when unsupported" {
+    var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
+    defer ctx.deinit();
+
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = false, .snap = false });
+
+    try std.testing.expectEqual(@as(usize, 0), ctx.capabilities.items.len);
+    try std.testing.expectEqual(@as(usize, 0), ctx.commands.items.len);
 }

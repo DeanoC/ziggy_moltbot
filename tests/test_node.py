@@ -73,6 +73,16 @@ def gateway_available():
     except Exception as e:
         pytest.skip(f"Gateway not available at {url}: {e}")
 
+
+@pytest.fixture(scope="session")
+def gateway_token():
+    """Require gateway auth token for integration tests."""
+    token = os.environ.get("GATEWAY_TOKEN")
+    if not token:
+        pytest.skip("GATEWAY_TOKEN env var is required for gateway/node integration tests")
+    return token
+
+
 @pytest.fixture
 def temp_dir():
     """Provide temporary directory"""
@@ -158,27 +168,47 @@ class NodeProcess:
         return ""
 
     def _write_config(self) -> Path:
-        """Write node config file"""
-        config = {
-            "node_id": self.node_id,
-            "display_name": f"Test-{self.node_id}",
-            "gateway_host": TestConfig.GATEWAY_URL.replace("ws://", "").rsplit(":", 1)[0],
-            "gateway_port": 18789,
-            # Token-auth gateway needs this; set GATEWAY_TOKEN in env.
-            "gateway_token": os.environ.get("GATEWAY_TOKEN"),
-            "system_enabled": True,
-            "canvas_enabled": self.config.get("canvas_enabled", False),
-            "canvas_backend": self.config.get("canvas_backend", "none"),
-            "exec_approvals_path": "~/.openclaw/exec-approvals.json",
-        }
+        """Write unified node config file"""
+        gateway_url = TestConfig.GATEWAY_URL
+        if gateway_url.startswith("ws://") or gateway_url.startswith("wss://"):
+            if not gateway_url.rstrip("/").endswith("/ws"):
+                gateway_url = gateway_url.rstrip("/") + "/ws"
+
+        token = os.environ.get("GATEWAY_TOKEN") or ""
 
         config_path = Path(tempfile.mktemp(suffix=".json", prefix="zsc-config-"))
+        base_dir = config_path.parent
+
+        config = {
+            "gateway": {
+                "wsUrl": gateway_url,
+                # Node-mode uses this for WS auth/connect auth and falls back to it when nodeToken is empty.
+                "authToken": token,
+            },
+            "node": {
+                "enabled": True,
+                "nodeToken": "",
+                "nodeId": self.node_id,
+                "displayName": f"Test-{self.node_id}",
+                "healthReporterIntervalMs": 10000,
+                "deviceIdentityPath": str(base_dir / f"{self.node_id}-device.json"),
+                "execApprovalsPath": str(base_dir / f"{self.node_id}-exec-approvals.json"),
+            },
+            "operator": {
+                "enabled": False,
+            },
+            "logging": {
+                "level": "debug",
+                "file": str(base_dir / f"{self.node_id}.log"),
+            },
+        }
+
         config_path.write_text(json.dumps(config))
         return config_path
 
 
 @pytest.fixture
-def node_process(temp_dir):
+def node_process(temp_dir, gateway_token):
     """Provide a started node process"""
     node_id = f"test-node-{int(time.time())}"
     node = NodeProcess(node_id)
@@ -196,7 +226,7 @@ def node_process(temp_dir):
 
 
 @pytest.fixture
-def canvas_node(temp_dir, xvfb_running):
+def canvas_node(temp_dir, xvfb_running, gateway_token):
     """Provide a node with canvas enabled"""
     node_id = f"test-canvas-node-{int(time.time())}"
     node = NodeProcess(node_id, config={
@@ -353,7 +383,7 @@ class GatewayClient:
 
 
 @pytest.fixture
-def gateway():
+def gateway(gateway_token):
     """Provide connected gateway client"""
     client = GatewayClient()
     try:
