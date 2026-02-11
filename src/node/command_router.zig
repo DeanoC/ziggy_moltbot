@@ -708,8 +708,11 @@ fn screenRecordHandler(allocator: std.mem.Allocator, _: *NodeContext, params: st
                 break :blk @as(u32, @intCast(index_param.integer));
             }
             if (index_param == .float) {
-                if (index_param.float < 0 or index_param.float > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
-                break :blk @as(u32, @intFromFloat(index_param.float));
+                const fval = index_param.float;
+                if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+                if (fval < 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+                if (@trunc(fval) != fval) return CommandError.InvalidParams;
+                break :blk @as(u32, @intFromFloat(fval));
             }
             return CommandError.InvalidParams;
         }
