@@ -51,6 +51,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop icon"; GroupDescription: "Additional icons:"
 
+[Dirs]
+Name: "{userappdata}\ZiggyStarClaw"
+
 [Files]
 Source: "{#SourceBin}\ziggystarclaw-client.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceBin}\ziggystarclaw-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -59,11 +62,11 @@ Source: "{#LicenseFile}"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreve
 Source: "{#ReadmeFile}"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"
-Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; Tasks: desktopicon
+Name: "{autoprograms}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; WorkingDir: "{userappdata}\ZiggyStarClaw"
+Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; Tasks: desktopicon; WorkingDir: "{userappdata}\ZiggyStarClaw"
 
 [Run]
-Filename: "{app}\ziggystarclaw-client.exe"; Parameters: "--install-profile-only"; Description: "Configure node profile now"; Flags: nowait postinstall runasoriginaluser skipifsilent
+Filename: "{app}\ziggystarclaw-client.exe"; Parameters: "--install-profile-only"; WorkingDir: "{userappdata}\ZiggyStarClaw"; Description: "Configure node profile now"; Flags: nowait postinstall runasoriginaluser skipifsilent
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
