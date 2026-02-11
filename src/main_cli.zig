@@ -1302,16 +1302,18 @@ pub fn main() !void {
 
                 installTrayStartup(allocator) catch |err| {
                     if (err == error.AccessDenied) {
-                        logger.err("Tray startup install failed: access denied.", .{});
-                        return error.AccessDenied;
+                        logger.warn("Tray startup install skipped: access denied. You can still launch tray manually or install startup later.", .{});
+                    } else {
+                        logger.warn("Tray startup install skipped: {}", .{err});
                     }
-                    return err;
                 };
-                _ = startTrayStartupTask(allocator) catch {};
+                _ = startTrayStartupTask(allocator) catch |err| {
+                    logger.warn("Tray startup start skipped: {}", .{err});
+                };
 
                 var out = std.fs.File.stdout().deprecatedWriter();
                 try out.print(
-                    "Applied profile: {s} (runner active, tray startup installed)\n",
+                    "Applied profile: {s} (runner active; tray startup configured when permitted)\n",
                     .{"service"},
                 );
                 return;
@@ -1342,16 +1344,18 @@ pub fn main() !void {
 
                 installTrayStartup(allocator) catch |err| {
                     if (err == error.AccessDenied) {
-                        logger.err("Tray startup install failed: access denied.", .{});
-                        return error.AccessDenied;
+                        logger.warn("Tray startup install skipped: access denied. You can still launch tray manually or install startup later.", .{});
+                    } else {
+                        logger.warn("Tray startup install skipped: {}", .{err});
                     }
-                    return err;
                 };
-                _ = startTrayStartupTask(allocator) catch {};
+                _ = startTrayStartupTask(allocator) catch |err| {
+                    logger.warn("Tray startup start skipped: {}", .{err});
+                };
 
                 var out = std.fs.File.stdout().deprecatedWriter();
                 try out.print(
-                    "Applied profile: {s} (runner active, tray startup installed)\n",
+                    "Applied profile: {s} (runner active; tray startup configured when permitted)\n",
                     .{"session"},
                 );
                 return;
