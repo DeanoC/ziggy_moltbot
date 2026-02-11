@@ -390,8 +390,9 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     try node_ctx.registerCanvasCapabilities();
     try node_ctx.registerWindowsCameraCapabilities();
 
-    // Initialize command router
-    var router = try command_router.initStandardRouter(allocator);
+    // Initialize command router from the exact advertised command set.
+    // This avoids command-surface drift between node metadata and routing.
+    var router = try command_router.initRouterWithCommands(allocator, node_ctx.commands.items);
     defer router.deinit();
 
     if (cfg.operator.enabled) {
