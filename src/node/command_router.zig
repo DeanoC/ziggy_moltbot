@@ -132,6 +132,9 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
         if (camera_support.snap) {
             try router.register(.camera_snap, cameraSnapHandler);
         }
+        if (camera_support.clip) {
+            try router.register(.camera_clip, cameraClipHandler);
+        }
     }
 
     return router;
@@ -152,12 +155,14 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             break :blk .{
                 .camera_list = camera.list,
                 .camera_snap = camera.snap,
+                .camera_clip = camera.clip,
                 .screen_record = screen.record,
             };
         }
         break :blk .{
             .camera_list = false,
             .camera_snap = false,
+            .camera_clip = false,
             .screen_record = false,
         };
     };
@@ -205,8 +210,13 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
                 }
                 try router.register(.camera_snap, cameraSnapHandler);
             },
+            .camera_clip => {
+                if (builtin.target.os.tag != .windows or !windows_support.camera_clip) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.camera_clip, cameraClipHandler);
+            },
             // Not implemented yet in this codebase (but present in enum)
-            .camera_clip,
             .location_get,
             => return error.CommandNotSupported,
         }
@@ -889,6 +899,93 @@ fn cameraSnapHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.
     try out.put("base64", std.json.Value{ .string = snap.base64 });
     try out.put("width", std.json.Value{ .integer = @as(i64, @intCast(snap.width)) });
     try out.put("height", std.json.Value{ .integer = @as(i64, @intCast(snap.height)) });
+    return std.json.Value{ .object = out };
+}
+
+fn cameraClipHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (comptime builtin.target.os.tag != .windows) {
+        return CommandError.CommandNotSupported;
+    }
+
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const format = blk: {
+        if (params.object.get("format")) |format_param| {
+            if (format_param != .string) return CommandError.InvalidParams;
+            break :blk windows_camera.CameraClipFormat.fromString(format_param.string) orelse return CommandError.InvalidParams;
+        }
+        break :blk windows_camera.CameraClipFormat.mp4;
+    };
+
+    const duration_ms = blk: {
+        if (params.object.get("durationMs")) |duration_param| {
+            break :blk try parseDurationMsParam(duration_param);
+        }
+
+        if (params.object.get("duration")) |duration_param| {
+            break :blk try parseDurationMsParam(duration_param);
+        }
+
+        break :blk @as(u32, 3000);
+    };
+
+    const include_audio = blk: {
+        if (params.object.get("includeAudio")) |include_audio_param| {
+            if (include_audio_param != .bool) return CommandError.InvalidParams;
+            break :blk include_audio_param.bool;
+        }
+        break :blk true;
+    };
+
+    const preferred_position = blk: {
+        if (params.object.get("facing")) |facing_param| {
+            if (facing_param != .string) return CommandError.InvalidParams;
+            if (std.ascii.eqlIgnoreCase(facing_param.string, "front")) break :blk windows_camera.CameraPosition.front;
+            if (std.ascii.eqlIgnoreCase(facing_param.string, "back")) break :blk windows_camera.CameraPosition.back;
+            return CommandError.InvalidParams;
+        }
+        break :blk null;
+    };
+
+    const device_id = blk: {
+        if (params.object.get("deviceId")) |device_id_param| {
+            if (device_id_param != .string) return CommandError.InvalidParams;
+            if (device_id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk device_id_param.string;
+        }
+
+        if (params.object.get("id")) |id_param| {
+            if (id_param != .string) return CommandError.InvalidParams;
+            if (id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk id_param.string;
+        }
+
+        break :blk null;
+    };
+
+    const clip = windows_camera.clipCamera(allocator, .{
+        .format = format,
+        .durationMs = duration_ms,
+        .includeAudio = include_audio,
+        .deviceId = device_id,
+        .preferredPosition = preferred_position,
+    }) catch |err| {
+        logger.err("camera.clip failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.DeviceNotFound, error.InvalidParams => CommandError.InvalidParams,
+            error.PowershellNotFound, error.FfmpegNotFound => CommandError.CommandNotSupported,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, clip.format.toString()) });
+    // `clip.base64` is allocated from the per-invocation arena allocator.
+    try out.put("base64", std.json.Value{ .string = clip.base64 });
+    try out.put("durationMs", std.json.Value{ .integer = @as(i64, @intCast(clip.durationMs)) });
+    try out.put("hasAudio", std.json.Value{ .bool = clip.hasAudio });
     return std.json.Value{ .object = out };
 }
 
