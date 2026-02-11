@@ -2655,23 +2655,27 @@ pub fn main() !void {
         if (builtin.os.tag == .windows) {
             var profile_job_kind: ?WinNodeServiceJobKind = null;
             if (ui_action.node_profile_apply_client) {
-                app_state_state.windows_setup_completed = true;
                 profile_job_kind = .profile_apply_client;
             }
             if (ui_action.node_profile_apply_service) {
-                app_state_state.windows_setup_completed = true;
                 profile_job_kind = .profile_apply_service;
             }
             if (ui_action.node_profile_apply_session) {
-                app_state_state.windows_setup_completed = true;
                 profile_job_kind = .profile_apply_session;
             }
 
             if (profile_job_kind) |kind| {
                 if (install_profile_only) {
-                    _ = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
-                    should_close = true;
+                    const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
+                    if (ok) {
+                        app_state_state.windows_setup_completed = true;
+                        should_close = true;
+                    } else {
+                        logger.err("Windows profile apply failed; staying in onboarding flow.", .{});
+                        ctx.setOperatorNotice("Failed to apply install profile. Please check logs and try again.") catch {};
+                    }
                 } else {
+                    app_state_state.windows_setup_completed = true;
                     spawnWinNodeServiceJob(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
                 }
             }
