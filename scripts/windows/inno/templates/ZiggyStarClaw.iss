@@ -58,12 +58,13 @@ Name: "{userappdata}\ZiggyStarClaw"
 Source: "{#SourceBin}\ziggystarclaw-client.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceBin}\ziggystarclaw-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceBin}\ziggystarclaw-tray.exe"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "{#SetupIcon}"; DestDir: "{app}"; DestName: "ziggystarclaw.ico"; Flags: ignoreversion
 Source: "{#LicenseFile}"; DestDir: "{app}"; DestName: "LICENSE"; Flags: ignoreversion
 Source: "{#ReadmeFile}"; DestDir: "{app}"; DestName: "README.md"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; WorkingDir: "{userappdata}\ZiggyStarClaw"
-Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; Tasks: desktopicon; WorkingDir: "{userappdata}\ZiggyStarClaw"
+Name: "{autoprograms}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; WorkingDir: "{userappdata}\ZiggyStarClaw"; IconFilename: "{app}\ziggystarclaw.ico"
+Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe"; Tasks: desktopicon; WorkingDir: "{userappdata}\ZiggyStarClaw"; IconFilename: "{app}\ziggystarclaw.ico"
 
 [Run]
 ; Pure client profile (no node runner)
