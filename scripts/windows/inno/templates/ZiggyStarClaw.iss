@@ -106,6 +106,11 @@ var
   ExistingServerUrl: String;
   ExistingGatewayToken: String;
   ExistingConfigHasConnection: Boolean;
+  SessionTaskScriptsReady: Boolean;
+  SessionNodeScriptPath: String;
+  SessionTrayScriptPath: String;
+
+procedure EnsureSessionTaskScripts; forward;
 
 function IsWhitespace(const C: Char): Boolean;
 begin
@@ -271,6 +276,9 @@ begin
   ExistingServerUrl := '';
   ExistingGatewayToken := '';
   ExistingConfigHasConnection := False;
+  SessionTaskScriptsReady := False;
+  SessionNodeScriptPath := '';
+  SessionTrayScriptPath := '';
 
   UserCfg := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
   CommonCfg := ExpandConstant('{commonappdata}\ZiggyStarClaw\config.json');
@@ -447,13 +455,9 @@ begin
 end;
 
 function GetSessionNodeCreateArgs(Param: String): String;
-var
-  TaskRun, CliPath, ConfigPath: String;
 begin
-  CliPath := ExpandConstant('{app}\ziggystarclaw-cli.exe');
-  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
-  TaskRun := '"' + CliPath + '" node supervise --config "' + ConfigPath + '" --as-node --no-operator --log-level info';
-  Result := '/Create /F /TN "ZiggyStarClaw Node" /TR "' + TaskRun + '" /SC ONLOGON /IT /RL LIMITED';
+  EnsureSessionTaskScripts;
+  Result := '/Create /F /TN "ZiggyStarClaw Node" /TR "' + SessionNodeScriptPath + '" /SC ONLOGON /IT /RL LIMITED';
 end;
 
 function GetSessionNodeRunArgs(Param: String): String;
@@ -467,15 +471,45 @@ begin
 end;
 
 function GetSessionTrayCreateArgs(Param: String): String;
-var
-  TaskRun, TrayPath: String;
 begin
-  TrayPath := ExpandConstant('{app}\ziggystarclaw-tray.exe');
-  TaskRun := '"' + TrayPath + '"';
-  Result := '/Create /F /TN "ZiggyStarClaw Tray" /TR "' + TaskRun + '" /SC ONLOGON /IT /RL LIMITED';
+  EnsureSessionTaskScripts;
+  Result := '/Create /F /TN "ZiggyStarClaw Tray" /TR "' + SessionTrayScriptPath + '" /SC ONLOGON /IT /RL LIMITED';
 end;
 
 function GetSessionTrayRunArgs(Param: String): String;
 begin
   Result := '/Run /TN "ZiggyStarClaw Tray"';
+end;
+
+procedure EnsureSessionTaskScripts;
+var
+  ScriptDir, CliPath, TrayPath: String;
+  NodeScript, TrayScript: String;
+begin
+  if SessionTaskScriptsReady then
+    Exit;
+
+  ScriptDir := ExpandConstant('{commonappdata}\ZiggyStarClaw');
+  if (not DirExists(ScriptDir)) then
+    ForceDirectories(ScriptDir);
+
+  SessionNodeScriptPath := ScriptDir + '\session-node.cmd';
+  SessionTrayScriptPath := ScriptDir + '\session-tray.cmd';
+
+  CliPath := ExpandConstant('{app}\ziggystarclaw-cli.exe');
+  TrayPath := ExpandConstant('{app}\ziggystarclaw-tray.exe');
+
+  NodeScript :=
+    '@echo off' + #13#10 +
+    '"' + CliPath + '" node supervise --as-node --no-operator --log-level info' + #13#10;
+  TrayScript :=
+    '@echo off' + #13#10 +
+    '"' + TrayPath + '"' + #13#10;
+
+  if (not SaveStringToFile(SessionNodeScriptPath, NodeScript, False)) then
+    RaiseException('Failed to write session task script: ' + SessionNodeScriptPath);
+  if (not SaveStringToFile(SessionTrayScriptPath, TrayScript, False)) then
+    RaiseException('Failed to write tray task script: ' + SessionTrayScriptPath);
+
+  SessionTaskScriptsReady := True;
 end;
