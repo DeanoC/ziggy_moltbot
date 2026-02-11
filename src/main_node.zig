@@ -397,8 +397,9 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     if (!opts.windows_service) {
         try node_ctx.registerCanvasCapabilities();
         try node_ctx.registerWindowsCameraCapabilities();
+        try node_ctx.registerWindowsScreenCapabilities();
     } else {
-        logger.info("Windows service mode detected: skipping interactive capabilities (canvas/camera)", .{});
+        logger.info("Windows service mode detected: skipping interactive capabilities (canvas/camera/screen)", .{});
     }
 
     // Initialize command router from the exact advertised command set.

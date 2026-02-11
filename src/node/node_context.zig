@@ -8,6 +8,10 @@ const windows_camera = if (builtin.target.os.tag == .windows)
     @import("../windows/camera.zig")
 else
     struct {};
+const windows_screen = if (builtin.target.os.tag == .windows)
+    @import("../windows/screen.zig")
+else
+    struct {};
 
 /// Node capability categories
 pub const Capability = enum {
@@ -325,6 +329,30 @@ pub const NodeContext = struct {
             try self.addCommand(.camera_snap);
             try self.setPermission("camera.snap", true);
         }
+    }
+
+    /// Register Windows screen capabilities that are executable on this host.
+    ///
+    /// In Windows Session 0 service mode, callers should skip this entirely.
+    pub fn registerWindowsScreenCapabilities(self: *NodeContext) !void {
+        if (builtin.target.os.tag != .windows) return;
+
+        const support = windows_screen.detectBackendSupport(self.allocator);
+        try self.registerWindowsScreenCapabilitiesForSupport(.{
+            .record = support.record,
+        });
+    }
+
+    pub const WindowsScreenCapabilitySupport = struct {
+        record: bool,
+    };
+
+    pub fn registerWindowsScreenCapabilitiesForSupport(self: *NodeContext, support: WindowsScreenCapabilitySupport) !void {
+        if (!support.record) return;
+
+        try self.addCapability(.screen);
+        try self.addCommand(.screen_record);
+        try self.setPermission("screen.record", true);
     }
 };
 

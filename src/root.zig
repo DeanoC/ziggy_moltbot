@@ -65,6 +65,7 @@ pub const node = struct {
 
 pub const windows = struct {
     pub const camera = @import("windows/camera.zig");
+    pub const screen = @import("windows/screen.zig");
 };
 
 pub const unified_config = @import("unified_config.zig");
