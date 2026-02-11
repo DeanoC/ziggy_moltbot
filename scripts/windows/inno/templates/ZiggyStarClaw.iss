@@ -79,18 +79,11 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-; Try user-context install first (preferred), then installer-context fallback if still missing.
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession and (not SessionRunnerInstalled)
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner install --mode session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession and (not SessionRunnerInstalled)
-; Start with the same fallback pattern.
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession and SessionRunnerInstalled
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession and SessionRunnerInstalled
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
-; 1) prefer original user context
-; 2) fallback to installer context if still missing
+; user-context only (installer-context ONLOGON task creation can block on credential prompts)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldInstallTrayStartup
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -319,7 +312,7 @@ end;
 
 function ShouldInstallTrayStartup: Boolean;
 begin
-  Result := (IsProfileService or IsProfileSession) and (not TrayStartupInstalled);
+  Result := IsProfileService and (not TrayStartupInstalled);
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
