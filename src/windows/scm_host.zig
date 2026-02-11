@@ -5,6 +5,7 @@ const logger = @import("../utils/logger.zig");
 const unified_config = @import("../unified_config.zig");
 const main_node = @import("../main_node.zig");
 const node_platform = @import("../node/node_platform.zig");
+const win_single_instance = @import("single_instance.zig");
 
 const win = @cImport({
     @cDefine("WIN32_LEAN_AND_MEAN", "1");
@@ -117,6 +118,47 @@ fn serviceMain(_argc: u32, _argv: [*c][*c]u16) callconv(.c) void {
                 logger.initFile(lp) catch {};
             }
         }
+    }
+
+    const owner_pid: u32 = @intCast(win.GetCurrentProcessId());
+    const mutex = win_single_instance.acquireNodeOwnerMutex(ctx.allocator) catch |err| {
+        logger.err(
+            "single_instance_error mode=service pid={d} err={s}",
+            .{ owner_pid, @errorName(err) },
+        );
+        setState(ctx, win.SERVICE_STOPPED, 1);
+        return;
+    };
+    const owns_single_instance = !mutex.already_running;
+    defer {
+        if (owns_single_instance) {
+            logger.info(
+                "single_instance_owner_released mode=service pid={d} lock={s}",
+                .{ owner_pid, mutex.name_used_utf8 },
+            );
+        }
+        std.os.windows.CloseHandle(mutex.handle);
+    }
+
+    if (mutex.already_running) {
+        logger.warn(
+            "single_instance_denied_existing_owner mode=service pid={d} lock={s}",
+            .{ owner_pid, mutex.name_used_utf8 },
+        );
+        setState(ctx, win.SERVICE_STOPPED, 0);
+        return;
+    }
+
+    logger.info(
+        "single_instance_acquired mode=service pid={d} lock={s}",
+        .{ owner_pid, mutex.name_used_utf8 },
+    );
+
+    if (std.mem.startsWith(u8, mutex.name_used_utf8, "Local\\")) {
+        logger.warn(
+            "single_instance_scope_local mode=service pid={d} lock={s}",
+            .{ owner_pid, mutex.name_used_utf8 },
+        );
     }
 
     logger.info("Windows SCM service starting node-mode", .{});

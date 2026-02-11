@@ -59,20 +59,15 @@ fn createMutexWithSddl(a: std.mem.Allocator, name_utf8: []const u8, sddl_utf8: [
     return @ptrCast(h);
 }
 
-/// Acquire a cross-process single-instance mutex for the Windows node supervisor.
-///
-/// Tries Global\ first (cross-session), then falls back to Local\.
-///
-/// NOTE: We intentionally grant Everyone GENERIC_ALL so non-admin processes can
-/// detect that the SYSTEM supervisor is already running.
-pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
+fn acquireNamedMutex(
+    allocator: std.mem.Allocator,
+    global_name: []const u8,
+    local_name: []const u8,
+) !AcquireResult {
     if (builtin.os.tag != .windows) return error.Unsupported;
 
-    // SYSTEM+Admins full; Everyone full (only used as a guard).
+    // SYSTEM+Admins full; Everyone full (used only as a process guard).
     const sddl_utf8 = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;WD)";
-
-    const global_name = "Global\\ZiggyStarClaw.NodeSupervisor";
-    const local_name = "Local\\ZiggyStarClaw.NodeSupervisor";
 
     var name_used: []const u8 = global_name;
     const h = createMutexWithSddl(allocator, global_name, sddl_utf8) catch |err| blk: {
@@ -86,4 +81,26 @@ pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
 
     const already = (win.GetLastError() == win.ERROR_ALREADY_EXISTS);
     return .{ .handle = h, .already_running = already, .name_used_utf8 = name_used };
+}
+
+/// Acquire the mutex used by the Windows node supervisor wrapper.
+///
+/// Historical name retained for compatibility with existing wrappers.
+pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
+    return acquireNamedMutex(
+        allocator,
+        "Global\\ZiggyStarClaw.NodeSupervisor",
+        "Local\\ZiggyStarClaw.NodeSupervisor",
+    );
+}
+
+/// Acquire the cross-mode node ownership mutex (service/runner startup guard).
+///
+/// This prevents startup races from creating two concurrent node sessions.
+pub fn acquireNodeOwnerMutex(allocator: std.mem.Allocator) !AcquireResult {
+    return acquireNamedMutex(
+        allocator,
+        "Global\\ZiggyStarClaw.NodeOwner",
+        "Local\\ZiggyStarClaw.NodeOwner",
+    );
 }
