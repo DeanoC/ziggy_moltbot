@@ -2,6 +2,19 @@
 
 The CLI is useful for quick commands, automation, or remote workflows. It can also run in an interactive REPL mode.
 
+## Canonical command reference (shared with `--help`)
+The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded directly by the CLI binary using `@embedFile`.
+
+Main sections:
+- [Overview](../cli/01-overview.md)
+- [Options](../cli/02-options.md)
+- [Node runner (Windows)](../cli/03-node-runner.md)
+- [Tray startup (Windows)](../cli/04-tray-startup.md)
+- [Node service helpers](../cli/05-node-service.md)
+- [Global flags](../cli/06-global-flags.md)
+- [Node mode help](../cli/node-mode.md)
+- [Operator mode help](../cli/operator-mode.md)
+
 ## Quick commands
 - Send a message:
   ```bash
