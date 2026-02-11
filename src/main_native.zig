@@ -558,6 +558,8 @@ const WinNodeServiceJobKind = enum {
     profile_apply_client,
     profile_apply_service,
     profile_apply_session,
+    tray_install_startup,
+    tray_start_startup,
     install_onlogon,
     uninstall,
     start,
@@ -614,6 +616,8 @@ fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) 
         .profile_apply_client => &.{ "node", "profile", "apply", "--profile", "client" },
         .profile_apply_service => &.{ "node", "profile", "apply", "--profile", "service" },
         .profile_apply_session => &.{ "node", "profile", "apply", "--profile", "session" },
+        .tray_install_startup => &.{ "tray", "install-startup" },
+        .tray_start_startup => &.{ "tray", "start" },
         .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
         .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
         .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
@@ -2895,6 +2899,14 @@ pub fn main() !void {
                     }
                     const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
                     if (ok) {
+                        if (kind == .profile_apply_service or kind == .profile_apply_session) {
+                            const tray_install_ok = runWinNodeServiceJobBlocking(.tray_install_startup, "", "", false);
+                            if (!tray_install_ok) {
+                                logger.warn("Tray startup install was skipped/failed after profile apply; continuing.", .{});
+                            } else {
+                                _ = runWinNodeServiceJobBlocking(.tray_start_startup, "", "", false);
+                            }
+                        }
                         app_state_state.windows_setup_completed = true;
                         should_close = true;
                         close_reason = "install_profile_apply_success";
