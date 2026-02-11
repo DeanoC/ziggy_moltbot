@@ -25,13 +25,15 @@ The installer:
 2) Build installer:
 
 ```powershell
-./scripts/windows/Build-ZscInstaller.ps1 -Version 1.0.0
+./scripts/windows/Build-ZscInstaller.ps1
 ```
+
+`-Version` is optional; when omitted it is read from `build.zig.zon`.
 
 If `ISCC.exe` is not on PATH, call the inner script with an explicit compiler path:
 
 ```powershell
-./scripts/windows/inno/Build-ZscInnoInstaller.ps1 -Version 1.0.0 -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+./scripts/windows/inno/Build-ZscInnoInstaller.ps1 -IsccPath "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
 3) Output:

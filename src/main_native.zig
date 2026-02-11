@@ -1634,14 +1634,18 @@ pub fn main() !void {
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
-    var install_profile_only = false;
+    var install_profile_only_requested = false;
     for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--install-profile-only") or std.mem.eql(u8, arg, "--installer-profile-only")) {
-            install_profile_only = true;
+        if (std.mem.eql(u8, arg, "--install-profile-only") or
+            std.mem.eql(u8, arg, "--installer-profile-only") or
+            std.mem.eql(u8, arg, "/install-profile-only") or
+            std.mem.eql(u8, arg, "/installer-profile-only") or
+            std.mem.eql(u8, arg, "-install-profile-only") or
+            std.mem.eql(u8, arg, "-installer-profile-only"))
+        {
+            install_profile_only_requested = true;
         }
     }
-    ui.setInstallerProfileOnlyMode(install_profile_only);
-
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
     // If the user has never saved a config yet, create one so it's easy to edit by hand.
@@ -1690,6 +1694,13 @@ pub fn main() !void {
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
+    const install_profile_only = install_profile_only_requested or
+        (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
+    ui.setInstallerProfileOnlyMode(install_profile_only);
+    logger.info(
+        "Windows profile setup mode: requested={} effective={} setup_completed={}",
+        .{ install_profile_only_requested, install_profile_only, app_state_state.windows_setup_completed },
+    );
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
     if (install_profile_only) {

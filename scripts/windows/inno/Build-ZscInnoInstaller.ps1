@@ -1,5 +1,5 @@
 param(
-  [Parameter(Mandatory=$true)][string]$Version,
+  [string]$Version = '',
   [string]$OutDir = 'dist/inno-out',
   [string]$SourceBin = 'zig-out/bin',
   [string]$TemplatePath = 'scripts/windows/inno/templates/ZiggyStarClaw.iss',
@@ -13,6 +13,20 @@ function Resolve-InputPath([string]$root, [string]$path) {
     return (Resolve-Path $path).ProviderPath
   }
   return (Resolve-Path (Join-Path $root $path)).ProviderPath
+}
+
+function Resolve-VersionFromBuildZon([string]$root) {
+  $buildZon = Join-Path $root 'build.zig.zon'
+  if (-not (Test-Path $buildZon)) {
+    throw "Version not provided and build file was not found: $buildZon"
+  }
+
+  $text = Get-Content -Raw $buildZon
+  $match = [regex]::Match($text, '\.version\s*=\s*"([^"]+)"')
+  if (-not $match.Success) {
+    throw "Failed to parse .version from $buildZon"
+  }
+  return $match.Groups[1].Value
 }
 
 function Find-Iscc {
@@ -40,6 +54,9 @@ function Find-Iscc {
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).ProviderPath
+if (-not $Version -or $Version.Trim().Length -eq 0) {
+  $Version = Resolve-VersionFromBuildZon $root
+}
 $template = Resolve-InputPath $root $TemplatePath
 $sourceBinPath = Resolve-InputPath $root $SourceBin
 $outDirPath = if ([System.IO.Path]::IsPathRooted($OutDir)) {
