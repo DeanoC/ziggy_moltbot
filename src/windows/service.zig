@@ -156,7 +156,7 @@ pub fn installTask(
     const task_run = try std.fmt.allocPrint(
         allocator,
         // NOTE: schtasks expects a single command line string.
-        "\"{s}\" node supervise --config \"{s}\" --as-node --no-operator --log-level info",
+        "\"{s}\" node supervise --hide-console --config \"{s}\" --as-node --no-operator --log-level info",
         .{ exe_path, config_path },
     );
     defer allocator.free(task_run);

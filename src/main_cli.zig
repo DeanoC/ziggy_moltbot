@@ -19,6 +19,7 @@ const win_service = @import("windows/service.zig");
 const win_scm = if (builtin.os.tag == .windows) @import("windows/scm_service.zig") else struct {};
 const win_scm_host = if (builtin.os.tag == .windows) @import("windows/scm_host.zig") else struct {};
 const win_control_pipe = if (builtin.os.tag == .windows) @import("windows/control_pipe_client.zig") else struct {};
+const win_console_window = if (builtin.os.tag == .windows) @import("windows/console_window.zig") else struct {};
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
@@ -378,6 +379,16 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
     // Keeps a named-pipe control channel so the tray app can query status and request
     // start/stop/restart even when running headless.
     if (builtin.os.tag != .windows) return error.Unsupported;
+
+    const hide_console = blk: {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--hide-console")) break :blk true;
+        }
+        break :blk false;
+    };
+    if (hide_console) {
+        win_console_window.hideIfPresent();
+    }
 
     var shared = supervisor_pipe.Shared{};
     supervisor_pipe.spawnServerThread(allocator, &shared) catch {};
