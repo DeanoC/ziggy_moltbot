@@ -23,11 +23,12 @@ Implemented now:
   - supports `deviceId` selection using IDs returned by `camera.list`.
 - `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
-  - current MVP supports `screenIndex=0` (desktop) and video-only capture (`hasAudio=false`).
+  - supports monitor index mapping via PowerShell Forms monitor metadata (primary monitor normalized to `screenIndex=0`).
+  - current backend is still video-only (`hasAudio=false`).
 
 Not yet implemented on Windows:
 - `camera.clip`
-- advanced `screen.record` coverage (multi-monitor index mapping + audio capture)
+- advanced `screen.record` coverage (audio capture + non-PowerShell monitor discovery fallback improvements)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
 ---
@@ -106,7 +107,10 @@ Notes:
 
 Notes:
 - Current backend is `ffmpeg-gdigrab`.
-- `screenIndex=0` is currently supported; non-zero indices are rejected with actionable errors.
+- Monitor index mapping is best-effort via PowerShell Forms (`[System.Windows.Forms.Screen]::AllScreens`):
+  - primary monitor is normalized to `screenIndex=0`
+  - additional monitors follow discovery order
+  - if monitor discovery fails, backend falls back to legacy desktop capture for `screenIndex=0` and rejects non-zero indices with actionable errors.
 - `includeAudio` is accepted for compatibility but current MVP emits video-only output (`hasAudio=false`).
 
 ---
@@ -156,8 +160,11 @@ Deliverables:
 
 Status:
 - MVP landed with `ffmpeg-gdigrab` backend and executable-aware registration/advertisement (`screen.record` is exposed only when ffmpeg is runnable).
-- Current slice supports primary desktop capture (`screenIndex=0`) and video-only output (`hasAudio=false`).
-- Follow-up slice: monitor-index mapping and optional audio capture.
+- Follow-up slice landed for monitor-index mapping via PowerShell Forms metadata:
+  - primary monitor normalized to `screenIndex=0`
+  - non-primary monitors selectable by index
+  - graceful fallback to legacy desktop capture for `screenIndex=0` when monitor discovery is unavailable.
+- Current remaining gap for this slice: optional audio capture (`includeAudio=true` currently logs warning and returns `hasAudio=false`).
 
 ### Post-9f4 follow-up — Windows `camera.clip`
 
