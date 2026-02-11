@@ -80,16 +80,16 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetSessionConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldSaveSessionConfig
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Node"" /TR """"{app}\ziggystarclaw-cli.exe"" node supervise --config ""{userappdata}\ZiggyStarClaw\config.json"" --as-node --no-operator --log-level info"" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Node"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeDeleteArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeCreateArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionNodeRunArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
 ; user-context only (installer-context ONLOGON task creation can block on credential prompts)
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /F /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "/Create /F /TN ""ZiggyStarClaw Tray"" /TR """"{app}\ziggystarclaw-tray.exe"""" /SC ONLOGON /IT /RL LIMITED"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
-Filename: "{sys}\schtasks.exe"; Parameters: "/Run /TN ""ZiggyStarClaw Tray"""; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayDeleteArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayCreateArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{sys}\schtasks.exe"; Parameters: "{code:GetSessionTrayRunArgs}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist
@@ -439,4 +439,43 @@ end;
 function ShouldSaveSessionConfig: Boolean;
 begin
   Result := IsProfileSession and (GetSessionConfigArgs('') <> '');
+end;
+
+function GetSessionNodeDeleteArgs(Param: String): String;
+begin
+  Result := '/Delete /F /TN "ZiggyStarClaw Node"';
+end;
+
+function GetSessionNodeCreateArgs(Param: String): String;
+var
+  TaskRun, CliPath, ConfigPath: String;
+begin
+  CliPath := ExpandConstant('{app}\ziggystarclaw-cli.exe');
+  ConfigPath := ExpandConstant('{userappdata}\ZiggyStarClaw\config.json');
+  TaskRun := '"' + CliPath + '" node supervise --config "' + ConfigPath + '" --as-node --no-operator --log-level info';
+  Result := '/Create /F /TN "ZiggyStarClaw Node" /TR "' + TaskRun + '" /SC ONLOGON /IT /RL LIMITED';
+end;
+
+function GetSessionNodeRunArgs(Param: String): String;
+begin
+  Result := '/Run /TN "ZiggyStarClaw Node"';
+end;
+
+function GetSessionTrayDeleteArgs(Param: String): String;
+begin
+  Result := '/Delete /F /TN "ZiggyStarClaw Tray"';
+end;
+
+function GetSessionTrayCreateArgs(Param: String): String;
+var
+  TaskRun, TrayPath: String;
+begin
+  TrayPath := ExpandConstant('{app}\ziggystarclaw-tray.exe');
+  TaskRun := '"' + TrayPath + '"';
+  Result := '/Create /F /TN "ZiggyStarClaw Tray" /TR "' + TaskRun + '" /SC ONLOGON /IT /RL LIMITED';
+end;
+
+function GetSessionTrayRunArgs(Param: String): String;
+begin
+  Result := '/Run /TN "ZiggyStarClaw Tray"';
 end;
