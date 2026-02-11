@@ -22,6 +22,7 @@ This will:
 - Build all targets (native, Windows, WASM, Android).
 - Gather artifacts into `dist/ziggystarclaw_<version>_<date>/`.
 - Produce `.zip` and `.tar.gz` bundles plus `checksums.txt`.
+- Include `ZiggyStarClaw_Setup_<version>_x64.exe` when present (from `dist/inno-out/` by default).
 - Emit `update.json` as a placeholder update manifest.
 
 ### Options
@@ -29,6 +30,8 @@ This will:
 - `--skip-wasm`: Skip the WASM build.
 - `--version=X.Y.Z`: Override version.
 - `--date=YYYYMMDD`: Override the date.
+- `--windows-installer=PATH`: Path to a prebuilt Inno installer EXE to include.
+- `--require-windows-installer`: Fail if installer EXE is missing.
 
 ## Output structure
 
@@ -42,6 +45,7 @@ dist/ziggystarclaw_<version>_<date>/
   ziggystarclaw_linux_<version>.zip
   ziggystarclaw_linux_<version>.tar.gz
   ziggystarclaw_windows_<version>.zip
+  ZiggyStarClaw_Setup_<version>_x64.exe   # optional
   ziggystarclaw_android_<version>.zip
   ziggystarclaw_wasm_<version>.zip
   checksums.txt

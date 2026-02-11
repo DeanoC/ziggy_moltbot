@@ -7,6 +7,8 @@ BUILD=1
 SKIP_WASM=0
 VERSION_OVERRIDE=""
 DATE_OVERRIDE=""
+WINDOWS_INSTALLER_PATH=""
+REQUIRE_WINDOWS_INSTALLER=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -14,9 +16,11 @@ for arg in "$@"; do
     --skip-wasm) SKIP_WASM=1 ;;
     --version=*) VERSION_OVERRIDE="${arg#*=}" ;;
     --date=*) DATE_OVERRIDE="${arg#*=}" ;;
+    --windows-installer=*) WINDOWS_INSTALLER_PATH="${arg#*=}" ;;
+    --require-windows-installer) REQUIRE_WINDOWS_INSTALLER=1 ;;
     -h|--help)
       cat <<'USAGE'
-Usage: scripts/package-release.sh [--no-build] [--skip-wasm] [--version=X.Y.Z] [--date=YYYYMMDD]
+Usage: scripts/package-release.sh [--no-build] [--skip-wasm] [--version=X.Y.Z] [--date=YYYYMMDD] [--windows-installer=PATH] [--require-windows-installer]
 
 Builds all targets and produces release bundles under dist/.
 USAGE
@@ -51,6 +55,15 @@ fi
 
 DIST_DIR="${ROOT_DIR}/dist/ziggystarclaw_${VERSION}_${DATE}"
 mkdir -p "${DIST_DIR}"
+
+if [[ -z "${WINDOWS_INSTALLER_PATH}" ]]; then
+  WINDOWS_INSTALLER_PATH="${ROOT_DIR}/dist/inno-out/ZiggyStarClaw_Setup_${VERSION}_x64.exe"
+elif [[ "${WINDOWS_INSTALLER_PATH}" != /* ]]; then
+  WINDOWS_INSTALLER_PATH="${ROOT_DIR}/${WINDOWS_INSTALLER_PATH}"
+fi
+
+WINDOWS_INSTALLER_NAME="ZiggyStarClaw_Setup_${VERSION}_x64.exe"
+WINDOWS_INSTALLER_STAGED="${DIST_DIR}/${WINDOWS_INSTALLER_NAME}"
 
 if [[ "${BUILD}" -eq 1 ]]; then
   echo "[release] building native"
@@ -143,6 +156,16 @@ if [[ -d "${ROOT_DIR}/zig-out/web/icons" ]]; then
   cp "${ROOT_DIR}/zig-out/web/icons/"* "${WASM_DIR}/icons/" || true
 fi
 
+if [[ -f "${WINDOWS_INSTALLER_PATH}" ]]; then
+  cp "${WINDOWS_INSTALLER_PATH}" "${WINDOWS_INSTALLER_STAGED}"
+  echo "[release] included windows installer: ${WINDOWS_INSTALLER_NAME}"
+elif [[ "${REQUIRE_WINDOWS_INSTALLER}" -eq 1 ]]; then
+  echo "[release] missing windows installer: ${WINDOWS_INSTALLER_PATH}" >&2
+  exit 1
+else
+  echo "[release] warning: windows installer not found at ${WINDOWS_INSTALLER_PATH}; continuing without installer"
+fi
+
 python3 - <<PY
 import pathlib, zipfile
 root = pathlib.Path("${DIST_DIR}")
@@ -164,7 +187,12 @@ PY
 tar -czf "${DIST_DIR}/ziggystarclaw_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "linux"
 tar -czf "${DIST_DIR}/ziggystarclaw_cli_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "cli-linux"
 
-(cd "${DIST_DIR}" && sha256sum ziggystarclaw_* > checksums.txt)
+(cd "${DIST_DIR}" && {
+  sha256sum ziggystarclaw_*
+  if [[ -f "${WINDOWS_INSTALLER_NAME}" ]]; then
+    sha256sum "${WINDOWS_INSTALLER_NAME}"
+  fi
+} > checksums.txt)
 
 python3 - <<PY
 import json, pathlib
@@ -202,6 +230,11 @@ manifest = {
         },
     },
 }
+installer_name = f"ZiggyStarClaw_Setup_${VERSION}_x64.exe"
+if installer_name in checksums:
+    manifest["platforms"]["windows"]["installer_file"] = installer_name
+    manifest["platforms"]["windows"]["installer_sha256"] = checksums[installer_name]
+
 with open(root / "update.json", "w", encoding="utf-8") as f:
     json.dump(manifest, f, indent=2)
 PY

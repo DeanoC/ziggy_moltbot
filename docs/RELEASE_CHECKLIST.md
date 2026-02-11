@@ -9,6 +9,7 @@ Use this checklist to prepare and ship a ZiggyStarClaw release.
 - [ ] Ensure Android keystore settings are correct (or use the example keystore for dev builds).
 
 ## Build + Package
+- [ ] Build Windows installer on Windows (`scripts/windows/Build-ZscInstaller.ps1`) and ensure `dist/inno-out/ZiggyStarClaw_Setup_<version>_x64.exe` exists.
 - [ ] Run `scripts/package-release.sh`.
 - [ ] Verify `dist/ziggystarclaw_<version>_<date>/` exists.
 - [ ] Check `checksums.txt` and `update.json` are present.
