@@ -409,9 +409,120 @@ pub fn drawCustom(
         stream_changed,
     );
 
-    var content_height = virtualContentHeight(&state.virt, padding, gap);
+    // When following the tail, avoid the one-frame "lag" where the streaming message grows,
+    // max_scroll increases, and we only pin after rendering (causing visible bounce/jitter).
+    //
+    // Pre-measure the stream item (only when it changes) so max_scroll is correct *before* we
+    // compute the render window and draw.
+    const prevent_auto_follow_tail_pre = state.selecting or pending_select;
     const view_height = rect.size()[1];
+    const debug_scroll_follow_tail = false;
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and stream_text != null and stream_changed) {
+        if (state.virt.items.items.len > 0 and state.virt.items.items[state.virt.items.items.len - 1].kind == .stream) {
+            const idx_stream = state.virt.items.items.len - 1;
+            const layout = measureMessageLayout(
+                allocator,
+                ctx,
+                stream_text.?,
+                null,
+                bubble_width,
+                line_height,
+                padding,
+                &measures_per_frame,
+            );
+            const item = state.virt.items.items[idx_stream];
+            if (layout.height != item.height or layout.text_len != item.text_len) {
+                if (debug_scroll_follow_tail) {
+                    std.log.debug(
+                        "chat: premeasure stream: height {d:.1}->{d:.1} text {d}->{d}",
+                        .{ item.height, layout.height, item.text_len, layout.text_len },
+                    );
+                }
+                virtualUpdateItemMetrics(state, idx_stream, layout.height, layout.text_len, gap, separator_len);
+            }
+        }
+    }
+
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging and
+        (session_changed or messages_changed or show_tool_output_changed))
+    {
+        // When pinned to bottom, session switches / history refreshes can refine message height
+        // estimates in the same frame (as the tail messages get measured), which shifts
+        // max_scroll and looks like an ugly jump. Pre-measure a small tail window so the first
+        // painted frame is already using stable metrics.
+        const tail_items_cap: usize = 64;
+        const target_h: f32 = view_height * 2.0;
+        var start_index: usize = state.virt.items.items.len;
+        var remaining: f32 = target_h;
+        var counted: usize = 0;
+        while (start_index > 0 and remaining > 0.0 and counted < tail_items_cap) {
+            start_index -= 1;
+            counted += 1;
+            remaining -= state.virt.items.items[start_index].height + gap;
+        }
+
+        var j: usize = start_index;
+        while (j < state.virt.items.items.len) : (j += 1) {
+            const item = state.virt.items.items[j];
+            switch (item.kind) {
+                .message => {
+                    if (item.msg_index >= messages.len) continue;
+                    const msg = messages[item.msg_index];
+                    const cache = ensureMessageCache(
+                        allocator,
+                        state,
+                        ctx,
+                        msg,
+                        bubble_width,
+                        line_height,
+                        padding,
+                        &measures_per_frame,
+                    );
+                    if (cache.height != item.height or cache.text_len != item.text_len) {
+                        if (debug_scroll_follow_tail) {
+                            std.log.debug(
+                                "chat: premeasure tail msg[{d}] height {d:.1}->{d:.1} text {d}->{d}",
+                                .{ item.msg_index, item.height, cache.height, item.text_len, cache.text_len },
+                            );
+                        }
+                        virtualUpdateItemMetrics(state, j, cache.height, cache.text_len, gap, separator_len);
+                    }
+                },
+                .stream => {
+                    if (stream_text) |stream| {
+                        const layout = measureMessageLayout(
+                            allocator,
+                            ctx,
+                            stream,
+                            null,
+                            bubble_width,
+                            line_height,
+                            padding,
+                            &measures_per_frame,
+                        );
+                        if (layout.height != item.height or layout.text_len != item.text_len) {
+                            if (debug_scroll_follow_tail) {
+                                std.log.debug(
+                                    "chat: premeasure tail stream height {d:.1}->{d:.1} text {d}->{d}",
+                                    .{ item.height, layout.height, item.text_len, layout.text_len },
+                                );
+                            }
+                            virtualUpdateItemMetrics(state, j, layout.height, layout.text_len, gap, separator_len);
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    var content_height = virtualContentHeight(&state.virt, padding, gap);
     var max_scroll: f32 = @max(0.0, content_height - view_height);
+
+    // If we are following the tail, pin *before* computing the render window so the current
+    // frame draws from the true bottom.
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging) {
+        state.scroll_y = max_scroll;
+    }
 
     const was_follow_tail = state.follow_tail;
 
