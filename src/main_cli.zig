@@ -1499,10 +1499,9 @@ pub fn main() !void {
             if (override_url != null and override_token != null) {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
             } else if (override_url != null and override_token == null) {
-                const secret_prompt = @import("utils/secret_prompt.zig");
-                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
-                defer allocator.free(tok);
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+                // Non-interactive-friendly behavior: allow empty token when URL is provided.
+                // Gateway deployments that require auth token will reject at connect/register time.
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
             } else if (override_url == null and override_token != null) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
                 return error.InvalidArguments;
@@ -1670,12 +1669,9 @@ pub fn main() !void {
             if (override_url != null and override_token != null) {
                 try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
             } else if (override_url != null and override_token == null) {
-                const secret_prompt = @import("utils/secret_prompt.zig");
-                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
-                defer allocator.free(tok);
-                // Token may be empty when connecting via Tailscale Serve with gateway.auth.allowTailscale=true.
-                // If the gateway requires a shared token, the subsequent connect/register step will fail with auth.
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
+                // Non-interactive-friendly behavior: allow empty token when URL is provided.
+                // Gateway deployments that require auth token will reject at connect/register time.
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
             } else if (override_url == null and override_token != null) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
                 return error.InvalidArguments;
