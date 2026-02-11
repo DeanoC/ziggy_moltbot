@@ -1,6 +1,6 @@
 # Spec: Windows onboarding + tray app (MVP)
 
-Goal: after MSIX install, user launches ZiggyStarClaw and can set up a full node (camera/screen/browser) with minimal friction.
+Goal: after installer setup, user launches ZiggyStarClaw and can set up a full node (camera/screen/browser) with minimal friction.
 
 ---
 
@@ -46,6 +46,11 @@ Full node capabilities require interactive user session permissions (camera/scre
 
 - Ensure stdout/stderr from node process is captured to a log file.
 
+Installer handoff mode:
+- `ziggystarclaw-client.exe --install-profile-only`
+- Opens only the install profile UI (Pure Client / Service Node / User Session Node)
+- After the user applies a profile, client exits (so installer can complete cleanly)
+
 ---
 
 ## Config + log locations
@@ -68,7 +73,7 @@ Add migration:
 
 ## Acceptance criteria
 
-- Fresh Windows user installs MSIX.
+- Fresh Windows user installs via `ZiggyStarClaw_Setup_<VERSION>_x64.exe`.
 - Launch → onboarding wizard appears.
 - User enters gateway URL (+ token if needed).
 - User can complete node-register and node appears in gateway.

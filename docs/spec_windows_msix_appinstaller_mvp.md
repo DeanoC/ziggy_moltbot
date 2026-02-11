@@ -1,4 +1,7 @@
-# Spec: Windows MSIX + App Installer (MVP)
+# Spec: Windows MSIX + App Installer (MVP, legacy)
+
+> Legacy path: active installer packaging has moved to Inno Setup.
+> See `docs/spec_windows_inno_installer_mvp.md`.
 
 Goal: ship ZiggyStarClaw for Windows 10/11 as a **painless download → install → connect node** experience.
 
@@ -93,6 +96,7 @@ User steps:
 Package should include:
 - `ziggystarclaw-client.exe` (UI app)
 - `ziggystarclaw-cli.exe` (helper/tooling; optional but useful)
+- `ziggystarclaw-tray.exe` (node profile tray controls)
 - icons/assets
 
 MVP manifest uses `Windows.FullTrustApplication` entrypoint.
@@ -119,7 +123,8 @@ MVP manifest uses `Windows.FullTrustApplication` entrypoint.
 4. Sign:
    - `signtool sign /fd SHA256 /a /f <pfx> /p <pwd> <out.msix>`
 5. Generate `.appinstaller` pointing at `deanoc.com`
-6. Upload `.msix`, `.appinstaller`, `.cer`
+6. Emit installer helper script (`Install-ZiggyStarClaw.ps1`) that launches profile setup mode after install
+7. Upload `.msix`, `.appinstaller`, `.cer`, installer helper script
 
 ---
 

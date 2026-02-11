@@ -555,6 +555,9 @@ fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 const WinNodeServiceJobKind = enum {
+    profile_apply_client,
+    profile_apply_service,
+    profile_apply_session,
     install_onlogon,
     uninstall,
     start,
@@ -598,21 +601,19 @@ fn spawnWinNodeServiceJob(kind: WinNodeServiceJobKind, url: []const u8, token: [
     };
 }
 
-fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
-    defer {
-        job.deinit();
-        std.heap.page_allocator.destroy(job);
-    }
-
+fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) bool {
     const allocator = std.heap.page_allocator;
 
     const cli = findSiblingExecutable(allocator, if (builtin.os.tag == .windows) "ziggystarclaw-cli.exe" else "ziggystarclaw-cli") catch |err| {
         logger.err("node service: failed to resolve cli path: {}", .{err});
-        return;
+        return false;
     };
     defer allocator.free(cli);
 
     const action_args: []const []const u8 = switch (job.kind) {
+        .profile_apply_client => &.{ "node", "profile", "apply", "--profile", "client" },
+        .profile_apply_service => &.{ "node", "profile", "apply", "--profile", "service" },
+        .profile_apply_session => &.{ "node", "profile", "apply", "--profile", "session" },
         .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
         .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
         .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
@@ -624,14 +625,14 @@ fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
 
-    argv.append(allocator, cli) catch return;
-    argv.appendSlice(allocator, action_args) catch return;
+    argv.append(allocator, cli) catch return false;
+    argv.appendSlice(allocator, action_args) catch return false;
 
     // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
-    argv.append(allocator, "--url") catch return;
-    argv.append(allocator, job.url) catch return;
-    argv.append(allocator, "--gateway-token") catch return;
-    argv.append(allocator, job.token) catch return;
+    argv.append(allocator, "--url") catch return false;
+    argv.append(allocator, job.url) catch return false;
+    argv.append(allocator, "--gateway-token") catch return false;
+    argv.append(allocator, job.token) catch return false;
 
     if (job.insecure_tls) {
         argv.append(allocator, "--insecure-tls") catch {};
@@ -643,34 +644,64 @@ fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    child.stdout_behavior = if (inherit_stdio) .Inherit else .Ignore;
+    child.stderr_behavior = if (inherit_stdio) .Inherit else .Ignore;
     if (builtin.os.tag == .windows) {
         child.create_no_window = true;
     }
 
     child.spawn() catch |err| {
         logger.err("node service: spawn failed: {}", .{err});
-        return;
+        return false;
     };
 
     const term = child.wait() catch |err| {
         logger.err("node service: wait failed: {}", .{err});
-        return;
+        return false;
     };
 
     switch (term) {
         .Exited => |code| {
             if (code == 0) {
                 logger.info("node service: {s} ok", .{@tagName(job.kind)});
+                return true;
             } else {
                 logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+                return false;
             }
         },
         else => {
             logger.err("node service: {s} terminated unexpectedly", .{@tagName(job.kind)});
+            return false;
         },
     }
+}
+
+fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
+    defer {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+    }
+    _ = runWinNodeServiceCommand(job, false);
+}
+
+fn runWinNodeServiceJobBlocking(kind: WinNodeServiceJobKind, url: []const u8, token: []const u8, insecure_tls: bool) bool {
+    const allocator = std.heap.page_allocator;
+    const job = allocator.create(WinNodeServiceJob) catch return false;
+    defer allocator.destroy(job);
+
+    job.* = .{
+        .kind = kind,
+        .url = allocator.dupe(u8, url) catch return false,
+        .token = allocator.dupe(u8, token) catch {
+            allocator.free(job.url);
+            return false;
+        },
+        .insecure_tls = insecure_tls,
+    };
+    defer job.deinit();
+
+    return runWinNodeServiceCommand(job, true);
 }
 
 fn findSiblingExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -1601,6 +1632,16 @@ pub fn main() !void {
     try initLogging(allocator);
     defer logger.deinit();
 
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    var install_profile_only = false;
+    for (args[1..]) |arg| {
+        if (std.mem.eql(u8, arg, "--install-profile-only") or std.mem.eql(u8, arg, "--installer-profile-only")) {
+            install_profile_only = true;
+        }
+    }
+    ui.setInstallerProfileOnlyMode(install_profile_only);
+
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
     // If the user has never saved a config yet, create one so it's easy to edit by hand.
@@ -1651,6 +1692,10 @@ pub fn main() !void {
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
+    if (install_profile_only) {
+        auto_connect_enabled = false;
+        auto_connect_pending = false;
+    }
 
     var ws_client = websocket_client.WebSocketClient.init(
         allocator,
@@ -1799,6 +1844,36 @@ pub fn main() !void {
 
     main_win.manager.deinit();
     main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
+    if (builtin.os.tag == .windows and (install_profile_only or !app_state_state.windows_setup_completed)) {
+        if (install_profile_only) {
+            var idx: usize = 0;
+            while (idx < main_win.manager.workspace.panels.items.len) {
+                const panel = main_win.manager.workspace.panels.items[idx];
+                if (panel.kind == .Control) {
+                    idx += 1;
+                    continue;
+                }
+                _ = main_win.manager.closePanel(panel.id);
+            }
+        }
+
+        var found_control = false;
+        for (main_win.manager.workspace.panels.items) |*panel| {
+            if (panel.kind != .Control) continue;
+            panel.data.Control.active_tab = .Settings;
+            found_control = true;
+            break;
+        }
+        if (!found_control) {
+            main_win.manager.ensurePanel(.Control);
+            for (main_win.manager.workspace.panels.items) |*panel| {
+                if (panel.kind != .Control) continue;
+                panel.data.Control.active_tab = .Settings;
+                break;
+            }
+        }
+        main_win.manager.workspace.markDirty();
+    }
     // If we loaded a workspace from disk, do not auto-apply the theme pack's workspace layout preset
     // for the current profile on startup. (It can re-open panels the user explicitly tore off.)
     if (workspace_file_exists) {
@@ -1813,7 +1888,7 @@ pub fn main() !void {
     }
 
     // Spawn any persisted secondary windows.
-    if (theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
+    if (!install_profile_only and theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
         for (loaded.windows) |*w| {
             var title_buf: [192]u8 = undefined;
             const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{w.title}) catch "ZiggyStarClaw";
@@ -2567,20 +2642,45 @@ pub fn main() !void {
         }
 
         if (builtin.os.tag == .windows) {
-            if (ui_action.node_service_install_onlogon) {
-                spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+            var profile_job_kind: ?WinNodeServiceJobKind = null;
+            if (ui_action.node_profile_apply_client) {
+                app_state_state.windows_setup_completed = true;
+                profile_job_kind = .profile_apply_client;
             }
-            if (ui_action.node_service_uninstall) {
-                spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+            if (ui_action.node_profile_apply_service) {
+                app_state_state.windows_setup_completed = true;
+                profile_job_kind = .profile_apply_service;
             }
-            if (ui_action.node_service_start) {
-                spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+            if (ui_action.node_profile_apply_session) {
+                app_state_state.windows_setup_completed = true;
+                profile_job_kind = .profile_apply_session;
             }
-            if (ui_action.node_service_stop) {
-                spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+
+            if (profile_job_kind) |kind| {
+                if (install_profile_only) {
+                    _ = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
+                    should_close = true;
+                } else {
+                    spawnWinNodeServiceJob(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
             }
-            if (ui_action.node_service_status) {
-                spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+
+            if (!install_profile_only) {
+                if (ui_action.node_service_install_onlogon) {
+                    spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_uninstall) {
+                    spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_start) {
+                    spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_stop) {
+                    spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_status) {
+                    spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
             }
         }
 

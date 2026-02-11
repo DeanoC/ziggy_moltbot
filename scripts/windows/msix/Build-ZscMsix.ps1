@@ -32,6 +32,7 @@ $root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 $bin = Join-Path $root 'zig-out\bin'
 $clientExe = Join-Path $bin 'ziggystarclaw-client.exe'
 $cliExe = Join-Path $bin 'ziggystarclaw-cli.exe'
+$trayExe = Join-Path $bin 'ziggystarclaw-tray.exe'
 
 if (-not (Test-Path $clientExe)) { throw "Missing artifact: $clientExe (run scripts/build-windows.ps1 first)" }
 
@@ -41,6 +42,11 @@ New-Item -ItemType Directory -Force -Path $staging | Out-Null
 
 Copy-Item $clientExe (Join-Path $staging 'ziggystarclaw-client.exe')
 if (Test-Path $cliExe) { Copy-Item $cliExe (Join-Path $staging 'ziggystarclaw-cli.exe') }
+if (Test-Path $trayExe) {
+  Copy-Item $trayExe (Join-Path $staging 'ziggystarclaw-tray.exe')
+} else {
+  Write-Warning "Missing artifact: $trayExe (tray profile controls will be unavailable)"
+}
 
 # Assets
 $assetsDir = Join-Path $staging 'Assets'
@@ -96,8 +102,19 @@ Set-Content -Path $appinstallerPath -Value $appinstaller -Encoding utf8
 # Copy CER alongside outputs
 Copy-Item $CerPath (Join-Path $OutDir 'DeanoC.cer') -Force
 
+# Emit local bootstrap installer helper (installs cert + appinstaller, then launches profile-only mode).
+$bootstrapTpl = Join-Path $PSScriptRoot 'templates\Install-ZiggyStarClaw.ps1.template'
+if (-not (Test-Path $bootstrapTpl)) { throw "Missing template: $bootstrapTpl" }
+
+$bootstrap = Get-Content -Raw $bootstrapTpl
+$bootstrap = $bootstrap.Replace('@@PACKAGE_NAME@@', $PackageName)
+$bootstrap = $bootstrap.Replace('@@APP_ID@@', $AppId)
+$bootstrapPath = Join-Path $OutDir 'Install-ZiggyStarClaw.ps1'
+Set-Content -Path $bootstrapPath -Value $bootstrap -Encoding utf8
+
 Write-Host "Done." -ForegroundColor Green
 Write-Host "Outputs:" -ForegroundColor Green
 Write-Host "  $msixPath"
 Write-Host "  $appinstallerPath"
 Write-Host "  $(Join-Path $OutDir 'DeanoC.cer')"
+Write-Host "  $bootstrapPath"

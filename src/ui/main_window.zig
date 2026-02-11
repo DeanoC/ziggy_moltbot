@@ -108,6 +108,10 @@ pub const UiAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
+    node_profile_apply_client: bool = false,
+    node_profile_apply_service: bool = false,
+    node_profile_apply_session: bool = false,
+
     // Windows node runner helpers (SCM service)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
@@ -575,6 +579,7 @@ const PanelIdList = struct {
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 var default_window_ui_state: WindowUiState = .{};
+var installer_profile_only_mode: bool = false;
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
 const attachment_json_pretty_limit: usize = 64 * 1024;
@@ -592,6 +597,10 @@ var pending_attachment_fetches: std.ArrayList(PendingAttachment) = .empty;
 
 pub fn setSafeInsets(left: f32, top: f32, right: f32, bottom: f32) void {
     safe_insets = .{ left, top, right, bottom };
+}
+
+pub fn setInstallerProfileOnlyMode(enabled: bool) void {
+    installer_profile_only_mode = enabled;
 }
 
 pub fn draw(
@@ -895,6 +904,7 @@ fn drawWorkspaceHost(
                 action,
                 pending_attachment,
                 win_state,
+                installer_profile_only_mode,
             );
             if (panel.kind == .Chat and draw_result.session_key != null) {
                 if (focused or active_session_key == null) {
@@ -1132,7 +1142,7 @@ fn drawFullscreenHost(
                 panel.data.Control.active_tab = .Agents;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1143,7 +1153,7 @@ fn drawFullscreenHost(
                 panel.data.Control.active_tab = .Settings;
             }
             if (selectPanelForKind(manager, .Control)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1151,7 +1161,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(4);
             ensureOnlyPanelKind(manager, .Chat);
             if (selectPanelForKind(manager, .Chat)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1159,7 +1169,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(5);
             ensureOnlyPanelKind(manager, .Showcase);
             if (selectPanelForKind(manager, .Showcase)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1271,6 +1281,7 @@ fn drawPanelContents(
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
     win_state: *WindowUiState,
+    install_profile_only_mode: bool,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
     const zone = profiler.zone(@src(), "ui.panel");
@@ -1370,6 +1381,7 @@ fn drawPanelContents(
                 &panel.data.Control,
                 panel_rect,
                 win_state.theme_pack_override,
+                install_profile_only_mode,
             );
             action.connect = control_action.connect;
             action.disconnect = control_action.disconnect;
@@ -1395,6 +1407,9 @@ fn drawPanelContents(
             action.open_download = control_action.open_download;
             action.install_update = control_action.install_update;
 
+            action.node_profile_apply_client = control_action.node_profile_apply_client;
+            action.node_profile_apply_service = control_action.node_profile_apply_service;
+            action.node_profile_apply_session = control_action.node_profile_apply_session;
             action.node_service_install_onlogon = control_action.node_service_install_onlogon;
             action.node_service_start = control_action.node_service_start;
             action.node_service_stop = control_action.node_service_stop;
