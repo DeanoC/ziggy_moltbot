@@ -79,7 +79,8 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node runner start"; Workin
 ; User session node profile (user Scheduled Task + tray startup in original user context)
 ; Ensure clean swap from service mode (requires installer elevation).
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node service uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileSession
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+; Run asynchronously to avoid Setup UI deadlock while session profile spawns subcommands.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile session {code:GetConnectionArgs}"; WorkingDir: "{app}"; Flags: runhidden nowait runasoriginaluser skipifdoesntexist; Check: IsProfileSession
 
 ; Tray startup task installation:
 ; user-context only (installer-context ONLOGON task creation can block on credential prompts)
