@@ -699,8 +699,15 @@ fn buildFfmpegSingleFrameArgv(
         "1",
     });
 
-    if (format == .jpeg) {
-        try argv.appendSlice(allocator, &.{ "-q:v", "2" });
+    switch (format) {
+        .jpeg => {
+            // Force JPEG encoding for deterministic payload format.
+            try argv.appendSlice(allocator, &.{ "-c:v", "mjpeg", "-q:v", "2" });
+        },
+        .png => {
+            // Force PNG encoding for deterministic payload format.
+            try argv.appendSlice(allocator, &.{ "-c:v", "png" });
+        },
     }
 
     try argv.appendSlice(allocator, &.{
@@ -1209,6 +1216,8 @@ test "buildFfmpegSingleFrameArgv enforces single-frame dshow capture for jpeg" {
     try std.testing.expect(argvContains(argv, "dshow"));
     try std.testing.expect(argvContains(argv, "-frames:v"));
     try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(argvContains(argv, "-c:v"));
+    try std.testing.expect(argvContains(argv, "mjpeg"));
     try std.testing.expect(argvContains(argv, "-q:v"));
     try std.testing.expect(argvContains(argv, "-update"));
     try std.testing.expect(argvContains(argv, "-y"));
@@ -1228,6 +1237,8 @@ test "buildFfmpegSingleFrameArgv omits jpeg quality flag for png" {
 
     try std.testing.expect(argvContains(argv, "-frames:v"));
     try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(argvContains(argv, "-c:v"));
+    try std.testing.expect(argvContains(argv, "png"));
     try std.testing.expect(!argvContains(argv, "-q:v"));
     try std.testing.expect(argvContains(argv, "-update"));
 }
