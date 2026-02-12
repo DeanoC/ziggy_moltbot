@@ -10,7 +10,7 @@ Each slice should be safe to ship independently in node-mode.
 
 ---
 
-## Current status (2026-02-11)
+## Current status (2026-02-12)
 
 Implemented now:
 - Router wiring is command-surface driven (node advertises only what router can execute).
@@ -24,6 +24,7 @@ Implemented now:
 - `camera.clip` is implemented with an ffmpeg+dshow backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, hasAudio }`
   - supports `deviceId` selection and best-effort `facing` routing via inferred camera `position`.
+  - supports `format=mp4|webm` (both currently video-only).
   - current backend is video-only (`hasAudio=false` when `includeAudio=true`).
 - `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
@@ -31,7 +32,7 @@ Implemented now:
   - current backend is still video-only (`hasAudio=false`).
 
 Not yet implemented on Windows:
-- advanced `camera.clip` coverage (audio capture + optional webm output)
+- advanced `camera.clip` coverage (audio capture)
 - advanced `screen.record` coverage (audio capture + non-PowerShell monitor discovery fallback improvements)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
@@ -89,7 +90,7 @@ Notes:
 {
   "durationMs": 3000,
   "duration": "3s",      // optional shorthand alternative to durationMs
-  "format": "mp4",
+  "format": "mp4|webm",
   "includeAudio": true,
   "deviceId": "<PNPDeviceID>",
   "facing": "front|back" // optional best-effort device routing
@@ -100,7 +101,7 @@ Notes:
 
 ```json
 {
-  "format": "mp4",
+  "format": "mp4|webm",
   "base64": "<video bytes base64>",
   "durationMs": 3000,
   "hasAudio": false
@@ -210,9 +211,9 @@ Deliverables:
 
 Status:
 - MVP landed with `ffmpeg-dshow` backend and executable-aware registration/advertisement (`camera.clip` is exposed only when ffmpeg + PowerShell are runnable).
-- Current remaining gaps for this slice:
+- Follow-up landed for optional `format=webm` output in addition to `mp4`.
+- Current remaining gap for this slice:
   - optional audio capture (`includeAudio=true` currently logs warning and returns `hasAudio=false`)
-  - optional `webm` output format
 
 ### Canvas / browser automation
 
