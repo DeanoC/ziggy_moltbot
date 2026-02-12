@@ -111,6 +111,7 @@ var
   ExistingServerUrl: String;
   ExistingGatewayToken: String;
   ExistingConfigHasConnection: Boolean;
+  ExistingCliBeforeInstall: Boolean;
 
 function IsWhitespace(const C: Char): Boolean;
 begin
@@ -244,6 +245,8 @@ procedure InitializeWizard;
 var
   UserCfg, CommonCfg, UserLegacyCfg, UrlValue, TokenValue: String;
 begin
+  ExistingCliBeforeInstall := False;
+
   ProfilePage := CreateInputOptionPage(
     wpSelectTasks,
     'Node Setup Profile',
@@ -306,6 +309,13 @@ begin
   end;
 end;
 
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    // Snapshot install-state before [Files] copies new binaries.
+    ExistingCliBeforeInstall := FileExists(ExpandConstant('{app}\ziggystarclaw-cli.exe'));
+end;
+
 function IsProfileClient: Boolean;
 begin
   Result := Assigned(ProfilePage) and ProfilePage.Values[ProfileClient];
@@ -334,7 +344,7 @@ end;
 function ExistingInstallDetected: Boolean;
 begin
   Result :=
-    FileExists(ExpandConstant('{app}\ziggystarclaw-cli.exe')) or
+    ExistingCliBeforeInstall or
     ServiceRunnerInstalled or
     SessionRunnerInstalled or
     TrayStartupInstalled;
