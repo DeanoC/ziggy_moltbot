@@ -31,6 +31,7 @@ pub const ui = struct {
     pub const input_panel = @import("ui/input_panel.zig");
     pub const settings_view = @import("ui/settings_view.zig");
     pub const status_bar = @import("ui/status_bar.zig");
+    pub const draw_context = @import("ui/draw_context.zig");
     pub const theme = @import("ui/theme.zig");
     pub const theme_engine = @import("ui/theme_engine/theme_engine.zig");
     pub const text_buffer = @import("ui/text_buffer.zig");
@@ -38,11 +39,19 @@ pub const ui = struct {
     pub const image_cache = @import("ui/image_cache.zig");
     pub const workspace = @import("ui/workspace.zig");
     pub const panel_manager = @import("ui/panel_manager.zig");
+    pub const dock_transfer = @import("ui/dock_transfer.zig");
     pub const ui_command = @import("ui/ui_command.zig");
     pub const ui_command_inbox = @import("ui/ui_command_inbox.zig");
     pub const workspace_store = @import("ui/workspace_store.zig");
     pub const components = @import("ui/components/components.zig");
     pub const widgets = @import("ui/widgets/widgets.zig");
+    pub const layout = struct {
+        pub const custom_layout = @import("ui/layout/custom_layout.zig");
+        pub const dock_graph = @import("ui/layout/dock_graph.zig");
+        pub const dock_drop = @import("ui/layout/dock_drop.zig");
+        pub const dock_detach = @import("ui/layout/dock_detach.zig");
+        pub const dock_rail = @import("ui/layout/dock_rail.zig");
+    };
 };
 
 pub const platform = struct {

@@ -5,7 +5,7 @@ const theme_mod = @import("../theme.zig");
 const theme_tokens = @import("../theme/theme.zig");
 
 const profile = @import("profile.zig");
-const schema = @import("schema.zig");
+pub const schema = @import("schema.zig");
 const theme_package = @import("theme_package.zig");
 const style_sheet = @import("style_sheet.zig");
 const builtin_packs = @import("builtin_packs.zig");
@@ -988,6 +988,11 @@ pub const ThemeEngine = struct {
     fn parsePanelKindLabel(label: []const u8) ?@import("../workspace.zig").PanelKind {
         if (std.ascii.eqlIgnoreCase(label, "workspace") or std.ascii.eqlIgnoreCase(label, "control")) return .Control;
         if (std.ascii.eqlIgnoreCase(label, "chat")) return .Chat;
+        if (std.ascii.eqlIgnoreCase(label, "agents")) return .Agents;
+        if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
+        if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
+        if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
+        if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
         if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
         if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
         if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;

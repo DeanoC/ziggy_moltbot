@@ -64,6 +64,14 @@ test "theme engine loads showcase theme pack directory (partial overrides + per-
         else => try std.testing.expect(false),
     }
 
+    // Ensure dock rail icon overrides resolve from components.json.
+    try std.testing.expect(ss_dark.panel.dock_rail_icons.chat.isSet());
+    try std.testing.expectEqualStrings("MSG", ss_dark.panel.dock_rail_icons.chat.slice());
+    try std.testing.expect(ss_dark.panel.dock_rail_icons.pin.isSet());
+    try std.testing.expect(ss_dark.panel.dock_drop_preview.active_fill != null);
+    try std.testing.expect(ss_dark.panel.dock_drop_preview.active_border != null);
+    try std.testing.expect(ss_dark.panel.dock_drop_preview.marker != null);
+
     // Ensure focus ring config is present.
     try std.testing.expect(ss_dark.focus_ring.thickness != null);
     try std.testing.expect(ss_dark.focus_ring.color != null);
@@ -73,4 +81,33 @@ test "theme engine loads showcase theme pack directory (partial overrides + per-
     try std.testing.expect(ss_dark.panel.frame_image.isSet());
     try std.testing.expect(ss_dark.panel.frame_slices_px != null);
     try std.testing.expect(ss_dark.panel.shadow.color != null);
+}
+
+test "theme schema parses window template chrome visibility fields" {
+    const allocator = std.testing.allocator;
+    const json =
+        \\{
+        \\  "schema_version": 1,
+        \\  "windows": [
+        \\    {
+        \\      "id": "utility",
+        \\      "title": "Utility",
+        \\      "chrome_mode": "template_utility",
+        \\      "menu_profile": "minimal",
+        \\      "show_menu_bar": false,
+        \\      "show_status_bar": false
+        \\    }
+        \\  ]
+        \\}
+    ;
+
+    var parsed = try zsc.ui.theme_engine.schema.parseJson(zsc.ui.theme_engine.schema.WindowsFile, allocator, json);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.windows.len);
+    const tpl = parsed.value.windows[0];
+    try std.testing.expect(tpl.show_menu_bar != null);
+    try std.testing.expect(tpl.show_status_bar != null);
+    try std.testing.expect(!tpl.show_menu_bar.?);
+    try std.testing.expect(!tpl.show_status_bar.?);
 }

@@ -72,6 +72,7 @@ pub const UiWindow = struct {
 ### How themes use it
 A theme package may optionally provide `windows.json` describing:
 - window templates (sizes, titles, docking policy)
+- window chrome policy (`chrome_mode`, `menu_profile`, `show_menu_bar`, `show_status_bar`)
 - which root view each window hosts
 - whether a window uses pixel-snapping (Winamp-like) or smooth vector UI
 
@@ -86,6 +87,8 @@ A clean desktop theme can allow:
 - “tear off” a panel into a new window
 - keep one authoritative workspace state
 - store detached window metadata in the workspace file
+  - includes detached window chrome settings (`chrome_mode`, `menu_profile`, `show_*_bar`)
+  - includes collapsed side-dock rail state (`collapsed_docks`) per window
 
 ## Phone Strategy
 

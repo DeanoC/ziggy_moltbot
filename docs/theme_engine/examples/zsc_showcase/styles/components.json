@@ -68,6 +68,26 @@
       "image": "assets/images/panel_frame.png",
       "slices_px": [8, 8, 8, 8],
       "tint": "#FFFFFFCC"
+    },
+    "dock_rail_icons": {
+      "chat": "MSG",
+      "code_editor": "ED",
+      "tool_output": "LOG",
+      "control": "WS",
+      "showcase": "FX",
+      "collapse_left": "<<",
+      "collapse_right": ">>",
+      "pin": "PIN",
+      "close_flyout": "X"
+    },
+    "dock_drop_preview": {
+      "inactive_fill": "#6B6BFF14",
+      "inactive_border": "#6B6BFF66",
+      "inactive_thickness": 1.0,
+      "active_fill": "#6B6BFF40",
+      "active_border": "#A6A6FFFF",
+      "active_thickness": 2.0,
+      "marker": "#F5F5FFFF"
     }
   },
   "focus_ring": {
