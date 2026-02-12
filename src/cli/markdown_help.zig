@@ -113,6 +113,7 @@ fn writeMarkdownLine(
     in_fenced_code: *bool,
 ) !void {
     const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const indent_len = line.len - trimmed.len;
 
     if (std.mem.startsWith(u8, trimmed, "```")) {
         in_fenced_code.* = !in_fenced_code.*;
@@ -129,6 +130,8 @@ fn writeMarkdownLine(
     }
 
     if (headingInfo(trimmed)) |heading| {
+        if (indent_len > 0) try writer.writeAll(line[0..indent_len]);
+
         if (mode == .ansi) {
             try writer.writeAll("\x1b[1m");
             if (heading.level == 1) try writer.writeAll("\x1b[4m");
@@ -145,7 +148,6 @@ fn writeMarkdownLine(
     }
 
     if (unorderedListContent(trimmed)) |content| {
-        const indent_len = line.len - trimmed.len;
         if (indent_len > 0) try writer.writeAll(line[0..indent_len]);
 
         if (mode == .ansi) {
@@ -160,10 +162,15 @@ fn writeMarkdownLine(
     }
 
     if (orderedListPrefixLen(trimmed)) |prefix_len| {
-        const indent_len = line.len - trimmed.len;
         if (indent_len > 0) try writer.writeAll(line[0..indent_len]);
 
-        try writer.writeAll(trimmed[0..prefix_len]);
+        if (mode == .ansi) {
+            try writer.writeAll("\x1b[36m");
+            try writer.writeAll(trimmed[0..prefix_len]);
+            try writer.writeAll("\x1b[39m");
+        } else {
+            try writer.writeAll(trimmed[0..prefix_len]);
+        }
         try renderInline(writer, trimmed[prefix_len..], mode);
         if (has_newline) try writer.writeByte('\n');
         return;
@@ -186,11 +193,25 @@ fn headingInfo(trimmed_line: []const u8) ?HeadingInfo {
     if (idx == 0 or idx >= trimmed_line.len) return null;
     if (trimmed_line[idx] != ' ') return null;
 
-    const content = std.mem.trimLeft(u8, trimmed_line[idx + 1 ..], " ");
+    const content = normalizeHeadingContent(trimmed_line[idx + 1 ..]);
     return .{
         .level = @as(u8, @intCast(idx)),
         .content = content,
     };
+}
+
+fn normalizeHeadingContent(raw_content: []const u8) []const u8 {
+    const trimmed_left = std.mem.trimLeft(u8, raw_content, " ");
+    const trimmed_right = std.mem.trimRight(u8, trimmed_left, " \t");
+
+    var end = trimmed_right.len;
+    while (end > 0 and trimmed_right[end - 1] == '#') : (end -= 1) {}
+    if (end == trimmed_right.len) return trimmed_right;
+
+    if (end == 0) return trimmed_right;
+    if (!std.ascii.isWhitespace(trimmed_right[end - 1])) return trimmed_right;
+
+    return std.mem.trimRight(u8, trimmed_right[0..end], " \t");
 }
 
 fn unorderedListContent(trimmed_line: []const u8) ?[]const u8 {
@@ -279,14 +300,32 @@ test "plain markdown fallback strips basic markdown markers" {
     );
 }
 
+test "plain mode preserves heading indentation and strips closing heading markers" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "  ## Title ##\n" ++
+        "10. **item**\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "  Title\n" ++
+            "10. item\n",
+        out.items,
+    );
+}
+
 test "ansi mode adds formatting sequences for heading/list/inline" {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(std.testing.allocator);
 
-    const input = "## Header\n- **bold** `code`\n";
+    const input = "## Header\n- **bold** `code`\n1. item\n";
     try writeMarkdown(out.writer(std.testing.allocator), input, .ansi);
 
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[1m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[36m•\x1b[39m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[33mcode\x1b[39m") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[36m1. \x1b[39m") != null);
 }
