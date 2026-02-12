@@ -21,6 +21,19 @@ To support smaller binaries, the CLI is split into separable chunks:
   - Result: node-only CLI that cannot act as operator.
   - Operator-only commands fail with the standard unsupported hint.
 
+Recommended local profile checks:
+
+```bash
+# Full profile
+zig build -Dclient=false
+python3 -m pytest tests/test_cli_unit.py -v
+
+# Node-only profile
+zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
+ZSC_NODE_ONLY_CLI=./zig-out/node-only/bin/ziggystarclaw-cli \
+  python3 -m pytest tests/test_cli_node_only.py -v
+```
+
 ## Why this split
 
 - Keeps node-runner/service workflows available in constrained builds.
