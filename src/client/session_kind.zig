@@ -47,20 +47,30 @@ pub fn isAutomationSession(session: types.Session) bool {
 }
 
 fn containsAutomationToken(label: []const u8) bool {
-    return containsIgnoreCase(label, "heartbeat") or
-        containsIgnoreCase(label, "cron") or
-        containsIgnoreCase(label, "automation");
+    return containsDelimitedToken(label, "heartbeat") or
+        containsDelimitedToken(label, "cron") or
+        containsDelimitedToken(label, "automation");
 }
 
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
+fn containsDelimitedToken(haystack: []const u8, token: []const u8) bool {
+    if (token.len == 0) return false;
+    if (haystack.len < token.len) return false;
 
     var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) {
-            return true;
-        }
+    while (i + token.len <= haystack.len) : (i += 1) {
+        if (!std.ascii.eqlIgnoreCase(haystack[i .. i + token.len], token)) continue;
+
+        const left_ok = if (i == 0)
+            true
+        else
+            !std.ascii.isAlphanumeric(haystack[i - 1]);
+        const right_index = i + token.len;
+        const right_ok = if (right_index >= haystack.len)
+            true
+        else
+            !std.ascii.isAlphanumeric(haystack[right_index]);
+
+        if (left_ok and right_ok) return true;
     }
     return false;
 }

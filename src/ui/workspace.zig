@@ -41,6 +41,12 @@ pub const ChatPanel = struct {
     session_key: ?[]const u8 = null,
     selected_session_id: ?[]const u8 = null,
     view: chat_view.ViewState = .{},
+    select_copy_mode: bool = false,
+    show_tool_output: bool = false,
+    show_system_sessions: bool = false,
+    session_picker_open: bool = false,
+    copy_context_menu_open: bool = false,
+    copy_context_menu_anchor: [2]f32 = .{ 0.0, 0.0 },
     composer_ratio: f32 = 0.24,
     composer_split_dragging: bool = false,
 };

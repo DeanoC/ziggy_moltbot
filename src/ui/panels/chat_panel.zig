@@ -40,13 +40,6 @@ const CopyContextMenuAction = enum {
     copy_all,
 };
 
-var select_copy_mode: bool = false;
-var show_tool_output: bool = false;
-var show_system_sessions = false;
-var session_picker_open = false;
-var copy_context_menu_open = false;
-var copy_context_menu_anchor: [2]f32 = .{ 0.0, 0.0 };
-
 pub fn draw(
     allocator: std.mem.Allocator,
     panel_state: *workspace.ChatPanel,
@@ -98,7 +91,7 @@ pub fn draw(
     const stream_text = if (session_state) |state_val| state_val.stream_text else null;
     const has_selection_select = chat_view.hasSelectCopySelection(&panel_state.view);
     const has_selection_custom = chat_view.hasSelection(&panel_state.view);
-    const has_selection = if (select_copy_mode) has_selection_select else has_selection_custom;
+    const has_selection = if (panel_state.select_copy_mode) has_selection_select else has_selection_custom;
     const panel_rect = rect_override orelse return action;
     var panel_ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer panel_ctx.deinit();
@@ -127,8 +120,9 @@ pub fn draw(
         session_key,
         panel_state.selected_session_id,
         has_session,
-        &select_copy_mode,
-        &show_tool_output,
+        &panel_state.select_copy_mode,
+        &panel_state.show_tool_output,
+        &panel_state.session_picker_open,
         control_height,
     );
 
@@ -212,7 +206,7 @@ pub fn draw(
     }
 
     const history_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], history_height });
-    if (select_copy_mode) {
+    if (panel_state.select_copy_mode) {
         chat_view.drawSelectCopy(
             allocator,
             &panel_ctx,
@@ -224,8 +218,8 @@ pub fn draw(
             stream_text,
             inbox,
             .{
-                .select_copy_mode = select_copy_mode,
-                .show_tool_output = show_tool_output,
+                .select_copy_mode = panel_state.select_copy_mode,
+                .show_tool_output = panel_state.show_tool_output,
                 .assistant_label = agent_name,
             },
         );
@@ -241,8 +235,8 @@ pub fn draw(
             stream_text,
             inbox,
             .{
-                .select_copy_mode = select_copy_mode,
-                .show_tool_output = show_tool_output,
+                .select_copy_mode = panel_state.select_copy_mode,
+                .show_tool_output = panel_state.show_tool_output,
                 .assistant_label = agent_name,
             },
         );
@@ -253,10 +247,10 @@ pub fn draw(
             .mouse_up => |mu| {
                 if (mu.button != .right) continue;
                 if (history_rect.contains(mu.pos)) {
-                    copy_context_menu_open = true;
-                    copy_context_menu_anchor = mu.pos;
+                    panel_state.copy_context_menu_open = true;
+                    panel_state.copy_context_menu_anchor = mu.pos;
                 } else {
-                    copy_context_menu_open = false;
+                    panel_state.copy_context_menu_open = false;
                 }
             },
             else => {},
@@ -285,26 +279,34 @@ pub fn draw(
         }
     }
 
-    if (copy_context_menu_open) {
-        const menu_action = drawCopyContextMenu(&panel_ctx, queue, panel_rect, has_session, has_selection);
+    if (panel_state.copy_context_menu_open) {
+        const menu_action = drawCopyContextMenu(
+            &panel_ctx,
+            queue,
+            panel_rect,
+            has_session,
+            has_selection,
+            &panel_state.copy_context_menu_open,
+            panel_state.copy_context_menu_anchor,
+        );
         switch (menu_action) {
             .copy_selection => {
-                if (select_copy_mode) {
+                if (panel_state.select_copy_mode) {
                     chat_view.copySelectCopySelectionToClipboard(allocator, &panel_state.view);
                 } else {
-                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, show_tool_output);
+                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, panel_state.show_tool_output);
                 }
-                copy_context_menu_open = false;
+                panel_state.copy_context_menu_open = false;
             },
             .copy_all => {
-                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, show_tool_output);
-                copy_context_menu_open = false;
+                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, panel_state.show_tool_output);
+                panel_state.copy_context_menu_open = false;
             },
             .none => {},
         }
     }
 
-    if (session_picker_open) {
+    if (panel_state.session_picker_open) {
         if (header_action.picker_rect) |picker_rect| {
             const selection = drawSessionPicker(
                 allocator,
@@ -315,7 +317,7 @@ pub fn draw(
                 session_key,
                 panel_state.selected_session_id,
                 picker_rect,
-                &show_system_sessions,
+                &panel_state.show_system_sessions,
             );
             if (selection.key) |key| {
                 action.select_session = key;
@@ -324,7 +326,7 @@ pub fn draw(
                 if (action.select_session_id) |sid| {
                     panel_state.selected_session_id = allocator.dupe(u8, sid) catch null;
                 }
-                session_picker_open = false;
+                panel_state.session_picker_open = false;
             } else {
                 if (selection.session_id) |sid| allocator.free(sid);
                 for (queue.events.items) |evt| {
@@ -334,7 +336,7 @@ pub fn draw(
                             if (picker_rect.contains(md.pos)) continue;
                             const menu_rect = pickerMenuRect(&panel_ctx, picker_rect);
                             if (!menu_rect.contains(md.pos)) {
-                                session_picker_open = false;
+                                panel_state.session_picker_open = false;
                             }
                         },
                         else => {},
@@ -342,7 +344,7 @@ pub fn draw(
                 }
             }
         } else {
-            session_picker_open = false;
+            panel_state.session_picker_open = false;
         }
     }
 
@@ -370,6 +372,7 @@ fn drawHeader(
     has_session: bool,
     select_copy_mode_ref: *bool,
     show_tool_output_ref: *bool,
+    session_picker_open_ref: *bool,
     control_height: f32,
 ) HeaderAction {
     const t = ctx.theme;
@@ -458,7 +461,7 @@ fn drawHeader(
             else
                 "v";
             if (widgets.button.draw(ctx, picker_rect, button_label, queue, .{ .variant = .secondary })) {
-                session_picker_open = !session_picker_open;
+                session_picker_open_ref.* = !session_picker_open_ref.*;
             }
             picker_rect_opt = picker_rect;
 
@@ -873,6 +876,8 @@ fn drawCopyContextMenu(
     panel_rect: draw_context.Rect,
     has_session: bool,
     has_selection: bool,
+    open_ref: *bool,
+    anchor: [2]f32,
 ) CopyContextMenuAction {
     const t = ctx.theme;
 
@@ -892,15 +897,15 @@ fn drawCopyContextMenu(
     const min_y = panel_rect.min[1] + 2.0;
     const max_x = @max(min_x, panel_rect.max[0] - menu_width - 2.0);
     const max_y = @max(min_y, panel_rect.max[1] - menu_height - 2.0);
-    const menu_x = std.math.clamp(copy_context_menu_anchor[0], min_x, max_x);
-    const menu_y = std.math.clamp(copy_context_menu_anchor[1], min_y, max_y);
+    const menu_x = std.math.clamp(anchor[0], min_x, max_x);
+    const menu_y = std.math.clamp(anchor[1], min_y, max_y);
     const menu_rect = draw_context.Rect.fromMinSize(.{ menu_x, menu_y }, .{ menu_width, menu_height });
 
     for (queue.events.items) |evt| {
         switch (evt) {
             .mouse_down => |md| {
                 if ((md.button == .left or md.button == .right) and !menu_rect.contains(md.pos)) {
-                    copy_context_menu_open = false;
+                    open_ref.* = false;
                     return .none;
                 }
             },

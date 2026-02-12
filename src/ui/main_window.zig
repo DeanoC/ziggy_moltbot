@@ -1969,9 +1969,11 @@ fn drawPanelContents(
 
             const agent_info = resolveAgentInfo(registry, agent_id);
             if (!std.mem.eql(u8, panel.title, agent_info.name)) {
-                allocator.free(panel.title);
-                panel.title = allocator.dupe(u8, agent_info.name) catch panel.title;
-                manager.workspace.markDirty();
+                if (allocator.dupe(u8, agent_info.name)) |new_title| {
+                    allocator.free(panel.title);
+                    panel.title = new_title;
+                    manager.workspace.markDirty();
+                } else |_| {}
             }
 
             const session_state = if (resolved_session_key) |session_key|
