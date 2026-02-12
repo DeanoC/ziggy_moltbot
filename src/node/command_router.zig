@@ -831,10 +831,7 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
     var out_devices = std.json.Array.init(allocator);
     for (devices) |dev| {
         var obj = std.json.ObjectMap.init(allocator);
-        const id = try allocator.dupe(u8, dev.deviceId);
-        try obj.put("id", std.json.Value{ .string = id });
-        // Alias for tool/client compatibility.
-        try obj.put("deviceId", std.json.Value{ .string = id });
+        try obj.put("id", std.json.Value{ .string = try allocator.dupe(u8, dev.deviceId) });
         try obj.put("name", std.json.Value{ .string = try allocator.dupe(u8, dev.name) });
         if (dev.position) |position| {
             try obj.put("position", std.json.Value{ .string = try allocator.dupe(u8, position.toString()) });
@@ -843,7 +840,6 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
     }
 
     var out = std.json.ObjectMap.init(allocator);
-    try out.put("backend", std.json.Value{ .string = try allocator.dupe(u8, "powershell-cim") });
     try out.put("devices", std.json.Value{ .array = out_devices });
     return std.json.Value{ .object = out };
 }
