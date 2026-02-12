@@ -30,8 +30,14 @@ pub fn minPanelWidth() f32 {
     return min_bubble_width / bubble_fill_ratio;
 }
 
-pub fn roleLabel(role: []const u8) []const u8 {
-    if (std.mem.eql(u8, role, "assistant")) return "Assistant";
+pub fn roleLabel(role: []const u8, assistant_label: ?[]const u8) []const u8 {
+    if (std.mem.eql(u8, role, "assistant")) {
+        if (assistant_label) |label| {
+            const trimmed = std.mem.trim(u8, label, " \t\r\n");
+            if (trimmed.len > 0) return trimmed;
+        }
+        return "Assistant";
+    }
     if (std.mem.eql(u8, role, "user")) return "You";
     if (std.mem.eql(u8, role, "system")) return "System";
     if (std.mem.startsWith(u8, role, "tool")) return "Tool";

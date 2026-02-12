@@ -34,3 +34,7 @@ pub fn buildChatSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) !
     defer allocator.free(suffix);
     return try std.fmt.allocPrint(allocator, "agent:{s}:chat-{s}", .{ agent_id, suffix });
 }
+
+pub fn buildMainSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
+    return try std.fmt.allocPrint(allocator, "agent:{s}:main", .{agent_id});
+}

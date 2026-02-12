@@ -19,6 +19,7 @@ pub const SessionRow = struct {
     label: ?[]const u8 = null,
     displayName: ?[]const u8 = null,
     updatedAt: ?i64 = null,
+    sessionId: ?[]const u8 = null,
 };
 
 pub const SessionsListResult = struct {

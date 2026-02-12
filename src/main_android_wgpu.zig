@@ -25,6 +25,7 @@ const logger = @import("utils/logger.zig");
 const profiler = @import("utils/profiler.zig");
 const requests = @import("protocol/requests.zig");
 const sessions_proto = @import("protocol/sessions.zig");
+const agents_proto = @import("protocol/agents.zig");
 const chat_proto = @import("protocol/chat.zig");
 const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
@@ -292,7 +293,7 @@ fn stopReadThread(loop: *ReadLoop, thread: *?std.Thread) void {
 }
 
 fn makeNewSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
-    return try session_keys.buildChatSessionKey(allocator, agent_id);
+    return try session_keys.buildMainSessionKey(allocator, agent_id);
 }
 
 fn sendSessionsResetRequest(
@@ -409,6 +410,7 @@ fn sendChatHistoryRequest(
     ctx: *client_state.ClientContext,
     ws_client: *websocket_client.WebSocketClient,
     session_key: []const u8,
+    session_id: ?[]const u8,
 ) void {
     if (!ws_client.is_connected) return;
     if (ctx.state != .connected) return;
@@ -418,6 +420,7 @@ fn sendChatHistoryRequest(
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
+        .sessionId = session_id,
         .limit = chat_history_fetch_limit,
     };
 
@@ -590,6 +593,143 @@ fn sendExecApprovalResolveRequest(
     ctx.clearOperatorNotice();
 }
 
+fn defaultAgentWorkspace(allocator: std.mem.Allocator, agent_id: []const u8) ?[]u8 {
+    return std.fmt.allocPrint(allocator, "~/.openclaw/workspace/{s}", .{agent_id}) catch null;
+}
+
+fn sendAgentsCreateRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    agent_id: []const u8,
+    agent_icon: ?[]const u8,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_create_request_id != null) {
+        ctx.setOperatorNotice("Another agent create request is still in progress.") catch {};
+        return;
+    }
+    if (!ctx.supportsGatewayMethod("agents.create")) return;
+
+    const workspace_path = defaultAgentWorkspace(allocator, agent_id) orelse {
+        ctx.setOperatorNotice("Failed to prepare agent workspace path.") catch {};
+        return;
+    };
+    defer allocator.free(workspace_path);
+
+    const icon_value = if (agent_icon) |value|
+        if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else null
+    else
+        null;
+    const avatar = if (icon_value) |value|
+        if (std.mem.startsWith(u8, value, "http://") or
+            std.mem.startsWith(u8, value, "https://") or
+            std.mem.startsWith(u8, value, "file://"))
+            value
+        else
+            null
+    else
+        null;
+    const emoji = if (icon_value) |value|
+        if (avatar == null) value else null
+    else
+        null;
+
+    const params = agents_proto.AgentsCreateParams{
+        .name = agent_id,
+        .workspace = workspace_path,
+        .avatar = avatar,
+        .emoji = emoji,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.create", params) catch |err| {
+        logger.warn("Failed to build agents.create request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send agents.create: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingAgentsCreateRequest(request.id);
+    ctx.setOperatorNotice("Creating agent on gateway...") catch {};
+}
+
+fn sendAgentsUpdateRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    agent_id: []const u8,
+    display_name: []const u8,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_update_request_id != null) return;
+    if (!ctx.supportsGatewayMethod("agents.update")) return;
+
+    const trimmed_name = std.mem.trim(u8, display_name, " \t\r\n");
+    if (trimmed_name.len == 0) return;
+    if (std.ascii.eqlIgnoreCase(trimmed_name, agent_id)) return;
+
+    const params = agents_proto.AgentsUpdateParams{
+        .agentId = agent_id,
+        .name = trimmed_name,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.update", params) catch |err| {
+        logger.warn("Failed to build agents.update request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send agents.update: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingAgentsUpdateRequest(request.id);
+}
+
+fn sendAgentsDeleteRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+    agent_id: []const u8,
+) void {
+    if (!ws_client.is_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_delete_request_id != null) {
+        ctx.setOperatorNotice("Another agent delete request is still in progress.") catch {};
+        return;
+    }
+    if (!ctx.supportsGatewayMethod("agents.delete")) return;
+
+    const params = agents_proto.AgentsDeleteParams{
+        .agentId = agent_id,
+        .deleteFiles = false,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.delete", params) catch |err| {
+        logger.warn("Failed to build agents.delete request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send agents.delete: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingAgentsDeleteRequest(request.id);
+    ctx.setOperatorNotice("Deleting agent on gateway...") catch {};
+}
+
 fn sendChatMessageRequest(
     allocator: std.mem.Allocator,
     ctx: *client_state.ClientContext,
@@ -726,6 +866,7 @@ fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
     var best_updated: i64 = -1;
     for (sessions) |session| {
         if (isAutomationSession(session)) continue;
+        _ = session_keys.parse(session.key) orelse continue;
         const updated = session.updated_at orelse 0;
         if (updated > best_updated) {
             best_updated = updated;
@@ -845,10 +986,10 @@ fn ensureChatPanelsReady(
         if (session_key) |key| {
             if (ctx.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
-                    sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                    sendChatHistoryRequest(allocator, ctx, ws_client, key, null);
                 }
             } else {
-                sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                sendChatHistoryRequest(allocator, ctx, ws_client, key, null);
             }
         }
     }
@@ -1122,6 +1263,7 @@ fn run() !void {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
                 ctx.clearGatewayIdentity();
+                ctx.clearGatewayMethods();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1191,6 +1333,7 @@ fn run() !void {
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
             ctx.clearGatewayIdentity();
+            ctx.clearGatewayMethods();
             // Requests may have been in-flight when the connection dropped.
             // Clear them so history can be requested again after reconnect.
             ctx.clearPendingRequests();
@@ -1423,6 +1566,7 @@ fn run() !void {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
                 ctx.clearGatewayIdentity();
+                ctx.clearGatewayMethods();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1443,6 +1587,7 @@ fn run() !void {
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
             ctx.clearGatewayIdentity();
+            ctx.clearGatewayMethods();
             ctx.clearPendingRequests();
             ctx.clearAllSessionStates();
             ctx.clearNodes();
@@ -1460,26 +1605,58 @@ fn run() !void {
 
         if (ui_action.new_session) {
             if (ws_client.is_connected) {
-                const key = makeNewSessionKey(allocator, "main") catch null;
-                if (key) |session_key| {
-                    defer allocator.free(session_key);
-                    sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
-                    if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+                const target_key = ctx.current_session orelse (makeNewSessionKey(allocator, "main") catch "");
+                const owns_key = ctx.current_session == null;
+                if (target_key.len > 0) {
+                    defer if (owns_key) allocator.free(target_key);
+                    sendSessionsResetRequest(allocator, &ctx, &ws_client, target_key);
+                    const target_agent_id = if (session_keys.parse(target_key)) |parts| parts.agent_id else "main";
+                    if (agents.setDefaultSession(allocator, target_agent_id, target_key) catch false) {
                         agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                     }
-                    _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
-                    ctx.clearSessionState(session_key);
-                    ctx.setCurrentSession(session_key) catch {};
-                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), target_key) catch {};
+                    ctx.clearSessionState(target_key);
+                    ctx.setCurrentSession(target_key) catch {};
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, target_key, null);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
+            }
+        }
+
+        if (ui_action.new_chat_session_key) |session_key| {
+            defer allocator.free(session_key);
+            if (ws_client.is_connected and session_key.len > 0) {
+                sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
+                const target_agent_id = if (session_keys.parse(session_key)) |parts| parts.agent_id else "main";
+                if (agents.setDefaultSession(allocator, target_agent_id, session_key) catch false) {
+                    agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
+                }
+                _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), session_key) catch {};
+                ctx.clearSessionState(session_key);
+                ctx.setCurrentSession(session_key) catch {};
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, null);
+                sendSessionsListRequest(allocator, &ctx, &ws_client);
             }
         }
 
         if (ui_action.new_chat_agent_id) |agent_id| {
             defer allocator.free(agent_id);
             if (ws_client.is_connected) {
-                const key = makeNewSessionKey(allocator, agent_id) catch null;
+                var key: ?[]u8 = null;
+                if (agents.find(agent_id)) |agent| {
+                    if (agent.default_session_key) |default_key| {
+                        if (session_keys.parse(default_key)) |parts| {
+                            if (!session_kind.isAutomationLabel(parts.label) and
+                                !(parts.label.len >= 5 and std.ascii.eqlIgnoreCase(parts.label[0..5], "chat-")))
+                            {
+                                key = allocator.dupe(u8, default_key) catch null;
+                            }
+                        }
+                    }
+                }
+                if (key == null) {
+                    key = makeNewSessionKey(allocator, agent_id) catch null;
+                }
                 if (key) |session_key| {
                     defer allocator.free(session_key);
                     sendSessionsResetRequest(allocator, &ctx, &ws_client, session_key);
@@ -1490,7 +1667,7 @@ fn run() !void {
                     _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
-                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, null);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
             }
@@ -1508,12 +1685,13 @@ fn run() !void {
             };
             _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key, null);
             }
         }
 
         if (ui_action.select_session) |session_key| {
             defer allocator.free(session_key);
+            defer if (ui_action.select_session_id) |session_id| allocator.free(session_id);
             ctx.setCurrentSession(session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
@@ -1523,8 +1701,10 @@ fn run() !void {
                 _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
             }
             if (ws_client.is_connected) {
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, ui_action.select_session_id);
             }
+        } else if (ui_action.select_session_id) |session_id| {
+            allocator.free(session_id);
         }
 
         if (ui_action.set_default_session) |choice| {
@@ -1560,6 +1740,8 @@ fn run() !void {
             })) |_| {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                 _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+                sendAgentsCreateRequest(allocator, &ctx, &ws_client, owned.id, owned.icon);
+                sendAgentsUpdateRequest(allocator, &ctx, &ws_client, owned.id, owned.display_name);
             } else |err| {
                 logger.warn("Failed to add agent: {}", .{err});
                 allocator.free(owned.id);
@@ -1573,6 +1755,25 @@ fn run() !void {
             if (agents.remove(allocator, agent_id)) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
                 closeAgentChatPanels(&manager, agent_id);
+                sendAgentsDeleteRequest(allocator, &ctx, &ws_client, agent_id);
+            }
+        }
+
+        if (ui_action.open_agent_file) |open_action| {
+            var open_mut = open_action;
+            defer open_mut.deinit(allocator);
+            if (open_mut.path) |path| {
+                if (std.mem.startsWith(u8, path, "http://") or
+                    std.mem.startsWith(u8, path, "https://") or
+                    std.mem.startsWith(u8, path, "file://"))
+                {
+                    openUrl(allocator, path);
+                } else {
+                    openPath(allocator, path);
+                }
+                ctx.clearOperatorNotice();
+            } else {
+                ctx.setOperatorNotice("No file path configured for this agent profile entry.") catch {};
             }
         }
 
@@ -1659,6 +1860,7 @@ fn run() !void {
                 ws_client.disconnect();
                 ctx.state = .disconnected;
                 ctx.clearGatewayIdentity();
+                ctx.clearGatewayMethods();
                 ctx.clearError();
                 next_ping_at_ms = 0;
             } else if (result.ok) {
@@ -1671,6 +1873,7 @@ fn run() !void {
             } else {
                 ctx.state = .error_state;
                 ctx.clearGatewayIdentity();
+                ctx.clearGatewayMethods();
                 if (result.err) |err_msg| {
                     ctx.setError(err_msg) catch {};
                     allocator.free(err_msg);

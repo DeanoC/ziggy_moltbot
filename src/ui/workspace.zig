@@ -39,7 +39,16 @@ pub const EditorOwner = enum { user, ai };
 pub const ChatPanel = struct {
     agent_id: ?[]const u8 = null,
     session_key: ?[]const u8 = null,
+    selected_session_id: ?[]const u8 = null,
     view: chat_view.ViewState = .{},
+    select_copy_mode: bool = false,
+    show_tool_output: bool = false,
+    show_system_sessions: bool = false,
+    session_picker_open: bool = false,
+    copy_context_menu_open: bool = false,
+    copy_context_menu_anchor: [2]f32 = .{ 0.0, 0.0 },
+    composer_ratio: f32 = 0.24,
+    composer_split_dragging: bool = false,
 };
 
 pub const CodeEditorPanel = struct {
@@ -101,6 +110,7 @@ pub const PanelData = union(enum) {
             .Chat => |*chat| {
                 if (chat.agent_id) |id| allocator.free(id);
                 if (chat.session_key) |key| allocator.free(key);
+                if (chat.selected_session_id) |session_id| allocator.free(session_id);
                 chat_view.deinit(&chat.view, allocator);
             },
             .CodeEditor => |*editor| {
@@ -333,6 +343,8 @@ pub const PanelStateSnapshot = struct {
 pub const ChatPanelSnapshot = struct {
     agent_id: ?[]const u8 = null,
     session: ?[]const u8 = null,
+    selected_session_id: ?[]const u8 = null,
+    composer_ratio: ?f32 = null,
 };
 
 pub const CodeEditorPanelSnapshot = struct {
@@ -475,6 +487,8 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
             snap.chat = .{
                 .agent_id = if (chat.agent_id) |id| try allocator.dupe(u8, id) else null,
                 .session = if (chat.session_key) |key| try allocator.dupe(u8, key) else null,
+                .selected_session_id = if (chat.selected_session_id) |id| try allocator.dupe(u8, id) else null,
+                .composer_ratio = chat.composer_ratio,
             };
         },
         .CodeEditor => |editor| {
@@ -561,11 +575,22 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 if (chat.agent_id) |agent| try allocator.dupe(u8, agent) else null
             else
                 null;
+            const selected_session_id = if (snap.chat) |chat|
+                if (chat.selected_session_id) |id| try allocator.dupe(u8, id) else null
+            else
+                null;
+            const composer_ratio = if (snap.chat) |chat| chat.composer_ratio orelse 0.24 else 0.24;
             return .{
                 .id = snap.id,
                 .kind = .Chat,
                 .title = title_copy,
-                .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
+                .data = .{ .Chat = .{
+                    .agent_id = agent_copy,
+                    .session_key = session_copy,
+                    .selected_session_id = selected_session_id,
+                    .composer_ratio = composer_ratio,
+                    .composer_split_dragging = false,
+                } },
                 .state = state_val,
             };
         },
@@ -713,6 +738,7 @@ pub fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) voi
     if (panel.chat) |chat| {
         if (chat.agent_id) |agent| allocator.free(agent);
         if (chat.session) |session| allocator.free(session);
+        if (chat.selected_session_id) |session_id| allocator.free(session_id);
     }
     if (panel.code_editor) |editor| {
         allocator.free(editor.file_id);
@@ -746,7 +772,13 @@ pub fn makeChatPanel(
         .id = id,
         .kind = .Chat,
         .title = title,
-        .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
+        .data = .{ .Chat = .{
+            .agent_id = agent_copy,
+            .session_key = session_copy,
+            .selected_session_id = null,
+            .composer_ratio = 0.24,
+            .composer_split_dragging = false,
+        } },
         .state = .{},
     };
 }

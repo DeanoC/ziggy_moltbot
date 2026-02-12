@@ -28,6 +28,7 @@ pub const Session = struct {
     label: ?[]const u8 = null,
     kind: ?[]const u8 = null,
     updated_at: ?i64 = null,
+    session_id: ?[]const u8 = null,
 };
 
 pub const SessionListResult = struct {

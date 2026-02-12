@@ -25,6 +25,7 @@ pub fn drawCustom(
     last_error: ?[]const u8,
 ) void {
     const t = dc.theme;
+    _ = message_count;
     const spacing = t.spacing.sm;
     const label = t.colors.text_secondary;
     const value = t.colors.text_primary;
@@ -48,37 +49,60 @@ pub fn drawCustom(
 
     surface_chrome.drawStatusBar(dc, rect);
     dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
+    dc.pushClip(rect);
+    defer dc.popClip();
 
     const line_height = dc.lineHeight();
     var cursor_x = rect.min[0] + t.spacing.sm;
+    const right_limit = rect.max[0] - t.spacing.sm;
     const text_y = rect.min[1] + (rect.size()[1] - line_height) * 0.5;
 
     cursor_x += drawLabel(dc, "Status:", cursor_x, text_y, label) + spacing;
     cursor_x += drawBadgeCustom(dc, @tagName(client_state), status_variant, true, cursor_x, rect) + spacing;
     cursor_x += drawLabel(dc, "Connection:", cursor_x, text_y, label) + spacing;
     cursor_x += drawBadgeCustom(dc, if (is_connected) "online" else "offline", connection_variant, true, cursor_x, rect) + spacing;
-    cursor_x += drawLabel(dc, "Gateway:", cursor_x, text_y, label) + spacing;
-    cursor_x += drawBadgeCustom(dc, gateway_label, gateway_variant, true, cursor_x, rect) + spacing;
-    cursor_x += drawLabel(dc, "Agent:", cursor_x, text_y, label) + spacing;
-    if (agent_name) |name| {
-        cursor_x += drawLabel(dc, name, cursor_x, text_y, value) + spacing;
-    } else {
-        cursor_x += drawLabel(dc, "(none)", cursor_x, text_y, label) + spacing;
-    }
-    cursor_x += drawLabel(dc, "Session:", cursor_x, text_y, label) + spacing;
-    if (session_name) |name| {
-        cursor_x += drawLabel(dc, name, cursor_x, text_y, value) + spacing;
-    } else {
-        cursor_x += drawLabel(dc, "(none)", cursor_x, text_y, label) + spacing;
-    }
-    cursor_x += drawLabel(dc, "Messages:", cursor_x, text_y, label) + spacing;
-    var msg_buf: [32]u8 = undefined;
-    const msg_text = std.fmt.bufPrint(&msg_buf, "{d}", .{message_count}) catch "0";
-    cursor_x += drawLabel(dc, msg_text, cursor_x, text_y, value) + spacing;
 
+    if (gateway_compatibility != .unknown) {
+        cursor_x += drawLabel(dc, "Gateway:", cursor_x, text_y, label) + spacing;
+        cursor_x += drawBadgeCustom(dc, gateway_label, gateway_variant, true, cursor_x, rect) + spacing;
+    }
+
+    var right_cursor = right_limit;
     if (last_error) |err| {
-        cursor_x += drawLabel(dc, "Error:", cursor_x, text_y, t.colors.danger) + spacing;
-        _ = drawLabel(dc, err, cursor_x, text_y, t.colors.danger);
+        const prefix = "Error:";
+        const prefix_w = dc.measureText(prefix, 0.0)[0];
+        const max_err_w = std.math.clamp(rect.size()[0] * 0.40, 120.0, 360.0);
+        const available = right_cursor - (cursor_x + spacing + prefix_w + spacing);
+        const err_w = @min(max_err_w, available);
+        if (err_w >= 40.0) {
+            var err_buf: [256]u8 = undefined;
+            const err_fit = fitTextEnd(dc, err, err_w, &err_buf);
+            const err_fit_w = dc.measureText(err_fit, 0.0)[0];
+            right_cursor -= err_fit_w;
+            dc.drawText(err_fit, .{ right_cursor, text_y }, .{ .color = t.colors.danger });
+            right_cursor -= spacing + prefix_w;
+            dc.drawText(prefix, .{ right_cursor, text_y }, .{ .color = t.colors.danger });
+            right_cursor -= spacing;
+        }
+    }
+
+    const show_chat_context = agent_name != null or session_name != null;
+    if (show_chat_context and right_cursor > cursor_x + 24.0) {
+        var context_buf: [320]u8 = undefined;
+        const context = if (agent_name != null and session_name != null)
+            std.fmt.bufPrint(&context_buf, "Agent {s} • Conversation {s}", .{ agent_name.?, session_name.? }) catch ""
+        else if (agent_name != null)
+            std.fmt.bufPrint(&context_buf, "Agent {s}", .{agent_name.?}) catch ""
+        else
+            std.fmt.bufPrint(&context_buf, "Conversation {s}", .{session_name.?}) catch "";
+
+        if (context.len > 0) {
+            var context_fit_buf: [320]u8 = undefined;
+            const context_fit = fitTextEnd(dc, context, right_cursor - cursor_x, &context_fit_buf);
+            if (context_fit.len > 0) {
+                _ = drawLabel(dc, context_fit, cursor_x, text_y, value);
+            }
+        }
     }
 }
 
@@ -130,4 +154,39 @@ fn drawLabel(
 ) f32 {
     dc.drawText(text, .{ x, y }, .{ .color = color });
     return dc.measureText(text, 0.0)[0];
+}
+
+fn fitTextEnd(
+    dc: *draw_context.DrawContext,
+    text: []const u8,
+    max_width: f32,
+    buf: []u8,
+) []const u8 {
+    if (text.len == 0) return "";
+    if (max_width <= 0.0) return "";
+    if (dc.measureText(text, 0.0)[0] <= max_width) return text;
+
+    const ellipsis = "...";
+    const ellipsis_w = dc.measureText(ellipsis, 0.0)[0];
+    if (ellipsis_w > max_width) return "";
+    if (buf.len <= ellipsis.len) return ellipsis;
+
+    var low: usize = 0;
+    var high: usize = @min(text.len, buf.len - ellipsis.len - 1);
+    var best: usize = 0;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const candidate = std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..mid], ellipsis }) catch ellipsis;
+        const w = dc.measureText(candidate, 0.0)[0];
+        if (w <= max_width) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    if (best == 0) return ellipsis;
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..best], ellipsis }) catch ellipsis;
 }

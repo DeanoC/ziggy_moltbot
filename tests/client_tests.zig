@@ -26,6 +26,9 @@ test "hello-ok response captures gateway identity compatibility" {
         "\"ok\":true," ++
         "\"payload\":{" ++
         "\"type\":\"hello-ok\"," ++
+        "\"features\":{" ++
+        "\"methods\":[\"chat.send\",\"agent.control\"]" ++
+        "}," ++
         "\"server\":{" ++
         "\"identity\":{" ++
         "\"kind\":\"gateway\"," ++
@@ -47,6 +50,8 @@ test "hello-ok response captures gateway identity compatibility" {
     try std.testing.expectEqual(state.GatewayCompatibilityMode.upstream, ctx.gateway_compatibility);
     try std.testing.expect(ctx.gateway_identity.mode != null);
     try std.testing.expectEqualStrings("upstream", ctx.gateway_identity.mode.?);
+    try std.testing.expect(ctx.supportsGatewayMethod("agent.control"));
+    try std.testing.expect(!ctx.supportsGatewayMethod("agent.file.open"));
 }
 
 test "hello-ok response without identity keeps compatibility unknown" {
