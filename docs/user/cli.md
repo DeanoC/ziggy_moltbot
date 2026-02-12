@@ -8,6 +8,7 @@ The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded dir
 Main sections:
 - [Overview](../cli/01-overview.md)
 - [Options (full build)](../cli/02-options.md)
+- [Legacy action flags (deprecated)](../cli/02-legacy-action-flags.md)
 - [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
 - [Tray startup (Windows)](../cli/04-tray-startup.md)
@@ -51,6 +52,8 @@ Internally, the build is split into a core/local CLI chunk and an operator chunk
   ```
 
 Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
+
+Use `ziggystarclaw-cli --help-legacy` to see the deprecated legacy action flags.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
