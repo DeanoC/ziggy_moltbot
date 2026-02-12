@@ -252,6 +252,13 @@ const ScreenRunVariant = enum {
     with_audio,
 };
 
+const ScreenVideoCodec = enum {
+    /// Best-effort H.264 encoder for smaller clips when available.
+    libx264,
+    /// Fallback codec available in most ffmpeg builds.
+    mpeg4,
+};
+
 const ScreenRunOutcome = enum {
     executable_missing,
     failed,
@@ -298,9 +305,47 @@ fn runFfmpegDesktopCapture(
     var saw_executable = false;
     var last_error: ?ScreenRecordError = null;
 
+    const codec_variants = [_]ScreenVideoCodec{ .libx264, .mpeg4 };
+
     for (ffmpegCandidates()) |exe| {
         if (req.includeAudio) {
-            const audio_outcome = try runFfmpegDesktopCaptureVariant(
+            var audio_outcome: ScreenRunOutcome = .executable_missing;
+            for (codec_variants) |codec| {
+                audio_outcome = try runFfmpegDesktopCaptureVariant(
+                    allocator,
+                    capture_target,
+                    fps_arg,
+                    duration_arg,
+                    offset_x_arg,
+                    offset_y_arg,
+                    video_size_arg,
+                    audio_input_spec,
+                    out_path,
+                    exe,
+                    .with_audio,
+                    codec,
+                );
+                switch (audio_outcome) {
+                    .success => return true,
+                    .executable_missing => break,
+                    .failed => {
+                        saw_executable = true;
+                        last_error = error.CommandFailed;
+                    },
+                }
+            }
+
+            if (audio_outcome == .failed) {
+                logger.warn(
+                    "screen.record backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
+                    .{ screen_backend_name, exe, audio_input_spec },
+                );
+            }
+        }
+
+        var video_outcome: ScreenRunOutcome = .executable_missing;
+        for (codec_variants) |codec| {
+            video_outcome = try runFfmpegDesktopCaptureVariant(
                 allocator,
                 capture_target,
                 fps_arg,
@@ -311,44 +356,20 @@ fn runFfmpegDesktopCapture(
                 audio_input_spec,
                 out_path,
                 exe,
-                .with_audio,
+                .video_only,
+                codec,
             );
-            switch (audio_outcome) {
-                .success => return true,
-                .executable_missing => {},
+            switch (video_outcome) {
+                .success => return false,
+                .executable_missing => break,
                 .failed => {
                     saw_executable = true;
                     last_error = error.CommandFailed;
-                    logger.warn(
-                        "screen.record backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
-                        .{ screen_backend_name, exe, audio_input_spec },
-                    );
                 },
             }
         }
 
-        const video_only_outcome = try runFfmpegDesktopCaptureVariant(
-            allocator,
-            capture_target,
-            fps_arg,
-            duration_arg,
-            offset_x_arg,
-            offset_y_arg,
-            video_size_arg,
-            audio_input_spec,
-            out_path,
-            exe,
-            .video_only,
-        );
-        switch (video_only_outcome) {
-            .success => return false,
-            .executable_missing => continue,
-            .failed => {
-                saw_executable = true;
-                last_error = error.CommandFailed;
-                continue;
-            },
-        }
+        if (video_outcome == .executable_missing) continue;
     }
 
     if (!saw_executable) return error.FfmpegNotFound;
@@ -367,6 +388,7 @@ fn runFfmpegDesktopCaptureVariant(
     out_path: []const u8,
     exe: []const u8,
     variant: ScreenRunVariant,
+    codec: ScreenVideoCodec,
 ) ScreenRecordError!ScreenRunOutcome {
     var argv_list = std.ArrayList([]const u8).empty;
     defer argv_list.deinit(allocator);
@@ -424,17 +446,34 @@ fn runFfmpegDesktopCaptureVariant(
         fps_arg,
         "-vf",
         "scale=-2:720",
-        "-c:v",
-        "mpeg4",
-        "-b:v",
-        "700k",
-        "-maxrate",
-        "700k",
-        "-bufsize",
-        "1400k",
-        "-q:v",
-        "7",
     });
+
+    switch (codec) {
+        .libx264 => try argv_list.appendSlice(allocator, &.{
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "30",
+            "-maxrate",
+            "800k",
+            "-bufsize",
+            "1600k",
+        }),
+        .mpeg4 => try argv_list.appendSlice(allocator, &.{
+            "-c:v",
+            "mpeg4",
+            "-b:v",
+            "700k",
+            "-maxrate",
+            "700k",
+            "-bufsize",
+            "1400k",
+            "-q:v",
+            "7",
+        }),
+    }
 
     if (variant == .with_audio) {
         try argv_list.appendSlice(allocator, &.{
@@ -940,6 +979,7 @@ test "runFfmpegDesktopCaptureVariant places duration after audio input for with_
         out_path,
         script_path,
         .with_audio,
+        .mpeg4,
     );
     try std.testing.expectEqual(ScreenRunOutcome.success, outcome);
 
