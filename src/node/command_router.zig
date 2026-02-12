@@ -842,12 +842,29 @@ fn screenRecordHandler(allocator: std.mem.Allocator, _: *NodeContext, params: st
         break :blk false;
     };
 
+    const audio_device_id = blk: {
+        if (params.object.get("audioDeviceId")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        if (params.object.get("audioDevice")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        break :blk null;
+    };
+
     const rec = windows_screen.recordScreen(allocator, .{
         .format = format,
         .durationMs = duration_ms,
         .fps = fps,
         .screenIndex = screen_index,
         .includeAudio = include_audio,
+        .audioDeviceId = audio_device_id,
     }) catch |err| {
         logger.err("screen.record failed: {s}", .{@errorName(err)});
         return switch (err) {
@@ -1069,12 +1086,29 @@ fn cameraClipHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.
         break :blk null;
     };
 
+    const audio_device_id = blk: {
+        if (params.object.get("audioDeviceId")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        if (params.object.get("audioDevice")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        break :blk null;
+    };
+
     const clip = windows_camera.clipCamera(allocator, .{
         .format = format,
         .durationMs = duration_ms,
         .includeAudio = include_audio,
         .deviceId = device_id,
         .preferredPosition = preferred_position,
+        .audioDeviceId = audio_device_id,
     }) catch |err| {
         logger.err("camera.clip failed: {s}", .{@errorName(err)});
         return switch (err) {

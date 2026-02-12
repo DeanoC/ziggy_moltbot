@@ -27,14 +27,16 @@ Implemented now:
   - supports `deviceId` selection and best-effort `facing` routing via inferred camera `position`.
   - supports `format=mp4|webm`.
   - supports best-effort audio capture (`includeAudio=true`) with automatic fallback to video-only output when audio input is unavailable (`hasAudio=false`).
+  - supports optional audio input selection via `audioDeviceId` (alias `audioDevice`) when `includeAudio=true`.
 - `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
-  - supports monitor index mapping via PowerShell Forms monitor metadata (primary monitor normalized to `screenIndex=0`).
+  - supports monitor index mapping via native Win32 monitor metadata (`win32-user32`) with PowerShell Forms fallback (`powershell-forms`), primary monitor normalized to `screenIndex=0`.
   - supports best-effort audio capture (`includeAudio=true`) with automatic fallback to video-only output when audio input is unavailable (`hasAudio=false`).
+  - supports optional audio input selection via `audioDeviceId` (alias `audioDevice`) when `includeAudio=true`.
 
 Not yet implemented on Windows:
-- advanced `camera.clip` coverage (audio source/device selection + richer diagnostics)
-- advanced `screen.record` coverage (non-PowerShell monitor discovery fallback improvements + richer audio source selection)
+- advanced `camera.clip` diagnostics for device-busy/in-use and permission-specific errors
+- advanced `screen.record` source diagnostics (for unavailable monitors/audio devices)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
 ---
@@ -93,6 +95,8 @@ Notes:
   "duration": "3s",      // optional shorthand alternative to durationMs
   "format": "mp4|webm",
   "includeAudio": true,
+  "audioDeviceId": "<DirectShow audio input name>",
+  "audioDevice": "<DirectShow audio input name>", // alias of audioDeviceId
   "deviceId": "<PNPDeviceID>",
   "facing": "front|back" // optional best-effort device routing
 }
@@ -114,6 +118,7 @@ Notes:
 - If `deviceId` is provided, it takes precedence over `facing`.
 - `facing` is best-effort using inferred camera `position`; if no match is found, the backend falls back to the first enumerated camera.
 - `includeAudio=true` attempts microphone capture via ffmpeg and returns `hasAudio=true` when successful.
+- Optional `audioDeviceId` (or alias `audioDevice`) lets callers select a specific DirectShow audio input; when omitted, backend uses `audio=default`.
 - When audio capture is unavailable/unsupported on the host, backend falls back to video-only output and returns `hasAudio=false`.
 
 `screen.record` request params (supported subset):
@@ -125,7 +130,9 @@ Notes:
   "fps": 12,
   "screenIndex": 0,
   "format": "mp4",
-  "includeAudio": false
+  "includeAudio": false,
+  "audioDeviceId": "<DirectShow audio input name>",
+  "audioDevice": "<DirectShow audio input name>" // alias of audioDeviceId
 }
 ```
 
@@ -144,11 +151,12 @@ Notes:
 
 Notes:
 - Current backend is `ffmpeg-gdigrab`.
-- Monitor index mapping is best-effort via PowerShell Forms (`[System.Windows.Forms.Screen]::AllScreens`):
+- Monitor index mapping is best-effort via native Win32 monitor metadata (`EnumDisplayMonitors`/`GetMonitorInfoW`) with PowerShell Forms fallback (`[System.Windows.Forms.Screen]::AllScreens`):
   - primary monitor is normalized to `screenIndex=0`
   - additional monitors follow discovery order
   - if monitor discovery fails, backend falls back to legacy desktop capture for `screenIndex=0` and rejects non-zero indices with actionable errors.
 - `includeAudio=true` attempts microphone capture via ffmpeg and returns `hasAudio=true` when successful.
+- Optional `audioDeviceId` (or alias `audioDevice`) lets callers select a specific DirectShow audio input; when omitted, backend uses `audio=default`.
 - When audio capture is unavailable/unsupported on the host, backend falls back to video-only output and returns `hasAudio=false`.
 
 ---
@@ -199,14 +207,16 @@ Deliverables:
 
 Status:
 - MVP landed with `ffmpeg-gdigrab` backend and executable-aware registration/advertisement (`screen.record` is exposed only when ffmpeg is runnable).
-- Follow-up slice landed for monitor-index mapping via PowerShell Forms metadata:
+- Follow-up slice landed for monitor-index mapping:
+  - primary backend: Win32 monitor metadata (`EnumDisplayMonitors` + `GetMonitorInfoW`)
+  - fallback backend: PowerShell Forms monitor metadata
   - primary monitor normalized to `screenIndex=0`
   - non-primary monitors selectable by index
   - graceful fallback to legacy desktop capture for `screenIndex=0` when monitor discovery is unavailable.
 - Follow-up slice landed for best-effort `includeAudio=true` capture with automatic fallback to video-only output when audio input is unavailable.
+- Follow-up slice landed for optional audio input selection (`audioDeviceId` / `audioDevice`).
 - Current remaining gaps for this slice:
-  - non-PowerShell monitor discovery fallback improvements
-  - richer audio source selection (beyond default microphone input)
+  - richer diagnostics when requested monitor/audio sources are unavailable
 
 ### Post-9f4 follow-up — Windows `camera.clip`
 
@@ -220,8 +230,8 @@ Status:
 - MVP landed with `ffmpeg-dshow` backend and executable-aware registration/advertisement (`camera.clip` is exposed only when ffmpeg + PowerShell are runnable).
 - Follow-up landed for optional `format=webm` output in addition to `mp4`.
 - Follow-up landed for best-effort `includeAudio=true` capture with automatic fallback to video-only output when audio input is unavailable.
+- Follow-up landed for optional audio input selection (`audioDeviceId` / `audioDevice`).
 - Current remaining gaps for this slice:
-  - explicit audio source/device selection
   - further hardening around device-busy/in-use diagnostics
 
 ### Canvas / browser automation
@@ -229,8 +239,15 @@ Status:
 MVP for parity target:
 - `canvas.navigate` / `canvas.eval` / `canvas.snapshot` via real CDP.
 
+Incremental roadmap:
+- 9f-browser-1: keep current logical canvas surface (`present`/`hide`/`navigate`) with screenshot fallback.
+- 9f-browser-2: establish a stable CDP session lifecycle for user-session Windows nodes.
+- 9f-browser-3: implement first-class `canvas.eval` + `canvas.snapshot` over CDP target pages.
+- 9f-browser-4: align canvas/browser behavior and diagnostics with Linux/macOS node implementations.
+
 Tracking:
 - Tracked separately in WORK_ITEMS_GLOBAL#12.
+- Detailed phased plan: `docs/windows_canvas_browser_parity_roadmap.md`.
 
 ---
 
