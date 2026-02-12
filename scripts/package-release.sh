@@ -67,24 +67,24 @@ WINDOWS_INSTALLER_STAGED="${DIST_DIR}/${WINDOWS_INSTALLER_NAME}"
 
 if [[ "${BUILD}" -eq 1 ]]; then
   echo "[release] building native"
-  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build
+  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Doptimize=ReleaseFast
 
   echo "[release] building windows"
-  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dtarget=x86_64-windows-gnu
+  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 
   if [[ "${SKIP_WASM}" -eq 0 ]]; then
     if [[ -f "${ROOT_DIR}/scripts/emsdk-env.sh" ]]; then
       echo "[release] building wasm"
       # shellcheck disable=SC1091
       source "${ROOT_DIR}/scripts/emsdk-env.sh"
-      "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dwasm=true
+      "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dwasm=true -Doptimize=ReleaseFast
     else
       echo "[release] skipping wasm (emsdk env missing)"
     fi
   fi
 
   echo "[release] building android"
-  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dandroid=true
+  "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dandroid=true -Doptimize=ReleaseFast
 fi
 
 LINUX_DIR="${DIST_DIR}/linux"

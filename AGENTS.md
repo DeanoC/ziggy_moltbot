@@ -18,10 +18,10 @@ For releases, always follow this order:
 - Update `README.md` for the new release version/highlights.
 - Rebuild all platforms after the version bump:
   ```bash
-  ./.tools/zig-0.15.2/zig build
-  ./.tools/zig-0.15.2/zig build -Dtarget=x86_64-windows-gnu
-  source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true
-  ./.tools/zig-0.15.2/zig build -Dandroid=true
+  ./.tools/zig-0.15.2/zig build -Doptimize=ReleaseFast
+  ./.tools/zig-0.15.2/zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
+  source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true -Doptimize=ReleaseFast
+  ./.tools/zig-0.15.2/zig build -Dandroid=true -Doptimize=ReleaseFast
   ```
 - After platform builds complete, check whether the host is Windows or WSL and build the Windows installer:
   ```bash
