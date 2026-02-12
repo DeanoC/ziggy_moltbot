@@ -120,7 +120,9 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
     const support = detectBackendSupport(allocator);
     if (!support.record) return error.FfmpegNotFound;
 
-    if (req.durationMs == 0 or req.durationMs > 300_000) return error.InvalidParams;
+    // `screen.record` returns the clip inline as base64. Keep clips short to avoid
+    // exceeding gateway payload limits.
+    if (req.durationMs == 0 or req.durationMs > 60_000) return error.InvalidParams;
     if (req.fps == 0 or req.fps > 60) return error.InvalidParams;
 
     const capture_target = resolveCaptureTarget(allocator, req.screenIndex) catch |err| switch (err) {
@@ -155,7 +157,24 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
     };
     defer file.close();
 
-    const video_bytes = file.readToEndAlloc(allocator, 150 * 1024 * 1024) catch |err| switch (err) {
+    // Keep inline base64 payloads small enough for a single gateway frame.
+    // If we ever switch to an upload/streaming path, this cap can be revisited.
+    const max_record_bytes: usize = 2 * 1024 * 1024;
+
+    const stat = file.stat() catch |err| {
+        logger.err("screen.record backend={s} failed to stat output video: {s}", .{ screen_backend_name, @errorName(err) });
+        return error.CommandFailed;
+    };
+
+    if (stat.size > max_record_bytes) {
+        logger.warn(
+            "screen.record backend={s} output too large for gateway frame (bytes={d}, cap={d})",
+            .{ screen_backend_name, stat.size, max_record_bytes },
+        );
+        return error.CommandFailed;
+    }
+
+    const video_bytes = file.readToEndAlloc(allocator, max_record_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             logger.err("screen.record backend={s} failed to read output video: {s}", .{ screen_backend_name, @errorName(err) });
@@ -397,13 +416,24 @@ fn runFfmpegDesktopCaptureVariant(
         try argv_list.append(allocator, "-an");
     }
 
+    // Keep clips compact: downscale + bitrate cap.
     try argv_list.appendSlice(allocator, &.{
         "-pix_fmt",
         "yuv420p",
+        "-r",
+        fps_arg,
+        "-vf",
+        "scale=-2:720",
         "-c:v",
         "mpeg4",
+        "-b:v",
+        "700k",
+        "-maxrate",
+        "700k",
+        "-bufsize",
+        "1400k",
         "-q:v",
-        "5",
+        "7",
     });
 
     if (variant == .with_audio) {
@@ -906,6 +936,7 @@ test "runFfmpegDesktopCaptureVariant places duration after audio input for with_
         null,
         null,
         null,
+        "audio=default",
         out_path,
         script_path,
         .with_audio,

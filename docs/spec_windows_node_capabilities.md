@@ -157,6 +157,8 @@ Notes:
   - if monitor discovery fails, backend falls back to legacy desktop capture for `screenIndex=0` and rejects non-zero indices with actionable errors.
 - `includeAudio=true` attempts microphone capture via ffmpeg and returns `hasAudio=true` when successful.
 - Optional `audioDeviceId` (or alias `audioDevice`) lets callers select a specific DirectShow audio input; when omitted, backend uses `audio=default`.
+- `durationMs` is capped (currently `<= 60000`) because the clip is returned inline as base64.
+- Output bytes are capped (currently `<= 2MB` pre-base64) to avoid oversized gateway frames.
 - When audio capture is unavailable/unsupported on the host, backend falls back to video-only output and returns `hasAudio=false`.
 
 ---
