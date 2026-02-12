@@ -892,7 +892,9 @@ fn parsePositiveU32Param(v: std.json.Value) CommandError!u32 {
             break :blk @as(u32, @intCast(ival));
         },
         .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
             if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
             break :blk @as(u32, @intFromFloat(fval));
         },
         else => CommandError.InvalidParams,
@@ -1469,4 +1471,18 @@ test "initRouterWithCommands gates location.get by backend support" {
     } else {
         try std.testing.expectError(error.CommandNotSupported, initRouterWithCommands(std.testing.allocator, &cmds));
     }
+}
+
+test "parsePositiveU32Param accepts integral values and rejects fractional floats" {
+    try std.testing.expectEqual(@as(u32, 42), try parsePositiveU32Param(.{ .integer = 42 }));
+    try std.testing.expectEqual(@as(u32, 42), try parsePositiveU32Param(.{ .float = 42.0 }));
+
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = 42.5 }));
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = std.math.inf(f64) }));
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = std.math.nan(f64) }));
+}
+
+test "parseDurationMsParam numeric values must be integral milliseconds" {
+    try std.testing.expectEqual(@as(u32, 1500), try parseDurationMsParam(.{ .float = 1500.0 }));
+    try std.testing.expectError(CommandError.InvalidParams, parseDurationMsParam(.{ .float = 1500.25 }));
 }
