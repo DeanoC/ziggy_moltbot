@@ -56,12 +56,14 @@ pub fn build(b: *std.Build) void {
     const app_version = readAppVersion(b);
     const git_rev = readGitRev(b);
     const build_client = b.option(bool, "client", "Build native UI client") orelse true;
+    const cli_operator = b.option(bool, "cli_operator", "Include operator client commands in ziggystarclaw-cli") orelse true;
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "app_version", app_version);
     build_options.addOption([]const u8, "git_rev", git_rev);
     build_options.addOption(bool, "enable_ztracy", enable_ztracy);
     build_options.addOption(bool, "enable_ztracy_android", enable_ztracy_android);
     build_options.addOption(bool, "enable_wasm_perf_markers", enable_wasm_perf_markers);
+    build_options.addOption(bool, "cli_enable_operator", cli_operator);
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
