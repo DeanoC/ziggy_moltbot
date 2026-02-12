@@ -616,19 +616,33 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
 var cli_log_level: std.log.Level = .warn;
 
-const usage =
-    @embedFile("../docs/cli/01-overview.md") ++ "\n" ++
-    (if (cli_features.supports_operator_client)
-        @embedFile("../docs/cli/02-options.md")
-    else
-        @embedFile("../docs/cli/02-options-node-only.md")) ++ "\n" ++
+const usage_overview = @embedFile("../docs/cli/01-overview.md");
+
+const usage_options = if (cli_features.supports_operator_client)
+    @embedFile("../docs/cli/02-options.md")
+else
+    @embedFile("../docs/cli/02-options-node-only.md");
+
+const usage_global_flags = if (cli_features.supports_operator_client)
+    @embedFile("../docs/cli/06-global-flags.md")
+else
+    @embedFile("../docs/cli/06-global-flags-node-only.md");
+
+const usage_tail =
     @embedFile("../docs/cli/03-node-runner.md") ++ "\n" ++
     @embedFile("../docs/cli/04-tray-startup.md") ++ "\n" ++
     @embedFile("../docs/cli/05-node-service.md") ++ "\n" ++
-    (if (cli_features.supports_operator_client)
-        @embedFile("../docs/cli/06-global-flags.md")
-    else
-        @embedFile("../docs/cli/06-global-flags-node-only.md"));
+    usage_global_flags;
+
+const usage = usage_overview ++ "\n" ++ usage_options ++ "\n" ++ usage_tail;
+
+const usage_legacy = if (cli_features.supports_operator_client)
+    usage_overview ++ "\n" ++
+        usage_options ++ "\n" ++
+        @embedFile("../docs/cli/02-legacy-action-flags.md") ++ "\n" ++
+        usage_tail
+else
+    usage;
 
 fn writeHelpText(allocator: std.mem.Allocator, text: []const u8) !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
@@ -768,7 +782,10 @@ pub fn main() !void {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (std.mem.eql(u8, arg, "--help-legacy")) {
+            try writeHelpText(allocator, usage_legacy);
+            return;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try writeHelpText(allocator, usage);
             return;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {

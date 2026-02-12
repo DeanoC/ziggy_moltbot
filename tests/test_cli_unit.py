@@ -63,11 +63,28 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
-        assert "message|messages|chat send <message>" in result.stdout or "chat send <message>" in result.stdout or "--send <message>" in result.stdout
+        assert (
+            "message send <message>" in result.stdout
+            or "message|messages|chat send <message>" in result.stdout
+            or "chat send <message>" in result.stdout
+            or "--send <message>" in result.stdout
+        )
         # Accept either modern command docs or legacy option docs depending on which
         # binary is present on the local machine.
-        assert "session|sessions list|use <key>" in result.stdout or "sessions|session list|use <key>" in result.stdout or "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
-        assert "device|devices list|approve <requestId>|reject <requestId>" in result.stdout or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout or "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
+        assert (
+            "sessions list|use <key>" in result.stdout
+            or "session list|use <key>" in result.stdout
+            or "session|sessions list|use <key>" in result.stdout
+            or "sessions|session list|use <key>" in result.stdout
+            or "--list-sessions" in result.stdout
+        )
+        assert (
+            "devices list|approve <requestId>|reject <requestId>" in result.stdout
+            or "device list|approve <requestId>|reject <requestId>" in result.stdout
+            or "device|devices list|approve <requestId>|reject <requestId>" in result.stdout
+            or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout
+            or "--list-approvals" in result.stdout
+        )
         assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
     def test_node_service_help_prefers_verb_noun(self, cli):
@@ -80,6 +97,24 @@ class TestCliHelp:
         assert result.returncode == 0
         assert "node service <action>" in result.stdout
         assert "--node-service-install" not in result.stdout
+
+    def test_cli_help_legacy_includes_deprecated_action_flags(self, cli):
+        """Preferred help should not list deprecated action flags; --help-legacy should."""
+        preferred = subprocess.run(
+            [str(cli), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert preferred.returncode == 0
+        assert "--send <message>" not in preferred.stdout
+
+        legacy = subprocess.run(
+            [str(cli), "--help-legacy"],
+            capture_output=True,
+            text=True,
+        )
+        assert legacy.returncode == 0
+        assert "--send <message>" in legacy.stdout
 
     def test_removed_node_service_flag_errors(self, cli):
         """Removed legacy node-service flags should hard-fail with guidance"""

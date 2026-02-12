@@ -3,20 +3,21 @@
 ## Usage
 
 ```text
-ziggystarclaw-cli <command> [options]
-ziggystarclaw-cli [legacy options]
+ziggystarclaw-cli <noun> <verb> [args] [options]
+ziggystarclaw-cli --help
+ziggystarclaw-cli --help-legacy
 ```
 
 ## Preferred command style (noun verb)
 
-- `message|messages|chat send <message>`
-- `sessions|session list|use <key>`
-- `nodes|node list|use <id>|run <command>|which <name>|notify <title>`
-- `nodes|node process list|spawn <command>|poll <processId>|stop <processId>`
-- `nodes|node canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
-- `nodes|node approvals get|allow <command>|allow-file <path>`
+- `message send <message>` (aliases: `chat`, `messages`)
+- `sessions list|use <key>` (alias: `session`)
+- `nodes list|use <id>|run <command>|which <name>|notify <title>` (alias: `node`)
+- `nodes process list|spawn <command>|poll <processId>|stop <processId>`
+- `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
+- `nodes approvals get|allow <command>|allow-file <path>`
 - `approvals list|approve <id>|deny <id>`
-- `devices|device list|approve <requestId>|reject <requestId>`
+- `devices list|approve <requestId>|reject <requestId>` (alias: `device`)
 - `node service ...`
 - `node session ...`
 - `node runner ...`
@@ -26,5 +27,5 @@ ziggystarclaw-cli [legacy options]
 ## Notes
 
 - Legacy flag-style action options are deprecated and emit warnings with the noun-verb replacement.
+- Use `--help-legacy` to see the deprecated legacy action flags.
 - Legacy tray aliases are also supported: `tray install-startup|uninstall-startup|start|stop|status` (deprecated; use `tray startup ...`).
-- Use `--help` to see preferred command-style usage plus transitional compatibility flags.
