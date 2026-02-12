@@ -14,6 +14,7 @@ Each slice should be safe to ship independently in node-mode.
 
 Implemented now:
 - Router wiring is command-surface driven (node advertises only what router can execute).
+- Router wiring includes `camera.*`, `screen.record`, and `location.get`; `location.get` is only advertised when a host implementation is available.
 - Windows camera advertisement is executable-aware:
   - `camera.list` is advertised only when PowerShell is runnable.
   - `camera.snap`/`camera.clip` are advertised only when both PowerShell + ffmpeg are runnable.
@@ -161,7 +162,8 @@ Deliverables:
 - Only advertise commands/capabilities that are executable on the current platform.
 
 Status:
-- Landed for current surface with executable-aware advertisement (`camera.list`, `camera.snap`, `camera.clip`).
+- Landed for current surface with executable-aware advertisement (`camera.list`, `camera.snap`, `camera.clip`, `screen.record`).
+- `location.get` is wired into router/capability plumbing and remains non-advertised on platforms where it is not implemented.
 
 ### 9f2 — Windows `camera.list` backend hardening
 

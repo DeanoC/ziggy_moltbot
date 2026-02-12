@@ -375,6 +375,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
         try node_ctx.registerCanvasCapabilities();
         try node_ctx.registerWindowsCameraCapabilities();
         try node_ctx.registerWindowsScreenCapabilities();
+        try node_ctx.registerLocationCapabilities();
     } else {
         logger.info("Windows service mode detected: skipping interactive capabilities (canvas/camera/screen)", .{});
     }

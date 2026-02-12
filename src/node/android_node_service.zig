@@ -4,7 +4,6 @@ const websocket_client = @import("../client/websocket_client.zig");
 const identity = @import("../client/device_identity.zig");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
-const Command = node_context.Command;
 const command_router = @import("command_router.zig");
 const CommandRouter = command_router.CommandRouter;
 const SingleThreadConnectionManager = @import("connection_manager_singlethread.zig").SingleThreadConnectionManager;
@@ -97,15 +96,9 @@ fn threadMain(self: *AndroidNodeHost, cfg: NodeHostConfig) void {
     node_ctx.addCommand(.system_notify) catch {};
     node_ctx.addCommand(.system_exec_approvals_get) catch {};
     node_ctx.addCommand(.system_exec_approvals_set) catch {};
+    node_ctx.registerLocationCapabilities() catch {};
 
-    const supported_cmds = &[_]Command{
-        .system_which,
-        .system_notify,
-        .system_exec_approvals_get,
-        .system_exec_approvals_set,
-    };
-
-    var router = command_router.initRouterWithCommands(allocator, supported_cmds) catch |err| {
+    var router = command_router.initRouterWithCommands(allocator, node_ctx.commands.items) catch |err| {
         logger.err("node-host: failed to init router: {s}", .{@errorName(err)});
         return;
     };

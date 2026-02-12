@@ -12,6 +12,7 @@ const windows_screen = if (builtin.target.os.tag == .windows)
     @import("../windows/screen.zig")
 else
     struct {};
+const node_location = @import("location.zig");
 
 /// Node capability categories
 pub const Capability = enum {
@@ -361,6 +362,24 @@ pub const NodeContext = struct {
         try self.addCommand(.screen_record);
         try self.setPermission("screen.record", true);
     }
+
+    /// Register location capabilities that are executable on this host.
+    pub fn registerLocationCapabilities(self: *NodeContext) !void {
+        const support = node_location.detectBackendSupport(self.allocator);
+        try self.registerLocationCapabilitiesForSupport(.{ .get = support.get });
+    }
+
+    pub const LocationCapabilitySupport = struct {
+        get: bool,
+    };
+
+    pub fn registerLocationCapabilitiesForSupport(self: *NodeContext, support: LocationCapabilitySupport) !void {
+        if (!support.get) return;
+
+        try self.addCapability(.location);
+        try self.addCommand(.location_get);
+        try self.setPermission("location.get", true);
+    }
 };
 
 pub fn generateNodeId(buf: *[64]u8) ![]const u8 {
@@ -416,6 +435,27 @@ test "registerWindowsCameraCapabilitiesForSupport skips camera capability when u
     defer ctx.deinit();
 
     try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = false, .snap = false, .clip = false });
+
+    try std.testing.expectEqual(@as(usize, 0), ctx.capabilities.items.len);
+    try std.testing.expectEqual(@as(usize, 0), ctx.commands.items.len);
+}
+
+test "registerLocationCapabilitiesForSupport registers location.get" {
+    var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
+    defer ctx.deinit();
+
+    try ctx.registerLocationCapabilitiesForSupport(.{ .get = true });
+
+    try std.testing.expect(ctx.supportsCommand("location.get"));
+    try std.testing.expectEqual(@as(usize, 1), ctx.capabilities.items.len);
+    try std.testing.expect(ctx.capabilities.items[0] == .location);
+}
+
+test "registerLocationCapabilitiesForSupport skips location capability when unsupported" {
+    var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
+    defer ctx.deinit();
+
+    try ctx.registerLocationCapabilitiesForSupport(.{ .get = false });
 
     try std.testing.expectEqual(@as(usize, 0), ctx.capabilities.items.len);
     try std.testing.expectEqual(@as(usize, 0), ctx.commands.items.len);
