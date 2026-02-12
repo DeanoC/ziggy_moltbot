@@ -9,6 +9,7 @@ const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
 const node_location = @import("location.zig");
+const node_canvas = @import("canvas.zig");
 
 const windows_camera = if (builtin.target.os.tag == .windows)
     @import("../windows/camera.zig")
@@ -590,18 +591,82 @@ fn systemExecApprovalsSetHandler(allocator: std.mem.Allocator, ctx: *NodeContext
 // Canvas Command Handlers
 // ============================================================================
 
+fn ensureRealCanvas(ctx: *NodeContext) ?*node_canvas.Canvas {
+    if (ctx.canvas_manager.getCanvas()) |canvas| return canvas;
+
+    ctx.canvas_manager.initialize(.{
+        .backend = .chrome,
+        .width = 1280,
+        .height = 720,
+        .headless = true,
+        .chrome_path = null,
+        .chrome_debug_port = 9222,
+    }) catch |err| {
+        logger.warn("Canvas initialization failed: {s}", .{@errorName(err)});
+        return null;
+    };
+
+    return ctx.canvas_manager.getCanvas();
+}
+
+fn parseOptionalU8Percent(v: std.json.Value) CommandError!?u8 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival < 0 or ival > 100) return CommandError.InvalidParams;
+            break :blk @as(u8, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval) or @trunc(fval) != fval) return CommandError.InvalidParams;
+            if (fval < 0 or fval > 100) return CommandError.InvalidParams;
+            break :blk @as(u8, @intFromFloat(fval));
+        },
+        .null => null,
+        else => CommandError.InvalidParams,
+    };
+}
+
+fn parseOptionalPositiveU32(v: std.json.Value) CommandError!?u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival <= 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval) or @trunc(fval) != fval) return CommandError.InvalidParams;
+            if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        .null => null,
+        else => CommandError.InvalidParams,
+    };
+}
+
 fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
     ctx.canvas_manager.setVisible(true);
 
     // `openclaw nodes canvas present --target <...>` passes { url }.
-    if (params.object.get("url")) |url| {
-        if (url == .string and url.string.len > 0) {
-            ctx.canvas_manager.setUrl(url.string) catch return CommandError.ExecutionFailed;
+    if (params == .object) {
+        if (params.object.get("url")) |url| {
+            if (url == .string and url.string.len > 0) {
+                ctx.canvas_manager.setUrl(url.string) catch return CommandError.ExecutionFailed;
+            }
+        }
+    }
+
+    if (ensureRealCanvas(ctx)) |canvas| {
+        canvas.present() catch |err| {
+            logger.err("canvas.present failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        if (ctx.canvas_manager.getUrl()) |u| {
+            canvas.navigate(u) catch |err| {
+                logger.err("canvas.present navigate failed: {s}", .{@errorName(err)});
+                return CommandError.ExecutionFailed;
+            };
         }
     }
 
     // placement is currently ignored.
-
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
     if (ctx.canvas_manager.getUrl()) |u| {
@@ -613,17 +678,32 @@ fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params:
 fn canvasHideHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
     ctx.canvas_manager.setVisible(false);
 
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.hide() catch |err| {
+            logger.err("canvas.hide failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+    }
+
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
     return std.json.Value{ .object = result };
 }
 
 fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) return CommandError.InvalidParams;
+
     const url_param = params.object.get("url") orelse return CommandError.InvalidParams;
     if (url_param != .string or url_param.string.len == 0) return CommandError.InvalidParams;
 
     ctx.canvas_manager.setUrl(url_param.string) catch return CommandError.ExecutionFailed;
     ctx.canvas_manager.setVisible(true);
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    canvas.navigate(url_param.string) catch |err| {
+        logger.err("canvas.navigate failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
 
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
@@ -631,33 +711,69 @@ fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params
     return std.json.Value{ .object = result };
 }
 
-fn canvasEvalHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    // TODO: implement CDP/WebKit-based evaluation.
+fn canvasEvalHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) return CommandError.InvalidParams;
+
+    const js_param = if (params.object.get("javaScript")) |js|
+        js
+    else if (params.object.get("js")) |js|
+        js
+    else
+        return CommandError.InvalidParams;
+
+    if (js_param != .string or js_param.string.len == 0) return CommandError.InvalidParams;
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    const eval_result = canvas.eval(js_param.string) catch |err| {
+        logger.err("canvas.eval failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+    defer canvas.allocator.free(eval_result);
+
     var result = std.json.ObjectMap.init(allocator);
-    try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, "(canvas.eval not implemented yet)") });
+    try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, eval_result) });
     return std.json.Value{ .object = result };
 }
 
 fn canvasSnapshotHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
-    // Expected params (from OpenClaw canvas tool): { format: "png"|"jpeg", maxWidth?: number, quality?: number }
-    _ = params;
+    if (params != .object) return CommandError.InvalidParams;
 
-    const url = ctx.canvas_manager.getUrl() orelse "about:blank";
+    // Expected params (from OpenClaw canvas tool):
+    // { format: "png"|"jpeg", maxWidth?: number, quality?: number }
+    const format = blk: {
+        if (params.object.get("format")) |raw| {
+            if (raw != .string or raw.string.len == 0) return CommandError.InvalidParams;
+            if (std.ascii.eqlIgnoreCase(raw.string, "jpg") or std.ascii.eqlIgnoreCase(raw.string, "jpeg")) break :blk "jpeg";
+            if (std.ascii.eqlIgnoreCase(raw.string, "png")) break :blk "png";
+            return CommandError.InvalidParams;
+        }
+        break :blk "png";
+    };
 
-    const png_bytes = chromeScreenshotPngAlloc(allocator, url) catch |err| {
+    const quality = blk: {
+        if (params.object.get("quality")) |raw| {
+            break :blk try parseOptionalU8Percent(raw);
+        }
+        break :blk null;
+    };
+
+    const max_width = blk: {
+        if (params.object.get("maxWidth")) |raw| {
+            break :blk try parseOptionalPositiveU32(raw);
+        }
+        break :blk null;
+    };
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    const base64 = canvas.snapshotBase64(format, quality, max_width) catch |err| {
         logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
-    defer allocator.free(png_bytes);
-
-    const b64_len = std.base64.standard.Encoder.calcSize(png_bytes.len);
-    const b64_buf = try allocator.alloc(u8, b64_len);
-    _ = std.base64.standard.Encoder.encode(b64_buf, png_bytes);
+    defer canvas.allocator.free(base64);
 
     var out = std.json.ObjectMap.init(allocator);
-    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, "png") });
-    // b64_buf is owned by the per-invocation arena allocator (see main_node.zig).
-    try out.put("base64", std.json.Value{ .string = b64_buf });
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, format) });
+    try out.put("base64", std.json.Value{ .string = try allocator.dupe(u8, base64) });
     return std.json.Value{ .object = out };
 }
 
