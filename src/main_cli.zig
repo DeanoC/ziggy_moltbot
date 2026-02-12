@@ -693,6 +693,9 @@ pub fn main() !void {
     var list_approvals = false;
     var approve_id: ?[]const u8 = null;
     var deny_id: ?[]const u8 = null;
+    var device_pair_list = false;
+    var device_pair_approve_id: ?[]const u8 = null;
+    var device_pair_reject_id: ?[]const u8 = null;
     var check_update_only = false;
     var print_update_url = false;
     var interactive = false;
@@ -759,17 +762,141 @@ pub fn main() !void {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.print("ziggystarclaw-cli {s}+{s}\n", .{ build_options.app_version, build_options.git_rev });
             return;
-        } else if (i == 1 and std.mem.eql(u8, arg, "node")) {
-            // Minimal verb-noun style convenience wrapper:
-            //   ziggystarclaw-cli node service install|uninstall|start|stop|status
-            //   ziggystarclaw-cli node supervise [--config <path>] [--log-level <level>]
+        } else if (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes")) {
+            // Modern noun-verb command surface (OpenClaw-style where possible):
+            //   ziggystarclaw-cli node list
+            //   ziggystarclaw-cli node run "uname -a"
+            //   ziggystarclaw-cli node process spawn "sleep 10"
+            //   ziggystarclaw-cli node canvas navigate "https://example.com"
+            //   ziggystarclaw-cli node service install
             if (i + 1 >= args.len) return error.InvalidArguments;
             const noun = args[i + 1];
 
+            if (std.mem.eql(u8, noun, "list")) {
+                list_nodes = true;
+                i += 1;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "use")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                use_node = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "run")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                run_command = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "which")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                which_name = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "notify")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                notify_title = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "ps")) {
+                ps_list = true;
+                i += 1;
+                continue;
+            }
+
+            if (std.mem.eql(u8, noun, "process")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "list")) {
+                    ps_list = true;
+                    i += 2;
+                    continue;
+                } else if (std.mem.eql(u8, action, "spawn")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    spawn_command = args[i + 3];
+                    i += 3;
+                    continue;
+                } else if (std.mem.eql(u8, action, "poll")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    poll_process_id = args[i + 3];
+                    i += 3;
+                    continue;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    stop_process_id = args[i + 3];
+                    i += 3;
+                    continue;
+                }
+
+                logger.err("Unknown node process action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
+            if (std.mem.eql(u8, noun, "canvas")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "present")) {
+                    canvas_present = true;
+                    i += 2;
+                    continue;
+                } else if (std.mem.eql(u8, action, "hide")) {
+                    canvas_hide = true;
+                    i += 2;
+                    continue;
+                } else if (std.mem.eql(u8, action, "navigate")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    canvas_navigate = args[i + 3];
+                    i += 3;
+                    continue;
+                } else if (std.mem.eql(u8, action, "eval")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    canvas_eval = args[i + 3];
+                    i += 3;
+                    continue;
+                } else if (std.mem.eql(u8, action, "snapshot")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    canvas_snapshot = args[i + 3];
+                    i += 3;
+                    continue;
+                }
+
+                logger.err("Unknown node canvas action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
+            if (std.mem.eql(u8, noun, "approvals")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "get")) {
+                    exec_approvals_get = true;
+                    i += 2;
+                    continue;
+                } else if (std.mem.eql(u8, action, "allow")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    exec_allow_cmd = args[i + 3];
+                    i += 3;
+                    continue;
+                } else if (std.mem.eql(u8, action, "allow-file")) {
+                    if (i + 3 >= args.len) return error.InvalidArguments;
+                    exec_allow_file = args[i + 3];
+                    i += 3;
+                    continue;
+                }
+
+                logger.err("Unknown node approvals action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+
             if (std.mem.eql(u8, noun, "supervise")) {
                 // Legacy headless supervisor (used by the older Task Scheduler runner MVP).
-                // Usage:
-                //   ziggystarclaw-cli node supervise --config <path> --as-node --no-operator --log-level debug
                 try runNodeSupervisor(allocator, args[(i + 2)..]);
                 return;
             }
@@ -857,38 +984,108 @@ pub fn main() !void {
                 continue;
             }
 
-            if (!std.mem.eql(u8, noun, "service")) {
-                logger.err("Unknown subcommand: node {s}", .{noun});
-                return error.InvalidArguments;
-            }
-            if (i + 2 >= args.len) {
-                var stdout = std.fs.File.stdout().deprecatedWriter();
-                try stdout.writeAll(usage);
-                return;
-            }
-            const action = args[i + 2];
-            if (std.mem.eql(u8, action, "install")) {
-                node_service_install = true;
-            } else if (std.mem.eql(u8, action, "uninstall")) {
-                node_service_uninstall = true;
-            } else if (std.mem.eql(u8, action, "start")) {
-                node_service_start = true;
-            } else if (std.mem.eql(u8, action, "stop")) {
-                node_service_stop = true;
-            } else if (std.mem.eql(u8, action, "status")) {
-                node_service_status = true;
-            } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                var stdout = std.fs.File.stdout().deprecatedWriter();
-                try stdout.writeAll(usage);
-                return;
-            } else {
-                logger.err("Unknown node service action: {s}", .{action});
-                return error.InvalidArguments;
+            if (std.mem.eql(u8, noun, "service")) {
+                if (i + 2 >= args.len) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                }
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    node_service_install = true;
+                } else if (std.mem.eql(u8, action, "uninstall")) {
+                    node_service_uninstall = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    node_service_start = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    node_service_stop = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    node_service_status = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    var stdout = std.fs.File.stdout().deprecatedWriter();
+                    try stdout.writeAll(usage);
+                    return;
+                } else {
+                    logger.err("Unknown node service action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "node service <action>".
+                i += 2;
+                continue;
             }
 
-            // Skip "node service <action>".
+            logger.err("Unknown subcommand: {s} {s}", .{ arg, noun });
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "session")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "list")) {
+                list_sessions = true;
+                i += 1;
+                continue;
+            } else if (std.mem.eql(u8, action, "use")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                use_session = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            logger.err("Unknown session action: {s}", .{action});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "chat")) {
+            if (i + 2 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (!std.mem.eql(u8, action, "send")) {
+                logger.err("Unknown chat action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+            send_message = args[i + 2];
             i += 2;
-        } else if (i == 1 and std.mem.eql(u8, arg, "tray")) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "approvals") or std.mem.eql(u8, arg, "approval")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "list")) {
+                list_approvals = true;
+                i += 1;
+                continue;
+            } else if (std.mem.eql(u8, action, "approve")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                approve_id = args[i + 2];
+                i += 2;
+                continue;
+            } else if (std.mem.eql(u8, action, "deny") or std.mem.eql(u8, action, "reject")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                deny_id = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            logger.err("Unknown approvals action: {s}", .{action});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "device")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "list")) {
+                device_pair_list = true;
+                i += 1;
+                continue;
+            } else if (std.mem.eql(u8, action, "approve")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                device_pair_approve_id = args[i + 2];
+                i += 2;
+                continue;
+            } else if (std.mem.eql(u8, action, "deny") or std.mem.eql(u8, action, "reject")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                device_pair_reject_id = args[i + 2];
+                i += 2;
+                continue;
+            }
+
+            logger.err("Unknown device action: {s}", .{action});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "tray")) {
             if (i + 1 >= args.len) {
                 var stdout = std.fs.File.stdout().deprecatedWriter();
                 try stdout.writeAll(usage);
@@ -1134,7 +1331,8 @@ pub fn main() !void {
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
-        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or use_session != null or use_node != null or
         extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or operator_mode or windows_service_run or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
         node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
@@ -2001,7 +2199,8 @@ pub fn main() !void {
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
-        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or interactive;
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or interactive;
     if (requires_connection and cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
@@ -2036,7 +2235,7 @@ pub fn main() !void {
     }
 
     // Handle --save-config without connecting
-    if (save_config and !check_update_only and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !interactive) {
+    if (save_config and !check_update_only and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !device_pair_list and device_pair_approve_id == null and device_pair_reject_id == null and !interactive) {
         try config.save(allocator, config_path, cfg);
         logger.info("Config saved to {s}", .{config_path});
         return;
@@ -2227,6 +2426,45 @@ pub fn main() !void {
                 try stdout.print("  {s} | {s} | resolve={s}\n", .{ approval.id, summary, can_resolve });
             }
         }
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    if (device_pair_list) {
+        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.list", .{}, 5000);
+        defer allocator.free(payload);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll(payload);
+        try stdout.writeByte('\n');
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    if (device_pair_approve_id) |request_id| {
+        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.approve", .{ .requestId = request_id }, 5000);
+        defer allocator.free(payload);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll(payload);
+        try stdout.writeByte('\n');
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
+        return;
+    }
+
+    if (device_pair_reject_id) |request_id| {
+        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.reject", .{ .requestId = request_id }, 5000);
+        defer allocator.free(payload);
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        try stdout.writeAll(payload);
+        try stdout.writeByte('\n');
         if (save_config) {
             try config.save(allocator, config_path, cfg);
             logger.info("Config saved to {s}", .{config_path});
@@ -2894,6 +3132,54 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "exit")) return .exit;
     if (std.mem.eql(u8, cmd, "save")) return .save;
     return .unknown;
+}
+
+fn requestAndAwaitJsonPayloadText(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    method: []const u8,
+    params: anytype,
+    timeout_ms: u64,
+) ![]u8 {
+    const request = try requests.buildRequestPayload(allocator, method, params);
+    defer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    try ws_client.send(request.payload);
+
+    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+    while (ws_client.is_connected and std.time.milliTimestamp() < deadline) {
+        const msg = ws_client.receive() catch |err| {
+            logger.err("WebSocket receive failed while waiting for {s}: {s}", .{ method, @errorName(err) });
+            return err;
+        };
+        if (msg) |payload| {
+            defer allocator.free(payload);
+
+            var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
+                continue;
+            };
+            defer parsed.deinit();
+
+            const frame = parsed.value;
+            if (frame != .object) continue;
+            const t = frame.object.get("type") orelse continue;
+            if (t != .string or !std.mem.eql(u8, t.string, "res")) continue;
+
+            const idv = frame.object.get("id") orelse continue;
+            if (idv != .string or !std.mem.eql(u8, idv.string, request.id)) continue;
+
+            if (frame.object.get("payload")) |pv| {
+                return std.json.Stringify.valueAlloc(allocator, pv, .{ .whitespace = .indent_2 });
+            }
+            return std.json.Stringify.valueAlloc(allocator, frame, .{ .whitespace = .indent_2 });
+        }
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+
+    return error.Timeout;
 }
 
 fn requestSessionsList(

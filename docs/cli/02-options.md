@@ -1,4 +1,4 @@
-Options:
+Legacy flag-style options (still supported):
   --url <ws/wss url>       Override server URL
   --token <token>          Override auth token (alias: --auth-token)
   --gateway-token <token>  Alias for --token
