@@ -71,6 +71,11 @@ Name: "{autodesktop}\ZiggyStarClaw"; Filename: "{app}\ziggystarclaw-client.exe";
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileClient
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "{code:GetClientConfigArgs}"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldSaveClientConfig
 
+; Reinstall/upgrade hygiene:
+; If we detect an existing install and user selected a runner profile, always reset to
+; pure-client first so stale service/task state cannot block reconfiguration.
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldResetExistingInstallBeforeProfileApply
+
 ; Service node profile (system service in elevated context)
 ; Ensure clean swap from user-session mode.
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session uninstall"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: IsProfileService
@@ -88,7 +93,7 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session install {code
 ; user-context only
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray uninstall-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldConfigureTrayStartup
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: IsProfileSession
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTrayStartup
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldRetryTrayStartupInstall
 
 [UninstallRun]
@@ -321,9 +326,28 @@ begin
   Result := IsProfileService and (not TrayStartupInstalled);
 end;
 
+function ShouldInstallSessionTrayStartup: Boolean;
+begin
+  Result := IsProfileSession and SessionRunnerInstalled and (not TrayStartupInstalled);
+end;
+
+function ExistingInstallDetected: Boolean;
+begin
+  Result :=
+    FileExists(ExpandConstant('{app}\ziggystarclaw-cli.exe')) or
+    ServiceRunnerInstalled or
+    SessionRunnerInstalled or
+    TrayStartupInstalled;
+end;
+
+function ShouldResetExistingInstallBeforeProfileApply: Boolean;
+begin
+  Result := (IsProfileService or IsProfileSession) and ExistingInstallDetected;
+end;
+
 function ShouldConfigureTrayStartup: Boolean;
 begin
-  Result := IsProfileService or IsProfileSession;
+  Result := IsProfileService or (IsProfileSession and SessionRunnerInstalled);
 end;
 
 function ShouldRetrySessionInstall: Boolean;
