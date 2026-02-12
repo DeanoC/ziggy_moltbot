@@ -22,11 +22,14 @@ pub const ChatPanelAction = struct {
     select_session: ?[]u8 = null,
     select_session_id: ?[]u8 = null,
     new_chat_session_key: ?[]u8 = null,
+    open_panel_kind: ?workspace.PanelKind = null,
 };
 
 const HeaderAction = struct {
     picker_rect: ?draw_context.Rect = null,
     request_new_chat: bool = false,
+    open_approvals: bool = false,
+    open_activity: bool = false,
 };
 
 const SessionSelection = struct {
@@ -49,6 +52,8 @@ pub fn draw(
     agent_icon: []const u8,
     agent_name: []const u8,
     sessions: []const types.Session,
+    approvals_pending: usize,
+    activity_attention: usize,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
     rect_override: ?draw_context.Rect,
 ) ChatPanelAction {
@@ -92,6 +97,9 @@ pub fn draw(
     const has_selection_select = chat_view.hasSelectCopySelection(&panel_state.view);
     const has_selection_custom = chat_view.hasSelection(&panel_state.view);
     const has_selection = if (panel_state.select_copy_mode) has_selection_select else has_selection_custom;
+
+    // Legacy toggle is retained for snapshot compatibility; visibility tier is canonical.
+    panel_state.show_tool_output = panel_state.visibility_tier == .deep_debug;
     const panel_rect = rect_override orelse return action;
     var panel_ctx = draw_context.DrawContext.init(allocator, .{ .direct = .{} }, t, panel_rect);
     defer panel_ctx.deinit();
@@ -120,11 +128,19 @@ pub fn draw(
         session_key,
         panel_state.selected_session_id,
         has_session,
+        approvals_pending,
+        activity_attention,
         &panel_state.select_copy_mode,
-        &panel_state.show_tool_output,
+        &panel_state.visibility_tier,
         &panel_state.session_picker_open,
         control_height,
     );
+
+    if (header_action.open_approvals) {
+        action.open_panel_kind = .ApprovalsInbox;
+    } else if (header_action.open_activity) {
+        action.open_panel_kind = .ActivityStream;
+    }
 
     const separator_h: f32 = 1.0;
     const separator_gap = t.spacing.xs;
@@ -219,7 +235,7 @@ pub fn draw(
             inbox,
             .{
                 .select_copy_mode = panel_state.select_copy_mode,
-                .show_tool_output = panel_state.show_tool_output,
+                .visibility_tier = panel_state.visibility_tier,
                 .assistant_label = agent_name,
             },
         );
@@ -236,7 +252,7 @@ pub fn draw(
             inbox,
             .{
                 .select_copy_mode = panel_state.select_copy_mode,
-                .show_tool_output = panel_state.show_tool_output,
+                .visibility_tier = panel_state.visibility_tier,
                 .assistant_label = agent_name,
             },
         );
@@ -294,12 +310,12 @@ pub fn draw(
                 if (panel_state.select_copy_mode) {
                     chat_view.copySelectCopySelectionToClipboard(allocator, &panel_state.view);
                 } else {
-                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, panel_state.show_tool_output);
+                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, panel_state.visibility_tier);
                 }
                 panel_state.copy_context_menu_open = false;
             },
             .copy_all => {
-                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, panel_state.show_tool_output);
+                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, panel_state.visibility_tier);
                 panel_state.copy_context_menu_open = false;
             },
             .none => {},
@@ -370,8 +386,10 @@ fn drawHeader(
     session_key: ?[]const u8,
     current_session_id: ?[]const u8,
     has_session: bool,
+    approvals_pending: usize,
+    activity_attention: usize,
     select_copy_mode_ref: *bool,
-    show_tool_output_ref: *bool,
+    visibility_tier_ref: *state.DebugVisibilityTier,
     session_picker_open_ref: *bool,
     control_height: f32,
 ) HeaderAction {
@@ -401,35 +419,56 @@ fn drawHeader(
     const box_size = @min(control_height, row_h);
     const checkbox_spacing = t.spacing.xs;
     const item_spacing = t.spacing.xs;
-    const select_label = "Raw";
-    const select_width = box_size + checkbox_spacing + ctx.measureText(select_label, 0.0)[0];
-    const tool_label = "Tools";
-    const tool_width = box_size + checkbox_spacing + ctx.measureText(tool_label, 0.0)[0];
-    const pair_width = select_width + item_spacing + tool_width;
     const controls_left = start_x;
-    var show_select = true;
-    var show_tools = true;
     var controls_end = controls_left;
 
     const reserve_right: f32 = picker_w_min;
     const gap = t.spacing.sm;
-    if (controls_left + pair_width + gap + reserve_right > right_bound) {
-        show_tools = false;
+
+    const select_label = "Select";
+    const select_width = box_size + checkbox_spacing + ctx.measureText(select_label, 0.0)[0];
+    const select_rect = draw_context.Rect.fromMinSize(.{ controls_left, controls_y }, .{ select_width, control_height });
+    _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
+    controls_end = select_rect.max[0];
+
+    const tier_label = switch (visibility_tier_ref.*) {
+        .normal => "Normal",
+        .dev => "Dev",
+        .deep_debug => "Deep debug",
+    };
+    var tier_buf: [48]u8 = undefined;
+    const tier_button_label = std.fmt.bufPrint(&tier_buf, "Tier: {s}", .{tier_label}) catch "Tier";
+    const tier_width = ctx.measureText(tier_button_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const tier_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ tier_width, control_height });
+    if (widgets.button.draw(ctx, tier_rect, tier_button_label, queue, .{ .variant = .secondary })) {
+        visibility_tier_ref.* = switch (visibility_tier_ref.*) {
+            .normal => .dev,
+            .dev => .deep_debug,
+            .deep_debug => .normal,
+        };
     }
-    const controls_width = if (show_select) (if (show_tools) pair_width else select_width) else 0.0;
-    if (controls_left + controls_width + gap + reserve_right > right_bound) {
-        show_select = false;
-        show_tools = false;
-    }
-    if (show_select) {
-        const select_rect = draw_context.Rect.fromMinSize(.{ controls_left, controls_y }, .{ select_width, control_height });
-        _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
-        controls_end = select_rect.max[0];
-        if (show_tools) {
-            const tool_rect = draw_context.Rect.fromMinSize(.{ select_rect.max[0] + item_spacing, controls_y }, .{ tool_width, control_height });
-            _ = widgets.checkbox.draw(ctx, tool_rect, tool_label, show_tool_output_ref, queue, .{ .disabled = !has_session });
-            controls_end = tool_rect.max[0];
-        }
+    controls_end = tier_rect.max[0];
+
+    var approvals_label_buf: [32]u8 = undefined;
+    const approvals_label = std.fmt.bufPrint(&approvals_label_buf, "Approvals ({d})", .{approvals_pending}) catch "Approvals";
+    const approvals_width = ctx.measureText(approvals_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const approvals_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ approvals_width, control_height });
+    const open_approvals = widgets.button.draw(ctx, approvals_rect, approvals_label, queue, .{
+        .variant = if (approvals_pending > 0) .primary else .secondary,
+    });
+    controls_end = approvals_rect.max[0];
+
+    var activity_label_buf: [32]u8 = undefined;
+    const activity_label = std.fmt.bufPrint(&activity_label_buf, "Activity ({d})", .{activity_attention}) catch "Activity";
+    const activity_width = ctx.measureText(activity_label, 0.0)[0] + t.spacing.sm * 2.0;
+    const activity_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ activity_width, control_height });
+    const open_activity = widgets.button.draw(ctx, activity_rect, activity_label, queue, .{
+        .variant = if (activity_attention > 0) .primary else .secondary,
+    });
+    controls_end = activity_rect.max[0];
+
+    if (controls_end + gap + reserve_right > right_bound) {
+        controls_end = controls_left;
     }
 
     var right_cursor = right_bound;
@@ -481,6 +520,8 @@ fn drawHeader(
     return .{
         .picker_rect = picker_rect_opt,
         .request_new_chat = request_new_chat,
+        .open_approvals = open_approvals,
+        .open_activity = open_activity,
     };
 }
 

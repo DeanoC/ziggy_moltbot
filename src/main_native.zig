@@ -380,6 +380,7 @@ fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
     if (std.ascii.eqlIgnoreCase(label, "agents")) return .Agents;
     if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
     if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
+    if (std.ascii.eqlIgnoreCase(label, "activity") or std.ascii.eqlIgnoreCase(label, "activity_stream")) return .ActivityStream;
     if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
     if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
     if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
@@ -586,6 +587,7 @@ fn defaultWindowSizeForPanelKind(kind: workspace.PanelKind) struct { w: c_int, h
         .Agents => .{ .w = 960, .h = 720 },
         .Operator => .{ .w = 960, .h = 720 },
         .ApprovalsInbox => .{ .w = 960, .h = 720 },
+        .ActivityStream => .{ .w = 960, .h = 720 },
         .Inbox => .{ .w = 960, .h = 720 },
         .Settings => .{ .w = 960, .h = 720 },
         .Showcase => .{ .w = 900, .h = 720 },
@@ -1469,7 +1471,7 @@ fn sendNodeInvokeRequest(
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingNodeInvokeRequest(request.id);
+    ctx.setPendingNodeInvokeRequest(request.id, command);
     ctx.clearOperatorNotice();
 }
 

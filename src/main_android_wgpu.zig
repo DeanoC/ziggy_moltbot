@@ -503,7 +503,7 @@ fn sendNodeInvokeRequest(
         return;
     };
     allocator.free(request.payload);
-    ctx.setPendingNodeInvokeRequest(request.id);
+    ctx.setPendingNodeInvokeRequest(request.id, command);
     ctx.clearOperatorNotice();
 }
 

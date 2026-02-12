@@ -36,6 +36,7 @@ const inbox_panel = @import("panels/inbox_panel.zig");
 const settings_panel = @import("panels/settings_panel.zig");
 const operator_view = @import("operator_view.zig");
 const approvals_inbox_view = @import("approvals_inbox_view.zig");
+const activity_stream_view = @import("activity_stream_view.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const showcase_panel = @import("panels/showcase_panel.zig");
 const session_presenter = @import("session_presenter.zig");
@@ -172,6 +173,7 @@ pub const UiAction = struct {
     // should create the tear-off window from this panel and then free the pointer.
     detach_panel: ?*workspace.Panel = null,
     open_url: ?[]u8 = null,
+    open_panel_kind: ?workspace.PanelKind = null,
 };
 
 const PanelDrawResult = struct {
@@ -325,6 +327,7 @@ const window_panel_toggles = [_]WindowPanelToggle{
     .{ .label = "Agents", .kind = .Agents },
     .{ .label = "Operator", .kind = .Operator },
     .{ .label = "Approvals", .kind = .ApprovalsInbox },
+    .{ .label = "Activity", .kind = .ActivityStream },
     .{ .label = "Inbox", .kind = .Inbox },
     .{ .label = "Settings", .kind = .Settings },
     .{ .label = "Showcase", .kind = .Showcase },
@@ -1133,6 +1136,11 @@ pub fn drawWindow(
             &pending_attachment,
             win_state,
         );
+    }
+
+    if (action.open_panel_kind) |kind| {
+        manager.ensurePanel(kind);
+        action.open_panel_kind = null;
     }
 
     if (manager.workspace.dirty) action.save_workspace = true;
@@ -1990,6 +1998,8 @@ fn drawPanelContents(
                 agent_info.icon,
                 agent_info.name,
                 ctx.sessions.items,
+                ctx.approvals.items.len,
+                ctx.activityWarnErrorCount(),
                 inbox,
                 panel_rect,
             );
@@ -2005,9 +2015,14 @@ fn drawPanelContents(
                     allocator.free(message);
                 }
             }
+            ctx.debug_visibility_tier = panel.data.Chat.visibility_tier;
+
             replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
             setOwnedSlice(allocator, &action.select_session_id, chat_action.select_session_id);
             replaceOwnedSlice(allocator, &action.new_chat_session_key, chat_action.new_chat_session_key);
+            if (chat_action.open_panel_kind) |kind| {
+                action.open_panel_kind = kind;
+            }
 
             result.session_key = resolved_session_key;
             result.agent_id = agent_id;
@@ -2144,6 +2159,12 @@ fn drawPanelContents(
             const approvals_action = approvals_inbox_view.draw(allocator, ctx, panel_rect);
             if (approvals_action.resolve_approval) |resolve| {
                 action.resolve_approval = resolve;
+            }
+        },
+        .ActivityStream => {
+            const activity_action = activity_stream_view.draw(allocator, ctx, panel_rect);
+            if (activity_action.open_approvals_panel) {
+                manager.ensurePanel(.ApprovalsInbox);
             }
         },
         .Inbox => {
@@ -3288,6 +3309,7 @@ fn railIconForPanel(panel: *const workspace.Panel, icons: *const style_sheet.Doc
         .Agents => dockRailIconLabel(&icons.agents, "A"),
         .Operator => dockRailIconLabel(&icons.operator, "OP"),
         .ApprovalsInbox => dockRailIconLabel(&icons.approvals_inbox, "AP"),
+        .ActivityStream => dockRailIconLabel(&icons.activity_stream, "AC"),
         .Inbox => dockRailIconLabel(&icons.inbox, "I"),
         .Settings => dockRailIconLabel(&icons.settings, "SE"),
         .Showcase => dockRailIconLabel(&icons.showcase, "S"),

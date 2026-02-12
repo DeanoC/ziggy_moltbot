@@ -991,6 +991,7 @@ pub const ThemeEngine = struct {
         if (std.ascii.eqlIgnoreCase(label, "agents")) return .Agents;
         if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
         if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
+        if (std.ascii.eqlIgnoreCase(label, "activity") or std.ascii.eqlIgnoreCase(label, "activity_stream")) return .ActivityStream;
         if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
         if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
         if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
@@ -1545,9 +1546,9 @@ fn applyWebJob(job: *WebPackJob) void {
     theme_mod.setRuntimeTheme(.light, light_theme);
     theme_mod.setRuntimeTheme(.dark, dark_theme);
 
-        if (eng.active_pack_root) |p| eng.allocator.free(p);
-        eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
-        runtime.setThemePackRootPath(eng.active_pack_root);
+    if (eng.active_pack_root) |p| eng.allocator.free(p);
+    eng.active_pack_root = eng.allocator.dupe(u8, job.root) catch null;
+    runtime.setThemePackRootPath(eng.active_pack_root);
 
     if (job.manifest) |m| {
         eng.clearPackMetaOwned();

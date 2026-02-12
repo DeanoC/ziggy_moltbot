@@ -34,6 +34,66 @@ pub const NodeHealthEntry = struct {
     updated_at_ms: i64,
 };
 
+pub const DebugVisibilityTier = enum {
+    normal,
+    dev,
+    deep_debug,
+};
+
+pub const ActivitySeverity = enum {
+    debug,
+    info,
+    warn,
+    @"error",
+};
+
+pub const ActivitySource = enum {
+    tool,
+    process,
+    approval,
+    system,
+};
+
+pub const ActivityScope = enum {
+    conversation,
+    background,
+};
+
+pub const ActivityStatus = enum {
+    running,
+    succeeded,
+    failed,
+    pending,
+    approved,
+    denied,
+    info,
+};
+
+pub const ActivityEntry = struct {
+    key: []const u8,
+    title: []const u8,
+    summary: ?[]const u8 = null,
+    source: ActivitySource = .system,
+    severity: ActivitySeverity = .info,
+    scope: ActivityScope = .background,
+    status: ActivityStatus = .info,
+
+    run_id: ?[]const u8 = null,
+    tool_call_id: ?[]const u8 = null,
+    process_session_id: ?[]const u8 = null,
+    conversation_session: ?[]const u8 = null,
+
+    started_at_ms: i64,
+    updated_at_ms: i64,
+    update_count: u32 = 1,
+    last_running_notice_ms: i64 = 0,
+
+    params: ?[]const u8 = null,
+    stdout: ?[]const u8 = null,
+    stderr: ?[]const u8 = null,
+    raw_event_json: ?[]const u8 = null,
+};
+
 pub const ChatSessionState = struct {
     messages: std.ArrayList(types.ChatMessage),
     stream_text: ?[]const u8 = null,
@@ -63,7 +123,9 @@ pub const ClientContext = struct {
     node_health: std.ArrayList(NodeHealthEntry),
     approvals: std.ArrayList(types.ExecApproval),
     approvals_resolved: std.ArrayList(types.ExecApproval),
+    activity: std.ArrayList(ActivityEntry),
     users: std.ArrayList(types.User),
+    debug_visibility_tier: DebugVisibilityTier = .normal,
     sessions_loading: bool = false,
     nodes_loading: bool = false,
     pending_sessions_request_id: ?[]const u8 = null,
@@ -72,6 +134,7 @@ pub const ClientContext = struct {
     pending_send_message_id: ?[]const u8 = null,
     pending_nodes_request_id: ?[]const u8 = null,
     pending_node_invoke_request_id: ?[]const u8 = null,
+    pending_node_invoke_command: ?[]const u8 = null,
     pending_node_describe_request_id: ?[]const u8 = null,
     pending_agents_create_request_id: ?[]const u8 = null,
     pending_agents_update_request_id: ?[]const u8 = null,
@@ -101,7 +164,9 @@ pub const ClientContext = struct {
             .node_health = std.ArrayList(NodeHealthEntry).empty,
             .approvals = std.ArrayList(types.ExecApproval).empty,
             .approvals_resolved = std.ArrayList(types.ExecApproval).empty,
+            .activity = std.ArrayList(ActivityEntry).empty,
             .users = std.ArrayList(types.User).empty,
+            .debug_visibility_tier = .normal,
             .sessions_loading = false,
             .nodes_loading = false,
             .pending_sessions_request_id = null,
@@ -110,6 +175,7 @@ pub const ClientContext = struct {
             .pending_send_message_id = null,
             .pending_nodes_request_id = null,
             .pending_node_invoke_request_id = null,
+            .pending_node_invoke_command = null,
             .pending_node_describe_request_id = null,
             .pending_agents_create_request_id = null,
             .pending_agents_update_request_id = null,
@@ -142,6 +208,7 @@ pub const ClientContext = struct {
         self.clearNodeResult();
         self.clearCurrentNode();
         self.clearApprovals();
+        self.clearActivity();
         self.clearNodeDescribes();
         self.clearNodeHealth();
         for (self.sessions.items) |*session| {
@@ -161,6 +228,7 @@ pub const ClientContext = struct {
         self.node_health.deinit(self.allocator);
         self.approvals.deinit(self.allocator);
         self.approvals_resolved.deinit(self.allocator);
+        self.activity.deinit(self.allocator);
         self.users.deinit(self.allocator);
         self.gateway_methods.deinit(self.allocator);
     }
@@ -575,6 +643,56 @@ pub const ClientContext = struct {
         self.approvals_resolved.clearRetainingCapacity();
     }
 
+    pub fn upsertActivityOwned(self: *ClientContext, entry: ActivityEntry) !void {
+        const running_throttle_ms: i64 = 5_000;
+        for (self.activity.items, 0..) |*existing, index| {
+            if (!std.mem.eql(u8, existing.key, entry.key)) continue;
+
+            if (existing.status == .running and entry.status == .running) {
+                if (entry.updated_at_ms - existing.last_running_notice_ms < running_throttle_ms) {
+                    freeActivityEntry(self.allocator, &entry);
+                    return;
+                }
+            }
+
+            var updated = entry;
+            updated.started_at_ms = existing.started_at_ms;
+            updated.update_count = existing.update_count + 1;
+            if (updated.status == .running) {
+                updated.last_running_notice_ms = updated.updated_at_ms;
+            } else {
+                updated.last_running_notice_ms = existing.last_running_notice_ms;
+            }
+
+            freeActivityEntry(self.allocator, existing);
+            self.activity.items[index] = updated;
+            return;
+        }
+
+        var owned = entry;
+        if (owned.status == .running) {
+            owned.last_running_notice_ms = owned.updated_at_ms;
+        }
+        try self.activity.append(self.allocator, owned);
+    }
+
+    pub fn clearActivity(self: *ClientContext) void {
+        for (self.activity.items) |*entry| {
+            freeActivityEntry(self.allocator, entry);
+        }
+        self.activity.clearRetainingCapacity();
+    }
+
+    pub fn activityWarnErrorCount(self: *const ClientContext) usize {
+        var count: usize = 0;
+        for (self.activity.items) |entry| {
+            if (entry.severity == .warn or entry.severity == .@"error" or entry.status == .failed or entry.status == .pending or entry.status == .denied) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
     pub fn setCurrentSession(self: *ClientContext, key: []const u8) !void {
         if (self.current_session) |session| {
             if (std.mem.eql(u8, session, key)) return;
@@ -686,18 +804,26 @@ pub const ClientContext = struct {
         self.nodes_loading = false;
     }
 
-    pub fn setPendingNodeInvokeRequest(self: *ClientContext, id: []const u8) void {
+    pub fn setPendingNodeInvokeRequest(self: *ClientContext, id: []const u8, command: []const u8) void {
         if (self.pending_node_invoke_request_id) |pending| {
             self.allocator.free(pending);
         }
+        if (self.pending_node_invoke_command) |pending| {
+            self.allocator.free(pending);
+        }
         self.pending_node_invoke_request_id = id;
+        self.pending_node_invoke_command = self.allocator.dupe(u8, command) catch null;
     }
 
     pub fn clearPendingNodeInvokeRequest(self: *ClientContext) void {
         if (self.pending_node_invoke_request_id) |pending| {
             self.allocator.free(pending);
         }
+        if (self.pending_node_invoke_command) |pending| {
+            self.allocator.free(pending);
+        }
         self.pending_node_invoke_request_id = null;
+        self.pending_node_invoke_command = null;
     }
 
     pub fn setPendingNodeDescribeRequest(self: *ClientContext, id: []const u8) void {
@@ -1070,6 +1196,20 @@ fn freeNode(allocator: std.mem.Allocator, node: *types.Node) void {
 fn freeNodeDescribe(allocator: std.mem.Allocator, describe: *NodeDescribe) void {
     allocator.free(describe.node_id);
     allocator.free(describe.payload_json);
+}
+
+fn freeActivityEntry(allocator: std.mem.Allocator, entry: *const ActivityEntry) void {
+    allocator.free(entry.key);
+    allocator.free(entry.title);
+    if (entry.summary) |value| allocator.free(value);
+    if (entry.run_id) |value| allocator.free(value);
+    if (entry.tool_call_id) |value| allocator.free(value);
+    if (entry.process_session_id) |value| allocator.free(value);
+    if (entry.conversation_session) |value| allocator.free(value);
+    if (entry.params) |value| allocator.free(value);
+    if (entry.stdout) |value| allocator.free(value);
+    if (entry.stderr) |value| allocator.free(value);
+    if (entry.raw_event_json) |value| allocator.free(value);
 }
 
 fn freeApproval(allocator: std.mem.Allocator, approval: *types.ExecApproval) void {
