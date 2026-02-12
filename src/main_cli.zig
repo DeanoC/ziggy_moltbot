@@ -762,7 +762,7 @@ pub fn main() !void {
             var stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.print("ziggystarclaw-cli {s}+{s}\n", .{ build_options.app_version, build_options.git_rev });
             return;
-        } else if (i == 1 and (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes"))) {
+        } else if (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes")) {
             // Modern noun-verb command surface (OpenClaw-style where possible):
             //   ziggystarclaw-cli node list
             //   ziggystarclaw-cli node run "uname -a"
@@ -1017,7 +1017,7 @@ pub fn main() !void {
 
             logger.err("Unknown subcommand: {s} {s}", .{ arg, noun });
             return error.InvalidArguments;
-        } else if (i == 1 and std.mem.eql(u8, arg, "session")) {
+        } else if (std.mem.eql(u8, arg, "session")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (std.mem.eql(u8, action, "list")) {
@@ -1033,7 +1033,7 @@ pub fn main() !void {
 
             logger.err("Unknown session action: {s}", .{action});
             return error.InvalidArguments;
-        } else if (i == 1 and std.mem.eql(u8, arg, "chat")) {
+        } else if (std.mem.eql(u8, arg, "chat")) {
             if (i + 2 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (!std.mem.eql(u8, action, "send")) {
@@ -1043,7 +1043,7 @@ pub fn main() !void {
             send_message = args[i + 2];
             i += 2;
             continue;
-        } else if (i == 1 and (std.mem.eql(u8, arg, "approvals") or std.mem.eql(u8, arg, "approval"))) {
+        } else if (std.mem.eql(u8, arg, "approvals") or std.mem.eql(u8, arg, "approval")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (std.mem.eql(u8, action, "list")) {
@@ -1064,7 +1064,7 @@ pub fn main() !void {
 
             logger.err("Unknown approvals action: {s}", .{action});
             return error.InvalidArguments;
-        } else if (i == 1 and std.mem.eql(u8, arg, "device")) {
+        } else if (std.mem.eql(u8, arg, "device")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (std.mem.eql(u8, action, "list")) {
@@ -1085,7 +1085,7 @@ pub fn main() !void {
 
             logger.err("Unknown device action: {s}", .{action});
             return error.InvalidArguments;
-        } else if (i == 1 and std.mem.eql(u8, arg, "tray")) {
+        } else if (std.mem.eql(u8, arg, "tray")) {
             if (i + 1 >= args.len) {
                 var stdout = std.fs.File.stdout().deprecatedWriter();
                 try stdout.writeAll(usage);
@@ -2439,6 +2439,10 @@ pub fn main() !void {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(payload);
         try stdout.writeByte('\n');
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
         return;
     }
 
@@ -2448,6 +2452,10 @@ pub fn main() !void {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(payload);
         try stdout.writeByte('\n');
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
         return;
     }
 
@@ -2457,6 +2465,10 @@ pub fn main() !void {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(payload);
         try stdout.writeByte('\n');
+        if (save_config) {
+            try config.save(allocator, config_path, cfg);
+            logger.info("Config saved to {s}", .{config_path});
+        }
         return;
     }
 
