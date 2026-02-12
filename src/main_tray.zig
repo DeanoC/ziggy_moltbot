@@ -80,17 +80,22 @@ fn trayMain(allocator: std.mem.Allocator) !void {
 
     // Single instance guard (best-effort).
     const tray_lock_name = "ZiggyStarClaw.Tray.Singleton";
+    const tray_pid: u32 = @intCast(win.GetCurrentProcessId());
     const mutex_name = try utf16Z(allocator, tray_lock_name);
     defer allocator.free(mutex_name);
     const hMutex = win.CreateMutexW(null, win.TRUE, mutex_name.ptr);
     if (hMutex != null) {
         // ERROR_ALREADY_EXISTS = 183
         if (win.GetLastError() == 183) {
-            logLine("single_instance_denied_existing_owner mode=tray lock=ZiggyStarClaw.Tray.Singleton");
+            var denied_buf: [160]u8 = undefined;
+            const denied = std.fmt.bufPrint(&denied_buf, "single_instance_denied_existing_owner mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_denied_existing_owner mode=tray";
+            logLine(denied);
             _ = win.CloseHandle(hMutex);
             return;
         }
-        logLine("single_instance_acquired mode=tray lock=ZiggyStarClaw.Tray.Singleton");
+        var acquired_buf: [160]u8 = undefined;
+        const acquired = std.fmt.bufPrint(&acquired_buf, "single_instance_acquired mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_acquired mode=tray";
+        logLine(acquired);
     }
 
     const hInstance = win.GetModuleHandleW(null);
@@ -160,7 +165,9 @@ fn trayMain(allocator: std.mem.Allocator) !void {
     }
 
     if (hMutex != null) {
-        logLine("single_instance_owner_released mode=tray lock=ZiggyStarClaw.Tray.Singleton");
+        var released_buf: [160]u8 = undefined;
+        const released = std.fmt.bufPrint(&released_buf, "single_instance_owner_released mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_owner_released mode=tray";
+        logLine(released);
         _ = win.CloseHandle(hMutex);
     }
 }

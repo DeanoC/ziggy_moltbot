@@ -174,5 +174,37 @@ class TestNodeConfig:
         assert result.returncode != 0 or "error" in result.stderr.lower()
 
 
+class TestWindowsDuplicateSessionStartupContracts:
+    """Regression checks for Windows startup duplicate-session guards."""
+
+    @staticmethod
+    def _read_repo_file(*parts: str) -> str:
+        repo_root = Path(__file__).resolve().parents[1]
+        return (repo_root.joinpath(*parts)).read_text(encoding="utf-8")
+
+    def test_spec_file_exists(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        spec = repo_root / "docs" / "spec_windows_tray_duplicate_session_startup.md"
+        assert spec.exists(), "Expected startup duplicate-session spec file"
+
+    def test_shared_node_owner_mutex_contract(self):
+        src = self._read_repo_file("src", "windows", "single_instance.zig")
+        assert "Global\\\\ZiggyStarClaw.NodeOwner" in src
+        assert "Local\\\\ZiggyStarClaw.NodeOwner" in src
+        assert "pub const node_owner_lock_global" in src
+        assert "pub const node_owner_lock_local" in src
+
+    def test_runner_and_service_emit_single_instance_diagnostics(self):
+        cli_src = self._read_repo_file("src", "main_cli.zig")
+        svc_src = self._read_repo_file("src", "windows", "scm_host.zig")
+
+        assert "single_instance_denied_existing_owner mode=runner" in cli_src
+        assert "single_instance_owner_released mode=runner" in cli_src
+        assert "node supervise blocked: another node owner already holds" in cli_src
+
+        assert "single_instance_denied_existing_owner mode=service" in svc_src
+        assert "single_instance_owner_released mode=service" in svc_src
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

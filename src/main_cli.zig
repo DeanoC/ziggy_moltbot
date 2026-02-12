@@ -474,6 +474,14 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
             "{d} [wrapper] single_instance_denied_existing_owner mode=runner pid={d} lock={s}\n",
             .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
         ) catch {};
+
+        var stderr_buf: [256]u8 = undefined;
+        const stderr_line = std.fmt.bufPrint(
+            &stderr_buf,
+            "node supervise blocked: another node owner already holds {s}\n",
+            .{mutex.name_used_utf8},
+        ) catch "node supervise blocked: another node owner already running\n";
+        std.io.getStdErr().writeAll(stderr_line) catch {};
         return;
     }
 
