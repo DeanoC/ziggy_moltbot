@@ -73,6 +73,12 @@ pub const WindowUiState = struct {
     menu_profile: WindowMenuProfile = .full,
     show_status_bar: bool = true,
     show_menu_bar: bool = true,
+    // Last dock content rect used for layout in window-local coordinates.
+    // Native cross-window drag/drop uses this to align target hit-testing with rendered bounds.
+    last_dock_content_rect: draw_context.Rect = .{
+        .min = .{ 0.0, 0.0 },
+        .max = .{ 0.0, 0.0 },
+    },
     collapsed_docks: dock_rail.CollapsedSet = .{},
     dock_flyout: DockFlyoutState = .{},
     dock_rail_anim: DockRailAnimState = .{},
@@ -1161,7 +1167,49 @@ fn drawWorkspaceHost(
 
     surface_chrome.drawBackground(&dc, host_rect);
 
+    if (installer_profile_only_mode) {
+        win_state.last_dock_content_rect = .{
+            .min = .{ 0.0, 0.0 },
+            .max = .{ 0.0, 0.0 },
+        };
+        ensureOnlyPanelKind(manager, .Control);
+        if (selectPanelForKind(manager, .Control)) |panel| {
+            panel.data.Control.active_tab = .Settings;
+            const inset = t.spacing.md;
+            const content_rect = draw_context.Rect.fromMinSize(
+                .{ host_rect.min[0] + inset, host_rect.min[1] + inset },
+                .{
+                    @max(1.0, host_rect.size()[0] - inset * 2.0),
+                    @max(1.0, host_rect.size()[1] - inset * 2.0),
+                },
+            );
+            _ = drawPanelContents(
+                allocator,
+                ctx,
+                cfg,
+                registry,
+                is_connected,
+                app_version,
+                panel,
+                content_rect,
+                inbox,
+                manager,
+                action,
+                pending_attachment,
+                win_state,
+                true,
+            );
+        }
+        drawControllerFocusOverlay(&dc, queue, host_rect);
+        ui_systems.endFrame(&dc);
+        return;
+    }
+
     if (theme_runtime.getProfile().id == .fullscreen) {
+        win_state.last_dock_content_rect = .{
+            .min = .{ 0.0, 0.0 },
+            .max = .{ 0.0, 0.0 },
+        };
         drawFullscreenHost(
             allocator,
             ctx,
@@ -1223,6 +1271,7 @@ fn drawWorkspaceHost(
         .{ content_rect.min[0] + left_rail_width, content_rect.min[1] },
         .{ @max(0.0, content_rect.size()[0] - left_rail_width - right_rail_width), content_rect.size()[1] },
     );
+    win_state.last_dock_content_rect = dock_content_rect;
 
     const keyboard_result = handleDockKeyboardShortcuts(queue, manager, dock_content_rect, win_state);
     if (keyboard_result.changed_layout) {
@@ -1488,6 +1537,7 @@ fn drawWorkspaceHost(
             agent_name,
             session_label,
             message_count,
+            ctx.gateway_compatibility,
             ctx.last_error,
         );
     }
@@ -1719,6 +1769,7 @@ fn drawFullscreenHost(
         null,
         null,
         0,
+        ctx.gateway_compatibility,
         ctx.last_error,
     );
 }

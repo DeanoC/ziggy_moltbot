@@ -355,8 +355,8 @@ pub fn saveMulti(
     next_panel_id: workspace.PanelId,
 ) !void {
     var snapshot = try main_ws.toSnapshot(allocator);
+    defer snapshot.deinit(allocator);
     snapshot.next_panel_id = next_panel_id;
-    errdefer snapshot.deinit(allocator);
     snapshot.collapsed_docks = try copyCollapsedDocks(allocator, main_collapsed_docks);
 
     try compactSnapshotSingletonPanels(allocator, snapshot.focused_panel_id, &snapshot.panels);
@@ -424,7 +424,6 @@ pub fn saveMulti(
 
     const json = try std.json.Stringify.valueAlloc(allocator, snapshot, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
-    defer snapshot.deinit(allocator);
 
     const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
     defer file.close();

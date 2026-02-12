@@ -307,16 +307,18 @@ pub const NodeContext = struct {
         try self.registerWindowsCameraCapabilitiesForSupport(.{
             .list = support.list,
             .snap = support.snap,
+            .clip = support.clip,
         });
     }
 
     pub const WindowsCameraCapabilitySupport = struct {
         list: bool,
         snap: bool,
+        clip: bool,
     };
 
     pub fn registerWindowsCameraCapabilitiesForSupport(self: *NodeContext, support: WindowsCameraCapabilitySupport) !void {
-        if (!support.list and !support.snap) return;
+        if (!support.list and !support.snap and !support.clip) return;
 
         try self.addCapability(.camera);
 
@@ -328,6 +330,11 @@ pub const NodeContext = struct {
         if (support.snap) {
             try self.addCommand(.camera_snap);
             try self.setPermission("camera.snap", true);
+        }
+
+        if (support.clip) {
+            try self.addCommand(.camera_clip);
+            try self.setPermission("camera.clip", true);
         }
     }
 
@@ -384,29 +391,31 @@ test "registerWindowsCameraCapabilitiesForSupport registers list-only support" {
     var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
     defer ctx.deinit();
 
-    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = false });
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = false, .clip = false });
 
     try std.testing.expect(ctx.supportsCommand("camera.list"));
     try std.testing.expect(!ctx.supportsCommand("camera.snap"));
+    try std.testing.expect(!ctx.supportsCommand("camera.clip"));
     try std.testing.expectEqual(@as(usize, 1), ctx.capabilities.items.len);
     try std.testing.expect(ctx.capabilities.items[0] == .camera);
 }
 
-test "registerWindowsCameraCapabilitiesForSupport registers list+snap support" {
+test "registerWindowsCameraCapabilitiesForSupport registers list+snap+clip support" {
     var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
     defer ctx.deinit();
 
-    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = true });
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = true, .snap = true, .clip = true });
 
     try std.testing.expect(ctx.supportsCommand("camera.list"));
     try std.testing.expect(ctx.supportsCommand("camera.snap"));
+    try std.testing.expect(ctx.supportsCommand("camera.clip"));
 }
 
 test "registerWindowsCameraCapabilitiesForSupport skips camera capability when unsupported" {
     var ctx = try NodeContext.init(std.testing.allocator, "node-id", "Node");
     defer ctx.deinit();
 
-    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = false, .snap = false });
+    try ctx.registerWindowsCameraCapabilitiesForSupport(.{ .list = false, .snap = false, .clip = false });
 
     try std.testing.expectEqual(@as(usize, 0), ctx.capabilities.items.len);
     try std.testing.expectEqual(@as(usize, 0), ctx.commands.items.len);

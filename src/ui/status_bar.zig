@@ -21,6 +21,7 @@ pub fn drawCustom(
     agent_name: ?[]const u8,
     session_name: ?[]const u8,
     message_count: usize,
+    gateway_compatibility: state.GatewayCompatibilityMode,
     last_error: ?[]const u8,
 ) void {
     const t = dc.theme;
@@ -34,6 +35,16 @@ pub fn drawCustom(
         .disconnected => if (is_connected) .success else .neutral,
     };
     const connection_variant: BadgeVariant = if (is_connected) .success else .neutral;
+    const gateway_variant: BadgeVariant = switch (gateway_compatibility) {
+        .fork => .primary,
+        .upstream => .warning,
+        .unknown => .neutral,
+    };
+    const gateway_label = switch (gateway_compatibility) {
+        .fork => "fork",
+        .upstream => "upstream",
+        .unknown => "unknown",
+    };
 
     surface_chrome.drawStatusBar(dc, rect);
     dc.drawRect(rect, .{ .stroke = t.colors.border, .thickness = 1.0 });
@@ -46,6 +57,8 @@ pub fn drawCustom(
     cursor_x += drawBadgeCustom(dc, @tagName(client_state), status_variant, true, cursor_x, rect) + spacing;
     cursor_x += drawLabel(dc, "Connection:", cursor_x, text_y, label) + spacing;
     cursor_x += drawBadgeCustom(dc, if (is_connected) "online" else "offline", connection_variant, true, cursor_x, rect) + spacing;
+    cursor_x += drawLabel(dc, "Gateway:", cursor_x, text_y, label) + spacing;
+    cursor_x += drawBadgeCustom(dc, gateway_label, gateway_variant, true, cursor_x, rect) + spacing;
     cursor_x += drawLabel(dc, "Agent:", cursor_x, text_y, label) + spacing;
     if (agent_name) |name| {
         cursor_x += drawLabel(dc, name, cursor_x, text_y, value) + spacing;

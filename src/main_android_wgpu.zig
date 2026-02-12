@@ -1121,6 +1121,7 @@ fn run() !void {
             const started = connect_job.start() catch |err| blk: {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1189,6 +1190,7 @@ fn run() !void {
 
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
+            ctx.clearGatewayIdentity();
             // Requests may have been in-flight when the connection dropped.
             // Clear them so history can be requested again after reconnect.
             ctx.clearPendingRequests();
@@ -1420,6 +1422,7 @@ fn run() !void {
             const started = connect_job.start() catch |err| blk: {
                 logger.err("Failed to start connect thread: {}", .{err});
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 ctx.setError(@errorName(err)) catch {};
                 break :blk false;
             };
@@ -1439,6 +1442,7 @@ fn run() !void {
             next_reconnect_at_ms = 0;
             reconnect_backoff_ms = 500;
             ctx.state = .disconnected;
+            ctx.clearGatewayIdentity();
             ctx.clearPendingRequests();
             ctx.clearAllSessionStates();
             ctx.clearNodes();
@@ -1654,6 +1658,7 @@ fn run() !void {
                 }
                 ws_client.disconnect();
                 ctx.state = .disconnected;
+                ctx.clearGatewayIdentity();
                 ctx.clearError();
                 next_ping_at_ms = 0;
             } else if (result.ok) {
@@ -1665,6 +1670,7 @@ fn run() !void {
                 };
             } else {
                 ctx.state = .error_state;
+                ctx.clearGatewayIdentity();
                 if (result.err) |err_msg| {
                     ctx.setError(err_msg) catch {};
                     allocator.free(err_msg);

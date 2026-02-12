@@ -95,7 +95,7 @@ pub fn build(b: *std.Build) void {
     // without pulling in UI deps.
     if (!build_client) {
         const cli_module = b.createModule(.{
-            .root_source_file = b.path("src/main_cli.zig"),
+            .root_source_file = b.path("main_cli_entry.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -233,7 +233,7 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&brushed_metal_example_theme.step);
 
         const cli_module = b.createModule(.{
-            .root_source_file = b.path("src/main_cli.zig"),
+            .root_source_file = b.path("main_cli_entry.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

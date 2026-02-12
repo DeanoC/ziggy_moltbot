@@ -19,6 +19,7 @@ const win_service = @import("windows/service.zig");
 const win_scm = if (builtin.os.tag == .windows) @import("windows/scm_service.zig") else struct {};
 const win_scm_host = if (builtin.os.tag == .windows) @import("windows/scm_host.zig") else struct {};
 const win_control_pipe = if (builtin.os.tag == .windows) @import("windows/control_pipe_client.zig") else struct {};
+const win_console_window = if (builtin.os.tag == .windows) @import("windows/console_window.zig") else struct {};
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
@@ -115,6 +116,177 @@ fn runSelfCliCommand(allocator: std.mem.Allocator, sub_args: []const []const u8)
     if (code != 0) return error.CommandFailed;
 }
 
+const SelfCliCommandResult = struct {
+    exit_code: u8,
+    stdout: []u8,
+    stderr: []u8,
+
+    fn deinit(self: *SelfCliCommandResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runSelfCliCommandCapture(allocator: std.mem.Allocator, sub_args: []const []const u8) !SelfCliCommandResult {
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, self_exe);
+    try argv.appendSlice(allocator, sub_args);
+
+    var child = std.process.Child.init(argv.items, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    if (builtin.os.tag == .windows) {
+        child.create_no_window = true;
+    }
+
+    try child.spawn();
+    errdefer _ = child.kill() catch {};
+
+    var stdout_buf = std.ArrayList(u8).empty;
+    defer stdout_buf.deinit(allocator);
+    var stderr_buf = std.ArrayList(u8).empty;
+    defer stderr_buf.deinit(allocator);
+    try child.collectOutput(allocator, &stdout_buf, &stderr_buf, 256 * 1024);
+
+    const term = try child.wait();
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
+
+    return .{
+        .exit_code = code,
+        .stdout = try stdout_buf.toOwnedSlice(allocator),
+        .stderr = try stderr_buf.toOwnedSlice(allocator),
+    };
+}
+
+fn writeCapturedOutput(result: *const SelfCliCommandResult) void {
+    if (result.stdout.len > 0) {
+        _ = std.fs.File.stdout().write(result.stdout) catch {};
+    }
+    if (result.stderr.len > 0) {
+        _ = std.fs.File.stderr().write(result.stderr) catch {};
+    }
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            const a = std.ascii.toLower(haystack[i + j]);
+            const b = std.ascii.toLower(needle[j]);
+            if (a != b) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
+fn outputSuggestsAccessDenied(buf: []const u8) bool {
+    return containsIgnoreCase(buf, "access denied") or
+        containsIgnoreCase(buf, "requires elevation") or
+        containsIgnoreCase(buf, "elevation required") or
+        containsIgnoreCase(buf, "error_access_denied");
+}
+
+fn appendPowershellSingleQuoted(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    try out.append(allocator, '\'');
+    for (value) |c| {
+        if (c == '\'') {
+            try out.appendSlice(allocator, "''");
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    try out.append(allocator, '\'');
+}
+
+fn runSelfCliCommandElevatedWindows(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    if (builtin.os.tag != .windows) return error.Unsupported;
+
+    const self_exe = try std.fs.selfExePathAlloc(allocator);
+    defer allocator.free(self_exe);
+
+    var quoted_exe = std.ArrayList(u8).empty;
+    defer quoted_exe.deinit(allocator);
+    try appendPowershellSingleQuoted(allocator, &quoted_exe, self_exe);
+
+    var quoted_args = std.ArrayList(u8).empty;
+    defer quoted_args.deinit(allocator);
+    var first_arg = true;
+    for (sub_args) |arg| {
+        // PowerShell Start-Process rejects null/empty elements in -ArgumentList.
+        // Skip empty entries when elevating; profile apply already persists config before this path.
+        if (arg.len == 0) continue;
+        if (!first_arg) try quoted_args.append(allocator, ',');
+        try appendPowershellSingleQuoted(allocator, &quoted_args, arg);
+        first_arg = false;
+    }
+
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath {s} -ArgumentList @({s}) -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        .{ quoted_exe.items, quoted_args.items },
+    );
+    defer allocator.free(script);
+
+    const argv = &[_][]const u8{
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    };
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    child.create_no_window = true;
+    try child.spawn();
+
+    const term = try child.wait();
+    const code: u8 = switch (term) {
+        .Exited => |c| c,
+        else => 255,
+    };
+    if (code != 0) return error.CommandFailed;
+}
+
+fn runSelfCliCommandWithWindowsElevationFallback(allocator: std.mem.Allocator, sub_args: []const []const u8) !void {
+    var result = try runSelfCliCommandCapture(allocator, sub_args);
+    defer result.deinit(allocator);
+
+    writeCapturedOutput(&result);
+    if (result.exit_code == 0) return;
+
+    if (builtin.os.tag == .windows and
+        (outputSuggestsAccessDenied(result.stderr) or outputSuggestsAccessDenied(result.stdout)))
+    {
+        logger.warn("Command needs elevation; re-running with UAC prompt.", .{});
+        try runSelfCliCommandElevatedWindows(allocator, sub_args);
+        return;
+    }
+
+    return error.CommandFailed;
+}
+
 fn appendProfileCommonArgs(
     allocator: std.mem.Allocator,
     argv: *std.ArrayList([]const u8),
@@ -130,12 +302,16 @@ fn appendProfileCommonArgs(
         try argv.append(allocator, config_path);
     }
     if (override_url) |url| {
-        try argv.append(allocator, "--url");
-        try argv.append(allocator, url);
+        if (url.len > 0) {
+            try argv.append(allocator, "--url");
+            try argv.append(allocator, url);
+        }
     }
     if (override_token) |tok| {
-        try argv.append(allocator, "--gateway-token");
-        try argv.append(allocator, tok);
+        if (tok.len > 0) {
+            try argv.append(allocator, "--gateway-token");
+            try argv.append(allocator, tok);
+        }
     }
     if (override_insecure orelse false) {
         try argv.append(allocator, "--insecure-tls");
@@ -204,6 +380,16 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
     // start/stop/restart even when running headless.
     if (builtin.os.tag != .windows) return error.Unsupported;
 
+    const hide_console = blk: {
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--hide-console")) break :blk true;
+        }
+        break :blk false;
+    };
+    if (hide_console) {
+        win_console_window.hideIfPresent();
+    }
+
     var shared = supervisor_pipe.Shared{};
     supervisor_pipe.spawnServerThread(allocator, &shared) catch {};
 
@@ -240,20 +426,47 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
     const self_exe = try std.fs.selfExePathAlloc(allocator);
     defer allocator.free(self_exe);
 
-    // Guard against multiple supervisors fighting over the pipe / child process.
-    const mutex = win_single_instance.acquireNodeSupervisorMutex(allocator) catch |err| {
-        wrap.print("{d} [wrapper] supervisor mutex error: {}\n", .{ std.time.timestamp(), err }) catch {};
+    const owner_pid: u32 = std.os.windows.GetCurrentProcessId();
+
+    // Guard against duplicate runner/service owners at startup.
+    const mutex = win_single_instance.acquireNodeOwnerMutex(allocator) catch |err| {
+        wrap.print(
+            "{d} [wrapper] single_instance_error mode=runner pid={d} err={s}\n",
+            .{ std.time.timestamp(), owner_pid, @errorName(err) },
+        ) catch {};
         return err;
     };
-    // Keep handle open for lifetime of supervisor.
-    defer std.os.windows.CloseHandle(mutex.handle);
+    const owns_single_instance = !mutex.already_running;
+
+    // Keep handle open for the lifetime of this process.
+    defer {
+        if (owns_single_instance) {
+            wrap.print(
+                "{d} [wrapper] single_instance_owner_released mode=runner pid={d} lock={s}\n",
+                .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+            ) catch {};
+        }
+        std.os.windows.CloseHandle(mutex.handle);
+    }
 
     if (mutex.already_running) {
         wrap.print(
-            "{d} [wrapper] supervisor already running (mutex {s}); exiting\n",
-            .{ std.time.timestamp(), mutex.name_used_utf8 },
+            "{d} [wrapper] single_instance_denied_existing_owner mode=runner pid={d} lock={s}\n",
+            .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
         ) catch {};
         return;
+    }
+
+    wrap.print(
+        "{d} [wrapper] single_instance_acquired mode=runner pid={d} lock={s}\n",
+        .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+    ) catch {};
+
+    if (std.mem.startsWith(u8, mutex.name_used_utf8, "Local\\")) {
+        wrap.print(
+            "{d} [wrapper] single_instance_scope_local mode=runner pid={d} lock={s}\n",
+            .{ std.time.timestamp(), owner_pid, mutex.name_used_utf8 },
+        ) catch {};
     }
 
     wrap.print(
@@ -380,81 +593,12 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 var cli_log_level: std.log.Level = .warn;
 
 const usage =
-    \\ZiggyStarClaw CLI
-    \\
-    \\Usage:
-    \\  ziggystarclaw-cli [options]
-    \\
-    \\Options:
-    \\  --url <ws/wss url>       Override server URL
-    \\  --token <token>          Override auth token (alias: --auth-token)
-    \\  --gateway-token <token>  Alias for --token
-    \\  --log-level <level>      Log level (debug|info|warn|error)
-    \\  --config <path>          Config file path (default: ~/.config/ziggystarclaw/config.json or %APPDATA%\\ZiggyStarClaw\\config.json)
-    \\  --update-url <url>       Override update manifest URL
-    \\  --print-update-url       Print normalized update manifest URL and exit
-    \\  --insecure-tls           Disable TLS verification
-    \\  --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
-    \\  --send <message>         Send a chat message and exit
-    \\  --session <key>          Target session for send (uses default if not set)
-    \\  --list-sessions          List available sessions and exit
-    \\  --use-session <key>      Set default session and exit
-    \\  --list-nodes             List available nodes and exit
-    \\  --node <id>              Target node for node commands
-    \\  --use-node <id>          Set default node and exit
-    \\  --run <command>          Run a command on the target node (system.run)
-    \\  --which <name>           Locate executable on node PATH (system.which)
-    \\  --notify <title>         Show a notification on the node (system.notify)
-    \\  --ps                     List node background processes (process.list)
-    \\  --spawn <command>        Spawn background process on node (process.spawn)
-    \\  --poll <processId>       Poll background process status (process.poll)
-    \\  --stop <processId>       Stop background process (process.stop)
-    \\  --canvas-present         Show canvas (canvas.present)
-    \\  --canvas-hide            Hide canvas (canvas.hide)
-    \\  --canvas-navigate <url>  Navigate canvas to URL (canvas.navigate)
-    \\  --canvas-eval <js>       Eval JS in canvas (canvas.eval)
-    \\  --canvas-snapshot <path> Save canvas snapshot to path on node (canvas.snapshot)
-    \\  --exec-approvals-get     Show node exec approvals (system.execApprovals.get)
-    \\  --exec-allow <command>   Add an entry to node exec allowlist (system.execApprovals.set)
-    \\  --exec-allow-file <path> Add entries from JSON file to node exec allowlist
-    \\  --list-approvals         List pending approvals and exit
-    \\  --approve <id>           Approve an exec request by ID
-    \\  --deny <id>              Deny an exec request by ID
-    \\  --check-update-only      Fetch update manifest and exit
-    \\  --interactive            Start interactive REPL mode
-    \\  --node-mode              Run as a capability node (see --node-mode-help)
-    \\  --node-register          Interactive: pair as node (connect role=node and persist token)
-    \\  --wait-for-approval      With --node-register: keep retrying until approved
-    \\  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
-    \\
-    \\Node runner (Windows)
-    \\  node runner install --mode <m>  Switch runner mode: service|session
-    \\  node runner start|stop|status   Control the active runner mode
-    \\  node session <action>           Manage user-session runner: install|uninstall|start|stop|status
-    \\  node profile apply --profile <p> Installer profile apply: client|service|session
-    \\
-    \\Tray startup (Windows)
-    \\  tray install-startup|uninstall-startup|start|stop|status
-    \\
-    \\Node service helpers (Windows SCM service / Linux systemd)
-    \\  node service <action>      Convenience: install|uninstall|start|stop|status
-    \\  --node-service-install    Install and enable node-mode background service
-    \\  --node-service-uninstall  Uninstall the background service
-    \\  --node-service-start      Start the service now
-    \\  --node-service-stop       Stop the service
-    \\  --node-service-status     Show service status
-    \\  --node-service-mode <m>   onlogon|onstart (default: onstart on Windows; onlogon elsewhere)
-    \\  --node-service-name <n>   Override service name (default: ZiggyStarClaw Node)
-    \\  --extract-wsz <path>      Extract a Winamp .wsz skin to a directory (zip)
-    \\  --extract-dest <path>     Destination directory for --extract-wsz
-    \\
-    \\  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
-    \\  --version                Print version and exit
-    \\  -h, --help               Show help
-    \\  --node-mode-help         Show node mode help
-    \\  --operator-mode-help     Show operator mode help
-    \\
-;
+    @embedFile("../docs/cli/01-overview.md") ++ "\n" ++
+    @embedFile("../docs/cli/02-options.md") ++ "\n" ++
+    @embedFile("../docs/cli/03-node-runner.md") ++ "\n" ++
+    @embedFile("../docs/cli/04-tray-startup.md") ++ "\n" ++
+    @embedFile("../docs/cli/05-node-service.md") ++ "\n" ++
+    @embedFile("../docs/cli/06-global-flags.md");
 
 const ReplCommand = enum {
     help,
@@ -495,6 +639,7 @@ pub fn main() !void {
     var config_path_set = false;
     var override_url: ?[]const u8 = null;
     var override_token: ?[]const u8 = null;
+    var override_token_set = false;
     var override_update_url: ?[]const u8 = null;
     var override_insecure: ?bool = null;
     var read_timeout_ms: u32 = 15_000;
@@ -754,11 +899,12 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
-            override_url = args[i];
+            override_url = if (args[i].len > 0) args[i] else null;
         } else if (std.mem.eql(u8, arg, "--token") or std.mem.eql(u8, arg, "--auth-token") or std.mem.eql(u8, arg, "--auth_token") or std.mem.eql(u8, arg, "--gateway-token")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             override_token = args[i];
+            override_token_set = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1101,12 +1247,52 @@ pub fn main() !void {
                 _ = std.fs.File.stdout().write("Applied profile: client (no node runner, no tray startup)\n") catch {};
                 return;
             },
-            .service, .session => |mode| {
-                const mode_label: []const u8 = if (mode == .service) "service" else "session";
-
+            .service => {
                 var install_cmd = std.ArrayList([]const u8).empty;
                 defer install_cmd.deinit(allocator);
-                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", mode_label });
+                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", "service" });
+                try appendProfileCommonArgs(
+                    allocator,
+                    &install_cmd,
+                    config_path_set,
+                    config_path,
+                    override_url,
+                    override_token,
+                    override_insecure,
+                    node_service_name,
+                );
+                try runSelfCliCommandWithWindowsElevationFallback(allocator, install_cmd.items);
+
+                var start_cmd = std.ArrayList([]const u8).empty;
+                defer start_cmd.deinit(allocator);
+                try start_cmd.appendSlice(allocator, &.{ "node", "runner", "start" });
+                if (node_service_name) |name| {
+                    try start_cmd.appendSlice(allocator, &.{ "--node-service-name", name });
+                }
+                try runSelfCliCommand(allocator, start_cmd.items);
+
+                installTrayStartup(allocator) catch |err| {
+                    if (err == error.AccessDenied) {
+                        logger.warn("Tray startup install skipped: access denied. You can still launch tray manually or install startup later.", .{});
+                    } else {
+                        logger.warn("Tray startup install skipped: {}", .{err});
+                    }
+                };
+                _ = startTrayStartupTask(allocator) catch |err| {
+                    logger.warn("Tray startup start skipped: {}", .{err});
+                };
+
+                var out = std.fs.File.stdout().deprecatedWriter();
+                try out.print(
+                    "Applied profile: {s} (runner active; tray startup configured when permitted)\n",
+                    .{"service"},
+                );
+                return;
+            },
+            .session => {
+                var install_cmd = std.ArrayList([]const u8).empty;
+                defer install_cmd.deinit(allocator);
+                try install_cmd.appendSlice(allocator, &.{ "node", "runner", "install", "--mode", "session" });
                 try appendProfileCommonArgs(
                     allocator,
                     &install_cmd,
@@ -1129,17 +1315,19 @@ pub fn main() !void {
 
                 installTrayStartup(allocator) catch |err| {
                     if (err == error.AccessDenied) {
-                        logger.err("Tray startup install failed: access denied.", .{});
-                        return error.AccessDenied;
+                        logger.warn("Tray startup install skipped: access denied. You can still launch tray manually or install startup later.", .{});
+                    } else {
+                        logger.warn("Tray startup install skipped: {}", .{err});
                     }
-                    return err;
                 };
-                _ = startTrayStartupTask(allocator) catch {};
+                _ = startTrayStartupTask(allocator) catch |err| {
+                    logger.warn("Tray startup start skipped: {}", .{err});
+                };
 
                 var out = std.fs.File.stdout().deprecatedWriter();
                 try out.print(
-                    "Applied profile: {s} (runner active, tray startup installed)\n",
-                    .{mode_label},
+                    "Applied profile: {s} (runner active; tray startup configured when permitted)\n",
+                    .{"session"},
                 );
                 return;
             },
@@ -1276,18 +1464,32 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        var cfg_invalid = false;
+        if (cfg_exists) {
+            var parsed = unified_config.load(allocator, node_cfg_path) catch |err| switch (err) {
+                error.ConfigNotFound => null,
+                error.SyntaxError, error.UnknownField => blk: {
+                    cfg_invalid = true;
+                    break :blk null;
+                },
+                else => return err,
+            };
+            if (parsed) |*loaded| loaded.deinit(allocator);
+        }
         const storage_scope: node_register.StorageScope = .user;
 
-        if (!cfg_exists) {
-            if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
-            } else if (override_url != null and override_token == null) {
-                const secret_prompt = @import("utils/secret_prompt.zig");
-                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
-                defer allocator.free(tok);
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
-            } else if (override_url == null and override_token != null) {
+        if (!cfg_exists or cfg_invalid) {
+            if (override_url != null and override_token_set) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token orelse "", storage_scope);
+            } else if (override_url != null and !override_token_set) {
+                // Non-interactive-friendly behavior: allow empty token when URL is provided.
+                // Gateway deployments that require auth token will reject at connect/register time.
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
+            } else if (override_url == null and override_token_set) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            } else if (cfg_invalid) {
+                logger.err("Config is invalid at {s}; pass --url (and optional --gateway-token) to repair non-interactively.", .{node_cfg_path});
                 return error.InvalidArguments;
             }
         }
@@ -1440,27 +1642,39 @@ pub fn main() !void {
             };
             break :blk true;
         };
+        var cfg_invalid = false;
+        if (cfg_exists) {
+            var parsed = unified_config.load(allocator, node_cfg_path) catch |err| switch (err) {
+                error.ConfigNotFound => null,
+                error.SyntaxError, error.UnknownField => blk: {
+                    cfg_invalid = true;
+                    break :blk null;
+                },
+                else => return err,
+            };
+            if (parsed) |*loaded| loaded.deinit(allocator);
+        }
         const storage_scope: node_register.StorageScope = if (builtin.os.tag == .windows and node_service_mode == .onstart)
             .system
         else
             .user;
 
-        if (!cfg_exists) {
+        if (!cfg_exists or cfg_invalid) {
             // Bootstrap config non-interactively when possible.
             //
             // If only --url is provided, prompt only for the auth token (so users don't get stuck
             // at a URL prompt even though they already passed one).
-            if (override_url != null and override_token != null) {
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token.?, storage_scope);
-            } else if (override_url != null and override_token == null) {
-                const secret_prompt = @import("utils/secret_prompt.zig");
-                const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
-                defer allocator.free(tok);
-                // Token may be empty when connecting via Tailscale Serve with gateway.auth.allowTailscale=true.
-                // If the gateway requires a shared token, the subsequent connect/register step will fail with auth.
-                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, tok, storage_scope);
-            } else if (override_url == null and override_token != null) {
+            if (override_url != null and override_token_set) {
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, override_token orelse "", storage_scope);
+            } else if (override_url != null and !override_token_set) {
+                // Non-interactive-friendly behavior: allow empty token when URL is provided.
+                // Gateway deployments that require auth token will reject at connect/register time.
+                try node_register.writeDefaultConfig(allocator, node_cfg_path, override_url.?, "", storage_scope);
+            } else if (override_url == null and override_token_set) {
                 logger.err("--gateway-token was provided without --url; please pass --url too (e.g. wss://wizball.tail*.ts.net)", .{});
+                return error.InvalidArguments;
+            } else if (cfg_invalid) {
+                logger.err("Config is invalid at {s}; pass --url (and optional --gateway-token) to repair non-interactively.", .{node_cfg_path});
                 return error.InvalidArguments;
             }
         }
@@ -1680,7 +1894,8 @@ pub fn main() !void {
             cfg.server_url = url;
         }
     }
-    if (override_token) |token| {
+    if (override_token_set) {
+        const token = override_token orelse "";
         allocator.free(cfg.token);
         cfg.token = try allocator.dupe(u8, token);
     } else {

@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const build_options = @import("build_options");
 const scm_service = @import("windows/scm_service.zig");
+const win_task = @import("windows/service.zig");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
@@ -74,17 +75,19 @@ var g_tip_buf: [128]u16 = undefined;
 fn trayMain(allocator: std.mem.Allocator) !void {
     g_allocator = allocator;
 
-    // Single instance (best-effort)
-    const mutex_name = try utf16Z(allocator, "ZiggyStarClaw.Tray.Singleton");
+    // Single instance guard (best-effort).
+    const tray_lock_name = "ZiggyStarClaw.Tray.Singleton";
+    const mutex_name = try utf16Z(allocator, tray_lock_name);
     defer allocator.free(mutex_name);
     const hMutex = win.CreateMutexW(null, win.TRUE, mutex_name.ptr);
     if (hMutex != null) {
         // ERROR_ALREADY_EXISTS = 183
         if (win.GetLastError() == 183) {
-            // Another instance is running.
+            logLine("single_instance_denied_existing_owner mode=tray lock=ZiggyStarClaw.Tray.Singleton");
             _ = win.CloseHandle(hMutex);
             return;
         }
+        logLine("single_instance_acquired mode=tray lock=ZiggyStarClaw.Tray.Singleton");
     }
 
     const hInstance = win.GetModuleHandleW(null);
@@ -150,7 +153,10 @@ fn trayMain(allocator: std.mem.Allocator) !void {
         _ = win.DispatchMessageW(&msg);
     }
 
-    if (hMutex != null) _ = win.CloseHandle(hMutex);
+    if (hMutex != null) {
+        logLine("single_instance_owner_released mode=tray lock=ZiggyStarClaw.Tray.Singleton");
+        _ = win.CloseHandle(hMutex);
+    }
 }
 
 fn refreshStatus() void {
@@ -391,7 +397,11 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
 
     if (mode == .session) {
         if (try queryServiceStatePipe(allocator)) |st| return st;
+
+        const task_installed = win_task.taskInstalled(allocator, name) catch false;
         if (try queryServiceStatePowerShell(allocator)) |ts| {
+            // PowerShell task-state probing can fail/lie in some environments.
+            if (ts == .not_installed and task_installed) return .stopped;
             return switch (ts) {
                 .not_installed => .not_installed,
                 .running => .running,
@@ -399,6 +409,7 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
                 else => .unknown,
             };
         }
+        if (task_installed) return .stopped;
         return .unknown;
     }
 
@@ -430,17 +441,39 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
 fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     const name: ?[]const u8 = "ZiggyStarClaw Node";
 
-    const st = scm_service.queryStartType(allocator, name) catch |err| switch (err) {
+    var has_service = false;
+    var service_missing_confirmed = false;
+    var service_query_denied = false;
+
+    const svc = scm_service.queryService(allocator, name) catch |err| switch (err) {
         scm_service.ServiceError.NotInstalled => null,
+        scm_service.ServiceError.AccessDenied => blk: {
+            service_query_denied = true;
+            break :blk null;
+        },
         else => return .unknown,
     };
-    const has_service = (st != null);
+    if (svc) |q| {
+        if (q.state == .not_installed) {
+            service_missing_confirmed = true;
+        } else {
+            has_service = true;
+        }
+    } else if (!service_query_denied) {
+        service_missing_confirmed = true;
+    }
 
     // Session mode is indicated by either:
     // - the Scheduled Task being present (install-time artifact)
     // - the supervisor control pipe responding (runtime artifact)
     const task_state = queryServiceStatePowerShell(allocator) catch null;
-    const has_task = if (task_state) |ts| ts != .not_installed else false;
+    const task_installed_opt: ?bool = win_task.taskInstalled(allocator, name) catch null;
+    const has_task = if (task_installed_opt) |installed|
+        installed
+    else if (task_state) |ts|
+        ts != .not_installed
+    else
+        false;
 
     const has_pipe = (queryServiceStatePipe(allocator) catch null) != null;
 
@@ -454,9 +487,17 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     }
     if (has_session) return .session;
 
-    if (task_state) |ts| {
-        // PowerShell was available, and it confirmed the task is missing.
-        if (ts == .not_installed) return .not_installed;
+    if (service_query_denied) {
+        // Avoid false "not installed" when service query was blocked by permissions.
+        return .unknown;
+    }
+
+    if (service_missing_confirmed) {
+        if (task_installed_opt) |installed| {
+            if (!installed) return .not_installed;
+        } else if (task_state) |ts| {
+            if (ts == .not_installed) return .not_installed;
+        }
     }
 
     return .unknown;

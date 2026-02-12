@@ -80,13 +80,71 @@ pub const CameraSnapError = error{
     OutOfMemory,
 };
 
+pub const CameraClipFormat = enum {
+    mp4,
+
+    pub fn toString(self: CameraClipFormat) []const u8 {
+        return switch (self) {
+            .mp4 => "mp4",
+        };
+    }
+
+    pub fn fromString(raw: []const u8) ?CameraClipFormat {
+        if (std.ascii.eqlIgnoreCase(raw, "mp4")) {
+            return .mp4;
+        }
+        return null;
+    }
+
+    fn fileExtension(self: CameraClipFormat) []const u8 {
+        return switch (self) {
+            .mp4 => "mp4",
+        };
+    }
+};
+
+pub const CameraClipRequest = struct {
+    format: CameraClipFormat = .mp4,
+    durationMs: u32 = 3000,
+    includeAudio: bool = true,
+    deviceId: ?[]const u8 = null,
+    preferredPosition: ?CameraPosition = null,
+};
+
+pub const CameraClipResult = struct {
+    format: CameraClipFormat,
+    base64: []const u8,
+    durationMs: u32,
+    hasAudio: bool,
+};
+
+pub const CameraClipError = error{
+    NotSupported,
+    PowershellNotFound,
+    FfmpegNotFound,
+    DeviceNotFound,
+    InvalidParams,
+    CommandFailed,
+    OutOfMemory,
+};
+
+const CameraCaptureResolveError = error{
+    NotSupported,
+    PowershellNotFound,
+    DeviceNotFound,
+    CommandFailed,
+    OutOfMemory,
+};
+
 pub const CameraBackendSupport = struct {
     list: bool,
     snap: bool,
+    clip: bool,
 };
 
 const list_backend_name = "powershell-cim";
 const snap_backend_name = "ffmpeg-dshow";
+const clip_backend_name = "ffmpeg-dshow";
 
 /// Best-effort Windows camera enumeration.
 ///
@@ -129,10 +187,10 @@ pub fn freeCameraDevices(allocator: std.mem.Allocator, devices: []CameraDevice) 
 /// Detect which Windows camera features should be advertised.
 ///
 /// - `list` requires a working PowerShell executable.
-/// - `snap` requires both PowerShell (for deviceId -> name mapping) and ffmpeg.
+/// - `snap`/`clip` require both PowerShell (for deviceId -> name mapping) and ffmpeg.
 pub fn detectBackendSupport(allocator: std.mem.Allocator) CameraBackendSupport {
     if (builtin.target.os.tag != .windows) {
-        return .{ .list = false, .snap = false };
+        return .{ .list = false, .snap = false, .clip = false };
     }
 
     const has_powershell = hasWorkingPowershell(allocator);
@@ -141,6 +199,7 @@ pub fn detectBackendSupport(allocator: std.mem.Allocator) CameraBackendSupport {
     return .{
         .list = has_powershell,
         .snap = has_powershell and has_ffmpeg,
+        .clip = has_powershell and has_ffmpeg,
     };
 }
 
@@ -151,7 +210,7 @@ pub fn snapCamera(allocator: std.mem.Allocator, req: CameraSnapRequest) CameraSn
     if (!support.list) return error.PowershellNotFound;
     if (!support.snap) return error.FfmpegNotFound;
 
-    const camera_name = try resolveCameraNameForSnap(allocator, req.deviceId);
+    const camera_name = try resolveCameraNameForCapture(allocator, req.deviceId, null);
     defer allocator.free(camera_name);
 
     const temp_dir = getTempDirAlloc(allocator) catch |err| switch (err) {
@@ -209,7 +268,87 @@ pub fn snapCamera(allocator: std.mem.Allocator, req: CameraSnapRequest) CameraSn
     };
 }
 
-fn resolveCameraNameForSnap(allocator: std.mem.Allocator, wanted_device_id: ?[]const u8) CameraSnapError![]u8 {
+pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraClipError!CameraClipResult {
+    if (builtin.target.os.tag != .windows) return error.NotSupported;
+
+    const support = detectBackendSupport(allocator);
+    if (!support.list) return error.PowershellNotFound;
+    if (!support.clip) return error.FfmpegNotFound;
+
+    if (req.durationMs == 0 or req.durationMs > 60_000) return error.InvalidParams;
+
+    if (req.includeAudio) {
+        logger.warn("camera.clip backend={s}: includeAudio requested but audio capture is not implemented yet; capturing video-only", .{clip_backend_name});
+    }
+
+    const camera_name = try resolveCameraNameForCapture(allocator, req.deviceId, req.preferredPosition);
+    defer allocator.free(camera_name);
+
+    const temp_dir = getTempDirAlloc(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.CommandFailed,
+    };
+    defer allocator.free(temp_dir);
+
+    const now_ms = std.time.milliTimestamp();
+    const file_name = try std.fmt.allocPrint(
+        allocator,
+        "zsc-camera-clip-{d}.{s}",
+        .{ now_ms, req.format.fileExtension() },
+    );
+    defer allocator.free(file_name);
+
+    const out_path = try std.fs.path.join(allocator, &.{ temp_dir, file_name });
+    defer allocator.free(out_path);
+    defer std.fs.deleteFileAbsolute(out_path) catch {};
+
+    const input_spec = try formatDshowVideoInputAlloc(allocator, camera_name);
+    defer allocator.free(input_spec);
+
+    try runFfmpegCameraClip(allocator, req, input_spec, out_path);
+
+    const file = std.fs.openFileAbsolute(out_path, .{}) catch {
+        logger.err("camera.clip backend={s} output file missing: {s}", .{ clip_backend_name, out_path });
+        return error.CommandFailed;
+    };
+    defer file.close();
+
+    const max_clip_bytes: usize = 300 * 1024;
+
+    const video_bytes = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            logger.err("camera.clip backend={s} failed to read output video: {s}", .{ clip_backend_name, @errorName(err) });
+            return error.CommandFailed;
+        },
+    };
+    defer allocator.free(video_bytes);
+
+    if (video_bytes.len > max_clip_bytes) {
+        logger.warn(
+            "camera.clip backend={s} output too large for gateway frame (bytes={d}, cap={d})",
+            .{ clip_backend_name, video_bytes.len, max_clip_bytes },
+        );
+        return error.CommandFailed;
+    }
+
+    const b64_len = std.base64.standard.Encoder.calcSize(video_bytes.len);
+    const b64_buf = allocator.alloc(u8, b64_len) catch return error.OutOfMemory;
+    _ = std.base64.standard.Encoder.encode(b64_buf, video_bytes);
+
+    return .{
+        .format = req.format,
+        .base64 = b64_buf,
+        .durationMs = req.durationMs,
+        .hasAudio = false,
+    };
+}
+
+fn resolveCameraNameForCapture(
+    allocator: std.mem.Allocator,
+    wanted_device_id: ?[]const u8,
+    preferred_position: ?CameraPosition,
+) CameraCaptureResolveError![]u8 {
     const devices = listCameras(allocator) catch |err| switch (err) {
         error.NotSupported => return error.NotSupported,
         error.PowershellNotFound => return error.PowershellNotFound,
@@ -230,28 +369,19 @@ fn resolveCameraNameForSnap(allocator: std.mem.Allocator, wanted_device_id: ?[]c
         return error.DeviceNotFound;
     }
 
+    if (preferred_position) |pos| {
+        for (devices) |device| {
+            if (device.position != null and device.position.? == pos) {
+                return allocator.dupe(u8, device.name) catch return error.OutOfMemory;
+            }
+        }
+    }
+
     return allocator.dupe(u8, devices[0].name) catch return error.OutOfMemory;
 }
 
 fn formatDshowVideoInputAlloc(allocator: std.mem.Allocator, camera_name: []const u8) ![]u8 {
-    const escaped = try escapeDoubleQuotesAlloc(allocator, camera_name);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, "video=\"{s}\"", .{escaped});
-}
-
-fn escapeDoubleQuotesAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
-
-    for (input) |ch| {
-        if (ch == '"') {
-            try out.appendSlice(allocator, "\\\"");
-        } else {
-            try out.append(allocator, ch);
-        }
-    }
-
-    return out.toOwnedSlice(allocator);
+    return std.fmt.allocPrint(allocator, "video={s}", .{camera_name});
 }
 
 fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -409,6 +539,8 @@ fn runFfmpegSingleFrame(
             "1",
             "-q:v",
             "2",
+            "-update",
+            "1",
             "-y",
             out_path,
         };
@@ -423,6 +555,8 @@ fn runFfmpegSingleFrame(
             "-i",
             input_spec,
             "-frames:v",
+            "1",
+            "-update",
             "1",
             "-y",
             out_path,
@@ -453,6 +587,94 @@ fn runFfmpegSingleFrame(
         const exit_code = childTermToExitCode(res.term);
         if (exit_code != 0) {
             logger.warn("camera.snap backend={s} failed via {s}: exit={d} stderr={s}", .{ snap_backend_name, exe, exit_code, res.stderr });
+            allocator.free(res.stdout);
+            allocator.free(res.stderr);
+            last_error = error.CommandFailed;
+            continue;
+        }
+
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+        return;
+    }
+
+    if (!saw_executable) return error.FfmpegNotFound;
+    return last_error orelse error.CommandFailed;
+}
+
+fn runFfmpegCameraClip(
+    allocator: std.mem.Allocator,
+    req: CameraClipRequest,
+    input_spec: []const u8,
+    out_path: []const u8,
+) CameraClipError!void {
+    const duration_arg = try std.fmt.allocPrint(
+        allocator,
+        "{d}.{d:0>3}",
+        .{ req.durationMs / 1000, req.durationMs % 1000 },
+    );
+    defer allocator.free(duration_arg);
+
+    var saw_executable = false;
+    var last_error: ?CameraClipError = null;
+
+    for (ffmpegCandidates()) |exe| {
+        const mp4_argv = &[_][]const u8{
+            exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "dshow",
+            "-i",
+            input_spec,
+            "-t",
+            duration_arg,
+            "-an",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            "10",
+            "-c:v",
+            "mpeg4",
+            "-b:v",
+            "450k",
+            "-maxrate",
+            "450k",
+            "-bufsize",
+            "900k",
+            "-q:v",
+            "7",
+            "-movflags",
+            "+faststart",
+            "-y",
+            out_path,
+        };
+
+        const argv = switch (req.format) {
+            .mp4 => mp4_argv,
+        };
+
+        const res = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = argv,
+            .max_output_bytes = 1024 * 1024,
+        }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                saw_executable = true;
+                logger.warn("camera.clip backend={s} failed to start {s}: {s}", .{ clip_backend_name, exe, @errorName(err) });
+                last_error = error.CommandFailed;
+                continue;
+            },
+        };
+
+        saw_executable = true;
+
+        const exit_code = childTermToExitCode(res.term);
+        if (exit_code != 0) {
+            logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
             allocator.free(res.stdout);
             allocator.free(res.stderr);
             last_error = error.CommandFailed;
@@ -672,6 +894,12 @@ test "CameraSnapFormat.fromString accepts jpeg/jpg/png" {
     try std.testing.expect(CameraSnapFormat.fromString("webp") == null);
 }
 
+test "CameraClipFormat.fromString accepts mp4" {
+    try std.testing.expect(CameraClipFormat.fromString("mp4").? == .mp4);
+    try std.testing.expect(CameraClipFormat.fromString("MP4").? == .mp4);
+    try std.testing.expect(CameraClipFormat.fromString("webm") == null);
+}
+
 test "parsePngDimensions reads width/height from IHDR" {
     const png_bytes = [_]u8{
         0x89, 'P',  'N',  'G',  '\r', '\n', 0x1A, '\n',
@@ -721,6 +949,7 @@ test "detectBackendSupport returns false on non-Windows targets" {
         const support = detectBackendSupport(std.testing.allocator);
         try std.testing.expect(!support.list);
         try std.testing.expect(!support.snap);
+        try std.testing.expect(!support.clip);
     }
 }
 
@@ -763,5 +992,11 @@ test "listCameras returns NotSupported on non-Windows targets" {
 test "snapCamera returns NotSupported on non-Windows targets" {
     if (builtin.target.os.tag != .windows) {
         try std.testing.expectError(error.NotSupported, snapCamera(std.testing.allocator, .{}));
+    }
+}
+
+test "clipCamera returns NotSupported on non-Windows targets" {
+    if (builtin.target.os.tag != .windows) {
+        try std.testing.expectError(error.NotSupported, clipCamera(std.testing.allocator, .{}));
     }
 }
