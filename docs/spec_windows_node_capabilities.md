@@ -24,16 +24,16 @@ Implemented now:
 - `camera.clip` is implemented with an ffmpeg+dshow backend (`ffmpeg-dshow`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, hasAudio }`
   - supports `deviceId` selection and best-effort `facing` routing via inferred camera `position`.
-  - supports `format=mp4|webm` (both currently video-only).
-  - current backend is video-only (`hasAudio=false` when `includeAudio=true`).
+  - supports `format=mp4|webm`.
+  - supports best-effort audio capture (`includeAudio=true`) with automatic fallback to video-only output when audio input is unavailable (`hasAudio=false`).
 - `screen.record` is implemented with an ffmpeg+gdigrab backend (`ffmpeg-gdigrab`) and returns OpenClaw-compatible payload:
   - `{ format, base64, durationMs, fps, screenIndex, hasAudio }`
   - supports monitor index mapping via PowerShell Forms monitor metadata (primary monitor normalized to `screenIndex=0`).
-  - current backend is still video-only (`hasAudio=false`).
+  - supports best-effort audio capture (`includeAudio=true`) with automatic fallback to video-only output when audio input is unavailable (`hasAudio=false`).
 
 Not yet implemented on Windows:
-- advanced `camera.clip` coverage (audio capture)
-- advanced `screen.record` coverage (audio capture + non-PowerShell monitor discovery fallback improvements)
+- advanced `camera.clip` coverage (audio source/device selection + richer diagnostics)
+- advanced `screen.record` coverage (non-PowerShell monitor discovery fallback improvements + richer audio source selection)
 - full CDP-based canvas/browser parity (tracked separately in WORK_ITEMS_GLOBAL#12)
 
 ---
@@ -104,7 +104,7 @@ Notes:
   "format": "mp4|webm",
   "base64": "<video bytes base64>",
   "durationMs": 3000,
-  "hasAudio": false
+  "hasAudio": true
 }
 ```
 
@@ -112,7 +112,8 @@ Notes:
 - Current backend is `ffmpeg-dshow`.
 - If `deviceId` is provided, it takes precedence over `facing`.
 - `facing` is best-effort using inferred camera `position`; if no match is found, the backend falls back to the first enumerated camera.
-- `includeAudio` is accepted for compatibility but current MVP emits video-only output (`hasAudio=false`).
+- `includeAudio=true` attempts microphone capture via ffmpeg and returns `hasAudio=true` when successful.
+- When audio capture is unavailable/unsupported on the host, backend falls back to video-only output and returns `hasAudio=false`.
 
 `screen.record` request params (supported subset):
 
@@ -136,7 +137,7 @@ Notes:
   "durationMs": 5000,
   "fps": 12,
   "screenIndex": 0,
-  "hasAudio": false
+  "hasAudio": true
 }
 ```
 
@@ -146,7 +147,8 @@ Notes:
   - primary monitor is normalized to `screenIndex=0`
   - additional monitors follow discovery order
   - if monitor discovery fails, backend falls back to legacy desktop capture for `screenIndex=0` and rejects non-zero indices with actionable errors.
-- `includeAudio` is accepted for compatibility but current MVP emits video-only output (`hasAudio=false`).
+- `includeAudio=true` attempts microphone capture via ffmpeg and returns `hasAudio=true` when successful.
+- When audio capture is unavailable/unsupported on the host, backend falls back to video-only output and returns `hasAudio=false`.
 
 ---
 
@@ -199,7 +201,10 @@ Status:
   - primary monitor normalized to `screenIndex=0`
   - non-primary monitors selectable by index
   - graceful fallback to legacy desktop capture for `screenIndex=0` when monitor discovery is unavailable.
-- Current remaining gap for this slice: optional audio capture (`includeAudio=true` currently logs warning and returns `hasAudio=false`).
+- Follow-up slice landed for best-effort `includeAudio=true` capture with automatic fallback to video-only output when audio input is unavailable.
+- Current remaining gaps for this slice:
+  - non-PowerShell monitor discovery fallback improvements
+  - richer audio source selection (beyond default microphone input)
 
 ### Post-9f4 follow-up — Windows `camera.clip`
 
@@ -212,8 +217,10 @@ Deliverables:
 Status:
 - MVP landed with `ffmpeg-dshow` backend and executable-aware registration/advertisement (`camera.clip` is exposed only when ffmpeg + PowerShell are runnable).
 - Follow-up landed for optional `format=webm` output in addition to `mp4`.
-- Current remaining gap for this slice:
-  - optional audio capture (`includeAudio=true` currently logs warning and returns `hasAudio=false`)
+- Follow-up landed for best-effort `includeAudio=true` capture with automatic fallback to video-only output when audio input is unavailable.
+- Current remaining gaps for this slice:
+  - explicit audio source/device selection
+  - further hardening around device-busy/in-use diagnostics
 
 ### Canvas / browser automation
 
