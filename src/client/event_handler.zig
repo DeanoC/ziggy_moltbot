@@ -135,7 +135,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         if (!frame.value.ok) {
             if (is_sessions) ctx.clearPendingSessionsRequest();
             if (is_history) ctx.clearPendingHistoryById(response_id);
-            if (is_send) ctx.clearPendingSendRequest();
+            if (is_send) ctx.resolvePendingSendRequest(false);
             if (is_nodes) ctx.clearPendingNodesRequest();
             if (is_node_invoke) ctx.clearPendingNodeInvokeRequest();
             if (is_node_describe) ctx.clearPendingNodeDescribeRequest();
@@ -198,7 +198,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             }
 
             if (is_send) {
-                ctx.clearPendingSendRequest();
+                ctx.resolvePendingSendRequest(true);
                 return null;
             }
 
@@ -232,6 +232,11 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 };
                 return null;
             }
+        }
+
+        // Some responses may omit a payload; ensure chat.send is still resolved.
+        if (is_send) {
+            ctx.resolvePendingSendRequest(true);
         }
         return null;
     }
@@ -469,6 +474,7 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
         if (text == null) return;
 
         if (ctx.findSessionState(session_key)) |state_ptr| {
+            state_ptr.awaiting_reply = true;
             if (state_ptr.stream_run_id == null or !std.mem.eql(u8, state_ptr.stream_run_id.?, event.runId)) {
                 try ctx.setSessionStreamRunId(session_key, event.runId);
             }
@@ -491,6 +497,9 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
         ctx.clearSessionStreamRunId(session_key);
     }
     ctx.clearSessionStreamText(session_key);
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = false;
+    }
 
     if (std.mem.eql(u8, event.state, "error")) {
         if (event.errorMessage) |msg| {
@@ -711,6 +720,7 @@ fn cloneChatMessageExisting(allocator: std.mem.Allocator, msg: types.ChatMessage
         .content = try allocator.dupe(u8, msg.content),
         .timestamp = msg.timestamp,
         .attachments = attachments_copy,
+        .local_state = msg.local_state,
     };
 }
 
@@ -782,7 +792,6 @@ fn nodeListHasId(list: []const types.Node, id: []const u8) bool {
     }
     return false;
 }
-
 
 fn handleNodeHealthFrame(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
     if (payload == null) return;

@@ -26,6 +26,10 @@ pub const ChatSessionState = struct {
     messages: std.ArrayList(types.ChatMessage),
     stream_text: ?[]const u8 = null,
     stream_run_id: ?[]const u8 = null,
+
+    // True after the user submits a message until the assistant emits a terminal (non-delta) event.
+    awaiting_reply: bool = false,
+
     pending_history_request_id: ?[]const u8 = null,
     messages_loading: bool = false,
     history_loaded: bool = false,
@@ -52,6 +56,8 @@ pub const ClientContext = struct {
     nodes_loading: bool = false,
     pending_sessions_request_id: ?[]const u8 = null,
     pending_send_request_id: ?[]const u8 = null,
+    pending_send_session_key: ?[]const u8 = null,
+    pending_send_message_id: ?[]const u8 = null,
     pending_nodes_request_id: ?[]const u8 = null,
     pending_node_invoke_request_id: ?[]const u8 = null,
     pending_node_describe_request_id: ?[]const u8 = null,
@@ -82,6 +88,8 @@ pub const ClientContext = struct {
             .nodes_loading = false,
             .pending_sessions_request_id = null,
             .pending_send_request_id = null,
+            .pending_send_session_key = null,
+            .pending_send_message_id = null,
             .pending_nodes_request_id = null,
             .pending_node_invoke_request_id = null,
             .pending_node_describe_request_id = null,
@@ -575,18 +583,44 @@ pub const ClientContext = struct {
         }
     }
 
-    pub fn setPendingSendRequest(self: *ClientContext, id: []const u8) void {
-        if (self.pending_send_request_id) |pending| {
-            self.allocator.free(pending);
+    pub fn setPendingSendRequest(
+        self: *ClientContext,
+        request_id: []u8,
+        session_key: []const u8,
+        message_id: []const u8,
+    ) void {
+        self.clearPendingSendRequest();
+        self.pending_send_request_id = request_id;
+        self.pending_send_session_key = self.allocator.dupe(u8, session_key) catch null;
+        self.pending_send_message_id = self.allocator.dupe(u8, message_id) catch null;
+    }
+
+    pub fn resolvePendingSendRequest(self: *ClientContext, success: bool) void {
+        if (self.pending_send_session_key) |session_key| {
+            if (self.pending_send_message_id) |message_id| {
+                if (self.findSessionState(session_key)) |state_ptr| {
+                    for (state_ptr.messages.items) |*msg| {
+                        if (std.mem.eql(u8, msg.id, message_id)) {
+                            msg.local_state = if (success) null else .failed;
+                            break;
+                        }
+                    }
+                    if (!success) {
+                        state_ptr.awaiting_reply = false;
+                    }
+                }
+            }
         }
-        self.pending_send_request_id = id;
+        self.clearPendingSendRequest();
     }
 
     pub fn clearPendingSendRequest(self: *ClientContext) void {
-        if (self.pending_send_request_id) |pending| {
-            self.allocator.free(pending);
-        }
+        if (self.pending_send_request_id) |pending| self.allocator.free(pending);
+        if (self.pending_send_session_key) |pending| self.allocator.free(pending);
+        if (self.pending_send_message_id) |pending| self.allocator.free(pending);
         self.pending_send_request_id = null;
+        self.pending_send_session_key = null;
+        self.pending_send_message_id = null;
     }
 
     pub fn setPendingNodesRequest(self: *ClientContext, id: []const u8) void {
@@ -730,6 +764,7 @@ fn deinitSessionState(allocator: std.mem.Allocator, state: *ChatSessionState) vo
     if (state.pending_history_request_id) |pending| allocator.free(pending);
     state.stream_text = null;
     state.stream_run_id = null;
+    state.awaiting_reply = false;
     state.pending_history_request_id = null;
     state.messages_loading = false;
     state.history_loaded = false;
@@ -818,6 +853,7 @@ fn cloneChatMessage(allocator: std.mem.Allocator, msg: types.ChatMessage) !types
         .content = try allocator.dupe(u8, msg.content),
         .timestamp = msg.timestamp,
         .attachments = null,
+        .local_state = msg.local_state,
     };
     if (msg.attachments) |attachments| {
         var list = try allocator.alloc(types.ChatAttachment, attachments.len);

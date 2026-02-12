@@ -18,6 +18,7 @@ const clipboard = @import("ui/clipboard.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
+const session_kind = @import("client/session_kind.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -675,6 +676,8 @@ fn sendNodesListRequest() void {
     }
 }
 
+const chat_history_fetch_limit_default: u32 = 20;
+
 fn sendChatHistoryRequest(session_key: []const u8) void {
     if (!ws_connected or ctx.state != .connected) return;
     if (ctx.findSessionState(session_key)) |state_ptr| {
@@ -683,7 +686,7 @@ fn sendChatHistoryRequest(session_key: []const u8) void {
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
-        .limit = 200,
+        .limit = chat_history_fetch_limit_default,
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
@@ -854,6 +857,7 @@ fn buildUserMessage(id: []const u8, content: []const u8) !types.ChatMessage {
         .content = content_copy,
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
+        .local_state = .sending,
     };
 }
 
@@ -876,9 +880,58 @@ fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u
     return agent_id;
 }
 
-fn isNotificationSession(session: types.Session) bool {
-    const kind = session.kind orelse return false;
-    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+fn isAutomationSession(session: types.Session) bool {
+    return session_kind.isAutomationSession(session);
+}
+
+fn findBestConversationSessionKeyForAgent(
+    sessions: []const types.Session,
+    agent_id: []const u8,
+) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const parts = session_keys.parse(session.key) orelse continue;
+        if (!std.mem.eql(u8, parts.agent_id, agent_id)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn ensureSafeCurrentSession(alloc: std.mem.Allocator, ctx_ptr: *client_state.ClientContext) bool {
+    if (ctx_ptr.current_session) |current| {
+        for (ctx_ptr.sessions.items) |session| {
+            if (std.mem.eql(u8, session.key, current)) return false;
+        }
+        alloc.free(current);
+        ctx_ptr.current_session = null;
+    }
+
+    const best = findBestConversationSessionKeyForAgent(ctx_ptr.sessions.items, "main") orelse
+        findBestConversationSessionKey(ctx_ptr.sessions.items) orelse
+        return false;
+
+    ctx_ptr.setCurrentSession(best) catch return false;
+    return true;
 }
 
 fn syncRegistryDefaults(
@@ -892,7 +945,7 @@ fn syncRegistryDefaults(
         if (agent.default_session_key) |key| {
             for (sessions) |session| {
                 if (!std.mem.eql(u8, session.key, key)) continue;
-                if (isNotificationSession(session)) break;
+                if (isAutomationSession(session)) break;
                 const parts = session_keys.parse(session.key) orelse break;
                 if (std.mem.eql(u8, parts.agent_id, agent.id)) {
                     default_valid = true;
@@ -905,7 +958,7 @@ fn syncRegistryDefaults(
             var best_key: ?[]const u8 = null;
             var best_updated: i64 = -1;
             for (sessions) |session| {
-                if (isNotificationSession(session)) continue;
+                if (isAutomationSession(session)) continue;
                 const parts = session_keys.parse(session.key) orelse continue;
                 if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
                 const updated = session.updated_at orelse 0;
@@ -1038,26 +1091,41 @@ fn sendChatMessageRequest(session_key: []const u8, message: []const u8) void {
         logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
-    errdefer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
 
     var msg = buildUserMessage(idempotency, message) catch |err| {
         logger.warn("Failed to build user message: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
         return;
     };
+
     ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(&msg);
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
     };
+
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = true;
+    }
 
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
-        ctx.setPendingSendRequest(request.id);
+        ctx.setPendingSendRequest(request.id, session_key, msg.id);
     } else {
         allocator.free(request.payload);
         allocator.free(request.id);
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            for (state_ptr.messages.items) |*m| {
+                if (std.mem.eql(u8, m.id, msg.id)) {
+                    m.local_state = .failed;
+                    break;
+                }
+            }
+            state_ptr.awaiting_reply = false;
+        }
     }
 }
 
@@ -1103,6 +1171,7 @@ export fn molt_ws_on_close(code: c_int) void {
     clearConnectNonce();
     ws_opened_ms = 0;
     ctx.state = .disconnected;
+    ctx.clearPendingRequests();
     logger.warn("WebSocket closed (code={d})", .{code});
 }
 
@@ -1113,6 +1182,7 @@ export fn molt_ws_on_error() void {
     connect_sent = false;
     ws_opened_ms = 0;
     ctx.state = .error_state;
+    ctx.clearPendingRequests();
     logger.warn("WebSocket error", .{});
 }
 
@@ -1228,9 +1298,11 @@ fn frame() callconv(.c) void {
     }
 
     if (ctx.sessions_updated) {
-        if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+        const defaults_changed = syncRegistryDefaults(allocator, &agents, ctx.sessions.items);
+        if (defaults_changed) {
             saveAgentRegistryToStorage();
         }
+        _ = ensureSafeCurrentSession(allocator, &ctx);
         ctx.clearSessionsUpdated();
     } else if (ws_connected and use_device_identity and !connect_sent) {
         const now_ms = std.time.milliTimestamp();

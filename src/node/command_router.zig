@@ -13,6 +13,10 @@ const windows_camera = if (builtin.target.os.tag == .windows)
     @import("../windows/camera.zig")
 else
     struct {};
+const windows_screen = if (builtin.target.os.tag == .windows)
+    @import("../windows/screen.zig")
+else
+    struct {};
 
 /// Command handler function signature
 pub const CommandHandler = *const fn (
@@ -114,9 +118,20 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
     try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler);
     try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler);
 
-    // Camera commands (Windows MVP)
+    // Windows-only interactive media commands (advertised when executable)
     if (builtin.target.os.tag == .windows) {
-        try router.register(.camera_list, cameraListHandler);
+        const screen_support = windows_screen.detectBackendSupport(allocator);
+        if (screen_support.record) {
+            try router.register(.screen_record, screenRecordHandler);
+        }
+
+        const camera_support = windows_camera.detectBackendSupport(allocator);
+        if (camera_support.list) {
+            try router.register(.camera_list, cameraListHandler);
+        }
+        if (camera_support.snap) {
+            try router.register(.camera_snap, cameraSnapHandler);
+        }
     }
 
     return router;
@@ -129,6 +144,23 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
 pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Command) !CommandRouter {
     var router = CommandRouter.init(allocator);
     errdefer router.deinit();
+
+    const windows_support = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const camera = windows_camera.detectBackendSupport(allocator);
+            const screen = windows_screen.detectBackendSupport(allocator);
+            break :blk .{
+                .camera_list = camera.list,
+                .camera_snap = camera.snap,
+                .screen_record = screen.record,
+            };
+        }
+        break :blk .{
+            .camera_list = false,
+            .camera_snap = false,
+            .screen_record = false,
+        };
+    };
 
     for (cmds) |cmd| {
         switch (cmd) {
@@ -154,16 +186,26 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             .canvas_a2ui_push_jsonl => try router.register(.canvas_a2ui_push_jsonl, canvasA2uiPushJsonlHandler),
             .canvas_a2ui_reset => try router.register(.canvas_a2ui_reset, canvasA2uiResetHandler),
 
-            // Not implemented yet in this codebase (but present in enum)
-            .screen_record => return error.CommandNotSupported,
-            .camera_list => {
-                if (builtin.target.os.tag == .windows) {
-                    try router.register(.camera_list, cameraListHandler);
-                } else {
+            // Windows media commands
+            .screen_record => {
+                if (builtin.target.os.tag != .windows or !windows_support.screen_record) {
                     return error.CommandNotSupported;
                 }
+                try router.register(.screen_record, screenRecordHandler);
             },
-            .camera_snap,
+            .camera_list => {
+                if (builtin.target.os.tag != .windows or !windows_support.camera_list) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.camera_list, cameraListHandler);
+            },
+            .camera_snap => {
+                if (builtin.target.os.tag != .windows or !windows_support.camera_snap) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.camera_snap, cameraSnapHandler);
+            },
+            // Not implemented yet in this codebase (but present in enum)
             .camera_clip,
             .location_get,
             => return error.CommandNotSupported,
@@ -619,6 +661,149 @@ fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: st
 }
 
 // ============================================================================
+// Screen Command Handlers
+// ============================================================================
+
+fn screenRecordHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (comptime builtin.target.os.tag != .windows) {
+        return CommandError.CommandNotSupported;
+    }
+
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const format = blk: {
+        if (params.object.get("format")) |format_param| {
+            if (format_param != .string) return CommandError.InvalidParams;
+            break :blk windows_screen.ScreenRecordFormat.fromString(format_param.string) orelse return CommandError.InvalidParams;
+        }
+        break :blk windows_screen.ScreenRecordFormat.mp4;
+    };
+
+    const duration_ms = blk: {
+        if (params.object.get("durationMs")) |duration_param| {
+            break :blk try parseDurationMsParam(duration_param);
+        }
+
+        if (params.object.get("duration")) |duration_param| {
+            break :blk try parseDurationMsParam(duration_param);
+        }
+
+        break :blk @as(u32, 5000);
+    };
+
+    const fps = blk: {
+        if (params.object.get("fps")) |fps_param| {
+            break :blk try parsePositiveU32Param(fps_param);
+        }
+        break :blk @as(u32, 12);
+    };
+
+    const screen_index = blk: {
+        if (params.object.get("screenIndex")) |index_param| {
+            if (index_param == .integer) {
+                if (index_param.integer < 0) return CommandError.InvalidParams;
+                if (index_param.integer > std.math.maxInt(u32)) return CommandError.InvalidParams;
+                break :blk @as(u32, @intCast(index_param.integer));
+            }
+            if (index_param == .float) {
+                const fval = index_param.float;
+                if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+                if (fval < 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+                if (@trunc(fval) != fval) return CommandError.InvalidParams;
+                break :blk @as(u32, @intFromFloat(fval));
+            }
+            return CommandError.InvalidParams;
+        }
+
+        break :blk @as(u32, 0);
+    };
+
+    const include_audio = blk: {
+        if (params.object.get("includeAudio")) |include_audio_param| {
+            if (include_audio_param != .bool) return CommandError.InvalidParams;
+            break :blk include_audio_param.bool;
+        }
+        break :blk false;
+    };
+
+    const rec = windows_screen.recordScreen(allocator, .{
+        .format = format,
+        .durationMs = duration_ms,
+        .fps = fps,
+        .screenIndex = screen_index,
+        .includeAudio = include_audio,
+    }) catch |err| {
+        logger.err("screen.record failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.FfmpegNotFound => CommandError.CommandNotSupported,
+            error.InvalidParams, error.ScreenIndexNotSupported => CommandError.InvalidParams,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, rec.format.toString()) });
+    // `rec.base64` is allocated from the per-invocation arena allocator.
+    try out.put("base64", std.json.Value{ .string = rec.base64 });
+    try out.put("durationMs", std.json.Value{ .integer = @as(i64, @intCast(rec.durationMs)) });
+    try out.put("fps", std.json.Value{ .integer = @as(i64, @intCast(rec.fps)) });
+    try out.put("screenIndex", std.json.Value{ .integer = @as(i64, @intCast(rec.screenIndex)) });
+    try out.put("hasAudio", std.json.Value{ .bool = rec.hasAudio });
+    return std.json.Value{ .object = out };
+}
+
+fn parsePositiveU32Param(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival <= 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        else => CommandError.InvalidParams,
+    };
+}
+
+fn parseDurationMsParam(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .string => |raw| parseDurationMsString(raw),
+        else => parsePositiveU32Param(v),
+    };
+}
+
+fn parseDurationMsString(raw: []const u8) CommandError!u32 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return CommandError.InvalidParams;
+
+    if (std.mem.endsWith(u8, trimmed, "ms")) {
+        const ms_raw = trimmed[0 .. trimmed.len - 2];
+        const ms = std.fmt.parseInt(u64, ms_raw, 10) catch return CommandError.InvalidParams;
+        if (ms == 0 or ms > std.math.maxInt(u32)) return CommandError.InvalidParams;
+        return @as(u32, @intCast(ms));
+    }
+
+    if (std.mem.endsWith(u8, trimmed, "s")) {
+        const sec_raw = trimmed[0 .. trimmed.len - 1];
+        const seconds = std.fmt.parseFloat(f64, sec_raw) catch return CommandError.InvalidParams;
+        if (!(seconds > 0)) return CommandError.InvalidParams;
+
+        const ms_f = seconds * 1000.0;
+        if (ms_f > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+        const ms_u32 = @as(u32, @intFromFloat(ms_f));
+        if (ms_u32 == 0) return CommandError.InvalidParams;
+        return ms_u32;
+    }
+
+    const ms = std.fmt.parseInt(u64, trimmed, 10) catch return CommandError.InvalidParams;
+    if (ms == 0 or ms > std.math.maxInt(u32)) return CommandError.InvalidParams;
+    return @as(u32, @intCast(ms));
+}
+
+// ============================================================================
 // Camera Command Handlers
 // ============================================================================
 
@@ -631,6 +816,7 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
         logger.err("camera.list failed: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
+    defer windows_camera.freeCameraDevices(allocator, devices);
 
     var out_devices = std.json.Array.init(allocator);
     for (devices) |dev| {
@@ -640,12 +826,69 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
         // Alias for tool/client compatibility.
         try obj.put("deviceId", std.json.Value{ .string = id });
         try obj.put("name", std.json.Value{ .string = try allocator.dupe(u8, dev.name) });
+        if (dev.position) |position| {
+            try obj.put("position", std.json.Value{ .string = try allocator.dupe(u8, position.toString()) });
+        }
         try out_devices.append(std.json.Value{ .object = obj });
     }
 
     var out = std.json.ObjectMap.init(allocator);
     try out.put("backend", std.json.Value{ .string = try allocator.dupe(u8, "powershell-cim") });
     try out.put("devices", std.json.Value{ .array = out_devices });
+    return std.json.Value{ .object = out };
+}
+
+fn cameraSnapHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (comptime builtin.target.os.tag != .windows) {
+        return CommandError.CommandNotSupported;
+    }
+
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const format = blk: {
+        if (params.object.get("format")) |format_param| {
+            if (format_param != .string) return CommandError.InvalidParams;
+            break :blk windows_camera.CameraSnapFormat.fromString(format_param.string) orelse return CommandError.InvalidParams;
+        }
+        break :blk windows_camera.CameraSnapFormat.jpeg;
+    };
+
+    const device_id = blk: {
+        if (params.object.get("deviceId")) |device_id_param| {
+            if (device_id_param != .string) return CommandError.InvalidParams;
+            if (device_id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk device_id_param.string;
+        }
+
+        if (params.object.get("id")) |id_param| {
+            if (id_param != .string) return CommandError.InvalidParams;
+            if (id_param.string.len == 0) return CommandError.InvalidParams;
+            break :blk id_param.string;
+        }
+
+        break :blk null;
+    };
+
+    const snap = windows_camera.snapCamera(allocator, .{
+        .format = format,
+        .deviceId = device_id,
+    }) catch |err| {
+        logger.err("camera.snap failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.DeviceNotFound => CommandError.InvalidParams,
+            error.PowershellNotFound, error.FfmpegNotFound => CommandError.CommandNotSupported,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, snap.format.toString()) });
+    // `snap.base64` is allocated from the per-invocation arena allocator.
+    try out.put("base64", std.json.Value{ .string = snap.base64 });
+    try out.put("width", std.json.Value{ .integer = @as(i64, @intCast(snap.width)) });
+    try out.put("height", std.json.Value{ .integer = @as(i64, @intCast(snap.height)) });
     return std.json.Value{ .object = out };
 }
 

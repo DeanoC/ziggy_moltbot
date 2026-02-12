@@ -34,6 +34,10 @@ pub const ControlPanelAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
+    node_profile_apply_client: bool = false,
+    node_profile_apply_service: bool = false,
+    node_profile_apply_session: bool = false,
+
     // Windows node runner helpers (SCM service)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
@@ -64,6 +68,7 @@ pub fn draw(
     panel: *workspace.ControlPanel,
     rect_override: ?draw_context.Rect,
     window_theme_pack_override: ?[]const u8,
+    install_profile_only_mode: bool,
 ) ControlPanelAction {
     _ = cfg;
     _ = registry;
@@ -71,6 +76,7 @@ pub fn draw(
     _ = app_version;
     _ = panel;
     _ = window_theme_pack_override;
+    _ = install_profile_only_mode;
 
     var action = ControlPanelAction{};
     const panel_rect = rect_override orelse return action;

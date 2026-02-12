@@ -1,6 +1,7 @@
 const std = @import("std");
 const state = @import("../../client/state.zig");
 const types = @import("../../protocol/types.zig");
+const session_kind = @import("../../client/session_kind.zig");
 const components = @import("../components/components.zig");
 const theme = @import("../theme.zig");
 const colors = @import("../theme/colors.zig");
@@ -17,6 +18,7 @@ const widgets = @import("../widgets/widgets.zig");
 const panel_chrome = @import("../panel_chrome.zig");
 const nav_router = @import("../input/nav_router.zig");
 const surface_chrome = @import("../surface_chrome.zig");
+const profiler = @import("../../utils/profiler.zig");
 
 pub const AttachmentOpen = struct {
     name: []const u8,
@@ -58,6 +60,9 @@ pub fn draw(
     ctx: *state.ClientContext,
     rect_override: ?draw_context.Rect,
 ) SessionPanelAction {
+    const zone = profiler.zone(@src(), "sessions_panel.draw");
+    defer zone.end();
+
     var action = SessionPanelAction{};
     const t = theme.activeTheme();
     const panel_rect = rect_override orelse return action;
@@ -101,6 +106,8 @@ fn drawSessionList(
     queue: *input_state.InputQueue,
     action: *SessionPanelAction,
 ) void {
+    const zone = profiler.zone(@src(), "sessions_panel.list");
+    defer zone.end();
     const t = dc.theme;
     panel_chrome.draw(dc, rect, .{
         .radius = t.radius.md,
@@ -168,13 +175,13 @@ fn drawSessionList(
     dc.pushClip(list_rect);
     var row_y = list_rect.min[1] - list_scroll_y;
     for (ctx.sessions.items) |session| {
-        var row_scope: u64 = std.hash.Wyhash.hash(0, "sessions_panel.session_row");
-        row_scope = std.hash.Wyhash.hash(row_scope, session.key);
-        nav_router.pushScope(row_scope);
-        defer nav_router.popScope();
-
         const row_rect = draw_context.Rect.fromMinSize(.{ list_rect.min[0], row_y }, .{ list_rect.size()[0], row_height });
         if (row_rect.max[1] >= list_rect.min[1] and row_rect.min[1] <= list_rect.max[1]) {
+            var row_scope: u64 = std.hash.Wyhash.hash(0, "sessions_panel.session_row");
+            row_scope = std.hash.Wyhash.hash(row_scope, session.key);
+            nav_router.pushScope(row_scope);
+            defer nav_router.popScope();
+
             const selected = ctx.current_session != null and std.mem.eql(u8, ctx.current_session.?, session.key);
             const clicked = drawSessionRow(dc, row_rect, session, selected, queue);
             if (clicked) {
@@ -230,14 +237,29 @@ fn drawSessionRow(
     const text_pos = .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs };
     dc.drawText(label, text_pos, .{ .color = t.colors.text_primary });
 
+    var badge_right = rect.max[0] - t.spacing.sm;
+
     if (selected) {
         const badge_label = "active";
         const badge_w = badgeWidth(dc, badge_label, t);
         const badge_rect = draw_context.Rect.fromMinSize(
-            .{ rect.max[0] - badge_w - t.spacing.sm, rect.min[1] + t.spacing.xs * 0.5 },
+            .{ badge_right - badge_w, rect.min[1] + t.spacing.xs * 0.5 },
             .{ badge_w, rect.size()[1] - t.spacing.xs },
         );
         drawBadge(dc, badge_rect, badge_label, t.colors.success, t);
+        badge_right = badge_rect.min[0] - t.spacing.xs;
+    }
+
+    if (session_kind.isAutomationSession(session)) {
+        const badge_label = "automation";
+        const badge_w = badgeWidth(dc, badge_label, t);
+        if (badge_right - badge_w > rect.min[0] + t.spacing.sm) {
+            const badge_rect = draw_context.Rect.fromMinSize(
+                .{ badge_right - badge_w, rect.min[1] + t.spacing.xs * 0.5 },
+                .{ badge_w, rect.size()[1] - t.spacing.xs },
+            );
+            drawBadge(dc, badge_rect, badge_label, t.colors.warning, t);
+        }
     }
 
     return clicked;

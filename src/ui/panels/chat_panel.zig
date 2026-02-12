@@ -38,13 +38,20 @@ pub fn draw(
     var action = ChatPanelAction{};
     const t = theme.activeTheme();
 
+    const status_suffix: []const u8 = if (session_state) |st| blk: {
+        if (st.messages_loading) break :blk " • loading…";
+        if (st.stream_run_id != null) break :blk " • replying…";
+        if (st.awaiting_reply) break :blk " • waiting…";
+        break :blk "";
+    } else "";
+
     var subtitle_buf: [256]u8 = undefined;
     const subtitle = if (session_key) |key| blk: {
         const label = session_label orelse key;
         break :blk std.fmt.bufPrint(
             &subtitle_buf,
-            "{s} {s} — {s}",
-            .{ agent_icon, agent_name, label },
+            "{s} {s} — {s}{s}",
+            .{ agent_icon, agent_name, label, status_suffix },
         ) catch label;
     } else "No session selected.";
 
@@ -156,9 +163,36 @@ pub fn draw(
     panel_ctx.drawRect(sep2_rect, .{ .fill = t.colors.divider });
     cursor_y = sep2_rect.max[1] + separator_gap;
 
-    const input_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], input_height });
-    if (input_panel.draw(allocator, &panel_ctx, input_rect, queue, has_session)) |message| {
-        action.send_message = message;
+    const input_block_rect = draw_context.Rect.fromMinSize(.{ panel_rect.min[0], cursor_y }, .{ panel_rect.size()[0], input_height });
+
+    const send_target = if (session_key) |key| (session_label orelse key) else "(no session selected)";
+    var send_to_buf: [512]u8 = undefined;
+    const send_to_text = std.fmt.bufPrint(&send_to_buf, "Sending to: {s}", .{send_target}) catch "Sending to: …";
+
+    const label_gap = t.spacing.xs * 0.5;
+    const label_pad_x = t.spacing.sm;
+    const label_h = panel_ctx.lineHeight();
+
+    var composer_rect = input_block_rect;
+    if (input_block_rect.size()[1] > label_h + label_gap + 40.0) {
+        const label_rect = draw_context.Rect.fromMinSize(
+            .{ input_block_rect.min[0] + label_pad_x, input_block_rect.min[1] },
+            .{ input_block_rect.size()[0] - label_pad_x * 2.0, label_h },
+        );
+        const label_color = if (has_session) t.colors.text_secondary else t.colors.warning;
+        panel_ctx.drawText(send_to_text, label_rect.min, .{ .color = label_color });
+
+        composer_rect = draw_context.Rect.fromMinSize(
+            .{ input_block_rect.min[0], label_rect.max[1] + label_gap },
+            .{ input_block_rect.size()[0], input_block_rect.max[1] - (label_rect.max[1] + label_gap) },
+        );
+    }
+
+    // Allow typing even when no session is selected; disable Send until a session is chosen.
+    if (composer_rect.size()[1] > 0.0) {
+        if (input_panel.draw(allocator, &panel_ctx, composer_rect, queue, true, has_session)) |message| {
+            action.send_message = message;
+        }
     }
 
     return action;

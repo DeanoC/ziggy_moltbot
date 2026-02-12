@@ -2,7 +2,24 @@
 
 ## End-user model
 
-On Windows, ZiggyStarClaw can run the node in **exactly one** of two mutually exclusive “runner modes”:
+On Windows, ZiggyStarClaw installer/setup presents three **install profiles**:
+
+1) **Pure Client**
+   - Installs operator client only
+   - No node runner enabled
+   - No tray startup task enabled
+
+2) **Service Node**
+   - Installs/starts SCM service node runner
+   - Installs tray startup task
+   - Reliable, limited desktop access
+
+3) **User Session Node**
+   - Installs/starts scheduled-task session runner
+   - Installs tray startup task
+   - Interactive desktop access
+
+For node profiles, node execution still uses **exactly one** of two mutually exclusive runner modes:
 
 1) **Always-on service**
    - Runs as a Windows SCM service (Session 0)
@@ -38,13 +55,26 @@ ziggystarclaw-cli node runner install --mode session
 Supporting commands:
 
 ```powershell
+ziggystarclaw-cli node profile apply --profile client
+ziggystarclaw-cli node profile apply --profile service
+ziggystarclaw-cli node profile apply --profile session
+
 ziggystarclaw-cli node runner status
 ziggystarclaw-cli node runner start
 ziggystarclaw-cli node runner stop
 
 ziggystarclaw-cli node service install|uninstall|start|stop|status
 ziggystarclaw-cli node session install|uninstall|start|stop|status
+ziggystarclaw-cli tray install-startup|uninstall-startup|start|stop|status
 ```
+
+Client installer-handoff mode:
+
+```powershell
+ziggystarclaw-client.exe --install-profile-only
+```
+
+This opens just the install profile card in Settings; after profile apply completes, the app exits.
 
 ## Migration behavior (mutual exclusion)
 

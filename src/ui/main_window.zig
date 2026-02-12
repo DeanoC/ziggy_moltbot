@@ -135,6 +135,10 @@ pub const UiAction = struct {
     open_download: bool = false,
     install_update: bool = false,
 
+    node_profile_apply_client: bool = false,
+    node_profile_apply_service: bool = false,
+    node_profile_apply_session: bool = false,
+
     // Windows node runner helpers (SCM service)
     node_service_install_onlogon: bool = false,
     node_service_start: bool = false,
@@ -993,6 +997,7 @@ const PanelIdList = struct {
 
 var safe_insets: [4]f32 = .{ 0.0, 0.0, 0.0, 0.0 };
 var default_window_ui_state: WindowUiState = .{};
+var installer_profile_only_mode: bool = false;
 const attachment_fetch_limit: usize = 256 * 1024;
 const attachment_editor_limit: usize = 128 * 1024;
 const attachment_json_pretty_limit: usize = 64 * 1024;
@@ -1010,6 +1015,10 @@ var pending_attachment_fetches: std.ArrayList(PendingAttachment) = .empty;
 
 pub fn setSafeInsets(left: f32, top: f32, right: f32, bottom: f32) void {
     safe_insets = .{ left, top, right, bottom };
+}
+
+pub fn setInstallerProfileOnlyMode(enabled: bool) void {
+    installer_profile_only_mode = enabled;
 }
 
 pub fn draw(
@@ -1357,6 +1366,7 @@ fn drawWorkspaceHost(
             action,
             pending_attachment,
             win_state,
+            installer_profile_only_mode,
         );
         if (panel.kind == .Chat and draw_result.session_key != null) {
             if (focused or active_session_key == null) {
@@ -1668,7 +1678,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(2);
             ensureOnlyPanelKind(manager, .Agents);
             if (selectPanelForKind(manager, .Agents)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1676,7 +1686,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(3);
             ensureOnlyPanelKind(manager, .Settings);
             if (selectPanelForKind(manager, .Settings)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1684,7 +1694,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(4);
             ensureOnlyPanelKind(manager, .Chat);
             if (selectPanelForKind(manager, .Chat)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1692,7 +1702,7 @@ fn drawFullscreenHost(
             nav_router.pushScope(5);
             ensureOnlyPanelKind(manager, .Showcase);
             if (selectPanelForKind(manager, .Showcase)) |panel| {
-                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
             }
             nav_router.popScope();
         },
@@ -1804,6 +1814,7 @@ fn drawPanelContents(
     action: *UiAction,
     pending_attachment: *?sessions_panel.AttachmentOpen,
     win_state: *WindowUiState,
+    install_profile_only_mode: bool,
 ) PanelDrawResult {
     var result: PanelDrawResult = .{};
     const zone = profiler.zone(@src(), "ui.panel");
@@ -1903,9 +1914,62 @@ fn drawPanelContents(
                 &panel.data.Control,
                 panel_rect,
                 win_state.theme_pack_override,
+                install_profile_only_mode,
             );
             action.refresh_sessions = action.refresh_sessions or control_action.refresh_sessions;
             action.new_session = action.new_session or control_action.new_session;
+            action.connect = action.connect or control_action.connect;
+            action.disconnect = action.disconnect or control_action.disconnect;
+            action.save_config = action.save_config or control_action.save_config;
+            action.reload_theme_pack = action.reload_theme_pack or control_action.reload_theme_pack;
+            action.browse_theme_pack = action.browse_theme_pack or control_action.browse_theme_pack;
+            action.browse_theme_pack_override = action.browse_theme_pack_override or control_action.browse_theme_pack_override;
+            action.clear_theme_pack_override = action.clear_theme_pack_override or control_action.clear_theme_pack_override;
+            action.reload_theme_pack_override = action.reload_theme_pack_override or control_action.reload_theme_pack_override;
+            action.clear_saved = action.clear_saved or control_action.clear_saved;
+            action.config_updated = action.config_updated or control_action.config_updated;
+            action.check_updates = action.check_updates or control_action.check_updates;
+            action.open_release = action.open_release or control_action.open_release;
+            action.download_update = action.download_update or control_action.download_update;
+            action.open_download = action.open_download or control_action.open_download;
+            action.install_update = action.install_update or control_action.install_update;
+
+            action.node_profile_apply_client = action.node_profile_apply_client or control_action.node_profile_apply_client;
+            action.node_profile_apply_service = action.node_profile_apply_service or control_action.node_profile_apply_service;
+            action.node_profile_apply_session = action.node_profile_apply_session or control_action.node_profile_apply_session;
+            action.node_service_install_onlogon = action.node_service_install_onlogon or control_action.node_service_install_onlogon;
+            action.node_service_start = action.node_service_start or control_action.node_service_start;
+            action.node_service_stop = action.node_service_stop or control_action.node_service_stop;
+            action.node_service_status = action.node_service_status or control_action.node_service_status;
+            action.node_service_uninstall = action.node_service_uninstall or control_action.node_service_uninstall;
+            action.open_node_logs = action.open_node_logs or control_action.open_node_logs;
+            action.refresh_nodes = action.refresh_nodes or control_action.refresh_nodes;
+            action.clear_node_result = action.clear_node_result or control_action.clear_node_result;
+            action.clear_operator_notice = action.clear_operator_notice or control_action.clear_operator_notice;
+
+            if (control_action.new_chat_agent_id) |agent_id| {
+                replaceOwnedSlice(allocator, &action.new_chat_agent_id, agent_id);
+            }
+            if (control_action.open_session) |open_session| {
+                action.open_session = open_session;
+            }
+            if (control_action.set_default_session) |set_default| {
+                action.set_default_session = set_default;
+            }
+            replaceOwnedSlice(allocator, &action.delete_session, control_action.delete_session);
+            if (control_action.add_agent) |add_agent| {
+                action.add_agent = add_agent;
+            }
+            replaceOwnedSlice(allocator, &action.remove_agent_id, control_action.remove_agent_id);
+            replaceOwnedSlice(allocator, &action.select_node, control_action.select_node);
+            if (control_action.invoke_node) |invoke| {
+                action.invoke_node = invoke;
+            }
+            replaceOwnedSlice(allocator, &action.describe_node, control_action.describe_node);
+            if (control_action.resolve_approval) |resolve| {
+                action.resolve_approval = resolve;
+            }
+            replaceOwnedSlice(allocator, &action.clear_node_describe, control_action.clear_node_describe);
             if (control_action.open_attachment) |attachment| {
                 pending_attachment.* = attachment;
             }
@@ -1976,6 +2040,7 @@ fn drawPanelContents(
                 app_version,
                 panel_rect,
                 win_state.theme_pack_override,
+                install_profile_only_mode,
             );
             action.connect = action.connect or settings_action.connect;
             action.disconnect = action.disconnect or settings_action.disconnect;
@@ -3039,6 +3104,7 @@ fn drawCollapsedDockFlyout(
         action,
         pending_attachment,
         win_state,
+        installer_profile_only_mode,
     );
     if (panel.kind == .Chat and draw_result.session_key != null) {
         out.session_key = draw_result.session_key;

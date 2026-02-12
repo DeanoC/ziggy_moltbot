@@ -1,5 +1,9 @@
 param(
-    [int]$Retries = 2
+    [int]$Retries = 2,
+    [ValidateSet('Debug','ReleaseSafe','ReleaseFast','ReleaseSmall')]
+    [string]$Optimize = 'ReleaseFast',
+    [switch]$EnableTracy,
+    [switch]$TracyOnDemand
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,7 +19,18 @@ $lastExit = 0
 do {
     $attempt++
     Write-Host "Windows build attempt $attempt of $($Retries + 1) ..."
-    & $zig build -Dtarget=x86_64-windows-gnu
+    $args = @(
+        'build',
+        '-Dtarget=x86_64-windows-gnu',
+        "-Doptimize=$Optimize"
+    )
+    if ($EnableTracy) {
+        $args += '-Denable_ztracy=true'
+        if ($TracyOnDemand) {
+            $args += '-Dtracy_on_demand=true'
+        }
+    }
+    & $zig @args
     $lastExit = $LASTEXITCODE
     if ($lastExit -eq 0) { break }
     Start-Sleep -Seconds 2

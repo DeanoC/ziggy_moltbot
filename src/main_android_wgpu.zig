@@ -14,6 +14,7 @@ const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
+const session_kind = @import("client/session_kind.zig");
 const config = @import("client/config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
@@ -137,6 +138,7 @@ const ReadLoop = struct {
     queue: *MessageQueue,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    too_large: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_receive_ms: i64 = 0,
     last_payload_len: usize = 0,
 };
@@ -231,6 +233,13 @@ fn readLoopMain(loop: *ReadLoop) void {
             defer zone.end();
             break :blk loop.ws_client.receive() catch |err| {
                 if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.TooLarge) {
+                    // Commonly triggered by a huge chat.history response being sent as a single WS message.
+                    loop.too_large.store(true, .monotonic);
+                    logger.warn("WebSocket receive failed (thread): payload too large (error.TooLarge)", .{});
+                    loop.ws_client.disconnect();
                     return;
                 }
                 if (err == error.ReadFailed) {
@@ -390,6 +399,11 @@ fn sendNodesListRequest(
     ctx.setPendingNodesRequest(request.id);
 }
 
+const chat_history_fetch_limit_default: u32 = 20;
+const chat_history_fetch_limit_min: u32 = 10;
+// Backed off when the gateway sends a chat.history payload that exceeds the client's WS max_size.
+var chat_history_fetch_limit: u32 = chat_history_fetch_limit_default;
+
 fn sendChatHistoryRequest(
     allocator: std.mem.Allocator,
     ctx: *client_state.ClientContext,
@@ -404,7 +418,7 @@ fn sendChatHistoryRequest(
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
-        .limit = 200,
+        .limit = chat_history_fetch_limit,
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
@@ -605,26 +619,43 @@ fn sendChatMessageRequest(
         logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
-    errdefer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
 
     var msg = buildUserMessage(allocator, idempotency, message) catch |err| {
         logger.warn("Failed to build user message: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
         return;
     };
     ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
     };
+
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = true;
+    }
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send chat.send: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            for (state_ptr.messages.items) |*m| {
+                if (std.mem.eql(u8, m.id, msg.id)) {
+                    m.local_state = .failed;
+                    break;
+                }
+            }
+            state_ptr.awaiting_reply = false;
+        }
         return;
     };
+
     allocator.free(request.payload);
-    ctx.setPendingSendRequest(request.id);
+    ctx.setPendingSendRequest(request.id, session_key, msg.id);
 }
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
@@ -658,6 +689,7 @@ fn buildUserMessage(
         .content = content_copy,
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
+        .local_state = .sending,
     };
 }
 
@@ -666,9 +698,58 @@ fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u
     return agent_id;
 }
 
-fn isNotificationSession(session: types.Session) bool {
-    const kind = session.kind orelse return false;
-    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+fn isAutomationSession(session: types.Session) bool {
+    return session_kind.isAutomationSession(session);
+}
+
+fn findBestConversationSessionKeyForAgent(
+    sessions: []const types.Session,
+    agent_id: []const u8,
+) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const parts = session_keys.parse(session.key) orelse continue;
+        if (!std.mem.eql(u8, parts.agent_id, agent_id)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn ensureSafeCurrentSession(allocator: std.mem.Allocator, ctx: *client_state.ClientContext) bool {
+    if (ctx.current_session) |current| {
+        for (ctx.sessions.items) |session| {
+            if (std.mem.eql(u8, session.key, current)) return false;
+        }
+        allocator.free(current);
+        ctx.current_session = null;
+    }
+
+    const best = findBestConversationSessionKeyForAgent(ctx.sessions.items, "main") orelse
+        findBestConversationSessionKey(ctx.sessions.items) orelse
+        return false;
+
+    ctx.setCurrentSession(best) catch return false;
+    return true;
 }
 
 fn syncRegistryDefaults(
@@ -682,7 +763,7 @@ fn syncRegistryDefaults(
         if (agent.default_session_key) |key| {
             for (sessions) |session| {
                 if (!std.mem.eql(u8, session.key, key)) continue;
-                if (isNotificationSession(session)) break;
+                if (isAutomationSession(session)) break;
                 const parts = session_keys.parse(session.key) orelse break;
                 if (std.mem.eql(u8, parts.agent_id, agent.id)) {
                     default_valid = true;
@@ -695,7 +776,7 @@ fn syncRegistryDefaults(
             var best_key: ?[]const u8 = null;
             var best_updated: i64 = -1;
             for (sessions) |session| {
-                if (isNotificationSession(session)) continue;
+                if (isAutomationSession(session)) continue;
                 const parts = session_keys.parse(session.key) orelse continue;
                 if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
                 const updated = session.updated_at orelse 0;
@@ -1066,8 +1147,51 @@ fn run() !void {
         if (read_thread != null and !read_loop.running.load(.monotonic)) {
             stopReadThread(&read_loop, &read_thread);
         }
+
+        if (read_loop.too_large.swap(false, .monotonic)) {
+            // If the server sent a WS message exceeding our max_size (commonly chat.history),
+            // reduce the history limit so the next reconnect can succeed.
+
+            var pending_history: usize = 0;
+            var it = ctx.session_states.iterator();
+            while (it.next()) |entry| {
+                const state_ptr = entry.value_ptr;
+                if (state_ptr.pending_history_request_id) |pending| {
+                    pending_history += 1;
+                    if (pending_history <= 3) {
+                        logger.warn("Pending chat.history: session={s} request_id={s}", .{ entry.key_ptr.*, pending });
+                    }
+                }
+            }
+
+            logger.warn(
+                "WS error.TooLarge while pending: sessions={} nodes={} send={} node_invoke={} node_describe={} approval_resolve={} history_count={d} history_limit={d}",
+                .{
+                    ctx.pending_sessions_request_id != null,
+                    ctx.pending_nodes_request_id != null,
+                    ctx.pending_send_request_id != null,
+                    ctx.pending_node_invoke_request_id != null,
+                    ctx.pending_node_describe_request_id != null,
+                    ctx.pending_approval_resolve_request_id != null,
+                    pending_history,
+                    chat_history_fetch_limit,
+                },
+            );
+
+            const next = @max(chat_history_fetch_limit_min, chat_history_fetch_limit / 2);
+            if (next != chat_history_fetch_limit) {
+                logger.warn("Backing off chat.history limit: {d} -> {d}", .{ chat_history_fetch_limit, next });
+                chat_history_fetch_limit = next;
+            }
+            ctx.setOperatorNotice("Gateway response too large; reducing chat history fetch limit and retrying.") catch {};
+            ctx.clearPendingRequests();
+        }
+
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
+            // Requests may have been in-flight when the connection dropped.
+            // Clear them so history can be requested again after reconnect.
+            ctx.clearPendingRequests();
             if (should_reconnect and next_reconnect_at_ms == 0) {
                 const now_ms = std.time.milliTimestamp();
                 next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
@@ -1116,9 +1240,11 @@ fn run() !void {
         }
 
         if (ctx.sessions_updated) {
-            if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+            const defaults_changed = syncRegistryDefaults(allocator, &agents, ctx.sessions.items);
+            if (defaults_changed) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
+            _ = ensureSafeCurrentSession(allocator, &ctx);
             ctx.clearSessionsUpdated();
         }
 

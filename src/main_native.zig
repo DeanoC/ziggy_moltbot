@@ -20,6 +20,7 @@ const attachment_cache = @import("ui/attachment_cache.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
 const session_keys = @import("client/session_keys.zig");
+const session_kind = @import("client/session_kind.zig");
 const config = @import("client/config.zig");
 const unified_config = @import("unified_config.zig");
 const app_state = @import("client/app_state.zig");
@@ -788,6 +789,9 @@ fn openPath(allocator: std.mem.Allocator, path: []const u8) void {
 }
 
 const WinNodeServiceJobKind = enum {
+    profile_apply_client,
+    profile_apply_service,
+    profile_apply_session,
     install_onlogon,
     uninstall,
     start,
@@ -831,21 +835,19 @@ fn spawnWinNodeServiceJob(kind: WinNodeServiceJobKind, url: []const u8, token: [
     };
 }
 
-fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
-    defer {
-        job.deinit();
-        std.heap.page_allocator.destroy(job);
-    }
-
+fn runWinNodeServiceCommand(job: *const WinNodeServiceJob, inherit_stdio: bool) bool {
     const allocator = std.heap.page_allocator;
 
     const cli = findSiblingExecutable(allocator, if (builtin.os.tag == .windows) "ziggystarclaw-cli.exe" else "ziggystarclaw-cli") catch |err| {
         logger.err("node service: failed to resolve cli path: {}", .{err});
-        return;
+        return false;
     };
     defer allocator.free(cli);
 
     const action_args: []const []const u8 = switch (job.kind) {
+        .profile_apply_client => &.{ "node", "profile", "apply", "--profile", "client" },
+        .profile_apply_service => &.{ "node", "profile", "apply", "--profile", "service" },
+        .profile_apply_session => &.{ "node", "profile", "apply", "--profile", "session" },
         .install_onlogon => &.{ "node", "service", "install", "--node-service-mode", "onlogon" },
         .uninstall => &.{ "node", "service", "uninstall", "--node-service-mode", "onlogon" },
         .start => &.{ "node", "service", "start", "--node-service-mode", "onlogon" },
@@ -857,14 +859,14 @@ fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
 
-    argv.append(allocator, cli) catch return;
-    argv.appendSlice(allocator, action_args) catch return;
+    argv.append(allocator, cli) catch return false;
+    argv.appendSlice(allocator, action_args) catch return false;
 
     // Pass --url and --gateway-token even when token is empty to avoid interactive prompts.
-    argv.append(allocator, "--url") catch return;
-    argv.append(allocator, job.url) catch return;
-    argv.append(allocator, "--gateway-token") catch return;
-    argv.append(allocator, job.token) catch return;
+    argv.append(allocator, "--url") catch return false;
+    argv.append(allocator, job.url) catch return false;
+    argv.append(allocator, "--gateway-token") catch return false;
+    argv.append(allocator, job.token) catch return false;
 
     if (job.insecure_tls) {
         argv.append(allocator, "--insecure-tls") catch {};
@@ -876,34 +878,64 @@ fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
 
     var child = std.process.Child.init(argv.items, allocator);
     child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
+    child.stdout_behavior = if (inherit_stdio) .Inherit else .Ignore;
+    child.stderr_behavior = if (inherit_stdio) .Inherit else .Ignore;
     if (builtin.os.tag == .windows) {
         child.create_no_window = true;
     }
 
     child.spawn() catch |err| {
         logger.err("node service: spawn failed: {}", .{err});
-        return;
+        return false;
     };
 
     const term = child.wait() catch |err| {
         logger.err("node service: wait failed: {}", .{err});
-        return;
+        return false;
     };
 
     switch (term) {
         .Exited => |code| {
             if (code == 0) {
                 logger.info("node service: {s} ok", .{@tagName(job.kind)});
+                return true;
             } else {
                 logger.err("node service: {s} exited code={d}", .{ @tagName(job.kind), code });
+                return false;
             }
         },
         else => {
             logger.err("node service: {s} terminated unexpectedly", .{@tagName(job.kind)});
+            return false;
         },
     }
+}
+
+fn runWinNodeServiceJob(job: *WinNodeServiceJob) void {
+    defer {
+        job.deinit();
+        std.heap.page_allocator.destroy(job);
+    }
+    _ = runWinNodeServiceCommand(job, false);
+}
+
+fn runWinNodeServiceJobBlocking(kind: WinNodeServiceJobKind, url: []const u8, token: []const u8, insecure_tls: bool) bool {
+    const allocator = std.heap.page_allocator;
+    const job = allocator.create(WinNodeServiceJob) catch return false;
+    defer allocator.destroy(job);
+
+    job.* = .{
+        .kind = kind,
+        .url = allocator.dupe(u8, url) catch return false,
+        .token = allocator.dupe(u8, token) catch {
+            allocator.free(job.url);
+            return false;
+        },
+        .insecure_tls = insecure_tls,
+    };
+    defer job.deinit();
+
+    return runWinNodeServiceCommand(job, true);
 }
 
 fn findSiblingExecutable(allocator: std.mem.Allocator, name: []const u8) ![]u8 {
@@ -1055,6 +1087,7 @@ const ReadLoop = struct {
     queue: *MessageQueue,
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    too_large: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_receive_ms: i64 = 0,
     last_payload_len: usize = 0,
 };
@@ -1149,6 +1182,13 @@ fn readLoopMain(loop: *ReadLoop) void {
             defer zone.end();
             break :blk loop.ws_client.receive() catch |err| {
                 if (err == error.NotConnected or err == error.Closed) {
+                    return;
+                }
+                if (err == error.TooLarge) {
+                    // Commonly triggered by a huge chat.history response being sent as a single WS message.
+                    loop.too_large.store(true, .monotonic);
+                    logger.warn("WebSocket receive failed (thread): payload too large (error.TooLarge)", .{});
+                    loop.ws_client.disconnect();
                     return;
                 }
                 if (err == error.ReadFailed) {
@@ -1308,6 +1348,11 @@ fn sendNodesListRequest(
     ctx.setPendingNodesRequest(request.id);
 }
 
+const chat_history_fetch_limit_default: u32 = 20;
+const chat_history_fetch_limit_min: u32 = 10;
+// Backed off when the gateway sends a chat.history payload that exceeds the client's WS max_size.
+var chat_history_fetch_limit: u32 = chat_history_fetch_limit_default;
+
 fn sendChatHistoryRequest(
     allocator: std.mem.Allocator,
     ctx: *client_state.ClientContext,
@@ -1322,7 +1367,7 @@ fn sendChatHistoryRequest(
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
-        .limit = 200,
+        .limit = chat_history_fetch_limit,
     };
 
     const request = requests.buildRequestPayload(allocator, "chat.history", params) catch |err| {
@@ -1523,26 +1568,46 @@ fn sendChatMessageRequest(
         logger.warn("Failed to build chat.send request: {}", .{err});
         return;
     };
-    errdefer {
-        allocator.free(request.payload);
-        allocator.free(request.id);
-    }
 
     var msg = buildUserMessage(allocator, idempotency, message) catch |err| {
         logger.warn("Failed to build user message: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
         return;
     };
+
     ctx.upsertSessionMessageOwned(session_key, msg) catch |err| {
         logger.warn("Failed to append user message: {}", .{err});
         freeChatMessageOwned(allocator, &msg);
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        return;
     };
+
+    // Mark the session as waiting immediately, even before streaming starts.
+    if (ctx.findSessionState(session_key)) |state_ptr| {
+        state_ptr.awaiting_reply = true;
+    }
 
     ws_client.send(request.payload) catch |err| {
         logger.err("Failed to send chat.send: {}", .{err});
+        allocator.free(request.payload);
+        allocator.free(request.id);
+        // Best-effort: mark the optimistic message as failed.
+        if (ctx.findSessionState(session_key)) |state_ptr| {
+            for (state_ptr.messages.items) |*m| {
+                if (std.mem.eql(u8, m.id, msg.id)) {
+                    m.local_state = .failed;
+                    break;
+                }
+            }
+            state_ptr.awaiting_reply = false;
+        }
         return;
     };
+
     allocator.free(request.payload);
-    ctx.setPendingSendRequest(request.id);
+    ctx.setPendingSendRequest(request.id, session_key, msg.id);
 }
 
 fn freeChatMessageOwned(allocator: std.mem.Allocator, msg: *types.ChatMessage) void {
@@ -1576,6 +1641,7 @@ fn buildUserMessage(
         .content = content_copy,
         .timestamp = std.time.milliTimestamp(),
         .attachments = null,
+        .local_state = .sending,
     };
 }
 
@@ -1584,9 +1650,74 @@ fn agentDisplayName(registry: *agent_registry.AgentRegistry, agent_id: []const u
     return agent_id;
 }
 
-fn isNotificationSession(session: types.Session) bool {
-    const kind = session.kind orelse return false;
-    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+fn isAutomationSession(session: types.Session) bool {
+    return session_kind.isAutomationSession(session);
+}
+
+fn findBestConversationSessionKeyForAgent(
+    sessions: []const types.Session,
+    agent_id: []const u8,
+) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const parts = session_keys.parse(session.key) orelse continue;
+        if (!std.mem.eql(u8, parts.agent_id, agent_id)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
+    var best_key: ?[]const u8 = null;
+    var best_updated: i64 = -1;
+    for (sessions) |session| {
+        if (isAutomationSession(session)) continue;
+        const updated = session.updated_at orelse 0;
+        if (updated > best_updated) {
+            best_updated = updated;
+            best_key = session.key;
+        }
+    }
+    return best_key;
+}
+
+fn ensureSafeCurrentSession(allocator: std.mem.Allocator, ctx: *client_state.ClientContext) bool {
+    // Never silently switch away from a user-selected session.
+    // Only repair when the current selection is missing.
+    var preferred_agent_id: ?[]const u8 = null;
+    var missing_current: ?[]const u8 = null;
+
+    if (ctx.current_session) |current| {
+        for (ctx.sessions.items) |session| {
+            if (std.mem.eql(u8, session.key, current)) return false;
+        }
+
+        // If the selected session disappears, prefer a replacement conversation for the same agent.
+        if (session_keys.parse(current)) |parts| {
+            preferred_agent_id = parts.agent_id;
+        }
+
+        missing_current = current;
+        ctx.current_session = null;
+    }
+
+    const best = if (preferred_agent_id) |agent_id|
+        findBestConversationSessionKeyForAgent(ctx.sessions.items, agent_id) orelse
+            findBestConversationSessionKey(ctx.sessions.items)
+    else
+        findBestConversationSessionKey(ctx.sessions.items);
+
+    if (missing_current) |current| allocator.free(current);
+
+    const key = best orelse return false;
+    ctx.setCurrentSession(key) catch return false;
+    return true;
 }
 
 fn syncRegistryDefaults(
@@ -1600,7 +1731,7 @@ fn syncRegistryDefaults(
         if (agent.default_session_key) |key| {
             for (sessions) |session| {
                 if (!std.mem.eql(u8, session.key, key)) continue;
-                if (isNotificationSession(session)) break;
+                if (isAutomationSession(session)) break;
                 const parts = session_keys.parse(session.key) orelse break;
                 if (std.mem.eql(u8, parts.agent_id, agent.id)) {
                     default_valid = true;
@@ -1613,7 +1744,7 @@ fn syncRegistryDefaults(
             var best_key: ?[]const u8 = null;
             var best_updated: i64 = -1;
             for (sessions) |session| {
-                if (isNotificationSession(session)) continue;
+                if (isAutomationSession(session)) continue;
                 const parts = session_keys.parse(session.key) orelse continue;
                 if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
                 const updated = session.updated_at orelse 0;
@@ -1724,6 +1855,16 @@ fn clearChatPanelsForSession(
     }
 }
 
+fn isInstallProfileOnlyArg(raw_arg: []const u8) bool {
+    const arg = std.mem.trim(u8, raw_arg, " \t\r\n\"'");
+    return std.ascii.eqlIgnoreCase(arg, "--install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "--installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "/installer-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-install-profile-only") or
+        std.ascii.eqlIgnoreCase(arg, "-installer-profile-only");
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }){};
     defer _ = gpa.deinit();
@@ -1739,6 +1880,14 @@ pub fn main() !void {
         logger.info("Docking debug enabled via ZSC_DOCK_DEBUG", .{});
     }
 
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+    var install_profile_only_requested = false;
+    for (args[1..]) |arg| {
+        if (isInstallProfileOnlyArg(arg)) {
+            install_profile_only_requested = true;
+        }
+    }
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
     // If the user has never saved a config yet, create one so it's easy to edit by hand.
@@ -1787,8 +1936,20 @@ pub fn main() !void {
     var agents = try agent_registry.AgentRegistry.loadOrDefault(allocator, "ziggystarclaw_agents.json");
     defer agents.deinit(allocator);
     var app_state_state = app_state.loadOrDefault(allocator, "ziggystarclaw_state.json") catch app_state.initDefault();
+    const install_profile_only = install_profile_only_requested or
+        (builtin.os.tag == .windows and !app_state_state.windows_setup_completed);
+    var install_profile_action_armed_at_ms: i64 = 0;
+    ui.setInstallerProfileOnlyMode(install_profile_only);
+    logger.info(
+        "Windows profile setup mode: requested={} effective={} setup_completed={}",
+        .{ install_profile_only_requested, install_profile_only, app_state_state.windows_setup_completed },
+    );
     var auto_connect_enabled = app_state_state.last_connected;
     var auto_connect_pending = auto_connect_enabled and cfg.auto_connect_on_launch and cfg.server_url.len > 0;
+    if (install_profile_only) {
+        auto_connect_enabled = false;
+        auto_connect_pending = false;
+    }
 
     var ws_client = websocket_client.WebSocketClient.init(
         allocator,
@@ -1950,6 +2111,40 @@ pub fn main() !void {
         allocator.free(list);
         loaded.main_collapsed_docks = null;
     }
+    if (builtin.os.tag == .windows and (install_profile_only or !app_state_state.windows_setup_completed)) {
+        if (install_profile_only) {
+            var idx: usize = 0;
+            while (idx < main_win.manager.workspace.panels.items.len) {
+                const panel = main_win.manager.workspace.panels.items[idx];
+                if (panel.kind == .Settings) {
+                    idx += 1;
+                    continue;
+                }
+                _ = main_win.manager.closePanel(panel.id);
+            }
+        }
+
+        var found_settings = false;
+        var settings_panel_id: ?workspace.PanelId = null;
+        for (main_win.manager.workspace.panels.items) |*panel| {
+            if (panel.kind != .Settings) continue;
+            found_settings = true;
+            settings_panel_id = panel.id;
+            break;
+        }
+        if (!found_settings) {
+            main_win.manager.ensurePanel(.Settings);
+            for (main_win.manager.workspace.panels.items) |panel| {
+                if (panel.kind != .Settings) continue;
+                settings_panel_id = panel.id;
+                break;
+            }
+        }
+        if (settings_panel_id) |pid| {
+            main_win.manager.focusPanel(pid);
+        }
+        main_win.manager.workspace.markDirty();
+    }
     // If we loaded a workspace from disk, do not auto-apply the theme pack's workspace layout preset
     // for the current profile on startup. (It can re-open panels the user explicitly tore off.)
     if (workspace_file_exists) {
@@ -1964,7 +2159,7 @@ pub fn main() !void {
     }
 
     // Spawn any persisted secondary windows.
-    if (theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
+    if (!install_profile_only and theme_eng.caps.supports_multi_window and loaded.windows.len > 0) {
         for (loaded.windows) |*w| {
             var title_buf: [192]u8 = undefined;
             const title_z = std.fmt.bufPrintZ(&title_buf, "{s}", .{w.title}) catch "ZiggyStarClaw";
@@ -2103,6 +2298,10 @@ pub fn main() !void {
         auto_connect_pending = false;
     }
 
+    if (install_profile_only) {
+        install_profile_action_armed_at_ms = std.time.milliTimestamp() + 900;
+    }
+
     var should_close = false;
     var window_close_requests: std.ArrayList(u32) = .empty;
     defer window_close_requests.deinit(allocator);
@@ -2136,8 +2335,51 @@ pub fn main() !void {
         if (read_thread != null and !read_loop.running.load(.monotonic)) {
             stopReadThread(&read_loop, &read_thread);
         }
+
+        if (read_loop.too_large.swap(false, .monotonic)) {
+            // If the server sent a WS message exceeding our max_size (commonly chat.history),
+            // reduce the history limit so the next reconnect can succeed.
+
+            var pending_history: usize = 0;
+            var it = ctx.session_states.iterator();
+            while (it.next()) |entry| {
+                const state_ptr = entry.value_ptr;
+                if (state_ptr.pending_history_request_id) |pending| {
+                    pending_history += 1;
+                    if (pending_history <= 3) {
+                        logger.warn("Pending chat.history: session={s} request_id={s}", .{ entry.key_ptr.*, pending });
+                    }
+                }
+            }
+
+            logger.warn(
+                "WS error.TooLarge while pending: sessions={} nodes={} send={} node_invoke={} node_describe={} approval_resolve={} history_count={d} history_limit={d}",
+                .{
+                    ctx.pending_sessions_request_id != null,
+                    ctx.pending_nodes_request_id != null,
+                    ctx.pending_send_request_id != null,
+                    ctx.pending_node_invoke_request_id != null,
+                    ctx.pending_node_describe_request_id != null,
+                    ctx.pending_approval_resolve_request_id != null,
+                    pending_history,
+                    chat_history_fetch_limit,
+                },
+            );
+
+            const next = @max(chat_history_fetch_limit_min, chat_history_fetch_limit / 2);
+            if (next != chat_history_fetch_limit) {
+                logger.warn("Backing off chat.history limit: {d} -> {d}", .{ chat_history_fetch_limit, next });
+                chat_history_fetch_limit = next;
+            }
+            ctx.setOperatorNotice("Gateway response too large; reducing chat history fetch limit and retrying.") catch {};
+            ctx.clearPendingRequests();
+        }
+
         if (!ws_client.is_connected and ctx.state == .connected) {
             ctx.state = .disconnected;
+            // Requests may have been in-flight when the connection dropped.
+            // Clear them so history can be requested again after reconnect.
+            ctx.clearPendingRequests();
             if (should_reconnect and next_reconnect_at_ms == 0) {
                 const now_ms = std.time.milliTimestamp();
                 next_reconnect_at_ms = now_ms + reconnect_backoff_ms;
@@ -2184,9 +2426,11 @@ pub fn main() !void {
         }
 
         if (ctx.sessions_updated) {
-            if (syncRegistryDefaults(allocator, &agents, ctx.sessions.items)) {
+            const defaults_changed = syncRegistryDefaults(allocator, &agents, ctx.sessions.items);
+            if (defaults_changed) {
                 agent_registry.AgentRegistry.save(allocator, "ziggystarclaw_agents.json", agents) catch {};
             }
+            _ = ensureSafeCurrentSession(allocator, &ctx);
             ctx.clearSessionsUpdated();
         }
 
@@ -2224,6 +2468,9 @@ pub fn main() !void {
             }
             ui.frameBegin(allocator, &ctx, &active_window.manager, &command_inbox);
             for (ui_windows.items) |w| {
+                const win_zone = profiler.zone(@src(), "frame.ui.window");
+                defer win_zone.end();
+
                 var w_fb_w: c_int = 0;
                 var w_fb_h: c_int = 0;
                 _ = sdl.SDL_GetWindowSizeInPixels(w.window, &w_fb_w, &w_fb_h);
@@ -2235,7 +2482,11 @@ pub fn main() !void {
                 const desired_pack: ?[]const u8 = w.ui_state.theme_pack_override orelse cfg.ui_theme_pack;
                 const force_reload_pack = w.ui_state.theme_pack_reload_requested;
                 if (w.ui_state.theme_pack_reload_requested) w.ui_state.theme_pack_reload_requested = false;
-                theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+                {
+                    const tz = profiler.zone(@src(), "theme.activate_pack_for_render");
+                    defer tz.end();
+                    theme_eng.activateThemePackForRender(desired_pack, force_reload_pack) catch {};
+                }
 
                 // Multi-window: each window can have a different framebuffer size (and potentially DPI),
                 // so resolve profile and typography scale per window before we record its UI commands.
@@ -3003,20 +3254,53 @@ pub fn main() !void {
         }
 
         if (builtin.os.tag == .windows) {
-            if (ui_action.node_service_install_onlogon) {
-                spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+            var profile_job_kind: ?WinNodeServiceJobKind = null;
+            if (ui_action.node_profile_apply_client) {
+                profile_job_kind = .profile_apply_client;
             }
-            if (ui_action.node_service_uninstall) {
-                spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+            if (ui_action.node_profile_apply_service) {
+                profile_job_kind = .profile_apply_service;
             }
-            if (ui_action.node_service_start) {
-                spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+            if (ui_action.node_profile_apply_session) {
+                profile_job_kind = .profile_apply_session;
             }
-            if (ui_action.node_service_stop) {
-                spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+
+            if (profile_job_kind) |kind| {
+                if (install_profile_only) {
+                    if (std.time.milliTimestamp() < install_profile_action_armed_at_ms) {
+                        logger.info("Ignoring startup profile action before onboarding UI is armed.", .{});
+                        continue;
+                    }
+                    const ok = runWinNodeServiceJobBlocking(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
+                    if (ok) {
+                        app_state_state.windows_setup_completed = true;
+                        should_close = true;
+                    } else {
+                        logger.err("Windows profile apply failed; staying in onboarding flow.", .{});
+                        ctx.setOperatorNotice("Failed to apply install profile. Please check logs and try again.") catch {};
+                    }
+                } else {
+                    app_state_state.windows_setup_completed = true;
+                    spawnWinNodeServiceJob(kind, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
             }
-            if (ui_action.node_service_status) {
-                spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+
+            if (!install_profile_only) {
+                if (ui_action.node_service_install_onlogon) {
+                    spawnWinNodeServiceJob(.install_onlogon, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_uninstall) {
+                    spawnWinNodeServiceJob(.uninstall, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_start) {
+                    spawnWinNodeServiceJob(.start, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_stop) {
+                    spawnWinNodeServiceJob(.stop, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
+                if (ui_action.node_service_status) {
+                    spawnWinNodeServiceJob(.status, cfg.server_url, cfg.token, cfg.insecure_tls);
+                }
             }
         }
 

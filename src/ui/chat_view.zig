@@ -409,9 +409,122 @@ pub fn drawCustom(
         stream_changed,
     );
 
-    var content_height = virtualContentHeight(&state.virt, padding, gap);
+    // When following the tail, avoid the one-frame "lag" where the streaming message grows,
+    // max_scroll increases, and we only pin after rendering (causing visible bounce/jitter).
+    //
+    // Pre-measure the stream item (only when it changes) so max_scroll is correct *before* we
+    // compute the render window and draw.
+    const prevent_auto_follow_tail_pre = state.selecting or pending_select;
     const view_height = rect.size()[1];
+    const debug_scroll_follow_tail = false;
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and stream_text != null and stream_changed) {
+        if (state.virt.items.items.len > 0 and state.virt.items.items[state.virt.items.items.len - 1].kind == .stream) {
+            const idx_stream = state.virt.items.items.len - 1;
+            const layout = measureMessageLayout(
+                allocator,
+                ctx,
+                stream_text.?,
+                null,
+                bubble_width,
+                line_height,
+                padding,
+                &measures_per_frame,
+            );
+            const item = state.virt.items.items[idx_stream];
+            if (layout.height != item.height or layout.text_len != item.text_len) {
+                if (debug_scroll_follow_tail) {
+                    std.log.debug(
+                        "chat: premeasure stream: height {d:.1}->{d:.1} text {d}->{d}",
+                        .{ item.height, layout.height, item.text_len, layout.text_len },
+                    );
+                }
+                virtualUpdateItemMetrics(state, idx_stream, layout.height, layout.text_len, gap, separator_len);
+            }
+        }
+    }
+
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging and
+        (session_changed or messages_changed or show_tool_output_changed))
+    {
+        // When pinned to bottom, session switches / history refreshes can refine message height
+        // estimates in the same frame (as the tail messages get measured), which shifts
+        // max_scroll and looks like an ugly jump. Pre-measure a small tail window so the first
+        // painted frame is already using stable metrics.
+        const tail_items_cap: usize = 64;
+        const target_h: f32 = view_height * 2.0;
+        var start_index: usize = state.virt.items.items.len;
+        var remaining: f32 = target_h;
+        var counted: usize = 0;
+        while (start_index > 0 and remaining > 0.0 and counted < tail_items_cap) {
+            start_index -= 1;
+            counted += 1;
+            remaining -= state.virt.items.items[start_index].height + gap;
+        }
+
+        var j: usize = start_index;
+        while (j < state.virt.items.items.len) : (j += 1) {
+            const item = state.virt.items.items[j];
+            switch (item.kind) {
+                .message => {
+                    if (item.msg_index >= messages.len) continue;
+                    const msg = messages[item.msg_index];
+                    const cache = ensureMessageCache(
+                        allocator,
+                        state,
+                        ctx,
+                        msg,
+                        bubble_width,
+                        line_height,
+                        padding,
+                        &measures_per_frame,
+                    );
+                    if (cache.height != item.height or cache.text_len != item.text_len) {
+                        if (debug_scroll_follow_tail) {
+                            std.log.debug(
+                                "chat: premeasure tail msg[{d}] height {d:.1}->{d:.1} text {d}->{d}",
+                                .{ item.msg_index, item.height, cache.height, item.text_len, cache.text_len },
+                            );
+                        }
+                        virtualUpdateItemMetrics(state, j, cache.height, cache.text_len, gap, separator_len);
+                    }
+                },
+                .stream => {
+                    if (stream_text) |stream| {
+                        const layout = measureMessageLayout(
+                            allocator,
+                            ctx,
+                            stream,
+                            null,
+                            bubble_width,
+                            line_height,
+                            padding,
+                            &measures_per_frame,
+                        );
+                        if (layout.height != item.height or layout.text_len != item.text_len) {
+                            if (debug_scroll_follow_tail) {
+                                std.log.debug(
+                                    "chat: premeasure tail stream height {d:.1}->{d:.1} text {d}->{d}",
+                                    .{ item.height, layout.height, item.text_len, layout.text_len },
+                                );
+                            }
+                            virtualUpdateItemMetrics(state, j, layout.height, layout.text_len, gap, separator_len);
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    var content_height = virtualContentHeight(&state.virt, padding, gap);
     var max_scroll: f32 = @max(0.0, content_height - view_height);
+
+    // If we are following the tail, pin *before* computing the render window so the current
+    // frame draws from the true bottom.
+    if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging) {
+        state.scroll_y = max_scroll;
+    }
+
+    const was_follow_tail = state.follow_tail;
 
     // If content shrank (or we just rebuilt estimates), clamp scroll before searching.
     if (state.scroll_y < 0.0) state.scroll_y = 0.0;
@@ -465,12 +578,23 @@ pub fn drawCustom(
                 const align_right = std.mem.eql(u8, msg.role, "user");
 
                 if (visible) {
+                    const status: ?[]const u8 = if (align_right) blk: {
+                        if (msg.local_state) |st| {
+                            break :blk switch (st) {
+                                .sending => "sending…",
+                                .failed => "failed",
+                            };
+                        }
+                        break :blk null;
+                    } else null;
+
                     const layout = drawMessage(
                         allocator,
                         ctx,
                         rect,
                         msg.id,
                         msg.role,
+                        status,
                         msg.content,
                         msg.timestamp,
                         now_ms,
@@ -519,6 +643,7 @@ pub fn drawCustom(
                             rect,
                             "streaming",
                             "assistant",
+                            null,
                             stream,
                             now_ms,
                             now_ms,
@@ -678,9 +803,18 @@ pub fn drawCustom(
     }
 
     const near_bottom = state.scroll_y >= max_scroll - 4.0;
-    if (user_scrolled and !near_bottom) {
+    const prevent_auto_follow_tail = state.selecting or pending_select;
+    // Sticky follow-tail: if we were following at frame start, keep following unless the user
+    // explicitly scrolls away from the bottom. This avoids visible jitter while streaming replies
+    // grow the document and `max_scroll` shifts during the frame.
+    //
+    // Do not auto-enable follow-tail while starting/performing text selection (selection sets
+    // follow_tail = false earlier in the frame).
+    if (!prevent_auto_follow_tail and was_follow_tail and !user_scrolled and !state.scrollbar_dragging) {
+        state.follow_tail = true;
+    } else if (user_scrolled and !near_bottom) {
         state.follow_tail = false;
-    } else if (near_bottom) {
+    } else if (!prevent_auto_follow_tail and near_bottom) {
         state.follow_tail = true;
     }
 
@@ -1065,6 +1199,7 @@ fn drawMessage(
     rect: draw_context.Rect,
     id: []const u8,
     role: []const u8,
+    status: ?[]const u8,
     content: []const u8,
     timestamp_ms: ?i64,
     now_ms: i64,
@@ -1142,11 +1277,17 @@ fn drawMessage(
         const label_pos = .{ bubble_x + padding, bubble_y + padding };
         ctx.drawText(label, label_pos, .{ .color = bubble.accent });
 
+        var header_x = label_pos[0] + ctx.measureText(label, 0.0)[0];
+        if (status) |status_label| {
+            header_x += t.spacing.sm;
+            ctx.drawText(status_label, .{ header_x, label_pos[1] }, .{ .color = t.colors.text_secondary });
+            header_x += ctx.measureText(status_label, 0.0)[0];
+        }
+
         if (timestamp_ms) |ts| {
             var time_buf: [32]u8 = undefined;
             const time_label = components.composite.message_bubble.formatRelativeTime(now_ms, ts, &time_buf);
-            const label_w = ctx.measureText(label, 0.0)[0];
-            const time_pos = .{ label_pos[0] + label_w + t.spacing.sm, label_pos[1] };
+            const time_pos = .{ header_x + t.spacing.sm, label_pos[1] };
             ctx.drawText(time_label, time_pos, .{ .color = t.colors.text_secondary });
         }
 

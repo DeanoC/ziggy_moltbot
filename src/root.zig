@@ -68,4 +68,13 @@ pub const utils = struct {
     pub const string_utils = @import("utils/string_utils.zig");
 };
 
+pub const node = struct {
+    pub const node_context = @import("node/node_context.zig");
+};
+
+pub const windows = struct {
+    pub const camera = @import("windows/camera.zig");
+    pub const screen = @import("windows/screen.zig");
+};
+
 pub const unified_config = @import("unified_config.zig");

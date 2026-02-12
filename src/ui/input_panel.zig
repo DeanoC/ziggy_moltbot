@@ -4,12 +4,30 @@ const draw_context = @import("draw_context.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const widgets = @import("widgets/widgets.zig");
 const input_state = @import("input/input_state.zig");
+const input_events = @import("input/input_events.zig");
 const theme_runtime = @import("theme_engine/runtime.zig");
 
 const hint = "Message (⏎ to send, Shift+⏎ for line breaks, paste images)";
 
 var editor_state: ?text_editor.TextEditor = null;
 var emoji_open = false;
+
+fn computeEmojiPickerRect(t: anytype, anchor: draw_context.Rect) draw_context.Rect {
+    const emojis_len: usize = 24;
+    const cols: usize = 6;
+    const rows: usize = (emojis_len + cols - 1) / cols;
+    const cell = anchor.size()[1];
+    const gap = t.spacing.xs;
+    const padding = t.spacing.xs;
+    const picker_w = @as(f32, @floatFromInt(cols)) * cell + @as(f32, @floatFromInt(cols - 1)) * gap + padding * 2.0;
+    const picker_h = @as(f32, @floatFromInt(rows)) * cell + @as(f32, @floatFromInt(rows - 1)) * gap + padding * 2.0;
+
+    var picker_min = .{ anchor.min[0], anchor.min[1] - picker_h - gap };
+    if (picker_min[1] < 0.0) {
+        picker_min[1] = anchor.max[1] + gap;
+    }
+    return draw_context.Rect.fromMinSize(picker_min, .{ picker_w, picker_h });
+}
 
 pub fn deinit(allocator: std.mem.Allocator) void {
     if (editor_state) |*editor| editor.deinit(allocator);
@@ -22,7 +40,8 @@ pub fn draw(
     ctx: *draw_context.DrawContext,
     rect: draw_context.Rect,
     queue: *input_state.InputQueue,
-    enabled: bool,
+    editor_enabled: bool,
+    send_enabled: bool,
 ) ?[]u8 {
     if (editor_state == null) {
         editor_state = text_editor.TextEditor.init(allocator) catch null;
@@ -44,14 +63,91 @@ pub fn draw(
 
     var disabled_queue = input_state.InputQueue{ .events = .empty, .state = .{} };
     disabled_queue.state.mouse_pos = .{ -10000.0, -10000.0 };
-    const active_queue = if (enabled) queue else &disabled_queue;
+    const active_queue = if (editor_enabled) queue else &disabled_queue;
 
-    if (!enabled) {
+    const emoji_label = "😀";
+    const emoji_width = button_height;
+    const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
+
+    if (!editor_enabled) {
         editor.focused = false;
         editor.dragging = false;
     }
 
+    // If the emoji picker is open, clicks within the picker should not move the caret in the
+    // underlying text editor (prevent click-through). The editor hit-tests against
+    // `queue.state.mouse_pos`, so we temporarily mask both the pointer state and any left-button
+    // mouse_down events that occur inside the picker.
+    const SavedMouseEvent = struct {
+        idx: usize,
+        is_down: bool,
+        button: input_events.MouseButton,
+        pos: [2]f32,
+    };
+    var saved_mouse_events: [16]SavedMouseEvent = undefined;
+    var saved_mouse_events_len: usize = 0;
+    var saved_queue_mouse_pos: ?[2]f32 = null;
+
+    if (emoji_open and editor_enabled) {
+        const picker_rect = computeEmojiPickerRect(t, emoji_rect);
+        const offscreen: [2]f32 = .{ -10000.0, -10000.0 };
+
+        if (picker_rect.contains(active_queue.state.mouse_pos)) {
+            saved_queue_mouse_pos = active_queue.state.mouse_pos;
+            active_queue.state.mouse_pos = offscreen;
+        }
+
+        for (active_queue.events.items, 0..) |*evt, i| {
+            switch (evt.*) {
+                .mouse_down => |md| {
+                    if (md.button == .left and picker_rect.contains(md.pos)) {
+                        if (saved_queue_mouse_pos == null) {
+                            saved_queue_mouse_pos = active_queue.state.mouse_pos;
+                            active_queue.state.mouse_pos = offscreen;
+                        }
+                        if (saved_mouse_events_len < saved_mouse_events.len) {
+                            saved_mouse_events[saved_mouse_events_len] = .{ .idx = i, .is_down = true, .button = md.button, .pos = md.pos };
+                            saved_mouse_events_len += 1;
+                            // Make the editor ignore this press; the picker will see the restored event.
+                            evt.* = .{ .mouse_down = .{ .button = .right, .pos = offscreen } };
+                        }
+                    }
+                },
+                .mouse_up => |mu| {
+                    if (mu.button == .left and picker_rect.contains(mu.pos)) {
+                        if (saved_mouse_events_len < saved_mouse_events.len) {
+                            saved_mouse_events[saved_mouse_events_len] = .{ .idx = i, .is_down = false, .button = mu.button, .pos = mu.pos };
+                            saved_mouse_events_len += 1;
+                            evt.* = .{ .mouse_up = .{ .button = mu.button, .pos = offscreen } };
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     const action = editor.draw(allocator, ctx, editor_rect, active_queue, .{ .submit_on_enter = true });
+
+    if (saved_queue_mouse_pos) |pos| {
+        active_queue.state.mouse_pos = pos;
+    }
+
+    // Restore masked mouse events so the picker can handle the click.
+    if (saved_mouse_events_len > 0) {
+        var j: usize = 0;
+        while (j < saved_mouse_events_len) : (j += 1) {
+            const entry = saved_mouse_events[j];
+            if (entry.idx < active_queue.events.items.len) {
+                const evt = &active_queue.events.items[entry.idx];
+                if (entry.is_down) {
+                    evt.* = .{ .mouse_down = .{ .button = entry.button, .pos = entry.pos } };
+                } else {
+                    evt.* = .{ .mouse_up = .{ .button = entry.button, .pos = entry.pos } };
+                }
+            }
+        }
+    }
 
     if (editor.focused) {
         const sys = ui_systems.get();
@@ -64,17 +160,14 @@ pub fn draw(
     }
 
     var send = action.send;
-    const emoji_label = "😀";
-    const emoji_width = button_height;
-    const emoji_rect = draw_context.Rect.fromMinSize(.{ rect.min[0], row_y }, .{ emoji_width, button_height });
     if (widgets.button.draw(ctx, emoji_rect, emoji_label, active_queue, .{
         .variant = .ghost,
-        .disabled = !enabled,
+        .disabled = !editor_enabled,
         .radius = t.radius.sm,
     })) {
         emoji_open = !emoji_open;
     }
-    if (!enabled) {
+    if (!editor_enabled) {
         emoji_open = false;
     }
 
@@ -86,17 +179,18 @@ pub fn draw(
     );
     if (widgets.button.draw(ctx, send_rect, send_label, active_queue, .{
         .variant = .primary,
-        .disabled = !enabled,
+        .disabled = !editor_enabled or !send_enabled,
         .radius = t.radius.sm,
     })) {
         send = true;
     }
 
-    if (emoji_open and enabled) {
+    if (emoji_open and editor_enabled) {
         drawEmojiPicker(allocator, ctx, active_queue, emoji_rect, editor);
     }
 
-    if (!send or !enabled) return null;
+    if (!send_enabled) send = false;
+    if (!send or !editor_enabled) return null;
     return editor.takeText(allocator);
 }
 

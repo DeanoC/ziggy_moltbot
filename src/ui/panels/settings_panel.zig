@@ -15,6 +15,7 @@ pub fn draw(
     app_version: []const u8,
     rect_override: ?@import("../draw_context.zig").Rect,
     window_theme_pack_override: ?[]const u8,
+    install_profile_only_mode: bool,
 ) SettingsPanelAction {
     return settings_view.draw(
         allocator,
@@ -25,5 +26,6 @@ pub fn draw(
         app_version,
         rect_override,
         window_theme_pack_override,
+        install_profile_only_mode,
     );
 }
