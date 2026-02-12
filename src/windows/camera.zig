@@ -283,10 +283,6 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
 
     if (req.durationMs == 0 or req.durationMs > 60_000) return error.InvalidParams;
 
-    if (req.includeAudio) {
-        logger.warn("camera.clip backend={s}: includeAudio requested but audio capture is not implemented yet; capturing video-only", .{clip_backend_name});
-    }
-
     const camera_name = try resolveCameraNameForCapture(allocator, req.deviceId, req.preferredPosition);
     defer allocator.free(camera_name);
 
@@ -311,7 +307,7 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
     const input_spec = try formatDshowVideoInputAlloc(allocator, camera_name);
     defer allocator.free(input_spec);
 
-    try runFfmpegCameraClip(allocator, req, input_spec, out_path);
+    const has_audio = try runFfmpegCameraClip(allocator, req, input_spec, out_path);
 
     const file = std.fs.openFileAbsolute(out_path, .{}) catch {
         logger.err("camera.clip backend={s} output file missing: {s}", .{ clip_backend_name, out_path });
@@ -346,7 +342,7 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
         .format = req.format,
         .base64 = b64_buf,
         .durationMs = req.durationMs,
-        .hasAudio = false,
+        .hasAudio = has_audio,
     };
 }
 
@@ -608,12 +604,23 @@ fn runFfmpegSingleFrame(
     return last_error orelse error.CommandFailed;
 }
 
+const ClipRunVariant = enum {
+    video_only,
+    with_audio,
+};
+
+const ClipRunOutcome = enum {
+    executable_missing,
+    failed,
+    success,
+};
+
 fn runFfmpegCameraClip(
     allocator: std.mem.Allocator,
     req: CameraClipRequest,
     input_spec: []const u8,
     out_path: []const u8,
-) CameraClipError!void {
+) CameraClipError!bool {
     const duration_arg = try std.fmt.allocPrint(
         allocator,
         "{d}.{d:0>3}",
@@ -625,108 +632,187 @@ fn runFfmpegCameraClip(
     var last_error: ?CameraClipError = null;
 
     for (ffmpegCandidates()) |exe| {
-        const mp4_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-t",
-            duration_arg,
-            "-an",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "10",
-            "-c:v",
-            "mpeg4",
-            "-b:v",
-            "450k",
-            "-maxrate",
-            "450k",
-            "-bufsize",
-            "900k",
-            "-q:v",
-            "7",
-            "-movflags",
-            "+faststart",
-            "-y",
-            out_path,
-        };
+        if (req.includeAudio) {
+            const audio_outcome = try runFfmpegCameraClipVariant(allocator, req, input_spec, duration_arg, out_path, exe, .with_audio);
+            switch (audio_outcome) {
+                .success => return true,
+                .executable_missing => {},
+                .failed => {
+                    saw_executable = true;
+                    last_error = error.CommandFailed;
+                    logger.warn(
+                        "camera.clip backend={s}: includeAudio capture failed via {s}; retrying video-only",
+                        .{ clip_backend_name, exe },
+                    );
+                },
+            }
+        }
 
-        const webm_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-t",
-            duration_arg,
-            "-an",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "10",
-            "-c:v",
-            "libvpx",
-            "-b:v",
-            "350k",
-            "-maxrate",
-            "350k",
-            "-bufsize",
-            "700k",
-            "-deadline",
-            "realtime",
-            "-f",
-            "webm",
-            "-y",
-            out_path,
-        };
-
-        const argv = switch (req.format) {
-            .mp4 => mp4_argv,
-            .webm => webm_argv,
-        };
-
-        const res = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = argv,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
+        const video_only_outcome = try runFfmpegCameraClipVariant(allocator, req, input_spec, duration_arg, out_path, exe, .video_only);
+        switch (video_only_outcome) {
+            .success => return false,
+            .executable_missing => continue,
+            .failed => {
                 saw_executable = true;
-                logger.warn("camera.clip backend={s} failed to start {s}: {s}", .{ clip_backend_name, exe, @errorName(err) });
                 last_error = error.CommandFailed;
                 continue;
             },
-        };
-
-        saw_executable = true;
-
-        const exit_code = childTermToExitCode(res.term);
-        if (exit_code != 0) {
-            logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
-            allocator.free(res.stdout);
-            allocator.free(res.stderr);
-            last_error = error.CommandFailed;
-            continue;
         }
-
-        allocator.free(res.stdout);
-        allocator.free(res.stderr);
-        return;
     }
 
     if (!saw_executable) return error.FfmpegNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn runFfmpegCameraClipVariant(
+    allocator: std.mem.Allocator,
+    req: CameraClipRequest,
+    input_spec: []const u8,
+    duration_arg: []const u8,
+    out_path: []const u8,
+    exe: []const u8,
+    variant: ClipRunVariant,
+) CameraClipError!ClipRunOutcome {
+    var argv_list = std.ArrayList([]const u8).empty;
+    defer argv_list.deinit(allocator);
+
+    try argv_list.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "dshow",
+        "-i",
+        input_spec,
+    });
+
+    switch (variant) {
+        .video_only => {
+            try argv_list.appendSlice(allocator, &.{ "-t", duration_arg, "-an" });
+        },
+        .with_audio => {
+            try argv_list.appendSlice(allocator, &.{
+                "-f",
+                "dshow",
+                "-i",
+                "audio=default",
+                "-t",
+                duration_arg,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "10",
+    });
+
+    switch (req.format) {
+        .mp4 => {
+            try argv_list.appendSlice(allocator, &.{
+                "-c:v",
+                "mpeg4",
+                "-b:v",
+                "450k",
+                "-maxrate",
+                "450k",
+                "-bufsize",
+                "900k",
+                "-q:v",
+                "7",
+            });
+
+            if (variant == .with_audio) {
+                try argv_list.appendSlice(allocator, &.{
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "32k",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "22050",
+                    "-shortest",
+                });
+            }
+
+            try argv_list.appendSlice(allocator, &.{
+                "-movflags",
+                "+faststart",
+            });
+        },
+        .webm => {
+            try argv_list.appendSlice(allocator, &.{
+                "-c:v",
+                "libvpx",
+                "-b:v",
+                "350k",
+                "-maxrate",
+                "350k",
+                "-bufsize",
+                "700k",
+                "-deadline",
+                "realtime",
+            });
+
+            if (variant == .with_audio) {
+                try argv_list.appendSlice(allocator, &.{
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "32k",
+                    "-ac",
+                    "1",
+                    "-shortest",
+                });
+            }
+
+            try argv_list.appendSlice(allocator, &.{
+                "-f",
+                "webm",
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-y",
+        out_path,
+    });
+
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer allocator.free(argv);
+
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 1024 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return .executable_missing,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            logger.warn("camera.clip backend={s} failed to start {s}: {s}", .{ clip_backend_name, exe, @errorName(err) });
+            return .failed;
+        },
+    };
+
+    const exit_code = childTermToExitCode(res.term);
+    if (exit_code != 0) {
+        logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+        return .failed;
+    }
+
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+    return .success;
 }
 
 const ImageDimensions = struct {
