@@ -18,6 +18,7 @@ Use this checklist to prepare and ship a ZiggyStarClaw release.
 - [ ] Windows: launch `ziggystarclaw-client.exe`, connect and send a message.
 - [ ] WASM: open `ziggystarclaw-client.html` in a local server and connect.
 - [ ] Android: install `ziggystarclaw_android.apk`, connect and send a message.
+- [ ] Run `docs/DOCKING_SMOKE_CHECKLIST.md` for docking, multi-window, and window chrome behavior.
 
 ## Release
 - [ ] Tag the commit (e.g. `vX.Y.Z`) and push.

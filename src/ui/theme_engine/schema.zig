@@ -41,6 +41,14 @@ pub const WindowTemplate = struct {
     title: []const u8 = "",
     width: u32 = 960,
     height: u32 = 720,
+    /// Optional UI chrome role: "main_workspace" | "detached_panel" | "template_utility".
+    chrome_mode: ?[]const u8 = null,
+    /// Optional menu profile: "full" | "compact" | "minimal".
+    menu_profile: ?[]const u8 = null,
+    /// Optional menu bar visibility override for this window template.
+    show_menu_bar: ?bool = null,
+    /// Optional status bar visibility override for this window template.
+    show_status_bar: ?bool = null,
     profile: ?[]const u8 = null,
     /// Optional theme variant ("light"/"dark") applied to this window only.
     variant: ?[]const u8 = null,

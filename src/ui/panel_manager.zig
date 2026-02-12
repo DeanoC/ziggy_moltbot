@@ -32,42 +32,7 @@ pub const PanelManager = struct {
     /// Note: this is intentionally conservative (only applies to kinds that are effectively
     /// singleton in today's UI).
     pub fn compactSingletonPanels(self: *PanelManager) void {
-        const singleton_kinds = [_]workspace.PanelKind{ .Control, .Chat, .Showcase };
-        for (singleton_kinds) |kind| {
-            var keep_id: ?workspace.PanelId = null;
-            // Prefer keeping the focused instance.
-            if (self.workspace.focused_panel_id) |fid| {
-                for (self.workspace.panels.items) |panel| {
-                    if (panel.kind == kind and panel.id == fid) {
-                        keep_id = fid;
-                        break;
-                    }
-                }
-            }
-            // Otherwise keep the first one we find.
-            if (keep_id == null) {
-                for (self.workspace.panels.items) |panel| {
-                    if (panel.kind == kind) {
-                        keep_id = panel.id;
-                        break;
-                    }
-                }
-            }
-            if (keep_id == null) continue;
-
-            var i: usize = 0;
-            while (i < self.workspace.panels.items.len) {
-                const p = self.workspace.panels.items[i];
-                if (p.kind == kind and p.id != keep_id.?) {
-                    var removed = self.workspace.panels.orderedRemove(i);
-                    removed.deinit(self.allocator);
-                    self.workspace.markDirty();
-                    // Don't increment: orderedRemove compacts.
-                    continue;
-                }
-                i += 1;
-            }
-        }
+        _ = self;
     }
 
     pub fn recomputeNextId(self: *PanelManager) void {
@@ -240,6 +205,31 @@ pub const PanelManager = struct {
                     if (panel.kind == .Control) return panel;
                 }
             },
+            .Agents => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Agents) return panel;
+                }
+            },
+            .Operator => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Operator) return panel;
+                }
+            },
+            .ApprovalsInbox => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .ApprovalsInbox) return panel;
+                }
+            },
+            .Inbox => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Inbox) return panel;
+                }
+            },
+            .Settings => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Settings) return panel;
+                }
+            },
             .Showcase => {
                 for (self.workspace.panels.items) |*panel| {
                     if (panel.kind == .Showcase) return panel;
@@ -307,6 +297,32 @@ pub const PanelManager = struct {
             .Control => {
                 const data = workspace.PanelData{ .Control = .{} };
                 return try self.openPanel(.Control, "Workspace", data);
+            },
+            .Agents => {
+                const data = workspace.PanelData{ .Agents = .{
+                    .active_tab = .Agents,
+                    .selected_agent_id = null,
+                } };
+                return try self.openPanel(.Agents, "Agents", data);
+            },
+            .Operator => {
+                const panel_data = workspace.PanelData{ .Operator = {} };
+                return try self.openPanel(.Operator, "Operator", panel_data);
+            },
+            .ApprovalsInbox => {
+                const panel_data = workspace.PanelData{ .ApprovalsInbox = {} };
+                return try self.openPanel(.ApprovalsInbox, "Approvals", panel_data);
+            },
+            .Inbox => {
+                const panel_data = workspace.PanelData{ .Inbox = .{
+                    .active_tab = .Inbox,
+                    .selected_agent_id = null,
+                } };
+                return try self.openPanel(.Inbox, "Inbox", panel_data);
+            },
+            .Settings => {
+                const panel_data = workspace.PanelData{ .Settings = {} };
+                return try self.openPanel(.Settings, "Settings", panel_data);
             },
             .CodeEditor => {
                 const file_id = "untitled.zig";
@@ -425,17 +441,67 @@ pub const PanelManager = struct {
                 _ = try self.openPanel(.ToolOutput, open.title orelse "Tool Output", panel_data);
             },
             .Control => {
-                if (self.findReusablePanel(.Control, null)) |panel| {
-                    if (payload) |data| {
-                        if (data.Control.active_tab) |tab| {
-                            panel.data.Control.active_tab = parseControlTab(tab);
+                if (payload) |data| {
+                    if (data.Control.active_tab) |tab| {
+                        const tab_kind = panelKindForControlTab(parseControlTab(tab));
+                        if (tab_kind != .Control) {
+                            self.ensurePanel(tab_kind);
+                            return;
                         }
                     }
+                }
+                if (self.findReusablePanel(.Control, null)) |panel| {
                     self.focusPanel(panel.id);
                     return;
                 }
                 const panel_data = workspace.PanelData{ .Control = .{} };
                 _ = try self.openPanel(.Control, open.title orelse "Workspace", panel_data);
+            },
+            .Agents => {
+                if (self.findReusablePanel(.Agents, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Agents = .{
+                    .active_tab = .Agents,
+                    .selected_agent_id = null,
+                } };
+                _ = try self.openPanel(.Agents, open.title orelse "Agents", panel_data);
+            },
+            .Operator => {
+                if (self.findReusablePanel(.Operator, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Operator = {} };
+                _ = try self.openPanel(.Operator, open.title orelse "Operator", panel_data);
+            },
+            .ApprovalsInbox => {
+                if (self.findReusablePanel(.ApprovalsInbox, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .ApprovalsInbox = {} };
+                _ = try self.openPanel(.ApprovalsInbox, open.title orelse "Approvals", panel_data);
+            },
+            .Inbox => {
+                if (self.findReusablePanel(.Inbox, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Inbox = .{
+                    .active_tab = .Inbox,
+                    .selected_agent_id = null,
+                } };
+                _ = try self.openPanel(.Inbox, open.title orelse "Inbox", panel_data);
+            },
+            .Settings => {
+                if (self.findReusablePanel(.Settings, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Settings = {} };
+                _ = try self.openPanel(.Settings, open.title orelse "Settings", panel_data);
             },
             .Showcase => {
                 if (self.findReusablePanel(.Showcase, null)) |panel| {
@@ -502,6 +568,27 @@ pub const PanelManager = struct {
                         panel.data.Control.active_tab = parseControlTab(tab);
                     }
                 },
+                .Agents => |data| {
+                    if (panel.kind != .Agents) return false;
+                    if (data.active_tab) |tab| {
+                        panel.data.Agents.active_tab = parseControlTab(tab);
+                    }
+                },
+                .Operator => {
+                    if (panel.kind != .Operator) return false;
+                },
+                .ApprovalsInbox => {
+                    if (panel.kind != .ApprovalsInbox) return false;
+                },
+                .Inbox => |data| {
+                    if (panel.kind != .Inbox) return false;
+                    if (data.active_tab) |tab| {
+                        panel.data.Inbox.active_tab = parseControlTab(tab);
+                    }
+                },
+                .Settings => {
+                    if (panel.kind != .Settings) return false;
+                },
                 .Showcase => {
                     if (panel.kind != .Showcase) return false;
                 },
@@ -527,4 +614,15 @@ fn parseControlTab(label: []const u8) workspace.ControlTab {
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return .Agents;
+}
+
+fn panelKindForControlTab(tab: workspace.ControlTab) workspace.PanelKind {
+    return switch (tab) {
+        .Agents => .Agents,
+        .Inbox => .Inbox,
+        .ApprovalsInbox => .ApprovalsInbox,
+        .Settings => .Settings,
+        .Operator => .Operator,
+        else => .Control,
+    };
 }

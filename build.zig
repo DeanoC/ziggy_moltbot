@@ -307,6 +307,7 @@ pub fn build(b: *std.Build) void {
             "tests/update_checker_tests.zig",
             "tests/theme_engine_tests.zig",
             "tests/unified_config_programdata_tests.zig",
+            "tests/docking_tests.zig",
         };
 
         for (test_files) |test_path| {

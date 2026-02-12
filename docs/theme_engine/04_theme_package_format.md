@@ -200,6 +200,15 @@ Example (sketch):
       "draw_center": true,
       "center_mode": "stretch",
       "center_anchor": "start"
+    },
+    "dock_drop_preview": {
+      "inactive_fill": "#6B6BFF14",
+      "inactive_border": "#6B6BFF66",
+      "inactive_thickness": 1.0,
+      "active_fill": "#6B6BFF40",
+      "active_border": "#A6A6FFFF",
+      "active_thickness": 2.0,
+      "marker": "#F5F5FFFF"
     }
   }
 }
@@ -224,6 +233,14 @@ Additional `panel` fields (implemented):
 - `header_buttons`: object with optional button styles for docked panel header controls:
   - `close`: button variant style (`radius`, `fill`, `text`, `border`, `states`)
   - `detach`: button variant style (`radius`, `fill`, `text`, `border`, `states`)
+- `dock_rail_icons`: optional labels for collapsed dock rails and flyout controls:
+  - `chat`, `code_editor`, `tool_output`, `control`, `showcase`
+  - `collapse_left`, `collapse_right`, `pin`, `close_flyout`
+  - each value is a short string label used as the button/icon text
+- `dock_drop_preview`: optional styling for dock drag/drop target overlays:
+  - `inactive_fill`, `active_fill`: paint
+  - `inactive_border`, `active_border`, `marker`: color
+  - `inactive_thickness`, `active_thickness`: numbers (stroke thickness in px)
 
 `menu.item` fields (implemented):
 - `radius`: number or token (optional)
@@ -352,6 +369,10 @@ Schema (see `src/ui/theme_engine/schema.zig`):
       "title": "Workspace",
       "width": 960,
       "height": 720,
+      "chrome_mode": "main_workspace",
+      "menu_profile": "full",
+      "show_menu_bar": true,
+      "show_status_bar": true,
       "profile": "desktop",
       "variant": "dark",
       "image_sampling": "linear",
@@ -364,6 +385,9 @@ Schema (see `src/ui/theme_engine/schema.zig`):
 ```
 
 Notes:
+- `chrome_mode` is optional (`"main_workspace"`, `"detached_panel"`, `"template_utility"`).
+- `menu_profile` is optional (`"full"`, `"compact"`, `"minimal"`).
+- `show_menu_bar` and `show_status_bar` are optional booleans to control chrome visibility per template.
 - `profile` is optional; if omitted, the app uses config/auto profile resolution.
 - `variant` is optional (`"light"` or `"dark"`). If set, it applies to that window only.
 - `image_sampling` and `pixel_snap_textured` let pixel-art packs opt into nearest sampling and pixel snapping.

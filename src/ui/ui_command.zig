@@ -44,6 +44,11 @@ pub const PanelDataPayload = union(enum) {
     CodeEditor: CodeEditorPanelPayload,
     ToolOutput: ToolOutputPanelPayload,
     Control: ControlPanelPayload,
+    Agents: ControlPanelPayload,
+    Operator: void,
+    ApprovalsInbox: void,
+    Inbox: ControlPanelPayload,
+    Settings: void,
     Showcase: void,
 
     pub fn deinit(self: *PanelDataPayload, allocator: std.mem.Allocator) void {
@@ -64,6 +69,15 @@ pub const PanelDataPayload = union(enum) {
             .Control => |*ctrl| {
                 if (ctrl.active_tab) |tab| allocator.free(tab);
             },
+            .Agents => |*ctrl| {
+                if (ctrl.active_tab) |tab| allocator.free(tab);
+            },
+            .Operator => {},
+            .ApprovalsInbox => {},
+            .Inbox => |*ctrl| {
+                if (ctrl.active_tab) |tab| allocator.free(tab);
+            },
+            .Settings => {},
             .Showcase => {},
         }
     }
@@ -161,6 +175,17 @@ fn parseOpen(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !?UiCommand 
             const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
             break :blk PanelDataPayload{ .Control = .{ .active_tab = active_tab } };
         },
+        .Agents => blk: {
+            const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
+            break :blk PanelDataPayload{ .Agents = .{ .active_tab = active_tab } };
+        },
+        .Operator => PanelDataPayload{ .Operator = {} },
+        .ApprovalsInbox => PanelDataPayload{ .ApprovalsInbox = {} },
+        .Inbox => blk: {
+            const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
+            break :blk PanelDataPayload{ .Inbox = .{ .active_tab = active_tab } };
+        },
+        .Settings => PanelDataPayload{ .Settings = {} },
         .Showcase => PanelDataPayload{ .Showcase = {} },
     };
 
@@ -255,6 +280,19 @@ fn parseDataPayloadForKind(
             if (!allow_partial and active_tab == null) return error.MissingPanelData;
             return .{ .Control = .{ .active_tab = active_tab } };
         },
+        .Agents => {
+            const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
+            if (!allow_partial and active_tab == null) return error.MissingPanelData;
+            return .{ .Agents = .{ .active_tab = active_tab } };
+        },
+        .Operator => return .{ .Operator = {} },
+        .ApprovalsInbox => return .{ .ApprovalsInbox = {} },
+        .Inbox => {
+            const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
+            if (!allow_partial and active_tab == null) return error.MissingPanelData;
+            return .{ .Inbox = .{ .active_tab = active_tab } };
+        },
+        .Settings => return .{ .Settings = {} },
         .Showcase => return .{ .Showcase = {} },
     }
 }
@@ -265,6 +303,12 @@ fn parsePanelKind(label: []const u8) ?workspace.PanelKind {
     if (std.mem.eql(u8, label, "ToolOutput")) return .ToolOutput;
     if (std.mem.eql(u8, label, "Control")) return .Control;
     if (std.mem.eql(u8, label, "Workspace")) return .Control;
+    if (std.mem.eql(u8, label, "Agents")) return .Agents;
+    if (std.mem.eql(u8, label, "Operator")) return .Operator;
+    if (std.mem.eql(u8, label, "ApprovalsInbox")) return .ApprovalsInbox;
+    if (std.mem.eql(u8, label, "Approvals")) return .ApprovalsInbox;
+    if (std.mem.eql(u8, label, "Inbox")) return .Inbox;
+    if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return null;
 }

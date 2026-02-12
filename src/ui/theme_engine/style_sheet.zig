@@ -63,6 +63,29 @@ pub const AssetPath = struct {
     }
 };
 
+pub const IconLabel = struct {
+    len: u8 = 0,
+    buf: [32]u8 = undefined,
+
+    pub fn isSet(self: *const IconLabel) bool {
+        return self.len != 0;
+    }
+
+    pub fn slice(self: *const IconLabel) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    pub fn set(self: *IconLabel, s: []const u8) void {
+        const n: usize = @min(s.len, self.buf.len);
+        if (n == 0) {
+            self.len = 0;
+            return;
+        }
+        @memcpy(self.buf[0..n], s[0..n]);
+        self.len = @intCast(n);
+    }
+};
+
 pub const ButtonVariantStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
@@ -170,6 +193,33 @@ pub const PanelHeaderButtonsStyle = struct {
     detach: ButtonVariantStyle = .{},
 };
 
+pub const DockRailIconsStyle = struct {
+    chat: IconLabel = .{},
+    code_editor: IconLabel = .{},
+    tool_output: IconLabel = .{},
+    control: IconLabel = .{},
+    agents: IconLabel = .{},
+    operator: IconLabel = .{},
+    approvals_inbox: IconLabel = .{},
+    inbox: IconLabel = .{},
+    settings: IconLabel = .{},
+    showcase: IconLabel = .{},
+    collapse_left: IconLabel = .{},
+    collapse_right: IconLabel = .{},
+    pin: IconLabel = .{},
+    close_flyout: IconLabel = .{},
+};
+
+pub const DockDropPreviewStyle = struct {
+    inactive_fill: ?Paint = null,
+    inactive_border: ?Color = null,
+    inactive_thickness: ?f32 = null,
+    active_fill: ?Paint = null,
+    active_border: ?Color = null,
+    active_thickness: ?f32 = null,
+    marker: ?Color = null,
+};
+
 pub const PanelStyle = struct {
     radius: ?f32 = null,
     fill: ?Paint = null,
@@ -182,6 +232,10 @@ pub const PanelStyle = struct {
     focus_border: ?Color = null,
     // Optional button styles for the docked panel header controls (close/detach).
     header_buttons: PanelHeaderButtonsStyle = .{},
+    // Optional icon labels for dock rail buttons and flyout controls.
+    dock_rail_icons: DockRailIconsStyle = .{},
+    // Optional dock drag/drop target preview styling.
+    dock_drop_preview: DockDropPreviewStyle = .{},
     // Optional inset applied to layouts that place content "inside" a panel.
     // This is separate from visual padding and is meant to keep content out of thick frame borders.
     // Order: left, top, right, bottom (pixels).
@@ -513,6 +567,12 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
             if (bobj.get("detach")) |dv2| parseButtonVariant(&out.header_buttons.detach, dv2, theme);
         }
     }
+    if (obj.get("dock_rail_icons")) |iv| {
+        parseDockRailIcons(&out.dock_rail_icons, iv);
+    }
+    if (obj.get("dock_drop_preview")) |dv| {
+        parseDockDropPreview(&out.dock_drop_preview, dv, theme);
+    }
     if (obj.get("content_inset_px")) |iv| out.content_inset_px = parseSlicesPx(iv) orelse out.content_inset_px;
     if (obj.get("overlay")) |ov| out.overlay = parsePaint(ov, theme) orelse out.overlay;
     if (obj.get("shadow")) |sv| {
@@ -521,6 +581,43 @@ fn parsePanel(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Th
     if (obj.get("frame")) |fv| {
         parsePanelFrame(out, fv, theme);
     }
+}
+
+fn parseDockRailIcons(out: *DockRailIconsStyle, v: std.json.Value) void {
+    if (v != .object) return;
+    const obj = v.object;
+    parseIconLabel(&out.chat, obj.get("chat"));
+    parseIconLabel(&out.code_editor, obj.get("code_editor"));
+    parseIconLabel(&out.tool_output, obj.get("tool_output"));
+    parseIconLabel(&out.control, obj.get("control"));
+    parseIconLabel(&out.agents, obj.get("agents"));
+    parseIconLabel(&out.operator, obj.get("operator"));
+    parseIconLabel(&out.approvals_inbox, obj.get("approvals_inbox"));
+    parseIconLabel(&out.inbox, obj.get("inbox"));
+    parseIconLabel(&out.settings, obj.get("settings"));
+    parseIconLabel(&out.showcase, obj.get("showcase"));
+    parseIconLabel(&out.collapse_left, obj.get("collapse_left"));
+    parseIconLabel(&out.collapse_right, obj.get("collapse_right"));
+    parseIconLabel(&out.pin, obj.get("pin"));
+    parseIconLabel(&out.close_flyout, obj.get("close_flyout"));
+}
+
+fn parseDockDropPreview(out: *DockDropPreviewStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {
+    if (v != .object) return;
+    const obj = v.object;
+    if (obj.get("inactive_fill")) |fv| out.inactive_fill = parsePaint(fv, theme) orelse out.inactive_fill;
+    if (obj.get("inactive_border")) |bv| out.inactive_border = parseColor(bv, theme) orelse out.inactive_border;
+    if (obj.get("inactive_thickness")) |tv| out.inactive_thickness = parseFloat(tv) orelse out.inactive_thickness;
+    if (obj.get("active_fill")) |fv| out.active_fill = parsePaint(fv, theme) orelse out.active_fill;
+    if (obj.get("active_border")) |bv| out.active_border = parseColor(bv, theme) orelse out.active_border;
+    if (obj.get("active_thickness")) |tv| out.active_thickness = parseFloat(tv) orelse out.active_thickness;
+    if (obj.get("marker")) |mv| out.marker = parseColor(mv, theme) orelse out.marker;
+}
+
+fn parseIconLabel(out: *IconLabel, value: ?std.json.Value) void {
+    if (value == null) return;
+    if (value.? != .string) return;
+    out.set(value.?.string);
 }
 
 fn parsePanelFrame(out: *PanelStyle, v: std.json.Value, theme: *const theme_tokens.Theme) void {

@@ -7,8 +7,13 @@ const theme = @import("ui/theme.zig");
 const theme_engine = @import("ui/theme_engine/theme_engine.zig");
 const profile = @import("ui/theme_engine/profile.zig");
 const panel_manager = @import("ui/panel_manager.zig");
+const dock_transfer = @import("ui/dock_transfer.zig");
 const workspace_store = @import("ui/workspace_store.zig");
 const workspace = @import("ui/workspace.zig");
+const dock_graph = @import("ui/layout/dock_graph.zig");
+const dock_drop = @import("ui/layout/dock_drop.zig");
+const dock_detach = @import("ui/layout/dock_detach.zig");
+const draw_context = @import("ui/draw_context.zig");
 const ui_command_inbox = @import("ui/ui_command_inbox.zig");
 const image_cache = @import("ui/image_cache.zig");
 const attachment_cache = @import("ui/attachment_cache.zig");
@@ -81,6 +86,20 @@ const ThemePackWatch = struct {
     pending_at_ms: i64 = 0,
     next_poll_ms: i64 = 0,
 };
+
+fn envFlagEnabled(allocator: std.mem.Allocator, name: []const u8) bool {
+    const val = std.process.getEnvVarOwned(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return false,
+        else => return false,
+    };
+    defer allocator.free(val);
+    if (val.len == 0) return false;
+    if (std.mem.eql(u8, val, "0")) return false;
+    if (std.ascii.eqlIgnoreCase(val, "false")) return false;
+    if (std.ascii.eqlIgnoreCase(val, "no")) return false;
+    if (std.ascii.eqlIgnoreCase(val, "off")) return false;
+    return true;
+}
 
 fn hashStat(hasher: *std.hash.Wyhash, st: std.fs.File.Stat) void {
     hasher.update(std.mem.asBytes(&st.size));
@@ -356,10 +375,165 @@ fn cloneWorkspaceRemap(
 fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
     if (std.ascii.eqlIgnoreCase(label, "workspace") or std.ascii.eqlIgnoreCase(label, "control")) return .Control;
     if (std.ascii.eqlIgnoreCase(label, "chat")) return .Chat;
+    if (std.ascii.eqlIgnoreCase(label, "agents")) return .Agents;
+    if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
+    if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
+    if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
+    if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
     if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
     if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
     if (std.ascii.eqlIgnoreCase(label, "tool_output") or std.ascii.eqlIgnoreCase(label, "tooloutput")) return .ToolOutput;
     return null;
+}
+
+fn parseWindowChromeRoleLabel(label: ?[]const u8) ?ui.WindowChromeRole {
+    const v = label orelse return null;
+    if (std.ascii.eqlIgnoreCase(v, "main_workspace")) return .main_workspace;
+    if (std.ascii.eqlIgnoreCase(v, "detached_panel")) return .detached_panel;
+    if (std.ascii.eqlIgnoreCase(v, "template_utility")) return .template_utility;
+    return null;
+}
+
+fn parseWindowMenuProfileLabel(label: ?[]const u8) ?ui.WindowMenuProfile {
+    const v = label orelse return null;
+    if (std.ascii.eqlIgnoreCase(v, "full")) return .full;
+    if (std.ascii.eqlIgnoreCase(v, "compact")) return .compact;
+    if (std.ascii.eqlIgnoreCase(v, "minimal")) return .minimal;
+    return null;
+}
+
+fn labelForWindowChromeRole(role: ui.WindowChromeRole) []const u8 {
+    return switch (role) {
+        .main_workspace => "main_workspace",
+        .detached_panel => "detached_panel",
+        .template_utility => "template_utility",
+    };
+}
+
+fn labelForWindowMenuProfile(menu_profile: ui.WindowMenuProfile) []const u8 {
+    return switch (menu_profile) {
+        .full => "full",
+        .compact => "compact",
+        .minimal => "minimal",
+    };
+}
+
+fn dockDropTargetForWindow(
+    win: *UiWindow,
+    local_pos: [2]f32,
+) ?dock_drop.DropTarget {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = sdl.SDL_GetWindowSize(win.window, &w, &h);
+    if (w <= 0 or h <= 0) return null;
+
+    const viewport = draw_context.Rect.fromMinSize(
+        .{ 0.0, 0.0 },
+        .{ @floatFromInt(w), @floatFromInt(h) },
+    );
+    const layout = win.manager.workspace.dock_layout.computeLayout(viewport);
+    for (layout.slice()) |group| {
+        if (!group.rect.contains(local_pos)) continue;
+        return .{
+            .node_id = group.node_id,
+            .location = dock_drop.classifyDropLocation(group.rect, local_pos),
+        };
+    }
+    return null;
+}
+
+fn panelIsReachableInWindowLayout(win: *UiWindow, panel_id: workspace.PanelId) bool {
+    const loc = win.manager.workspace.dock_layout.findPanel(panel_id) orelse return false;
+
+    var w: c_int = 0;
+    var h: c_int = 0;
+    _ = sdl.SDL_GetWindowSize(win.window, &w, &h);
+    if (w <= 0 or h <= 0) return false;
+
+    const viewport = draw_context.Rect.fromMinSize(
+        .{ 0.0, 0.0 },
+        .{ @floatFromInt(w), @floatFromInt(h) },
+    );
+    const layout = win.manager.workspace.dock_layout.computeLayout(viewport);
+    for (layout.slice()) |group| {
+        if (group.node_id == loc.node_id) return true;
+    }
+    return false;
+}
+
+const WindowMouseHit = struct {
+    win: *UiWindow,
+    local_pos: [2]f32,
+};
+
+fn windowUnderGlobalMouse(ui_windows: []*UiWindow, exclude_window_id: u32) ?WindowMouseHit {
+    var gx: f32 = 0.0;
+    var gy: f32 = 0.0;
+    _ = sdl.SDL_GetGlobalMouseState(&gx, &gy);
+
+    // Check windows in reverse creation order so newer windows are preferred
+    // when multiple bounds overlap.
+    var i: usize = ui_windows.len;
+    while (i > 0) {
+        i -= 1;
+        const w = ui_windows[i];
+        if (w.id == exclude_window_id) continue;
+
+        var wx: c_int = 0;
+        var wy: c_int = 0;
+        _ = sdl.SDL_GetWindowPosition(w.window, &wx, &wy);
+        var border_top: c_int = 0;
+        var border_left: c_int = 0;
+        var border_bottom: c_int = 0;
+        var border_right: c_int = 0;
+        if (!sdl.SDL_GetWindowBordersSize(w.window, &border_top, &border_left, &border_bottom, &border_right)) {
+            border_top = 0;
+            border_left = 0;
+            border_bottom = 0;
+            border_right = 0;
+        }
+        var ww: c_int = 0;
+        var wh: c_int = 0;
+        _ = sdl.SDL_GetWindowSize(w.window, &ww, &wh);
+        if (ww <= 0 or wh <= 0) continue;
+
+        const content_x: c_int = wx + border_left;
+        const content_y: c_int = wy + border_top;
+        const min_x: f32 = @floatFromInt(content_x);
+        const min_y: f32 = @floatFromInt(content_y);
+        const max_x = min_x + @as(f32, @floatFromInt(ww));
+        const max_y = min_y + @as(f32, @floatFromInt(wh));
+        if (gx < min_x or gx >= max_x or gy < min_y or gy >= max_y) continue;
+
+        return .{
+            .win = w,
+            .local_pos = .{ gx - min_x, gy - min_y },
+        };
+    }
+    return null;
+}
+
+fn focusedWindowMouseHit(ui_windows: []*UiWindow, exclude_window_id: u32) ?WindowMouseHit {
+    const mouse_focus = sdl.SDL_GetMouseFocus();
+    const hover_id: u32 = if (mouse_focus) |mw| sdl.SDL_GetWindowID(mw) else 0;
+    if (hover_id == 0 or hover_id == exclude_window_id) return null;
+
+    var target_window: ?*UiWindow = null;
+    for (ui_windows) |w| {
+        if (w.id == hover_id) {
+            target_window = w;
+            break;
+        }
+    }
+    if (target_window == null) return null;
+
+    var local_mouse_x: f32 = 0.0;
+    var local_mouse_y: f32 = 0.0;
+    _ = sdl.SDL_GetMouseState(&local_mouse_x, &local_mouse_y);
+    return .{
+        .win = target_window.?,
+        .local_pos = .{ local_mouse_x, local_mouse_y },
+    };
 }
 
 fn parseImageSamplingLabel(label: ?[]const u8) ui_commands.ImageSampling {
@@ -375,10 +549,60 @@ fn labelForImageSampling(s: ui_commands.ImageSampling) []const u8 {
     };
 }
 
+fn applyCollapsedDocksToWindowState(
+    ui_state: *ui.WindowUiState,
+    docks_opt: ?[]const workspace.CollapsedDockSnapshot,
+) void {
+    ui_state.collapsed_docks = .{};
+    ui_state.dock_flyout.clear();
+    const docks = docks_opt orelse return;
+    for (docks) |entry| {
+        ui_state.collapsed_docks.collapse(entry.node_id, entry.side);
+    }
+}
+
+fn copyCollapsedDocksForSave(
+    allocator: std.mem.Allocator,
+    ui_state: *const ui.WindowUiState,
+) ?[]workspace.CollapsedDockSnapshot {
+    if (ui_state.collapsed_docks.len == 0) return null;
+    const out = allocator.alloc(workspace.CollapsedDockSnapshot, ui_state.collapsed_docks.len) catch return null;
+    for (ui_state.collapsed_docks.items[0..ui_state.collapsed_docks.len], 0..) |item, idx| {
+        out[idx] = .{
+            .node_id = item.node_id,
+            .side = item.side,
+        };
+    }
+    return out;
+}
+
+fn queueCloseIfNowEmptyDetachedWindow(
+    allocator: std.mem.Allocator,
+    window_close_requests: *std.ArrayList(u32),
+    main_window_id: u32,
+    w: *UiWindow,
+    dock_debug: bool,
+) void {
+    if (w.id == main_window_id) return;
+    if (w.manager.workspace.panels.items.len != 0) return;
+    window_close_requests.append(allocator, w.id) catch {};
+    if (dock_debug) {
+        logger.info(
+            "Auto-close empty detached window id={d}",
+            .{w.id},
+        );
+    }
+}
+
 fn defaultWindowSizeForPanelKind(kind: workspace.PanelKind) struct { w: c_int, h: c_int } {
     return switch (kind) {
         .Chat => .{ .w = 560, .h = 720 },
         .Control => .{ .w = 960, .h = 720 },
+        .Agents => .{ .w = 960, .h = 720 },
+        .Operator => .{ .w = 960, .h = 720 },
+        .ApprovalsInbox => .{ .w = 960, .h = 720 },
+        .Inbox => .{ .w = 960, .h = 720 },
+        .Settings => .{ .w = 960, .h = 720 },
         .Showcase => .{ .w = 900, .h = 720 },
         .CodeEditor => .{ .w = 960, .h = 720 },
         .ToolOutput => .{ .w = 720, .h = 520 },
@@ -438,6 +662,10 @@ fn createUiWindow(
     next_panel_id: *workspace.PanelId,
     persist_in_workspace: bool,
     apply_theme_layout_preset: bool,
+    chrome_role: ui.WindowChromeRole,
+    menu_profile: ui.WindowMenuProfile,
+    show_status_bar: bool,
+    show_menu_bar: bool,
     profile_override: ?theme_engine.ProfileId,
     theme_mode_override: ?theme.Mode,
     image_sampling_override: ?ui_commands.ImageSampling,
@@ -469,7 +697,13 @@ fn createUiWindow(
         .queue = input_state.InputQueue.init(allocator),
         .swapchain = swapchain,
         .manager = panel_manager.PanelManager.init(allocator, ws, next_panel_id),
-        .ui_state = .{ .theme_layout_presets_enabled = apply_theme_layout_preset },
+        .ui_state = .{
+            .theme_layout_presets_enabled = apply_theme_layout_preset,
+            .chrome_role = chrome_role,
+            .menu_profile = menu_profile,
+            .show_status_bar = show_status_bar,
+            .show_menu_bar = show_menu_bar,
+        },
         .title = title_copy,
         .persist_in_workspace = persist_in_workspace,
         .profile_override = profile_override,
@@ -1495,11 +1729,15 @@ pub fn main() !void {
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
+    const dock_debug = envFlagEnabled(allocator, "ZSC_DOCK_DEBUG");
 
     profiler.setThreadName("main");
 
     try initLogging(allocator);
     defer logger.deinit();
+    if (dock_debug) {
+        logger.info("Docking debug enabled via ZSC_DOCK_DEBUG", .{});
+    }
 
     var cfg = try config.loadOrDefault(allocator, "ziggystarclaw_config.json");
     defer cfg.deinit(allocator);
@@ -1678,14 +1916,22 @@ pub fn main() !void {
                 logger.err("Failed to init default workspace: {}", .{init_err});
                 return init_err;
             },
+            .main_collapsed_docks = null,
             .windows = allocator.alloc(workspace_store.DetachedWindow, 0) catch return err,
             .next_panel_id = 1,
         };
         break :blk fallback;
     };
+    if (dock_debug) {
+        logger.info(
+            "Workspace load: detached_windows={d} next_panel_id={d}",
+            .{ loaded.windows.len, loaded.next_panel_id },
+        );
+    }
     defer {
         // We transfer window workspaces into actual UiWindows below; this cleanup only runs
         // for any remaining (emptied) workspaces/metadata.
+        if (loaded.main_collapsed_docks) |list| allocator.free(list);
         for (loaded.windows) |*w| w.deinit(allocator);
         allocator.free(loaded.windows);
         loaded.main.deinit(allocator);
@@ -1699,6 +1945,11 @@ pub fn main() !void {
 
     main_win.manager.deinit();
     main_win.manager = panel_manager.PanelManager.init(allocator, workspace_state, &next_panel_id_global);
+    applyCollapsedDocksToWindowState(&main_win.ui_state, loaded.main_collapsed_docks);
+    if (loaded.main_collapsed_docks) |list| {
+        allocator.free(list);
+        loaded.main_collapsed_docks = null;
+    }
     // If we loaded a workspace from disk, do not auto-apply the theme pack's workspace layout preset
     // for the current profile on startup. (It can re-open panels the user explicitly tore off.)
     if (workspace_file_exists) {
@@ -1722,6 +1973,22 @@ pub fn main() !void {
             const mode_override: ?theme.Mode = if (w.variant) |v| theme.modeFromLabel(v) else null;
             const sampling_override: ?ui_commands.ImageSampling = if (w.image_sampling) |v| parseImageSamplingLabel(v) else null;
             const pixel_override: ?bool = w.pixel_snap_textured;
+            const chrome_role = parseWindowChromeRoleLabel(w.chrome_mode) orelse ui.WindowChromeRole.detached_panel;
+            const menu_profile = parseWindowMenuProfileLabel(w.menu_profile) orelse ui.WindowMenuProfile.compact;
+            const show_status_bar = w.show_status_bar orelse false;
+            const show_menu_bar = w.show_menu_bar orelse true;
+            if (dock_debug) {
+                logger.info(
+                    "Restoring detached window '{s}' chrome={s} menu={s} menu_bar={s} status_bar={s}",
+                    .{
+                        w.title,
+                        labelForWindowChromeRole(chrome_role),
+                        labelForWindowMenuProfile(menu_profile),
+                        if (show_menu_bar) "on" else "off",
+                        if (show_status_bar) "on" else "off",
+                    },
+                );
+            }
 
             const max_cint_u32: u32 = @intCast(std.math.maxInt(c_int));
             const width_u32: u32 = std.math.clamp(w.width, @as(u32, 320), max_cint_u32);
@@ -1731,6 +1998,8 @@ pub fn main() !void {
 
             const ws_for_new = w.ws;
             w.ws = workspace.Workspace.initEmpty(allocator);
+            const collapsed_for_new = w.collapsed_docks;
+            w.collapsed_docks = null;
 
             const new_win = createUiWindow(
                 allocator,
@@ -1743,18 +2012,27 @@ pub fn main() !void {
                 &next_panel_id_global,
                 true,
                 false,
+                chrome_role,
+                menu_profile,
+                show_status_bar,
+                show_menu_bar,
                 profile_override,
                 mode_override,
                 sampling_override,
                 pixel_override,
             ) catch |create_err| blk2: {
                 logger.warn("Failed to restore window '{s}': {}", .{ w.title, create_err });
+                if (collapsed_for_new) |list| allocator.free(list);
                 break :blk2 null;
             };
             if (new_win) |uw| {
+                applyCollapsedDocksToWindowState(&uw.ui_state, collapsed_for_new);
+                if (collapsed_for_new) |list| allocator.free(list);
                 ui_windows.append(allocator, uw) catch {
                     destroyUiWindow(allocator, uw);
                 };
+            } else if (collapsed_for_new) |list| {
+                allocator.free(list);
             }
         }
     }
@@ -1930,7 +2208,7 @@ pub fn main() !void {
         var ui_action: ui.UiAction = .{};
         var active_window: *UiWindow = main_win;
         var any_save_workspace: bool = false;
-        var detach_req: ?struct { wid: u32, panel_ptr: *workspace.Panel } = null;
+        var detach_req: ?struct { wid: u32, panel_ptr: *workspace.Panel, from_drag_drop: bool } = null;
         {
             const zone = profiler.zone(@src(), "frame.ui");
             defer zone.end();
@@ -2009,7 +2287,11 @@ pub fn main() !void {
                     // UI already removed the panel from the manager; keep ownership in a heap node
                     // until we spawn the tear-off window at the end of the frame.
                     if (detach_req == null) {
-                        detach_req = .{ .wid = w.id, .panel_ptr = pp };
+                        detach_req = .{
+                            .wid = w.id,
+                            .panel_ptr = pp,
+                            .from_drag_drop = action.detach_panel_id != null,
+                        };
                     } else {
                         // Only one detach per frame is supported; don't leak if multiple fire.
                         const moved = pp.*;
@@ -2231,6 +2513,141 @@ pub fn main() !void {
                 if (source_window) |src_w| {
                     const panel = req.panel_ptr.*;
                     allocator.destroy(req.panel_ptr);
+                    if (dock_debug) {
+                        logger.info(
+                            "Detach request panel_id={d} title='{s}' from_window={d} drag_drop={s}",
+                            .{ panel.id, panel.title, src_w.id, if (req.from_drag_drop) "yes" else "no" },
+                        );
+                    }
+
+                    if (req.from_drag_drop) {
+                        var target_window: ?*UiWindow = null;
+                        var target_local_pos: [2]f32 = .{ 0.0, 0.0 };
+
+                        if (focusedWindowMouseHit(ui_windows.items, src_w.id)) |hit| {
+                            target_window = hit.win;
+                            target_local_pos = hit.local_pos;
+                        } else if (windowUnderGlobalMouse(ui_windows.items, src_w.id)) |hit| {
+                            target_window = hit.win;
+                            target_local_pos = hit.local_pos;
+                        } else {
+                            // No destination window under cursor.
+                        }
+
+                        if (target_window) |dst_w| {
+                            if (dockDropTargetForWindow(dst_w, target_local_pos)) |drop| {
+                                if (dst_w.manager.workspace.panels.append(allocator, panel)) |_| {
+                                    dst_w.manager.workspace.markDirty();
+                                    dst_w.manager.recomputeNextId();
+                                    if (dst_w.manager.workspace.syncDockLayout() catch false) {
+                                        dst_w.manager.workspace.markDirty();
+                                    }
+
+                                    const moved = if (drop.location == .center)
+                                        dst_w.manager.workspace.dock_layout.movePanelToTabs(panel.id, drop.node_id, null) catch false
+                                    else
+                                        dst_w.manager.workspace.dock_layout.splitNodeWithPanel(drop.node_id, panel.id, drop.location) catch false;
+                                    var moved_final = moved;
+                                    if (!moved_final and drop.location != .center) {
+                                        if (dst_w.manager.workspace.dock_layout.root) |root_id| {
+                                            moved_final = dst_w.manager.workspace.dock_layout.splitNodeWithPanel(root_id, panel.id, drop.location) catch false;
+                                        }
+                                    }
+
+                                    if (moved_final) {
+                                        dst_w.manager.workspace.markDirty();
+                                        if (dock_debug) {
+                                            logger.info(
+                                                "Cross-window attach panel_id={d} src_window={d} dst_window={d} location={s}",
+                                                .{
+                                                    panel.id,
+                                                    src_w.id,
+                                                    dst_w.id,
+                                                    @tagName(drop.location),
+                                                },
+                                            );
+                                        }
+                                    }
+
+                                    const panel_loc = dst_w.manager.workspace.dock_layout.findPanel(panel.id);
+                                    const is_reachable = panelIsReachableInWindowLayout(dst_w, panel.id);
+                                    const side_drop = drop.location != .center;
+                                    const center_committed = if (!side_drop and panel_loc != null)
+                                        panel_loc.?.node_id == drop.node_id
+                                    else
+                                        false;
+                                    const side_committed = if (side_drop and panel_loc != null)
+                                        moved_final and panel_loc.?.node_id != drop.node_id and is_reachable
+                                    else
+                                        false;
+                                    const attach_committed = if (side_drop)
+                                        side_committed
+                                    else
+                                        (moved_final or center_committed) and is_reachable;
+
+                                    if (attach_committed and panel_loc != null) {
+                                        const loc = panel_loc.?;
+                                        // Keep cross-window drops visible even when destination has collapsed rails.
+                                        if (dst_w.ui_state.collapsed_docks.expand(loc.node_id)) {
+                                            dst_w.manager.workspace.markDirty();
+                                        }
+                                        if (dst_w.ui_state.dock_flyout.node_id != null and dst_w.ui_state.dock_flyout.node_id.? == loc.node_id) {
+                                            dst_w.ui_state.dock_flyout.clear();
+                                        }
+                                        dst_w.manager.focusPanel(panel.id);
+                                        queueCloseIfNowEmptyDetachedWindow(
+                                            allocator,
+                                            &window_close_requests,
+                                            main_win.id,
+                                            src_w,
+                                            dock_debug,
+                                        );
+                                        break :detach_block;
+                                    }
+
+                                    // Destination append did not result in a committed visible drop;
+                                    // rollback to source window to avoid "open but invisible" state.
+                                    const restored = dst_w.manager.takePanel(panel.id) orelse panel;
+                                    if (src_w.manager.putPanel(restored)) |_| {
+                                        if (src_w.manager.workspace.syncDockLayout() catch false) {
+                                            src_w.manager.workspace.markDirty();
+                                        }
+                                        src_w.manager.focusPanel(restored.id);
+                                    } else |_| {
+                                        var tmp = restored;
+                                        tmp.deinit(allocator);
+                                    }
+                                    break :detach_block;
+                                } else |_| {
+                                    // Keep the source window consistent if cross-window append fails.
+                                    if (src_w.manager.putPanel(panel)) |_| {
+                                        if (src_w.manager.workspace.syncDockLayout() catch false) {
+                                            src_w.manager.workspace.markDirty();
+                                        }
+                                        src_w.manager.focusPanel(panel.id);
+                                    } else |_| {
+                                        var tmp = panel;
+                                        tmp.deinit(allocator);
+                                    }
+                                    break :detach_block;
+                                }
+                            } else {
+                                // No visible drop target in destination window: cancel cross-window attach
+                                // and put the panel back in the source detached window.
+                                if (src_w.manager.putPanel(panel)) |_| {
+                                    if (src_w.manager.workspace.syncDockLayout() catch false) {
+                                        src_w.manager.workspace.markDirty();
+                                    }
+                                    src_w.manager.focusPanel(panel.id);
+                                } else |_| {
+                                    var tmp = panel;
+                                    tmp.deinit(allocator);
+                                }
+                                break :detach_block;
+                            }
+                        }
+                    }
+
                     var ws_new = workspace.Workspace.initEmpty(allocator);
                     // Transfer the panel into the new window workspace.
                     if (ws_new.panels.append(allocator, panel)) |_| {} else |err| {
@@ -2260,24 +2677,28 @@ pub fn main() !void {
                         &next_panel_id_global,
                         true,
                         false,
+                        .detached_panel,
+                        .compact,
+                        false,
+                        true,
                         src_w.profile_override,
                         src_w.theme_mode_override,
                         src_w.image_sampling_override,
                         src_w.pixel_snap_textured_override,
                     ) catch |err| blk: {
                         logger.warn("Failed to detach panel into new window: {}", .{err});
-                        // Reattach: pull the panel back out of ws_new before freeing.
-                        const restored = ws_new.panels.pop();
+                        // Reattach any moved panels before freeing.
+                        dock_transfer.restorePanelsFromWorkspace(&src_w.manager, &ws_new);
                         ws_new.deinit(allocator);
-                        if (restored) |p| {
-                            _ = src_w.manager.putPanel(p) catch {
-                                var tmp = p;
-                                tmp.deinit(allocator);
-                            };
-                        }
                         break :blk null;
                     };
                     if (new_win) |wnew| {
+                        if (dock_debug) {
+                            logger.info(
+                                "Created detached window id={d} panel_id={d} title='{s}'",
+                                .{ wnew.id, panel.id, panel.title },
+                            );
+                        }
                         var pos_x: c_int = 0;
                         var pos_y: c_int = 0;
                         _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
@@ -2285,6 +2706,13 @@ pub fn main() !void {
                         ui_windows.append(allocator, wnew) catch {
                             destroyUiWindow(allocator, wnew);
                         };
+                        queueCloseIfNowEmptyDetachedWindow(
+                            allocator,
+                            &window_close_requests,
+                            main_win.id,
+                            src_w,
+                            dock_debug,
+                        );
                     }
                 } else {
                     // Source window disappeared; avoid leaking the detached panel.
@@ -2292,6 +2720,136 @@ pub fn main() !void {
                     allocator.destroy(req.panel_ptr);
                     tmp.deinit(allocator);
                 }
+            }
+        }
+
+        if (ui_action.detach_group_node_id) |group_node_id| {
+            const src_w = active_window;
+            if (dock_debug) {
+                logger.info(
+                    "Detach group request node_id={d} from_window={d}",
+                    .{ group_node_id, src_w.id },
+                );
+            }
+            switch (dock_detach.planGroupDetach(&src_w.manager.workspace.dock_layout, group_node_id)) {
+                .node_not_found => {
+                    if (dock_debug) {
+                        logger.info("Detach group ignored node_id={d}; node not found", .{group_node_id});
+                    }
+                },
+                .split_node => {
+                    if (dock_debug) {
+                        logger.info(
+                            "Detach group ignored node_id={d}; node is split",
+                            .{group_node_id},
+                        );
+                    }
+                },
+                .empty_tabs => {
+                    if (dock_debug) {
+                        logger.info(
+                            "Detach group ignored node_id={d}; tab group is empty",
+                            .{group_node_id},
+                        );
+                    }
+                },
+                .tabs => |panel_ids| {
+                    if (dock_debug) {
+                        logger.info(
+                            "Detach group node_id={d} tab_count={d}",
+                            .{ group_node_id, panel_ids.len },
+                        );
+                    }
+
+                    var ws_new = workspace.Workspace.initEmpty(allocator);
+                    const transfer = dock_transfer.transferPanelsToWorkspace(
+                        allocator,
+                        &src_w.manager,
+                        panel_ids,
+                        &ws_new,
+                    );
+                    const moved_ok = transfer.moved_ok;
+                    const moved_count = transfer.moved_count;
+                    if (dock_debug) {
+                        logger.info(
+                            "Detach group transfer node_id={d} moved={d} moved_ok={s}",
+                            .{ group_node_id, moved_count, if (moved_ok) "yes" else "no" },
+                        );
+                    }
+
+                    if (dock_detach.shouldRollbackGroupTransfer(moved_ok, moved_count)) {
+                        dock_transfer.restorePanelsFromWorkspace(&src_w.manager, &ws_new);
+                        ws_new.deinit(allocator);
+                        if (dock_debug) {
+                            logger.info(
+                                "Detach group aborted node_id={d}; panels restored to source window",
+                                .{group_node_id},
+                            );
+                        }
+                    } else {
+                        ws_new.focused_panel_id = ws_new.panels.items[0].id;
+
+                        var title_buf: [192]u8 = undefined;
+                        const title_z = std.fmt.bufPrintZ(&title_buf, "{s} Group", .{ws_new.panels.items[0].title}) catch "ZiggyStarClaw";
+                        const size = defaultWindowSizeForPanelKind(ws_new.panels.items[0].kind);
+
+                        const new_win = createUiWindow(
+                            allocator,
+                            &gpu,
+                            title_z,
+                            size.w,
+                            size.h,
+                            window_flags,
+                            ws_new,
+                            &next_panel_id_global,
+                            true,
+                            false,
+                            .detached_panel,
+                            .compact,
+                            false,
+                            true,
+                            src_w.profile_override,
+                            src_w.theme_mode_override,
+                            src_w.image_sampling_override,
+                            src_w.pixel_snap_textured_override,
+                        ) catch |err| blk: {
+                            logger.warn("Failed to move group to new window: {}", .{err});
+                            break :blk null;
+                        };
+
+                        if (new_win) |wnew| {
+                            if (dock_debug) {
+                                logger.info(
+                                    "Created detached group window id={d} node_id={d} panel_count={d}",
+                                    .{ wnew.id, group_node_id, moved_count },
+                                );
+                            }
+                            var pos_x: c_int = 0;
+                            var pos_y: c_int = 0;
+                            _ = sdl.SDL_GetWindowPosition(src_w.window, &pos_x, &pos_y);
+                            _ = sdl.SDL_SetWindowPosition(wnew.window, pos_x + 24, pos_y + 24);
+                            ui_windows.append(allocator, wnew) catch {
+                                destroyUiWindow(allocator, wnew);
+                            };
+                            queueCloseIfNowEmptyDetachedWindow(
+                                allocator,
+                                &window_close_requests,
+                                main_win.id,
+                                src_w,
+                                dock_debug,
+                            );
+                        } else {
+                            dock_transfer.restorePanelsFromWorkspace(&src_w.manager, &ws_new);
+                            ws_new.deinit(allocator);
+                            if (dock_debug) {
+                                logger.info(
+                                    "Detach group window creation failed node_id={d}; panels restored",
+                                    .{group_node_id},
+                                );
+                            }
+                        }
+                    }
+                },
             }
         }
 
@@ -2303,12 +2861,18 @@ pub fn main() !void {
                 if (!w.persist_in_workspace) continue;
                 count += 1;
             }
+            const main_collapsed = copyCollapsedDocksForSave(allocator, &main_win.ui_state);
+            defer if (main_collapsed) |list| allocator.free(list);
+            if (dock_debug) {
+                logger.info("Saving workspace: detached_windows={d}", .{count});
+            }
             const views = allocator.alloc(workspace_store.DetachedWindowView, count) catch |err| {
                 logger.err("Failed to allocate workspace save list: {}", .{err});
                 workspace_store.saveMulti(
                     allocator,
                     "ziggystarclaw_workspace.json",
                     &main_win.manager.workspace,
+                    if (main_collapsed) |list| list else null,
                     &[_]workspace_store.DetachedWindowView{},
                     next_panel_id_global,
                 ) catch |save_err| {
@@ -2321,6 +2885,16 @@ pub fn main() !void {
                 break :save_ws;
             };
             defer allocator.free(views);
+            const collapsed_window_storage = allocator.alloc(?[]workspace.CollapsedDockSnapshot, count) catch null;
+            defer if (collapsed_window_storage) |arr| {
+                for (arr) |opt| {
+                    if (opt) |list| allocator.free(list);
+                }
+                allocator.free(arr);
+            };
+            if (collapsed_window_storage) |arr| {
+                for (arr) |*opt| opt.* = null;
+            }
 
             var filled: usize = 0;
             for (ui_windows.items) |w| {
@@ -2331,15 +2905,28 @@ pub fn main() !void {
                 _ = sdl.SDL_GetWindowSize(w.window, &size_w, &size_h);
                 const w_u32: u32 = @intCast(if (size_w > 0) size_w else 1);
                 const h_u32: u32 = @intCast(if (size_h > 0) size_h else 1);
+                var collapsed_view: ?[]const workspace.CollapsedDockSnapshot = null;
+                if (collapsed_window_storage) |arr| {
+                    const copied = copyCollapsedDocksForSave(allocator, &w.ui_state);
+                    arr[filled] = copied;
+                    if (copied) |list| {
+                        collapsed_view = list;
+                    }
+                }
 
                 views[filled] = .{
                     .title = w.title,
                     .width = w_u32,
                     .height = h_u32,
+                    .chrome_mode = labelForWindowChromeRole(w.ui_state.chrome_role),
+                    .menu_profile = labelForWindowMenuProfile(w.ui_state.menu_profile),
+                    .show_status_bar = w.ui_state.show_status_bar,
+                    .show_menu_bar = w.ui_state.show_menu_bar,
                     .profile = if (w.profile_override) |pid| profile.labelForProfile(pid) else null,
                     .variant = if (w.theme_mode_override) |m| theme.labelForMode(m) else null,
                     .image_sampling = if (w.image_sampling_override) |s| labelForImageSampling(s) else null,
                     .pixel_snap_textured = w.pixel_snap_textured_override,
+                    .collapsed_docks = collapsed_view,
                     .ws = &w.manager.workspace,
                 };
                 filled += 1;
@@ -2349,6 +2936,7 @@ pub fn main() !void {
                 allocator,
                 "ziggystarclaw_workspace.json",
                 &main_win.manager.workspace,
+                if (main_collapsed) |list| list else null,
                 views[0..filled],
                 next_panel_id_global,
             ) catch |err| {
@@ -2786,6 +3374,10 @@ pub fn main() !void {
             var mode_override: ?theme.Mode = active_window.theme_mode_override;
             var sampling_override: ?ui_commands.ImageSampling = active_window.image_sampling_override;
             var pixel_override: ?bool = active_window.pixel_snap_textured_override;
+            var chrome_role: ui.WindowChromeRole = .template_utility;
+            var menu_profile: ui.WindowMenuProfile = .minimal;
+            var show_status_bar: bool = false;
+            var show_menu_bar: bool = true;
 
             var ws_for_new: workspace.Workspace = undefined;
             var ws_owned: bool = false;
@@ -2811,6 +3403,18 @@ pub fn main() !void {
                     }
                     if (tpl.pixel_snap_textured) |snap| {
                         pixel_override = snap;
+                    }
+                    if (parseWindowChromeRoleLabel(tpl.chrome_mode)) |role| {
+                        chrome_role = role;
+                    }
+                    if (parseWindowMenuProfileLabel(tpl.menu_profile)) |profile_label| {
+                        menu_profile = profile_label;
+                    }
+                    if (tpl.show_status_bar) |show| {
+                        show_status_bar = show;
+                    }
+                    if (tpl.show_menu_bar) |show| {
+                        show_menu_bar = show;
                     }
                     if (buildWorkspaceFromTemplate(allocator, tpl, &next_panel_id_global)) |ws_val| {
                         ws_for_new = ws_val;
@@ -2839,6 +3443,10 @@ pub fn main() !void {
                     &next_panel_id_global,
                     false,
                     false,
+                    chrome_role,
+                    menu_profile,
+                    show_status_bar,
+                    show_menu_bar,
                     profile_override,
                     mode_override,
                     sampling_override,

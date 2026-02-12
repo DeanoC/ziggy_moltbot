@@ -159,6 +159,8 @@ pub fn freeWindowTemplates(allocator: std.mem.Allocator, templates: []schema.Win
     for (templates) |tpl| {
         allocator.free(tpl.id);
         allocator.free(tpl.title);
+        if (tpl.chrome_mode) |p| allocator.free(p);
+        if (tpl.menu_profile) |p| allocator.free(p);
         if (tpl.profile) |p| allocator.free(p);
         if (tpl.variant) |p| allocator.free(p);
         if (tpl.image_sampling) |p| allocator.free(p);
@@ -201,6 +203,10 @@ fn loadOptionalWindows(
         const title_src = if (tpl.title.len > 0) tpl.title else tpl.id;
         const title_copy = try allocator.dupe(u8, title_src);
         errdefer allocator.free(title_copy);
+        const chrome_mode_copy = if (tpl.chrome_mode) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (chrome_mode_copy) |p| allocator.free(p);
+        const menu_profile_copy = if (tpl.menu_profile) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (menu_profile_copy) |p| allocator.free(p);
         const profile_copy = if (tpl.profile) |p| try allocator.dupe(u8, p) else null;
         errdefer if (profile_copy) |p| allocator.free(p);
         const variant_copy = if (tpl.variant) |p| try allocator.dupe(u8, p) else null;
@@ -233,6 +239,10 @@ fn loadOptionalWindows(
             .title = title_copy,
             .width = tpl.width,
             .height = tpl.height,
+            .chrome_mode = chrome_mode_copy,
+            .menu_profile = menu_profile_copy,
+            .show_menu_bar = tpl.show_menu_bar,
+            .show_status_bar = tpl.show_status_bar,
             .profile = profile_copy,
             .variant = variant_copy,
             .image_sampling = sampling_copy,

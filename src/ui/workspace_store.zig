@@ -5,17 +5,25 @@ pub const DetachedWindow = struct {
     title: []u8,
     width: u32,
     height: u32,
+    chrome_mode: ?[]u8 = null,
+    menu_profile: ?[]u8 = null,
+    show_status_bar: ?bool = null,
+    show_menu_bar: ?bool = null,
     profile: ?[]u8 = null,
     variant: ?[]u8 = null,
     image_sampling: ?[]u8 = null,
     pixel_snap_textured: ?bool = null,
+    collapsed_docks: ?[]workspace.CollapsedDockSnapshot = null,
     ws: workspace.Workspace,
 
     pub fn deinit(self: *DetachedWindow, allocator: std.mem.Allocator) void {
         allocator.free(self.title);
+        if (self.chrome_mode) |p| allocator.free(p);
+        if (self.menu_profile) |p| allocator.free(p);
         if (self.profile) |p| allocator.free(p);
         if (self.variant) |p| allocator.free(p);
         if (self.image_sampling) |p| allocator.free(p);
+        if (self.collapsed_docks) |list| allocator.free(list);
         self.ws.deinit(allocator);
         self.* = undefined;
     }
@@ -25,20 +33,27 @@ pub const DetachedWindowView = struct {
     title: []const u8,
     width: u32,
     height: u32,
+    chrome_mode: ?[]const u8 = null,
+    menu_profile: ?[]const u8 = null,
+    show_status_bar: ?bool = null,
+    show_menu_bar: ?bool = null,
     profile: ?[]const u8 = null,
     variant: ?[]const u8 = null,
     image_sampling: ?[]const u8 = null,
     pixel_snap_textured: ?bool = null,
+    collapsed_docks: ?[]const workspace.CollapsedDockSnapshot = null,
     ws: *const workspace.Workspace,
 };
 
 pub const MultiWorkspace = struct {
     main: workspace.Workspace,
+    main_collapsed_docks: ?[]workspace.CollapsedDockSnapshot = null,
     windows: []DetachedWindow,
     next_panel_id: workspace.PanelId,
 
     pub fn deinit(self: *MultiWorkspace, allocator: std.mem.Allocator) void {
         self.main.deinit(allocator);
+        if (self.main_collapsed_docks) |list| allocator.free(list);
         for (self.windows) |*w| {
             w.deinit(allocator);
         }
@@ -48,42 +63,8 @@ pub const MultiWorkspace = struct {
 };
 
 fn compactWorkspaceSingletonPanels(allocator: std.mem.Allocator, ws: *workspace.Workspace) void {
-    const singleton_kinds = [_]workspace.PanelKind{ .Control, .Chat, .Showcase };
-    for (singleton_kinds) |kind| {
-        var keep_id: ?workspace.PanelId = null;
-
-        // Prefer keeping the focused instance.
-        if (ws.focused_panel_id) |fid| {
-            for (ws.panels.items) |panel| {
-                if (panel.kind == kind and panel.id == fid) {
-                    keep_id = fid;
-                    break;
-                }
-            }
-        }
-        // Otherwise keep the first one we find.
-        if (keep_id == null) {
-            for (ws.panels.items) |panel| {
-                if (panel.kind == kind) {
-                    keep_id = panel.id;
-                    break;
-                }
-            }
-        }
-        if (keep_id == null) continue;
-
-        var i: usize = 0;
-        while (i < ws.panels.items.len) {
-            const p = ws.panels.items[i];
-            if (p.kind == kind and p.id != keep_id.?) {
-                var removed = ws.panels.orderedRemove(i);
-                removed.deinit(allocator);
-                ws.markDirty();
-                continue;
-            }
-            i += 1;
-        }
-    }
+    _ = allocator;
+    _ = ws;
 }
 
 fn firstOrFocusedSingletonKeepId(
@@ -107,44 +88,19 @@ fn compactSnapshotSingletonPanels(
     focused_panel_id: ?workspace.PanelId,
     panels_opt: *?[]workspace.PanelSnapshot,
 ) !void {
-    const panels = panels_opt.* orelse return;
-    if (panels.len == 0) return;
+    _ = allocator;
+    _ = focused_panel_id;
+    _ = panels_opt;
+}
 
-    const keep_control = firstOrFocusedSingletonKeepId(panels, .Control, focused_panel_id);
-    const keep_chat = firstOrFocusedSingletonKeepId(panels, .Chat, focused_panel_id);
-    const keep_showcase = firstOrFocusedSingletonKeepId(panels, .Showcase, focused_panel_id);
-
-    var keep_count: usize = 0;
-    for (panels) |p| {
-        const keep = switch (p.kind) {
-            .Control => keep_control != null and p.id == keep_control.?,
-            .Chat => keep_chat != null and p.id == keep_chat.?,
-            .Showcase => keep_showcase != null and p.id == keep_showcase.?,
-            else => true,
-        };
-        if (keep) keep_count += 1;
-    }
-    if (keep_count == panels.len) return;
-
-    var new_panels = try allocator.alloc(workspace.PanelSnapshot, keep_count);
-    var out: usize = 0;
-    for (panels) |p| {
-        const keep = switch (p.kind) {
-            .Control => keep_control != null and p.id == keep_control.?,
-            .Chat => keep_chat != null and p.id == keep_chat.?,
-            .Showcase => keep_showcase != null and p.id == keep_showcase.?,
-            else => true,
-        };
-        if (keep) {
-            new_panels[out] = p; // move ownership
-            out += 1;
-        } else {
-            workspace.freePanelSnapshot(allocator, p);
-        }
-    }
-
-    allocator.free(panels);
-    panels_opt.* = new_panels;
+fn copyCollapsedDocks(
+    allocator: std.mem.Allocator,
+    src: ?[]const workspace.CollapsedDockSnapshot,
+) !?[]workspace.CollapsedDockSnapshot {
+    const list = src orelse return null;
+    const out = try allocator.alloc(workspace.CollapsedDockSnapshot, list.len);
+    @memcpy(out, list);
+    return out;
 }
 
 fn workspaceHasKind(ws: *const workspace.Workspace, kind: workspace.PanelKind) bool {
@@ -281,6 +237,7 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
     const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{
             .main = try workspace.Workspace.initDefault(allocator),
+            .main_collapsed_docks = null,
             .windows = try allocator.alloc(DetachedWindow, 0),
             .next_panel_id = 1,
         },
@@ -294,6 +251,7 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
     var parsed = std.json.parseFromSlice(workspace.WorkspaceSnapshot, allocator, data, .{ .ignore_unknown_fields = true }) catch {
         return .{
             .main = try workspace.Workspace.initDefault(allocator),
+            .main_collapsed_docks = null,
             .windows = try allocator.alloc(DetachedWindow, 0),
             .next_panel_id = 1,
         };
@@ -303,6 +261,8 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
     const snap = parsed.value;
     var main_ws = try workspace.Workspace.fromSnapshot(allocator, snap);
     errdefer main_ws.deinit(allocator);
+    const main_collapsed_docks = try copyCollapsedDocks(allocator, snap.collapsed_docks);
+    errdefer if (main_collapsed_docks) |list| allocator.free(list);
     compactWorkspaceSingletonPanels(allocator, &main_ws);
 
     const windows_src = snap.detached_windows orelse &[_]workspace.DetachedWindowSnapshot{};
@@ -317,6 +277,10 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
         _ = idx;
         const title_copy = try allocator.dupe(u8, wsrc.title);
         errdefer allocator.free(title_copy);
+        const chrome_mode_copy = if (wsrc.chrome_mode) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (chrome_mode_copy) |p| allocator.free(p);
+        const menu_profile_copy = if (wsrc.menu_profile) |p| try allocator.dupe(u8, p) else null;
+        errdefer if (menu_profile_copy) |p| allocator.free(p);
         const profile_copy = if (wsrc.profile) |p| try allocator.dupe(u8, p) else null;
         errdefer if (profile_copy) |p| allocator.free(p);
         const variant_copy = if (wsrc.variant) |p| try allocator.dupe(u8, p) else null;
@@ -329,6 +293,8 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
             .focused_panel_id = wsrc.focused_panel_id,
             .next_panel_id = snap.next_panel_id,
             .custom_layout = wsrc.custom_layout,
+            .layout_version = wsrc.layout_version,
+            .layout_v2 = wsrc.layout_v2,
             .panels = wsrc.panels,
             .detached_windows = null,
         };
@@ -340,10 +306,15 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
             .title = title_copy,
             .width = wsrc.width,
             .height = wsrc.height,
+            .chrome_mode = chrome_mode_copy,
+            .menu_profile = menu_profile_copy,
+            .show_status_bar = wsrc.show_status_bar,
+            .show_menu_bar = wsrc.show_menu_bar,
             .profile = profile_copy,
             .variant = variant_copy,
             .image_sampling = sampling_copy,
             .pixel_snap_textured = wsrc.pixel_snap_textured,
+            .collapsed_docks = try copyCollapsedDocks(allocator, wsrc.collapsed_docks),
             .ws = ws,
         };
         filled += 1;
@@ -354,6 +325,7 @@ pub fn loadMultiOrDefault(allocator: std.mem.Allocator, path: []const u8) !Multi
 
     return .{
         .main = main_ws,
+        .main_collapsed_docks = main_collapsed_docks,
         .windows = windows,
         .next_panel_id = snap.next_panel_id,
     };
@@ -378,12 +350,14 @@ pub fn saveMulti(
     allocator: std.mem.Allocator,
     path: []const u8,
     main_ws: *const workspace.Workspace,
+    main_collapsed_docks: ?[]const workspace.CollapsedDockSnapshot,
     windows: []const DetachedWindowView,
     next_panel_id: workspace.PanelId,
 ) !void {
     var snapshot = try main_ws.toSnapshot(allocator);
     snapshot.next_panel_id = next_panel_id;
     errdefer snapshot.deinit(allocator);
+    snapshot.collapsed_docks = try copyCollapsedDocks(allocator, main_collapsed_docks);
 
     try compactSnapshotSingletonPanels(allocator, snapshot.focused_panel_id, &snapshot.panels);
 
@@ -406,6 +380,10 @@ pub fn saveMulti(
 
             const title_copy = try allocator.dupe(u8, w.title);
             errdefer allocator.free(title_copy);
+            const chrome_mode_copy = if (w.chrome_mode) |p| try allocator.dupe(u8, p) else null;
+            errdefer if (chrome_mode_copy) |p| allocator.free(p);
+            const menu_profile_copy = if (w.menu_profile) |p| try allocator.dupe(u8, p) else null;
+            errdefer if (menu_profile_copy) |p| allocator.free(p);
             const profile_copy = if (w.profile) |p| try allocator.dupe(u8, p) else null;
             errdefer if (profile_copy) |p| allocator.free(p);
             const variant_copy = if (w.variant) |p| try allocator.dupe(u8, p) else null;
@@ -417,6 +395,10 @@ pub fn saveMulti(
                 .title = title_copy,
                 .width = w.width,
                 .height = w.height,
+                .chrome_mode = chrome_mode_copy,
+                .menu_profile = menu_profile_copy,
+                .show_status_bar = w.show_status_bar,
+                .show_menu_bar = w.show_menu_bar,
                 .profile = profile_copy,
                 .variant = variant_copy,
                 .image_sampling = sampling_copy,
@@ -424,9 +406,13 @@ pub fn saveMulti(
                 .active_project = ws_snap.active_project,
                 .focused_panel_id = ws_snap.focused_panel_id,
                 .custom_layout = ws_snap.custom_layout,
+                .layout_version = ws_snap.layout_version,
+                .layout_v2 = ws_snap.layout_v2,
+                .collapsed_docks = try copyCollapsedDocks(allocator, w.collapsed_docks),
                 .panels = ws_snap.panels,
             };
             // Transfer ownership of `panels` to the window snapshot.
+            ws_snap.layout_v2 = null;
             ws_snap.panels = null;
             ws_snap.deinit(allocator);
 

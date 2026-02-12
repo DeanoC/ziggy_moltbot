@@ -2,6 +2,8 @@ const std = @import("std");
 const text_buffer = @import("text_buffer.zig");
 const chat_view = @import("chat_view.zig");
 const text_editor = @import("widgets/text_editor.zig");
+const dock_graph = @import("layout/dock_graph.zig");
+const dock_rail = @import("layout/dock_rail.zig");
 
 pub const PanelId = u64;
 pub const DockNodeId = u32;
@@ -12,6 +14,11 @@ pub const PanelKind = enum {
     CodeEditor,
     ToolOutput,
     Control,
+    Agents,
+    Operator,
+    ApprovalsInbox,
+    Inbox,
+    Settings,
     Showcase,
 };
 
@@ -82,6 +89,11 @@ pub const PanelData = union(enum) {
     CodeEditor: CodeEditorPanel,
     ToolOutput: ToolOutputPanel,
     Control: ControlPanel,
+    Agents: ControlPanel,
+    Operator: void,
+    ApprovalsInbox: void,
+    Inbox: ControlPanel,
+    Settings: void,
     Showcase: void,
 
     pub fn deinit(self: *PanelData, allocator: std.mem.Allocator) void {
@@ -116,6 +128,15 @@ pub const PanelData = union(enum) {
             .Control => |*ctrl| {
                 if (ctrl.selected_agent_id) |id| allocator.free(id);
             },
+            .Agents => |*ctrl| {
+                if (ctrl.selected_agent_id) |id| allocator.free(id);
+            },
+            .Operator => {},
+            .ApprovalsInbox => {},
+            .Inbox => |*ctrl| {
+                if (ctrl.selected_agent_id) |id| allocator.free(id);
+            },
+            .Settings => {},
             .Showcase => {},
         }
     }
@@ -137,15 +158,16 @@ pub const Panel = struct {
 pub const Workspace = struct {
     panels: std.ArrayList(Panel),
     custom_layout: CustomLayoutState,
+    dock_layout: dock_graph.Graph,
     focused_panel_id: ?PanelId,
     active_project: ProjectId,
     dirty: bool = false,
 
     pub fn initEmpty(allocator: std.mem.Allocator) Workspace {
-        _ = allocator;
         return .{
             .panels = std.ArrayList(Panel).empty,
             .custom_layout = .{},
+            .dock_layout = dock_graph.Graph.init(allocator),
             .focused_panel_id = null,
             .active_project = 0,
             .dirty = false,
@@ -160,6 +182,7 @@ pub const Workspace = struct {
         try ws.panels.append(allocator, try makeChatPanel(allocator, 2, "main", null));
 
         ws.focused_panel_id = ws.panels.items[1].id;
+        _ = try ws.syncDockLayout();
         return ws;
     }
 
@@ -168,6 +191,7 @@ pub const Workspace = struct {
             panel.deinit(allocator);
         }
         self.panels.deinit(allocator);
+        self.dock_layout.deinit();
     }
 
     pub fn markDirty(self: *Workspace) void {
@@ -182,7 +206,15 @@ pub const Workspace = struct {
         var panels = try allocator.alloc(PanelSnapshot, self.panels.items.len);
         var filled: usize = 0;
         var max_id: PanelId = 0;
+        var layout_copy = dock_graph.Graph.init(allocator);
+        defer layout_copy.deinit();
+        try layout_copy.cloneFrom(&self.dock_layout);
+        var panel_ids = try self.collectPanelIdsWithAllocator(allocator);
+        defer panel_ids.deinit(allocator);
+        _ = try layout_copy.syncPanels(panel_ids.items);
+        var dock_snap = try layout_copy.toSnapshot(allocator);
         errdefer {
+            dock_snap.deinit(allocator);
             for (panels[0..filled]) |panel| {
                 freePanelSnapshot(allocator, panel);
             }
@@ -202,6 +234,8 @@ pub const Workspace = struct {
                 .min_left_width = self.custom_layout.min_left_width,
                 .min_right_width = self.custom_layout.min_right_width,
             },
+            .layout_version = 2,
+            .layout_v2 = dock_snap,
             .panels = panels,
         };
     }
@@ -225,7 +259,68 @@ pub const Workspace = struct {
                 try ws.panels.append(allocator, try panelFromSnapshot(allocator, snap));
             }
         }
+
+        if (snapshot.layout_v2) |layout| {
+            ws.dock_layout = try dock_graph.Graph.fromSnapshot(allocator, layout);
+            _ = try ws.syncDockLayout();
+        } else {
+            _ = try ws.syncDockLayout();
+        }
+
         return ws;
+    }
+
+    pub fn syncDockLayout(self: *Workspace) !bool {
+        if (self.dock_layout.root == null and self.panels.items.len > 0) {
+            try self.seedDockLayoutFromPanels();
+            return true;
+        }
+        var panel_ids = try self.collectPanelIdsWithAllocator(self.dock_layout.allocator);
+        defer panel_ids.deinit(self.dock_layout.allocator);
+        return try self.dock_layout.syncPanels(panel_ids.items);
+    }
+
+    fn collectPanelIdsWithAllocator(self: *const Workspace, allocator: std.mem.Allocator) !std.ArrayList(PanelId) {
+        var ids = std.ArrayList(PanelId).empty;
+        errdefer ids.deinit(allocator);
+        try ids.ensureTotalCapacity(allocator, self.panels.items.len);
+        for (self.panels.items) |panel| {
+            try ids.append(allocator, panel.id);
+        }
+        return ids;
+    }
+
+    fn seedDockLayoutFromPanels(self: *Workspace) !void {
+        self.dock_layout.clear();
+
+        var chat_ids = std.ArrayList(PanelId).empty;
+        defer chat_ids.deinit(self.dock_layout.allocator);
+        var other_ids = std.ArrayList(PanelId).empty;
+        defer other_ids.deinit(self.dock_layout.allocator);
+        try chat_ids.ensureTotalCapacity(self.dock_layout.allocator, self.panels.items.len);
+        try other_ids.ensureTotalCapacity(self.dock_layout.allocator, self.panels.items.len);
+
+        for (self.panels.items) |panel| {
+            if (panel.kind == .Chat) {
+                try chat_ids.append(self.dock_layout.allocator, panel.id);
+            } else {
+                try other_ids.append(self.dock_layout.allocator, panel.id);
+            }
+        }
+
+        if (chat_ids.items.len > 0 and other_ids.items.len > 0) {
+            const left = try self.dock_layout.addTabsNode(chat_ids.items, 0);
+            const right = try self.dock_layout.addTabsNode(other_ids.items, 0);
+            const root = try self.dock_layout.addSplitNode(.vertical, self.custom_layout.left_ratio, left, right);
+            self.dock_layout.root = root;
+            return;
+        }
+
+        var all_ids = try self.collectPanelIdsWithAllocator(self.dock_layout.allocator);
+        defer all_ids.deinit(self.dock_layout.allocator);
+        if (all_ids.items.len == 0) return;
+        const root = try self.dock_layout.addTabsNode(all_ids.items, 0);
+        self.dock_layout.root = root;
     }
 };
 
@@ -266,6 +361,11 @@ pub const CustomLayoutSnapshot = struct {
     min_right_width: f32 = 320.0,
 };
 
+pub const CollapsedDockSnapshot = struct {
+    node_id: DockNodeId,
+    side: dock_rail.Side = .left,
+};
+
 pub const PanelSnapshot = struct {
     id: PanelId,
     kind: PanelKind,
@@ -282,10 +382,19 @@ pub const WorkspaceSnapshot = struct {
     focused_panel_id: ?PanelId = null,
     next_panel_id: PanelId = 1,
     custom_layout: ?CustomLayoutSnapshot = null,
+    layout_version: u32 = 1,
+    layout_v2: ?dock_graph.GraphSnapshot = null,
+    collapsed_docks: ?[]CollapsedDockSnapshot = null,
     panels: ?[]PanelSnapshot = null,
     detached_windows: ?[]DetachedWindowSnapshot = null,
 
     pub fn deinit(self: *WorkspaceSnapshot, allocator: std.mem.Allocator) void {
+        if (self.layout_v2) |*layout| {
+            layout.deinit(allocator);
+        }
+        if (self.collapsed_docks) |list| {
+            allocator.free(list);
+        }
         if (self.panels) |panels| {
             for (panels) |panel| {
                 freePanelSnapshot(allocator, panel);
@@ -306,6 +415,10 @@ pub const DetachedWindowSnapshot = struct {
     title: []const u8,
     width: u32,
     height: u32,
+    chrome_mode: ?[]const u8 = null,
+    menu_profile: ?[]const u8 = null,
+    show_status_bar: ?bool = null,
+    show_menu_bar: ?bool = null,
     profile: ?[]const u8 = null,
     variant: ?[]const u8 = null,
     image_sampling: ?[]const u8 = null,
@@ -315,13 +428,24 @@ pub const DetachedWindowSnapshot = struct {
     active_project: ProjectId = 0,
     focused_panel_id: ?PanelId = null,
     custom_layout: ?CustomLayoutSnapshot = null,
+    layout_version: u32 = 1,
+    layout_v2: ?dock_graph.GraphSnapshot = null,
+    collapsed_docks: ?[]CollapsedDockSnapshot = null,
     panels: ?[]PanelSnapshot = null,
 
     pub fn deinit(self: *DetachedWindowSnapshot, allocator: std.mem.Allocator) void {
         allocator.free(self.title);
+        if (self.chrome_mode) |p| allocator.free(p);
+        if (self.menu_profile) |p| allocator.free(p);
         if (self.profile) |p| allocator.free(p);
         if (self.variant) |p| allocator.free(p);
         if (self.image_sampling) |p| allocator.free(p);
+        if (self.layout_v2) |*layout| {
+            layout.deinit(allocator);
+        }
+        if (self.collapsed_docks) |list| {
+            allocator.free(list);
+        }
         if (self.panels) |panels| {
             for (panels) |panel| {
                 freePanelSnapshot(allocator, panel);
@@ -393,6 +517,21 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
             };
         },
+        .Agents => |ctrl| {
+            snap.control = .{
+                .active_tab = try allocator.dupe(u8, "Agents"),
+                .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+            };
+        },
+        .Operator => {},
+        .ApprovalsInbox => {},
+        .Inbox => |ctrl| {
+            snap.control = .{
+                .active_tab = try allocator.dupe(u8, "Inbox"),
+                .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+            };
+        },
+        .Settings => {},
         .Showcase => {},
     }
 
@@ -482,6 +621,59 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                     .active_tab = active_tab,
                     .selected_agent_id = if (ctrl_snap.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
                 } },
+                .state = state_val,
+            };
+        },
+        .Agents => {
+            const ctrl_snap = snap.control orelse ControlPanelSnapshot{};
+            return .{
+                .id = snap.id,
+                .kind = .Agents,
+                .title = title_copy,
+                .data = .{ .Agents = .{
+                    .active_tab = .Agents,
+                    .selected_agent_id = if (ctrl_snap.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+                } },
+                .state = state_val,
+            };
+        },
+        .Operator => {
+            return .{
+                .id = snap.id,
+                .kind = .Operator,
+                .title = title_copy,
+                .data = .{ .Operator = {} },
+                .state = state_val,
+            };
+        },
+        .ApprovalsInbox => {
+            return .{
+                .id = snap.id,
+                .kind = .ApprovalsInbox,
+                .title = title_copy,
+                .data = .{ .ApprovalsInbox = {} },
+                .state = state_val,
+            };
+        },
+        .Inbox => {
+            const ctrl_snap = snap.control orelse ControlPanelSnapshot{};
+            return .{
+                .id = snap.id,
+                .kind = .Inbox,
+                .title = title_copy,
+                .data = .{ .Inbox = .{
+                    .active_tab = .Inbox,
+                    .selected_agent_id = if (ctrl_snap.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
+                } },
+                .state = state_val,
+            };
+        },
+        .Settings => {
+            return .{
+                .id = snap.id,
+                .kind = .Settings,
+                .title = title_copy,
+                .data = .{ .Settings = {} },
                 .state = state_val,
             };
         },
@@ -629,6 +821,67 @@ pub fn makeShowcasePanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
         .kind = .Showcase,
         .title = title,
         .data = .{ .Showcase = {} },
+        .state = .{},
+    };
+}
+
+pub fn makeAgentsPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Agents");
+    return .{
+        .id = id,
+        .kind = .Agents,
+        .title = title,
+        .data = .{ .Agents = .{
+            .active_tab = .Agents,
+            .selected_agent_id = null,
+        } },
+        .state = .{},
+    };
+}
+
+pub fn makeOperatorPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Operator");
+    return .{
+        .id = id,
+        .kind = .Operator,
+        .title = title,
+        .data = .{ .Operator = {} },
+        .state = .{},
+    };
+}
+
+pub fn makeApprovalsInboxPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Approvals");
+    return .{
+        .id = id,
+        .kind = .ApprovalsInbox,
+        .title = title,
+        .data = .{ .ApprovalsInbox = {} },
+        .state = .{},
+    };
+}
+
+pub fn makeInboxPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Inbox");
+    return .{
+        .id = id,
+        .kind = .Inbox,
+        .title = title,
+        .data = .{ .Inbox = .{
+            .active_tab = .Inbox,
+            .selected_agent_id = null,
+        } },
+        .state = .{},
+    };
+}
+
+pub fn makeSettingsPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Settings");
+    return .{
+        .id = id,
+        .kind = .Settings,
+        .title = title,
+        .data = .{ .Settings = {} },
         .state = .{},
     };
 }

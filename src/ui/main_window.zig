@@ -4,7 +4,8 @@ const state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
 const theme = @import("theme.zig");
 const components = @import("components/components.zig");
-const custom_layout = @import("layout/custom_layout.zig");
+const dock_graph = @import("layout/dock_graph.zig");
+const dock_rail = @import("layout/dock_rail.zig");
 const panel_manager = @import("panel_manager.zig");
 const text_buffer = @import("text_buffer.zig");
 const workspace = @import("workspace.zig");
@@ -30,6 +31,11 @@ const chat_panel = @import("panels/chat_panel.zig");
 const code_editor_panel = @import("panels/code_editor_panel.zig");
 const tool_output_panel = @import("panels/tool_output_panel.zig");
 const control_panel = @import("panels/control_panel.zig");
+const agents_panel = @import("panels/agents_panel.zig");
+const inbox_panel = @import("panels/inbox_panel.zig");
+const settings_panel = @import("panels/settings_panel.zig");
+const operator_view = @import("operator_view.zig");
+const approvals_inbox_view = @import("approvals_inbox_view.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const showcase_panel = @import("panels/showcase_panel.zig");
 const status_bar = @import("status_bar.zig");
@@ -45,10 +51,31 @@ pub const SendMessageAction = struct {
     message: []u8,
 };
 
+pub const WindowChromeRole = enum {
+    main_workspace,
+    detached_panel,
+    template_utility,
+};
+
+pub const WindowMenuProfile = enum {
+    full,
+    compact,
+    minimal,
+};
+
 pub const WindowUiState = struct {
     custom_split_dragging: bool = false,
     custom_window_menu_open: bool = false,
+    dock_drag: DockDragState = .{},
+    split_drag: DockSplitDragState = .{},
     nav: nav.NavState = .{},
+    chrome_role: WindowChromeRole = .main_workspace,
+    menu_profile: WindowMenuProfile = .full,
+    show_status_bar: bool = true,
+    show_menu_bar: bool = true,
+    collapsed_docks: dock_rail.CollapsedSet = .{},
+    dock_flyout: DockFlyoutState = .{},
+    dock_rail_anim: DockRailAnimState = .{},
 
     fullscreen_page: FullscreenPage = .home,
     // When true, the first frame for a given profile applies the theme pack's `layouts/workspace.json`
@@ -126,6 +153,7 @@ pub const UiAction = struct {
     clear_operator_notice: bool = false,
     save_workspace: bool = false,
     detach_panel_id: ?workspace.PanelId = null,
+    detach_group_node_id: ?dock_graph.NodeId = null,
     // When non-null, the UI already removed the panel from the source manager; the native loop
     // should create the tear-off window from this panel and then free the pointer.
     detach_panel: ?*workspace.Panel = null,
@@ -144,12 +172,203 @@ const PanelFrameResult = struct {
     clicked: bool,
 };
 
+const DockDragState = struct {
+    panel_id: ?workspace.PanelId = null,
+    source_node_id: ?dock_graph.NodeId = null,
+    source_tab_index: usize = 0,
+    press_pos: [2]f32 = .{ 0.0, 0.0 },
+    dragging: bool = false,
+
+    pub fn clear(self: *DockDragState) void {
+        self.* = .{};
+    }
+};
+
+const DockSplitDragState = struct {
+    node_id: ?dock_graph.NodeId = null,
+    axis: dock_graph.Axis = .vertical,
+
+    pub fn clear(self: *DockSplitDragState) void {
+        self.* = .{};
+    }
+};
+
+const DockFlyoutState = struct {
+    node_id: ?dock_graph.NodeId = null,
+    side: dock_rail.Side = .left,
+    pinned: bool = false,
+
+    pub fn clear(self: *DockFlyoutState) void {
+        self.* = .{};
+    }
+};
+
+const DockRailAnimState = struct {
+    initialized: bool = false,
+    left_width: f32 = 0.0,
+    right_width: f32 = 0.0,
+
+    pub fn update(self: *DockRailAnimState, target_left: f32, target_right: f32, dt: f32) void {
+        if (!self.initialized) {
+            self.initialized = true;
+            self.left_width = target_left;
+            self.right_width = target_right;
+            return;
+        }
+        self.left_width = smoothDockRailWidth(self.left_width, target_left, dt);
+        self.right_width = smoothDockRailWidth(self.right_width, target_right, dt);
+    }
+};
+
+fn smoothDockRailWidth(current: f32, target: f32, dt: f32) f32 {
+    if (@abs(current - target) <= 0.2) return target;
+    const blend = 1.0 - std.math.exp(-14.0 * dt);
+    return current + (target - current) * blend;
+}
+
+const DockTabHit = struct {
+    panel_id: workspace.PanelId,
+    node_id: dock_graph.NodeId,
+    tab_index: usize,
+    rect: draw_context.Rect,
+};
+
+const DockTabHitList = struct {
+    items: [64]DockTabHit = undefined,
+    len: usize = 0,
+
+    pub fn append(self: *DockTabHitList, item: DockTabHit) void {
+        if (self.len >= self.items.len) return;
+        self.items[self.len] = item;
+        self.len += 1;
+    }
+
+    pub fn slice(self: *const DockTabHitList) []const DockTabHit {
+        return self.items[0..self.len];
+    }
+};
+
+const DockDropTarget = struct {
+    node_id: dock_graph.NodeId,
+    location: dock_graph.DropLocation,
+    rect: draw_context.Rect,
+};
+
+const DockDropTargetList = struct {
+    items: [96]DockDropTarget = undefined,
+    len: usize = 0,
+
+    pub fn append(self: *DockDropTargetList, item: DockDropTarget) void {
+        if (self.len >= self.items.len) return;
+        self.items[self.len] = item;
+        self.len += 1;
+    }
+
+    pub fn findAt(self: *const DockDropTargetList, pos: [2]f32) ?DockDropTarget {
+        // Prefer center targets, then side targets to match IDE expectations.
+        for (self.items[0..self.len]) |tgt| {
+            if (tgt.location != .center) continue;
+            if (tgt.rect.contains(pos)) return tgt;
+        }
+        for (self.items[0..self.len]) |tgt| {
+            if (tgt.location == .center) continue;
+            if (tgt.rect.contains(pos)) return tgt;
+        }
+        return null;
+    }
+};
+
+const DockGroupFrameResult = struct {
+    content_rect: draw_context.Rect,
+    close_panel_id: ?workspace.PanelId = null,
+    detach_panel_id: ?workspace.PanelId = null,
+    collapse_clicked: bool = false,
+    frame_clicked: bool = false,
+};
+
+const DockRailInteractionResult = struct {
+    hovered_item: ?dock_rail.Item = null,
+    clicked_item: ?dock_rail.Item = null,
+    focus_panel_id: ?workspace.PanelId = null,
+};
+
+const DockFlyoutResult = struct {
+    focus_panel_id: ?workspace.PanelId = null,
+    session_key: ?[]const u8 = null,
+    agent_id: ?[]const u8 = null,
+    changed_layout: bool = false,
+    expand_node_id: ?dock_graph.NodeId = null,
+};
+
+const WindowPanelToggle = struct {
+    label: []const u8,
+    kind: workspace.PanelKind,
+};
+
+const window_panel_toggles = [_]WindowPanelToggle{
+    .{ .label = "Workspace", .kind = .Control },
+    .{ .label = "Chat", .kind = .Chat },
+    .{ .label = "Agents", .kind = .Agents },
+    .{ .label = "Operator", .kind = .Operator },
+    .{ .label = "Approvals", .kind = .ApprovalsInbox },
+    .{ .label = "Inbox", .kind = .Inbox },
+    .{ .label = "Settings", .kind = .Settings },
+    .{ .label = "Showcase", .kind = .Showcase },
+};
+
 fn customMenuHeight(line_height: f32, t: *const theme.Theme) f32 {
     return line_height + t.spacing.xs * 2.0;
 }
 
 fn statusBarHeight(line_height: f32, t: *const theme.Theme) f32 {
     return line_height + t.spacing.xs * 2.0;
+}
+
+fn focusedDockNodeId(manager: *panel_manager.PanelManager) ?dock_graph.NodeId {
+    const focused_panel = manager.workspace.focused_panel_id orelse return null;
+    const loc = manager.workspace.dock_layout.findPanel(focused_panel) orelse return null;
+    return loc.node_id;
+}
+
+fn resetDockLayout(manager: *panel_manager.PanelManager) void {
+    manager.workspace.dock_layout.clear();
+    if (manager.workspace.syncDockLayout() catch false) {
+        manager.workspace.markDirty();
+    }
+}
+
+fn moveFocusedTabToNewGroup(manager: *panel_manager.PanelManager) bool {
+    const focused_panel = manager.workspace.focused_panel_id orelse return false;
+    const loc = manager.workspace.dock_layout.findPanel(focused_panel) orelse return false;
+    if (manager.workspace.dock_layout.splitNodeWithPanel(loc.node_id, focused_panel, .right) catch false) {
+        manager.workspace.markDirty();
+        manager.focusPanel(focused_panel);
+        return true;
+    }
+    return false;
+}
+
+fn closeFocusedGroup(manager: *panel_manager.PanelManager, allocator: std.mem.Allocator) bool {
+    const node_id = focusedDockNodeId(manager) orelse return false;
+    const node = manager.workspace.dock_layout.getNode(node_id) orelse return false;
+    const tabs = switch (node.*) {
+        .tabs => |t| t,
+        .split => return false,
+    };
+    if (tabs.tabs.items.len == 0) return false;
+
+    var panel_ids = std.ArrayList(workspace.PanelId).empty;
+    defer panel_ids.deinit(allocator);
+    panel_ids.ensureTotalCapacity(allocator, tabs.tabs.items.len) catch return false;
+    panel_ids.appendSlice(allocator, tabs.tabs.items) catch return false;
+
+    var closed_any = false;
+    for (panel_ids.items) |pid| {
+        if (manager.closePanel(pid)) {
+            closed_any = true;
+        }
+    }
+    return closed_any;
 }
 
 fn drawCustomMenuBar(
@@ -183,6 +402,11 @@ fn drawCustomMenuBar(
         return;
     }
 
+    if (win_state.menu_profile != .full) {
+        drawContextualWindowMenu(dc, rect, queue, manager, action, win_state);
+        return;
+    }
+
     const menu_padding = t.spacing.xs;
     const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
     const menu_width: f32 = computeWindowMenuWidth(dc, cfg, win_state, item_height);
@@ -196,9 +420,11 @@ fn drawCustomMenuBar(
     const recent = cfg.ui_theme_pack_recent orelse &[_][]const u8{};
     const max_recent: usize = 4;
     const recent_shown: usize = @min(recent.len, max_recent);
+    const panel_items_u: usize = window_panel_toggles.len;
+    const layout_items_u: usize = 3 + (if (allow_multi_window) @as(usize, 1) else @as(usize, 0));
     const theme_items_u: usize = @as(usize, 3) + (if (win_state.theme_pack_override != null) @as(usize, 1) else @as(usize, 0)) + recent_shown;
     const multi_items_u: usize = if (allow_multi_window) (1 + templates.len) else 0;
-    const item_count_u: usize = 3 + theme_items_u + multi_items_u;
+    const item_count_u: usize = panel_items_u + layout_items_u + theme_items_u + multi_items_u;
     const item_count: f32 = @floatFromInt(item_count_u);
     const menu_height = menu_padding * 2.0 + item_height * item_count;
     const menu_rect = draw_context.Rect.fromMinSize(
@@ -211,56 +437,78 @@ fn drawCustomMenuBar(
         .draw_frame = false,
     });
 
-    const has_control = manager.hasPanel(.Control);
-    const has_chat = manager.hasPanel(.Chat);
-    const has_showcase = manager.hasPanel(.Showcase);
     var cursor_y = menu_rect.min[1] + menu_padding;
+    for (window_panel_toggles) |entry| {
+        const has_panel = manager.hasPanel(entry.kind);
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            entry.label,
+            has_panel,
+            false,
+        )) {
+            if (has_panel) {
+                _ = manager.closePanelByKind(entry.kind);
+            } else {
+                manager.ensurePanel(entry.kind);
+            }
+            win_state.custom_window_menu_open = false;
+        }
+        cursor_y += item_height;
+    }
+
     if (drawMenuItem(
         dc,
         queue,
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
-        "Workspace",
-        has_control,
+        "Layout: Reset",
+        false,
         false,
     )) {
-        if (has_control) {
-            _ = manager.closePanelByKind(.Control);
-        } else {
-            manager.ensurePanel(.Control);
-        }
+        resetDockLayout(manager);
         win_state.custom_window_menu_open = false;
     }
+
     cursor_y += item_height;
     if (drawMenuItem(
         dc,
         queue,
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
-        "Chat",
-        has_chat,
+        "Layout: Move tab to new group",
         false,
+        manager.workspace.focused_panel_id == null,
     )) {
-        if (has_chat) {
-            _ = manager.closePanelByKind(.Chat);
-        } else {
-            manager.ensurePanel(.Chat);
-        }
+        _ = moveFocusedTabToNewGroup(manager);
         win_state.custom_window_menu_open = false;
     }
+
     cursor_y += item_height;
     if (drawMenuItem(
         dc,
         queue,
         draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
-        "Showcase",
-        has_showcase,
+        "Layout: Close group",
         false,
+        focusedDockNodeId(manager) == null,
     )) {
-        if (has_showcase) {
-            _ = manager.closePanelByKind(.Showcase);
-        } else {
-            manager.ensurePanel(.Showcase);
-        }
+        _ = closeFocusedGroup(manager, dc.allocator);
         win_state.custom_window_menu_open = false;
+    }
+
+    if (allow_multi_window) {
+        cursor_y += item_height;
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "Layout: Move group to window",
+            false,
+            focusedDockNodeId(manager) == null,
+        )) {
+            action.detach_group_node_id = focusedDockNodeId(manager);
+            win_state.custom_window_menu_open = false;
+        }
     }
 
     const can_browse_pack = builtin.target.os.tag == .linux or builtin.target.os.tag == .windows or builtin.target.os.tag == .macos;
@@ -406,6 +654,176 @@ fn drawCustomMenuBar(
         switch (evt) {
             .mouse_down => |md| {
                 if (md.button == .left and !menu_rect.contains(md.pos) and !button_rect.contains(md.pos)) {
+                    clicked_outside = true;
+                }
+            },
+            else => {},
+        }
+    }
+    if (clicked_outside) {
+        win_state.custom_window_menu_open = false;
+    }
+}
+
+fn drawContextualWindowMenu(
+    dc: *draw_context.DrawContext,
+    menu_bar_rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    action: *UiAction,
+    win_state: *WindowUiState,
+) void {
+    const t = dc.theme;
+    const menu_padding = t.spacing.xs;
+    const item_height = dc.lineHeight() + t.spacing.xs * 2.0;
+    const allow_multi_window = (builtin.cpu.arch != .wasm32) and !builtin.abi.isAndroid();
+    const templates_all = theme_runtime.getWindowTemplates();
+    const max_templates: usize = 8;
+    const templates = templates_all[0..@min(templates_all.len, max_templates)];
+
+    const include_panel_toggles = win_state.menu_profile == .compact;
+    const include_multi = allow_multi_window;
+    const include_move_tab_group = win_state.menu_profile == .compact;
+    const panel_items: usize = if (include_panel_toggles) window_panel_toggles.len else 0;
+    const layout_items: usize = 2 + (if (include_move_tab_group) @as(usize, 1) else @as(usize, 0)) + (if (allow_multi_window) @as(usize, 1) else @as(usize, 0));
+    const multi_items: usize = if (include_multi) (1 + templates.len) else 0;
+    const item_count_u: usize = panel_items + layout_items + multi_items;
+    if (item_count_u == 0) {
+        win_state.custom_window_menu_open = false;
+        return;
+    }
+
+    const menu_width: f32 = if (win_state.menu_profile == .minimal) 240.0 else 300.0;
+    const item_count: f32 = @floatFromInt(item_count_u);
+    const menu_height = menu_padding * 2.0 + item_height * item_count;
+    const menu_rect = draw_context.Rect.fromMinSize(
+        .{ menu_bar_rect.min[0] + t.spacing.sm, menu_bar_rect.max[1] + t.spacing.xs },
+        .{ menu_width, menu_height },
+    );
+
+    panel_chrome.draw(dc, menu_rect, .{
+        .radius = t.radius.md,
+        .draw_shadow = true,
+        .draw_frame = false,
+    });
+
+    var cursor_y = menu_rect.min[1] + menu_padding;
+    if (include_panel_toggles) {
+        for (window_panel_toggles) |entry| {
+            const has_panel = manager.hasPanel(entry.kind);
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                entry.label,
+                has_panel,
+                false,
+            )) {
+                if (has_panel) {
+                    _ = manager.closePanelByKind(entry.kind);
+                } else {
+                    manager.ensurePanel(entry.kind);
+                }
+                win_state.custom_window_menu_open = false;
+            }
+            cursor_y += item_height;
+        }
+    }
+
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Layout: Reset",
+        false,
+        false,
+    )) {
+        resetDockLayout(manager);
+        win_state.custom_window_menu_open = false;
+    }
+    cursor_y += item_height;
+
+    if (drawMenuItem(
+        dc,
+        queue,
+        draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+        "Layout: Close group",
+        false,
+        focusedDockNodeId(manager) == null,
+    )) {
+        _ = closeFocusedGroup(manager, dc.allocator);
+        win_state.custom_window_menu_open = false;
+    }
+    cursor_y += item_height;
+
+    if (include_move_tab_group) {
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "Layout: Move tab to new group",
+            false,
+            manager.workspace.focused_panel_id == null,
+        )) {
+            _ = moveFocusedTabToNewGroup(manager);
+            win_state.custom_window_menu_open = false;
+        }
+        cursor_y += item_height;
+    }
+
+    if (allow_multi_window) {
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "Layout: Move group to window",
+            false,
+            focusedDockNodeId(manager) == null,
+        )) {
+            action.detach_group_node_id = focusedDockNodeId(manager);
+            win_state.custom_window_menu_open = false;
+        }
+        cursor_y += item_height;
+    }
+
+    if (include_multi) {
+        if (drawMenuItem(
+            dc,
+            queue,
+            draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+            "New Window",
+            false,
+            false,
+        )) {
+            action.spawn_window = true;
+            win_state.custom_window_menu_open = false;
+        }
+        cursor_y += item_height;
+
+        for (templates, 0..) |tpl, idx| {
+            var label_buf: [96]u8 = undefined;
+            const title = if (tpl.title.len > 0) tpl.title else tpl.id;
+            const label = std.fmt.bufPrint(&label_buf, "New: {s}", .{title}) catch title;
+            if (drawMenuItem(
+                dc,
+                queue,
+                draw_context.Rect.fromMinSize(.{ menu_rect.min[0], cursor_y }, .{ menu_rect.size()[0], item_height }),
+                label,
+                false,
+                false,
+            )) {
+                action.spawn_window_template = @intCast(idx);
+                win_state.custom_window_menu_open = false;
+            }
+            cursor_y += item_height;
+        }
+    }
+
+    var clicked_outside = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and !menu_rect.contains(md.pos)) {
                     clicked_outside = true;
                 }
             },
@@ -755,16 +1173,16 @@ fn drawWorkspaceHost(
         return;
     }
 
-    // Enforce singleton panel kinds per window (see PanelManager.compactSingletonPanels).
-    manager.compactSingletonPanels();
-
     if (win_state.theme_layout_presets_enabled) {
         applyThemeWorkspaceLayoutPreset(manager, win_state);
     }
+    if (manager.workspace.syncDockLayout() catch false) {
+        manager.workspace.markDirty();
+    }
 
     const line_height = dc.lineHeight();
-    const menu_height = customMenuHeight(line_height, t);
-    const status_height = statusBarHeight(line_height, t);
+    const menu_height = if (win_state.show_menu_bar) customMenuHeight(line_height, t) else 0.0;
+    const status_height = if (win_state.show_status_bar) statusBarHeight(line_height, t) else 0.0;
     const menu_rect = draw_context.Rect.fromMinSize(host_rect.min, .{ host_rect.size()[0], menu_height });
 
     const status_rect = draw_context.Rect.fromMinSize(
@@ -778,131 +1196,248 @@ fn drawWorkspaceHost(
         .{ host_rect.size()[0], content_height },
     );
 
-    const gap = t.spacing.sm;
-    const left_kind: ?workspace.PanelKind = if (manager.hasPanel(.Chat)) .Chat else null;
-    var right_buf: [3]workspace.PanelKind = undefined;
-    var right_len: usize = 0;
-    if (manager.hasPanel(.Control)) {
-        right_buf[right_len] = .Control;
-        right_len += 1;
-    }
-    if (manager.hasPanel(.Showcase) and right_len < right_buf.len) {
-        right_buf[right_len] = .Showcase;
-        right_len += 1;
-    }
-
-    var ratio = manager.workspace.custom_layout.left_ratio;
-    if (left_kind != null and right_len > 0 and content_rect.size()[0] > 0.0) {
-        const width = content_rect.size()[0];
-        const min_left = @min(manager.workspace.custom_layout.min_left_width, width);
-        const max_left = @max(min_left, width - manager.workspace.custom_layout.min_right_width);
-        var left_width = std.math.clamp(width * ratio, min_left, max_left);
-        ratio = if (width > 0.0) left_width / width else ratio;
-        const divider_width = @max(6.0, gap);
-        const divider_rect = draw_context.Rect.fromMinSize(
-            .{ content_rect.min[0] + left_width - divider_width * 0.5, content_rect.min[1] },
-            .{ divider_width, content_rect.size()[1] },
-        );
-        const hovered = divider_rect.contains(queue.state.mouse_pos);
-        if (hovered or win_state.custom_split_dragging) {
-            cursor.set(.resize_ew);
-        }
-        for (queue.events.items) |evt| {
-            switch (evt) {
-                .mouse_down => |md| {
-                    if (md.button == .left and hovered) {
-                        win_state.custom_split_dragging = true;
-                    }
-                },
-                .mouse_up => |mu| {
-                    if (mu.button == .left) {
-                        win_state.custom_split_dragging = false;
-                    }
-                },
-                .focus_lost => {
-                    win_state.custom_split_dragging = false;
-                },
-                else => {},
-            }
-        }
-        if (win_state.custom_split_dragging) {
-            const mouse_x = queue.state.mouse_pos[0];
-            const clamped_left = std.math.clamp(mouse_x - content_rect.min[0], min_left, max_left);
-            ratio = if (width > 0.0) clamped_left / width else ratio;
-            left_width = clamped_left;
-        }
-        if (ratio != manager.workspace.custom_layout.left_ratio) {
-            manager.workspace.custom_layout.left_ratio = ratio;
-            manager.workspace.markDirty();
+    win_state.collapsed_docks.prune(&manager.workspace.dock_layout);
+    if (win_state.dock_flyout.node_id) |node_id| {
+        if (!win_state.collapsed_docks.isCollapsed(node_id)) {
+            win_state.dock_flyout.clear();
         }
     }
 
-    var tree = custom_layout.LayoutTree{};
-    tree.root = custom_layout.buildTwoColumnStacked(
-        &tree,
-        left_kind,
-        right_buf[0..right_len],
-        ratio,
-        gap,
+    const rail_button_extent = @max(20.0, line_height + t.spacing.xs * 2.0);
+    const rail_strip_width = rail_button_extent + t.spacing.xs * 2.0;
+    const target_left_rail_width: f32 = if (win_state.collapsed_docks.countForSide(.left) > 0) rail_strip_width else 0.0;
+    const target_right_rail_width: f32 = if (win_state.collapsed_docks.countForSide(.right) > 0) rail_strip_width else 0.0;
+    win_state.dock_rail_anim.update(target_left_rail_width, target_right_rail_width, ui_systems.frameDtSeconds());
+    const left_rail_width = win_state.dock_rail_anim.left_width;
+    const right_rail_width = win_state.dock_rail_anim.right_width;
+    const dock_content_rect = draw_context.Rect.fromMinSize(
+        .{ content_rect.min[0] + left_rail_width, content_rect.min[1] },
+        .{ @max(0.0, content_rect.size()[0] - left_rail_width - right_rail_width), content_rect.size()[1] },
     );
-    const layout_result = custom_layout.computeRects(&tree, content_rect);
+
+    const keyboard_result = handleDockKeyboardShortcuts(queue, manager, dock_content_rect, win_state);
+    if (keyboard_result.changed_layout) {
+        manager.workspace.markDirty();
+    }
+
+    var layout_graph_storage = dock_graph.Graph.init(allocator);
+    var using_layout_graph_storage = false;
+    defer if (using_layout_graph_storage) layout_graph_storage.deinit();
+
+    var layout_graph: *const dock_graph.Graph = &manager.workspace.dock_layout;
+    if (win_state.collapsed_docks.len > 0) {
+        if (layout_graph_storage.cloneFrom(&manager.workspace.dock_layout)) |_| {
+            using_layout_graph_storage = true;
+            for (win_state.collapsed_docks.items[0..win_state.collapsed_docks.len]) |item| {
+                const node = manager.workspace.dock_layout.getNode(item.node_id) orelse continue;
+                const tabs = switch (node.*) {
+                    .tabs => |tabs_node| tabs_node,
+                    .split => continue,
+                };
+                for (tabs.tabs.items) |panel_id| {
+                    _ = layout_graph_storage.removePanel(panel_id);
+                }
+            }
+            layout_graph = &layout_graph_storage;
+        } else |_| {}
+    }
+
+    const layout_result = layout_graph.computeLayout(dock_content_rect);
+    const splitters = layout_graph.computeSplitters(dock_content_rect);
+    const split_changed = handleDockSplitInteractions(queue, manager, win_state, &splitters);
+    if (split_changed) {
+        manager.workspace.markDirty();
+    }
+    drawDockSplitters(&dc, queue, win_state, &splitters);
 
     var focus_panel_id: ?workspace.PanelId = null;
+    if (keyboard_result.focus_panel_id) |pid| {
+        focus_panel_id = pid;
+    }
     var close_panel_id: ?workspace.PanelId = null;
     var active_session_key: ?[]const u8 = null;
     var active_agent_id: ?[]const u8 = null;
-
-    for (layout_result.slice()) |panel_slot| {
-        if (selectPanelForKind(manager, panel_slot.kind)) |panel| {
-            // Namespace controller-nav ids to the panel, so identical labels in different panels don't collide.
-            nav_router.pushScope(panel.id);
-            defer nav_router.popScope();
-
-            const focused = if (manager.workspace.focused_panel_id) |id| id == panel.id else false;
-            panel.state.is_focused = focused;
-            const frame = drawPanelFrame(&dc, panel_slot.rect, panel.title, queue, focused);
-            if (frame.clicked) {
-                focus_panel_id = panel.id;
+    var tab_hits = DockTabHitList{};
+    var drop_targets = DockDropTargetList{};
+    const flyout_rect_opt = activeDockFlyoutRect(&dc, manager, win_state, content_rect, left_rail_width, right_rail_width);
+    var block_under_flyout = false;
+    if (flyout_rect_opt) |fly_rect| {
+        if (fly_rect.contains(queue.state.mouse_pos)) {
+            block_under_flyout = true;
+        } else {
+            for (queue.events.items) |evt| {
+                switch (evt) {
+                    .mouse_down => |md| {
+                        if (md.button == .left and fly_rect.contains(md.pos)) {
+                            block_under_flyout = true;
+                        }
+                    },
+                    .mouse_up => |mu| {
+                        if (mu.button == .left and fly_rect.contains(mu.pos)) {
+                            block_under_flyout = true;
+                        }
+                    },
+                    else => {},
+                }
             }
-            if (frame.close_clicked) {
-                close_panel_id = panel.id;
+        }
+    }
+
+    for (layout_result.slice()) |group| {
+        const node = layout_graph.getNode(group.node_id) orelse continue;
+        const tabs_node = switch (node.*) {
+            .tabs => |tabs| tabs,
+            .split => continue,
+        };
+        if (tabs_node.tabs.items.len == 0) continue;
+
+        const active_index = @min(tabs_node.active, tabs_node.tabs.items.len - 1);
+        const active_panel_id = tabs_node.tabs.items[active_index];
+        const panel = findPanelById(manager, active_panel_id) orelse continue;
+
+        nav_router.pushScope(panel.id);
+        defer nav_router.popScope();
+
+        const focused = if (manager.workspace.focused_panel_id) |id| id == panel.id else false;
+        panel.state.is_focused = focused;
+        const collapse_side = dock_rail.collapsibleSideForRect(dock_content_rect, group.rect);
+
+        const frame = drawDockGroupFrame(
+            &dc,
+            group.rect,
+            queue,
+            manager,
+            win_state,
+            block_under_flyout,
+            group.node_id,
+            tabs_node.tabs.items,
+            active_index,
+            focused,
+            collapse_side,
+            &tab_hits,
+            &drop_targets,
+        );
+        if (frame.collapse_clicked) {
+            if (collapse_side) |side| {
+                win_state.collapsed_docks.collapse(group.node_id, side);
             }
-            if (frame.detach_clicked and action.detach_panel == null) {
-                // Tear off: remove from this manager immediately so the source window updates.
-                // We intentionally skip drawing contents this frame to avoid using a stale pointer.
-                if (manager.takePanel(panel.id)) |moved| {
+            continue;
+        }
+        if (frame.frame_clicked) {
+            focus_panel_id = panel.id;
+        }
+        if (frame.close_panel_id) |pid| {
+            close_panel_id = pid;
+        }
+        if (frame.detach_panel_id) |pid| {
+            if (action.detach_panel == null) {
+                if (manager.takePanel(pid)) |moved| {
                     if (allocator.create(workspace.Panel)) |pp| {
                         pp.* = moved;
                         action.detach_panel = pp;
                     } else |_| {
-                        // Restore on allocation failure.
                         _ = manager.putPanel(moved) catch {};
                     }
                 }
-                continue;
             }
-            const draw_result = drawPanelContents(
-                allocator,
-                ctx,
-                cfg,
-                registry,
-                is_connected,
-                app_version,
-                panel,
-                frame.content_rect,
-                inbox,
-                manager,
-                action,
-                pending_attachment,
-                win_state,
-            );
-            if (panel.kind == .Chat and draw_result.session_key != null) {
-                if (focused or active_session_key == null) {
-                    active_session_key = draw_result.session_key;
-                    active_agent_id = draw_result.agent_id;
+            continue;
+        }
+
+        const draw_result = drawPanelContents(
+            allocator,
+            ctx,
+            cfg,
+            registry,
+            is_connected,
+            app_version,
+            panel,
+            frame.content_rect,
+            inbox,
+            manager,
+            action,
+            pending_attachment,
+            win_state,
+        );
+        if (panel.kind == .Chat and draw_result.session_key != null) {
+            if (focused or active_session_key == null) {
+                active_session_key = draw_result.session_key;
+                active_agent_id = draw_result.agent_id;
+            }
+        }
+    }
+
+    const drag_result = handleDockTabInteractions(queue, manager, win_state, &tab_hits, &drop_targets, dock_content_rect);
+    if (drag_result.changed_layout) {
+        manager.workspace.markDirty();
+    }
+    if (drag_result.focus_panel_id) |pid| {
+        focus_panel_id = pid;
+    }
+    if (drag_result.detach_panel_id) |pid| {
+        if (action.detach_panel == null) {
+            if (manager.takePanel(pid)) |moved| {
+                if (allocator.create(workspace.Panel)) |pp| {
+                    pp.* = moved;
+                    action.detach_panel = pp;
+                    action.detach_panel_id = pid;
+                } else |_| {
+                    _ = manager.putPanel(moved) catch {};
                 }
             }
         }
+    }
+    drawDockDragOverlay(&dc, queue, manager, win_state, &drop_targets, dock_content_rect);
+
+    const rail_result = drawCollapsedDockRails(&dc, queue, manager, win_state, content_rect, left_rail_width, right_rail_width);
+    if (rail_result.focus_panel_id) |pid| {
+        focus_panel_id = pid;
+    }
+    if (rail_result.clicked_item) |item| {
+        if (win_state.dock_flyout.node_id != null and win_state.dock_flyout.node_id.? == item.node_id and win_state.dock_flyout.pinned) {
+            win_state.dock_flyout.clear();
+        } else {
+            win_state.dock_flyout.node_id = item.node_id;
+            win_state.dock_flyout.side = item.side;
+            win_state.dock_flyout.pinned = true;
+        }
+    } else if (!win_state.dock_flyout.pinned) {
+        if (rail_result.hovered_item) |item| {
+            win_state.dock_flyout.node_id = item.node_id;
+            win_state.dock_flyout.side = item.side;
+        }
+    }
+
+    const flyout_result = drawCollapsedDockFlyout(
+        allocator,
+        ctx,
+        cfg,
+        registry,
+        is_connected,
+        app_version,
+        manager,
+        inbox,
+        queue,
+        &dc,
+        action,
+        pending_attachment,
+        win_state,
+        content_rect,
+        left_rail_width,
+        right_rail_width,
+    );
+    if (flyout_result.changed_layout) {
+        manager.workspace.markDirty();
+    }
+    if (flyout_result.focus_panel_id) |pid| {
+        focus_panel_id = pid;
+    }
+    if (flyout_result.expand_node_id) |node_id| {
+        _ = win_state.collapsed_docks.expand(node_id);
+        win_state.dock_flyout.clear();
+    }
+    if (flyout_result.session_key != null) {
+        active_session_key = flyout_result.session_key;
+        active_agent_id = flyout_result.agent_id;
     }
 
     if (close_panel_id) |panel_id| {
@@ -918,7 +1453,9 @@ fn drawWorkspaceHost(
     }
     syncAttachmentFetches(allocator, manager);
 
-    drawCustomMenuBar(&dc, menu_rect, queue, manager, cfg, action, win_state);
+    if (win_state.show_menu_bar) {
+        drawCustomMenuBar(&dc, menu_rect, queue, manager, cfg, action, win_state);
+    }
 
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;
@@ -932,16 +1469,18 @@ fn drawWorkspaceHost(
         agent_name = info.name;
     }
 
-    status_bar.drawCustom(
-        &dc,
-        status_rect,
-        ctx.state,
-        is_connected,
-        agent_name,
-        session_label,
-        message_count,
-        ctx.last_error,
-    );
+    if (win_state.show_status_bar) {
+        status_bar.drawCustom(
+            &dc,
+            status_rect,
+            ctx.state,
+            is_connected,
+            agent_name,
+            session_label,
+            message_count,
+            ctx.last_error,
+        );
+    }
 
     drawControllerFocusOverlay(&dc, queue, host_rect);
 
@@ -1127,22 +1666,16 @@ fn drawFullscreenHost(
         },
         .agents => {
             nav_router.pushScope(2);
-            ensureOnlyPanelKind(manager, .Control);
-            if (selectPanelForKind(manager, .Control)) |panel| {
-                panel.data.Control.active_tab = .Agents;
-            }
-            if (selectPanelForKind(manager, .Control)) |panel| {
+            ensureOnlyPanelKind(manager, .Agents);
+            if (selectPanelForKind(manager, .Agents)) |panel| {
                 _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
         },
         .settings => {
             nav_router.pushScope(3);
-            ensureOnlyPanelKind(manager, .Control);
-            if (selectPanelForKind(manager, .Control)) |panel| {
-                panel.data.Control.active_tab = .Settings;
-            }
-            if (selectPanelForKind(manager, .Control)) |panel| {
+            ensureOnlyPanelKind(manager, .Settings);
+            if (selectPanelForKind(manager, .Settings)) |panel| {
                 _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state);
             }
             nav_router.popScope();
@@ -1371,50 +1904,100 @@ fn drawPanelContents(
                 panel_rect,
                 win_state.theme_pack_override,
             );
-            action.connect = control_action.connect;
-            action.disconnect = control_action.disconnect;
-            action.save_config = control_action.save_config;
-            action.reload_theme_pack = control_action.reload_theme_pack;
-            action.browse_theme_pack = control_action.browse_theme_pack;
-            action.browse_theme_pack_override = control_action.browse_theme_pack_override;
-            action.clear_theme_pack_override = control_action.clear_theme_pack_override;
-            action.reload_theme_pack_override = control_action.reload_theme_pack_override;
-            action.clear_saved = control_action.clear_saved;
-            action.config_updated = control_action.config_updated;
-            action.refresh_sessions = control_action.refresh_sessions;
-            action.new_session = control_action.new_session;
-            action.new_chat_agent_id = control_action.new_chat_agent_id;
-            action.open_session = control_action.open_session;
-            action.set_default_session = control_action.set_default_session;
-            action.delete_session = control_action.delete_session;
-            action.add_agent = control_action.add_agent;
-            action.remove_agent_id = control_action.remove_agent_id;
-            action.check_updates = control_action.check_updates;
-            action.open_release = control_action.open_release;
-            action.download_update = control_action.download_update;
-            action.open_download = control_action.open_download;
-            action.install_update = control_action.install_update;
-
-            action.node_service_install_onlogon = control_action.node_service_install_onlogon;
-            action.node_service_start = control_action.node_service_start;
-            action.node_service_stop = control_action.node_service_stop;
-            action.node_service_status = control_action.node_service_status;
-            action.node_service_uninstall = control_action.node_service_uninstall;
-            action.open_node_logs = control_action.open_node_logs;
-
-            action.refresh_nodes = control_action.refresh_nodes;
-            action.select_node = control_action.select_node;
-            action.invoke_node = control_action.invoke_node;
-            action.describe_node = control_action.describe_node;
-            action.resolve_approval = control_action.resolve_approval;
-            action.clear_node_describe = control_action.clear_node_describe;
-            action.clear_node_result = control_action.clear_node_result;
-            action.clear_operator_notice = control_action.clear_operator_notice;
+            action.refresh_sessions = action.refresh_sessions or control_action.refresh_sessions;
+            action.new_session = action.new_session or control_action.new_session;
             if (control_action.open_attachment) |attachment| {
                 pending_attachment.* = attachment;
             }
             replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
             replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
+        },
+        .Agents => {
+            const agents_action = agents_panel.draw(
+                allocator,
+                ctx,
+                registry,
+                &panel.data.Agents,
+                panel_rect,
+            );
+            action.refresh_sessions = action.refresh_sessions or agents_action.refresh;
+            if (agents_action.new_chat_agent_id) |agent_id| {
+                replaceOwnedSlice(allocator, &action.new_chat_agent_id, agent_id);
+            }
+            if (agents_action.open_session) |open_session| {
+                action.open_session = open_session;
+            }
+            if (agents_action.set_default) |set_default| {
+                action.set_default_session = set_default;
+            }
+            if (agents_action.delete_session) |session_key| {
+                replaceOwnedSlice(allocator, &action.delete_session, session_key);
+            }
+            if (agents_action.add_agent) |add_agent| {
+                action.add_agent = add_agent;
+            }
+            if (agents_action.remove_agent_id) |agent_id| {
+                replaceOwnedSlice(allocator, &action.remove_agent_id, agent_id);
+            }
+        },
+        .Operator => {
+            const op_action = operator_view.draw(allocator, ctx, is_connected, panel_rect);
+            action.refresh_nodes = action.refresh_nodes or op_action.refresh_nodes;
+            replaceOwnedSlice(allocator, &action.select_node, op_action.select_node);
+            if (op_action.invoke_node) |invoke| {
+                action.invoke_node = invoke;
+            }
+            replaceOwnedSlice(allocator, &action.describe_node, op_action.describe_node);
+            if (op_action.resolve_approval) |resolve| {
+                action.resolve_approval = resolve;
+            }
+            replaceOwnedSlice(allocator, &action.clear_node_describe, op_action.clear_node_describe);
+            action.clear_node_result = action.clear_node_result or op_action.clear_node_result;
+            action.clear_operator_notice = action.clear_operator_notice or op_action.clear_operator_notice;
+        },
+        .ApprovalsInbox => {
+            const approvals_action = approvals_inbox_view.draw(allocator, ctx, panel_rect);
+            if (approvals_action.resolve_approval) |resolve| {
+                action.resolve_approval = resolve;
+            }
+        },
+        .Inbox => {
+            if (panel_rect) |content_rect| {
+                _ = inbox_panel.draw(allocator, ctx, &panel.data.Inbox, content_rect);
+            }
+        },
+        .Settings => {
+            const settings_action = settings_panel.draw(
+                allocator,
+                cfg,
+                ctx.state,
+                is_connected,
+                &ctx.update_state,
+                app_version,
+                panel_rect,
+                win_state.theme_pack_override,
+            );
+            action.connect = action.connect or settings_action.connect;
+            action.disconnect = action.disconnect or settings_action.disconnect;
+            action.save_config = action.save_config or settings_action.save;
+            action.reload_theme_pack = action.reload_theme_pack or settings_action.reload_theme_pack;
+            action.browse_theme_pack = action.browse_theme_pack or settings_action.browse_theme_pack;
+            action.browse_theme_pack_override = action.browse_theme_pack_override or settings_action.browse_theme_pack_override;
+            action.clear_theme_pack_override = action.clear_theme_pack_override or settings_action.clear_theme_pack_override;
+            action.reload_theme_pack_override = action.reload_theme_pack_override or settings_action.reload_theme_pack_override;
+            action.clear_saved = action.clear_saved or settings_action.clear_saved;
+            action.config_updated = action.config_updated or settings_action.config_updated;
+            action.check_updates = action.check_updates or settings_action.check_updates;
+            action.open_release = action.open_release or settings_action.open_release;
+            action.download_update = action.download_update or settings_action.download_update;
+            action.open_download = action.open_download or settings_action.open_download;
+            action.install_update = action.install_update or settings_action.install_update;
+            action.node_service_install_onlogon = action.node_service_install_onlogon or settings_action.node_service_install_onlogon;
+            action.node_service_start = action.node_service_start or settings_action.node_service_start;
+            action.node_service_stop = action.node_service_stop or settings_action.node_service_stop;
+            action.node_service_status = action.node_service_status or settings_action.node_service_status;
+            action.node_service_uninstall = action.node_service_uninstall or settings_action.node_service_uninstall;
+            action.open_node_logs = action.open_node_logs or settings_action.open_node_logs;
         },
         .Showcase => {
             const showcase_action = showcase_panel.draw(allocator, panel_rect);
@@ -1488,6 +2071,1386 @@ fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]cons
     return null;
 }
 
+const DockKeyboardResult = struct {
+    focus_panel_id: ?workspace.PanelId = null,
+    changed_layout: bool = false,
+    collapsed_count: usize = 0,
+    flyout_node_id: ?dock_graph.NodeId = null,
+    flyout_pinned: bool = false,
+};
+
+pub const DockShortcutTestKey = enum {
+    tab,
+    page_up,
+    page_down,
+    left_arrow,
+    right_arrow,
+    up_arrow,
+    down_arrow,
+    enter,
+};
+
+pub const DockShortcutTestMods = struct {
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+};
+
+pub const DockShortcutTestResult = struct {
+    focus_panel_id: ?workspace.PanelId = null,
+    changed_layout: bool = false,
+    collapsed_count: usize = 0,
+    flyout_node_id: ?dock_graph.NodeId = null,
+    flyout_pinned: bool = false,
+};
+
+// Test hook: exercise docking keyboard shortcut behavior without a full draw frame.
+pub fn applyDockShortcutForTest(
+    allocator: std.mem.Allocator,
+    manager: *panel_manager.PanelManager,
+    content_rect: draw_context.Rect,
+    key: DockShortcutTestKey,
+    mods: DockShortcutTestMods,
+) DockShortcutTestResult {
+    var win_state = WindowUiState{};
+    return applyDockShortcutForTestWithState(allocator, manager, content_rect, &win_state, key, mods);
+}
+
+pub fn applyDockShortcutForTestWithState(
+    allocator: std.mem.Allocator,
+    manager: *panel_manager.PanelManager,
+    content_rect: draw_context.Rect,
+    win_state: *WindowUiState,
+    key: DockShortcutTestKey,
+    mods: DockShortcutTestMods,
+) DockShortcutTestResult {
+    var queue = input_state.InputQueue.init(allocator);
+    defer queue.deinit(allocator);
+    queue.push(allocator, .{ .key_down = .{
+        .key = switch (key) {
+            .tab => .tab,
+            .page_up => .page_up,
+            .page_down => .page_down,
+            .left_arrow => .left_arrow,
+            .right_arrow => .right_arrow,
+            .up_arrow => .up_arrow,
+            .down_arrow => .down_arrow,
+            .enter => .enter,
+        },
+        .mods = .{
+            .ctrl = mods.ctrl,
+            .shift = mods.shift,
+            .alt = mods.alt,
+            .super = false,
+        },
+        .repeat = false,
+    } });
+    const out = handleDockKeyboardShortcuts(&queue, manager, content_rect, win_state);
+    return .{
+        .focus_panel_id = out.focus_panel_id,
+        .changed_layout = out.changed_layout,
+        .collapsed_count = out.collapsed_count,
+        .flyout_node_id = out.flyout_node_id,
+        .flyout_pinned = out.flyout_pinned,
+    };
+}
+
+fn handleDockKeyboardShortcuts(
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    content_rect: draw_context.Rect,
+    win_state_opt: ?*WindowUiState,
+) DockKeyboardResult {
+    var out = DockKeyboardResult{};
+    const focused_panel_id = manager.workspace.focused_panel_id orelse return out;
+    const focused_loc = manager.workspace.dock_layout.findPanel(focused_panel_id) orelse return out;
+
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .key_down => |kd| {
+                if (kd.mods.ctrl and kd.mods.shift and (kd.key == .left_arrow or kd.key == .right_arrow or kd.key == .up_arrow or kd.key == .down_arrow or kd.key == .enter)) {
+                    if (win_state_opt) |win_state| {
+                        switch (kd.key) {
+                            .left_arrow, .right_arrow => {
+                                const side: dock_rail.Side = if (kd.key == .left_arrow) .left else .right;
+                                const prev = win_state.collapsed_docks.sideForNode(focused_loc.node_id);
+                                if (prev == null or prev.? != side) {
+                                    win_state.collapsed_docks.collapse(focused_loc.node_id, side);
+                                    out.changed_layout = true;
+                                }
+                                if (win_state.dock_flyout.node_id != null and win_state.dock_flyout.node_id.? == focused_loc.node_id) {
+                                    win_state.dock_flyout.side = side;
+                                }
+                                out.focus_panel_id = focused_panel_id;
+                            },
+                            .up_arrow => {
+                                if (win_state.dock_flyout.node_id != null) {
+                                    win_state.dock_flyout.pinned = !win_state.dock_flyout.pinned;
+                                } else {
+                                    for (win_state.collapsed_docks.items[0..win_state.collapsed_docks.len]) |item| {
+                                        const pid = activePanelForNode(manager, item.node_id) orelse continue;
+                                        win_state.dock_flyout.node_id = item.node_id;
+                                        win_state.dock_flyout.side = item.side;
+                                        win_state.dock_flyout.pinned = false;
+                                        out.focus_panel_id = pid;
+                                        break;
+                                    }
+                                }
+                            },
+                            .down_arrow => {
+                                if (win_state.dock_flyout.node_id != null) {
+                                    win_state.dock_flyout.clear();
+                                }
+                            },
+                            .enter => {
+                                var target_node: ?dock_graph.NodeId = win_state.dock_flyout.node_id;
+                                if (target_node == null and win_state.collapsed_docks.isCollapsed(focused_loc.node_id)) {
+                                    target_node = focused_loc.node_id;
+                                }
+                                if (target_node) |node_id| {
+                                    if (win_state.collapsed_docks.expand(node_id)) {
+                                        out.changed_layout = true;
+                                    }
+                                    if (activePanelForNode(manager, node_id)) |pid| {
+                                        out.focus_panel_id = pid;
+                                    }
+                                    if (win_state.dock_flyout.node_id != null and win_state.dock_flyout.node_id.? == node_id) {
+                                        win_state.dock_flyout.clear();
+                                    }
+                                }
+                            },
+                            else => {},
+                        }
+                    }
+                    continue;
+                }
+
+                if (kd.mods.ctrl and kd.key == .tab) {
+                    const node = manager.workspace.dock_layout.getNode(focused_loc.node_id) orelse continue;
+                    const tabs = switch (node.*) {
+                        .tabs => |t| t,
+                        .split => continue,
+                    };
+                    if (tabs.tabs.items.len == 0) continue;
+                    const next = if (kd.mods.shift)
+                        (tabs.active + tabs.tabs.items.len - 1) % tabs.tabs.items.len
+                    else
+                        (tabs.active + 1) % tabs.tabs.items.len;
+                    if (manager.workspace.dock_layout.setActiveTab(focused_loc.node_id, next)) {
+                        out.changed_layout = true;
+                        out.focus_panel_id = tabs.tabs.items[next];
+                    }
+                    continue;
+                }
+
+                if (kd.mods.ctrl and (kd.key == .page_up or kd.key == .page_down)) {
+                    const layout = manager.workspace.dock_layout.computeLayout(content_rect);
+                    const groups = layout.slice();
+                    if (groups.len <= 1) continue;
+                    var cur_idx: usize = 0;
+                    while (cur_idx < groups.len and groups[cur_idx].node_id != focused_loc.node_id) : (cur_idx += 1) {}
+                    if (cur_idx >= groups.len) continue;
+
+                    const next_idx = if (kd.key == .page_down)
+                        (cur_idx + 1) % groups.len
+                    else
+                        (cur_idx + groups.len - 1) % groups.len;
+                    const target_node_id = groups[next_idx].node_id;
+                    const target_node = manager.workspace.dock_layout.getNode(target_node_id) orelse continue;
+                    const target_tabs = switch (target_node.*) {
+                        .tabs => |t| t,
+                        .split => continue,
+                    };
+                    if (target_tabs.tabs.items.len == 0) continue;
+                    _ = manager.workspace.dock_layout.setActiveTab(target_node_id, target_tabs.active);
+                    out.changed_layout = true;
+                    out.focus_panel_id = target_tabs.tabs.items[@min(target_tabs.active, target_tabs.tabs.items.len - 1)];
+                    continue;
+                }
+
+                if (kd.mods.alt and kd.mods.shift and (kd.key == .left_arrow or kd.key == .right_arrow)) {
+                    const node = manager.workspace.dock_layout.getNode(focused_loc.node_id) orelse continue;
+                    const tabs = switch (node.*) {
+                        .tabs => |t| t,
+                        .split => continue,
+                    };
+                    if (tabs.tabs.items.len <= 1) continue;
+                    const src_idx = focused_loc.tab_index;
+                    var dst_idx: usize = src_idx;
+                    if (kd.key == .left_arrow and src_idx > 0) {
+                        dst_idx = src_idx - 1;
+                    } else if (kd.key == .right_arrow and src_idx + 1 < tabs.tabs.items.len) {
+                        // movePanelToTabs() interprets insert_index as "insert before"; moving right
+                        // by one tab therefore targets the slot after the immediate neighbor.
+                        dst_idx = src_idx + 2;
+                    } else {
+                        continue;
+                    }
+                    if (manager.workspace.dock_layout.movePanelToTabs(focused_panel_id, focused_loc.node_id, dst_idx) catch false) {
+                        out.changed_layout = true;
+                        out.focus_panel_id = focused_panel_id;
+                    }
+                    continue;
+                }
+
+                if (kd.mods.ctrl and kd.mods.alt and (kd.key == .left_arrow or kd.key == .right_arrow or kd.key == .up_arrow or kd.key == .down_arrow)) {
+                    const dir: [2]i8 = switch (kd.key) {
+                        .left_arrow => .{ -1, 0 },
+                        .right_arrow => .{ 1, 0 },
+                        .up_arrow => .{ 0, -1 },
+                        .down_arrow => .{ 0, 1 },
+                        else => .{ 0, 0 },
+                    };
+                    const target = nearestDockNodeInDirection(
+                        &manager.workspace.dock_layout,
+                        content_rect,
+                        focused_loc.node_id,
+                        dir,
+                    ) orelse continue;
+                    const loc: dock_graph.DropLocation = switch (kd.key) {
+                        .left_arrow => .left,
+                        .right_arrow => .right,
+                        .up_arrow => .top,
+                        .down_arrow => .bottom,
+                        else => .center,
+                    };
+                    if (manager.workspace.dock_layout.splitNodeWithPanel(target, focused_panel_id, loc) catch false) {
+                        out.changed_layout = true;
+                        out.focus_panel_id = focused_panel_id;
+                    }
+                    continue;
+                }
+
+                if (kd.mods.ctrl and kd.mods.alt and kd.key == .enter) {
+                    const target = nearestDockNode(
+                        &manager.workspace.dock_layout,
+                        content_rect,
+                        focused_loc.node_id,
+                    ) orelse continue;
+                    if (manager.workspace.dock_layout.movePanelToTabs(focused_panel_id, target, null) catch false) {
+                        out.changed_layout = true;
+                        out.focus_panel_id = focused_panel_id;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (win_state_opt) |win_state| {
+        out.collapsed_count = win_state.collapsed_docks.len;
+        out.flyout_node_id = win_state.dock_flyout.node_id;
+        out.flyout_pinned = win_state.dock_flyout.pinned;
+    }
+    return out;
+}
+
+fn rectCenter(rect: draw_context.Rect) [2]f32 {
+    return .{
+        rect.min[0] + rect.size()[0] * 0.5,
+        rect.min[1] + rect.size()[1] * 0.5,
+    };
+}
+
+fn nearestDockNode(
+    graph: *const dock_graph.Graph,
+    content_rect: draw_context.Rect,
+    source_node: dock_graph.NodeId,
+) ?dock_graph.NodeId {
+    const layout = graph.computeLayout(content_rect);
+    const groups = layout.slice();
+    if (groups.len == 0) return null;
+
+    var src_center: ?[2]f32 = null;
+    for (groups) |g| {
+        if (g.node_id == source_node) {
+            src_center = rectCenter(g.rect);
+            break;
+        }
+    }
+    const s = src_center orelse return null;
+
+    var best: ?dock_graph.NodeId = null;
+    var best_dist: f32 = std.math.inf(f32);
+    for (groups) |g| {
+        if (g.node_id == source_node) continue;
+        const c = rectCenter(g.rect);
+        const dx = c[0] - s[0];
+        const dy = c[1] - s[1];
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best_dist) {
+            best_dist = d2;
+            best = g.node_id;
+        }
+    }
+    return best;
+}
+
+fn nearestDockNodeInDirection(
+    graph: *const dock_graph.Graph,
+    content_rect: draw_context.Rect,
+    source_node: dock_graph.NodeId,
+    dir: [2]i8,
+) ?dock_graph.NodeId {
+    const layout = graph.computeLayout(content_rect);
+    const groups = layout.slice();
+    if (groups.len == 0) return null;
+
+    var src_center: ?[2]f32 = null;
+    for (groups) |g| {
+        if (g.node_id == source_node) {
+            src_center = rectCenter(g.rect);
+            break;
+        }
+    }
+    const s = src_center orelse return null;
+
+    var best: ?dock_graph.NodeId = null;
+    var best_dist: f32 = std.math.inf(f32);
+    for (groups) |g| {
+        if (g.node_id == source_node) continue;
+        const c = rectCenter(g.rect);
+        const dx = c[0] - s[0];
+        const dy = c[1] - s[1];
+
+        const matches_direction =
+            ((dir[0] < 0 and dx < -1.0) or
+            (dir[0] > 0 and dx > 1.0) or
+            (dir[1] < 0 and dy < -1.0) or
+            (dir[1] > 0 and dy > 1.0));
+        if (!matches_direction) continue;
+
+        const d2 = dx * dx + dy * dy;
+        if (d2 < best_dist) {
+            best_dist = d2;
+            best = g.node_id;
+        }
+    }
+    return best;
+}
+
+fn findTabHitAt(tab_hits: *const DockTabHitList, pos: [2]f32) ?DockTabHit {
+    // Favor the last drawn tabs (top-most visual stacking).
+    var idx: usize = tab_hits.len;
+    while (idx > 0) {
+        idx -= 1;
+        const hit = tab_hits.items[idx];
+        if (hit.rect.contains(pos)) return hit;
+    }
+    return null;
+}
+
+fn drawDockGroupFrame(
+    dc: *draw_context.DrawContext,
+    rect: draw_context.Rect,
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    win_state: *const WindowUiState,
+    block_interactions: bool,
+    node_id: dock_graph.NodeId,
+    tabs: []const workspace.PanelId,
+    active_index: usize,
+    focused: bool,
+    collapse_side: ?dock_rail.Side,
+    tab_hits: *DockTabHitList,
+    drop_targets: *DockDropTargetList,
+) DockGroupFrameResult {
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const size = rect.size();
+    if (size[0] <= 0.0 or size[1] <= 0.0) {
+        return .{ .content_rect = rect };
+    }
+
+    const layout_rect = panel_chrome.contentRect(rect);
+    const layout_size = layout_rect.size();
+    const tab_height = @min(layout_size[1], dc.lineHeight() + t.spacing.xs * 2.0);
+    const header_rect = draw_context.Rect.fromMinSize(layout_rect.min, .{ layout_size[0], tab_height });
+
+    panel_chrome.draw(dc, rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = true,
+        .draw_border = false,
+    });
+
+    if (ss.panel.header_overlay) |paint| {
+        panel_chrome.drawPaintRect(dc, header_rect, paint);
+    } else {
+        dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.55) });
+    }
+
+    const base_border = ss.panel.border orelse t.colors.border;
+    const focus_border = ss.panel.focus_border orelse t.colors.primary;
+    dc.drawRect(layout_rect, .{
+        .fill = null,
+        .stroke = if (focused) focus_border else base_border,
+        .thickness = 1.0,
+    });
+
+    const button_size = @min(tab_height, @max(12.0, tab_height - t.spacing.xs * 2.0));
+    const button_y = layout_rect.min[1] + (tab_height - button_size) * 0.5;
+    var button_x = layout_rect.max[0] - t.spacing.xs - button_size;
+
+    const close_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_size, button_size });
+    var close_panel_id: ?workspace.PanelId = null;
+    if (!block_interactions and tabs.len > 0 and widgets.button.draw(dc, close_rect, "x", queue, .{
+        .variant = .ghost,
+        .radius = t.radius.sm,
+        .style_override = &ss.panel.header_buttons.close,
+    })) {
+        close_panel_id = tabs[@min(active_index, tabs.len - 1)];
+    }
+    var buttons_left_edge = close_rect.min[0];
+
+    button_x -= button_size + t.spacing.xs;
+    var detach_panel_id: ?workspace.PanelId = null;
+    const p = theme_runtime.getProfile();
+    if (p.allow_multi_window and tabs.len > 0) {
+        const detach_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_size, button_size });
+        if (!block_interactions and widgets.button.draw(dc, detach_rect, "[]", queue, .{
+            .variant = .ghost,
+            .radius = t.radius.sm,
+            .style_override = &ss.panel.header_buttons.detach,
+        })) {
+            detach_panel_id = tabs[@min(active_index, tabs.len - 1)];
+        }
+        buttons_left_edge = detach_rect.min[0];
+        button_x -= button_size + t.spacing.xs;
+    }
+
+    var collapse_clicked = false;
+    if (tabs.len > 0 and collapse_side != null) {
+        const collapse_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_size, button_size });
+        const collapse_label = if (collapse_side.? == .left)
+            dockRailIconLabel(&ss.panel.dock_rail_icons.collapse_left, "<|")
+        else
+            dockRailIconLabel(&ss.panel.dock_rail_icons.collapse_right, "|>");
+        if (!block_interactions and widgets.button.draw(dc, collapse_rect, collapse_label, queue, .{
+            .variant = .ghost,
+            .radius = t.radius.sm,
+            .style_override = &ss.panel.header_buttons.detach,
+        })) {
+            collapse_clicked = true;
+        }
+        buttons_left_edge = collapse_rect.min[0];
+    }
+
+    const tabs_right_edge = buttons_left_edge - t.spacing.xs;
+    var tab_x = layout_rect.min[0] + t.spacing.xs;
+    const tab_pad_x = t.spacing.sm;
+    const tab_radius = t.radius.sm;
+    for (tabs, 0..) |panel_id, idx| {
+        const panel = findPanelById(manager, panel_id) orelse continue;
+        const label = panel.title;
+        const label_w = dc.measureText(label, 0.0)[0];
+        const tab_w = label_w + tab_pad_x * 2.0;
+        if (tab_x + tab_w > tabs_right_edge) break;
+
+        const tab_rect = draw_context.Rect.fromMinSize(
+            .{ tab_x, header_rect.min[1] + t.spacing.xs * 0.4 },
+            .{ tab_w, header_rect.size()[1] - t.spacing.xs * 0.8 },
+        );
+        const active = idx == active_index;
+        const hovered = tab_rect.contains(queue.state.mouse_pos);
+        const fill = if (active)
+            colors.withAlpha(t.colors.primary, 0.18)
+        else if (hovered and theme_runtime.allowHover(queue))
+            colors.withAlpha(t.colors.primary, 0.10)
+        else
+            colors.withAlpha(t.colors.surface, 0.50);
+        const stroke = if (active) t.colors.primary else colors.withAlpha(t.colors.border, 0.7);
+
+        dc.drawRoundedRect(tab_rect, tab_radius, .{
+            .fill = fill,
+            .stroke = stroke,
+            .thickness = 1.0,
+        });
+        const label_pos = .{
+            tab_rect.min[0] + tab_pad_x,
+            tab_rect.min[1] + (tab_rect.size()[1] - dc.lineHeight()) * 0.5,
+        };
+        dc.drawText(label, label_pos, .{
+            .color = if (active) t.colors.text_primary else t.colors.text_secondary,
+        });
+
+        if (!block_interactions) {
+            tab_hits.append(.{
+                .panel_id = panel_id,
+                .node_id = node_id,
+                .tab_index = idx,
+                .rect = tab_rect,
+            });
+        }
+        tab_x = tab_rect.max[0] + t.spacing.xs;
+    }
+
+    const divider_rect = draw_context.Rect.fromMinSize(
+        .{ layout_rect.min[0], header_rect.max[1] - 1.0 },
+        .{ layout_rect.size()[0], 1.0 },
+    );
+    dc.drawRect(divider_rect, .{ .fill = t.colors.divider });
+
+    const content_height = @max(0.0, layout_size[1] - tab_height);
+    const content_rect = draw_context.Rect.fromMinSize(
+        .{ layout_rect.min[0], layout_rect.min[1] + tab_height },
+        .{ layout_size[0], content_height },
+    );
+
+    const center_w = content_rect.size()[0] * 0.42;
+    const center_h = content_rect.size()[1] * 0.42;
+    const center_rect = draw_context.Rect.fromMinSize(
+        .{ content_rect.min[0] + (content_rect.size()[0] - center_w) * 0.5, content_rect.min[1] + (content_rect.size()[1] - center_h) * 0.5 },
+        .{ center_w, center_h },
+    );
+    var is_source_group = false;
+    if (win_state.dock_drag.source_node_id != null and win_state.dock_drag.source_node_id.? == node_id) {
+        is_source_group = true;
+    }
+    if (!is_source_group) {
+        drop_targets.append(.{ .node_id = node_id, .location = .center, .rect = center_rect });
+    }
+
+    var allow_edge_targets = true;
+    if (is_source_group) {
+        if (manager.workspace.dock_layout.getNode(node_id)) |src_node| {
+            switch (src_node.*) {
+                .tabs => |src_tabs| allow_edge_targets = src_tabs.tabs.items.len > 1,
+                .split => allow_edge_targets = false,
+            }
+        }
+    }
+    if (allow_edge_targets) {
+        const side_w = @max(24.0, @min(content_rect.size()[0] * 0.20, 108.0));
+        const side_h = @max(24.0, @min(content_rect.size()[1] * 0.20, 108.0));
+        // Prefer top/bottom bands before left/right so dragging near top/bottom corners
+        // doesn't unexpectedly resolve to side splits.
+        drop_targets.append(.{ .node_id = node_id, .location = .top, .rect = draw_context.Rect.fromMinSize(content_rect.min, .{ content_rect.size()[0], side_h }) });
+        drop_targets.append(.{ .node_id = node_id, .location = .bottom, .rect = draw_context.Rect.fromMinSize(.{ content_rect.min[0], content_rect.max[1] - side_h }, .{ content_rect.size()[0], side_h }) });
+        drop_targets.append(.{ .node_id = node_id, .location = .left, .rect = draw_context.Rect.fromMinSize(content_rect.min, .{ side_w, content_rect.size()[1] }) });
+        drop_targets.append(.{ .node_id = node_id, .location = .right, .rect = draw_context.Rect.fromMinSize(.{ content_rect.max[0] - side_w, content_rect.min[1] }, .{ side_w, content_rect.size()[1] }) });
+    }
+
+    var frame_clicked = false;
+    if (!block_interactions) {
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_down => |md| {
+                    if (md.button == .left and rect.contains(md.pos)) frame_clicked = true;
+                },
+                else => {},
+            }
+        }
+    }
+
+    return .{
+        .content_rect = content_rect,
+        .close_panel_id = close_panel_id,
+        .detach_panel_id = detach_panel_id,
+        .collapse_clicked = collapse_clicked,
+        .frame_clicked = frame_clicked,
+    };
+}
+
+fn activeDockFlyoutRect(
+    dc: *const draw_context.DrawContext,
+    manager: *panel_manager.PanelManager,
+    win_state: *const WindowUiState,
+    content_rect: draw_context.Rect,
+    left_rail_width: f32,
+    right_rail_width: f32,
+) ?draw_context.Rect {
+    const node_id = win_state.dock_flyout.node_id orelse return null;
+    const side = win_state.dock_flyout.side;
+    const node = manager.workspace.dock_layout.getNode(node_id) orelse return null;
+    const tabs_node = switch (node.*) {
+        .tabs => |tabs| tabs,
+        .split => return null,
+    };
+    if (tabs_node.tabs.items.len == 0) return null;
+
+    const t = dc.theme;
+    const pad = t.spacing.xs;
+    const avail_width = @max(0.0, content_rect.size()[0] - left_rail_width - right_rail_width - pad * 3.0);
+    if (avail_width <= 120.0) return null;
+
+    var flyout_width = std.math.clamp(content_rect.size()[0] * 0.34, 300.0, 760.0);
+    if (flyout_width > avail_width) flyout_width = avail_width;
+    const flyout_height = @max(0.0, content_rect.size()[1] - pad * 2.0);
+    if (flyout_height <= 0.0) return null;
+    const flyout_x = switch (side) {
+        .left => content_rect.min[0] + left_rail_width + pad,
+        .right => content_rect.max[0] - right_rail_width - pad - flyout_width,
+    };
+    return draw_context.Rect.fromMinSize(
+        .{ flyout_x, content_rect.min[1] + pad },
+        .{ flyout_width, flyout_height },
+    );
+}
+
+fn drawCollapsedDockRails(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    win_state: *WindowUiState,
+    content_rect: draw_context.Rect,
+    left_rail_width: f32,
+    right_rail_width: f32,
+) DockRailInteractionResult {
+    var out: DockRailInteractionResult = .{};
+    if (left_rail_width <= 0.0 and right_rail_width <= 0.0) return out;
+    const t = dc.theme;
+    const focused_node_id = focusedDockNodeId(manager);
+    const ss = theme_runtime.getStyleSheet();
+    const allow_hover = theme_runtime.allowHover(queue);
+
+    if (left_rail_width > 0.0) {
+        const left_rect = draw_context.Rect.fromMinSize(content_rect.min, .{ left_rail_width, content_rect.size()[1] });
+        dc.drawRect(left_rect, .{
+            .fill = colors.withAlpha(t.colors.surface, 0.72),
+            .stroke = colors.withAlpha(t.colors.border, 0.85),
+            .thickness = 1.0,
+        });
+
+        const button_size = @max(12.0, left_rail_width - t.spacing.xs * 2.0);
+        var y = left_rect.min[1] + t.spacing.xs;
+        for (win_state.collapsed_docks.items[0..win_state.collapsed_docks.len]) |item| {
+            if (item.side != .left) continue;
+            const node = manager.workspace.dock_layout.getNode(item.node_id) orelse continue;
+            const tabs = switch (node.*) {
+                .tabs => |tabs_node| tabs_node,
+                .split => continue,
+            };
+            for (tabs.tabs.items, 0..) |panel_id, tab_index| {
+                const panel = findPanelById(manager, panel_id) orelse continue;
+                if (y + button_size > left_rect.max[1]) break;
+                const button_rect = draw_context.Rect.fromMinSize(
+                    .{ left_rect.min[0] + t.spacing.xs, y },
+                    .{ button_size, button_size },
+                );
+                const focused = focused_node_id != null and focused_node_id.? == item.node_id and tab_index == tabs.active;
+                if (allow_hover and button_rect.contains(queue.state.mouse_pos)) {
+                    out.hovered_item = item;
+                }
+                if (widgets.button.draw(dc, button_rect, railIconForPanel(panel, &ss.panel.dock_rail_icons), queue, .{
+                    .variant = if (focused) .secondary else .ghost,
+                    .radius = t.radius.sm,
+                })) {
+                    _ = manager.workspace.dock_layout.setActiveTab(item.node_id, tab_index);
+                    out.clicked_item = item;
+                    out.focus_panel_id = panel_id;
+                }
+                y += button_size + t.spacing.xs;
+            }
+        }
+    }
+
+    if (right_rail_width > 0.0) {
+        const right_rect = draw_context.Rect.fromMinSize(
+            .{ content_rect.max[0] - right_rail_width, content_rect.min[1] },
+            .{ right_rail_width, content_rect.size()[1] },
+        );
+        dc.drawRect(right_rect, .{
+            .fill = colors.withAlpha(t.colors.surface, 0.72),
+            .stroke = colors.withAlpha(t.colors.border, 0.85),
+            .thickness = 1.0,
+        });
+
+        const button_size = @max(12.0, right_rail_width - t.spacing.xs * 2.0);
+        var y = right_rect.min[1] + t.spacing.xs;
+        for (win_state.collapsed_docks.items[0..win_state.collapsed_docks.len]) |item| {
+            if (item.side != .right) continue;
+            const node = manager.workspace.dock_layout.getNode(item.node_id) orelse continue;
+            const tabs = switch (node.*) {
+                .tabs => |tabs_node| tabs_node,
+                .split => continue,
+            };
+            for (tabs.tabs.items, 0..) |panel_id, tab_index| {
+                const panel = findPanelById(manager, panel_id) orelse continue;
+                if (y + button_size > right_rect.max[1]) break;
+                const button_rect = draw_context.Rect.fromMinSize(
+                    .{ right_rect.min[0] + t.spacing.xs, y },
+                    .{ button_size, button_size },
+                );
+                const focused = focused_node_id != null and focused_node_id.? == item.node_id and tab_index == tabs.active;
+                if (allow_hover and button_rect.contains(queue.state.mouse_pos)) {
+                    out.hovered_item = item;
+                }
+                if (widgets.button.draw(dc, button_rect, railIconForPanel(panel, &ss.panel.dock_rail_icons), queue, .{
+                    .variant = if (focused) .secondary else .ghost,
+                    .radius = t.radius.sm,
+                })) {
+                    _ = manager.workspace.dock_layout.setActiveTab(item.node_id, tab_index);
+                    out.clicked_item = item;
+                    out.focus_panel_id = panel_id;
+                }
+                y += button_size + t.spacing.xs;
+            }
+        }
+    }
+
+    return out;
+}
+
+fn drawCollapsedDockFlyout(
+    allocator: std.mem.Allocator,
+    ctx: *state.ClientContext,
+    cfg: *config.Config,
+    registry: *agent_registry.AgentRegistry,
+    is_connected: bool,
+    app_version: []const u8,
+    manager: *panel_manager.PanelManager,
+    inbox: *ui_command_inbox.UiCommandInbox,
+    queue: *input_state.InputQueue,
+    dc: *draw_context.DrawContext,
+    action: *UiAction,
+    pending_attachment: *?sessions_panel.AttachmentOpen,
+    win_state: *WindowUiState,
+    content_rect: draw_context.Rect,
+    left_rail_width: f32,
+    right_rail_width: f32,
+) DockFlyoutResult {
+    var out: DockFlyoutResult = .{};
+    const node_id = win_state.dock_flyout.node_id orelse return out;
+    const side = win_state.dock_flyout.side;
+    const node = manager.workspace.dock_layout.getNode(node_id) orelse {
+        win_state.dock_flyout.clear();
+        return out;
+    };
+    const tabs_node = switch (node.*) {
+        .tabs => |tabs| tabs,
+        .split => {
+            win_state.dock_flyout.clear();
+            return out;
+        },
+    };
+    if (tabs_node.tabs.items.len == 0) {
+        win_state.dock_flyout.clear();
+        return out;
+    }
+
+    const t = dc.theme;
+    const ss = theme_runtime.getStyleSheet();
+    const pad = t.spacing.xs;
+    const avail_width = @max(0.0, content_rect.size()[0] - left_rail_width - right_rail_width - pad * 3.0);
+    if (avail_width <= 120.0) return out;
+
+    var flyout_width = std.math.clamp(content_rect.size()[0] * 0.34, 300.0, 760.0);
+    if (flyout_width > avail_width) flyout_width = avail_width;
+    const flyout_height = @max(0.0, content_rect.size()[1] - pad * 2.0);
+    if (flyout_height <= 0.0) return out;
+    const flyout_x = switch (side) {
+        .left => content_rect.min[0] + left_rail_width + pad,
+        .right => content_rect.max[0] - right_rail_width - pad - flyout_width,
+    };
+    const flyout_rect = draw_context.Rect.fromMinSize(
+        .{ flyout_x, content_rect.min[1] + pad },
+        .{ flyout_width, flyout_height },
+    );
+    const left_rail_rect = if (left_rail_width > 0.0)
+        draw_context.Rect.fromMinSize(content_rect.min, .{ left_rail_width, content_rect.size()[1] })
+    else
+        draw_context.Rect.fromMinSize(.{ 0.0, 0.0 }, .{ 0.0, 0.0 });
+    const right_rail_rect = if (right_rail_width > 0.0)
+        draw_context.Rect.fromMinSize(
+            .{ content_rect.max[0] - right_rail_width, content_rect.min[1] },
+            .{ right_rail_width, content_rect.size()[1] },
+        )
+    else
+        draw_context.Rect.fromMinSize(.{ 0.0, 0.0 }, .{ 0.0, 0.0 });
+
+    if (!win_state.dock_flyout.pinned) {
+        const pos = queue.state.mouse_pos;
+        const over_rail = left_rail_rect.contains(pos) or right_rail_rect.contains(pos);
+        if (!over_rail and !flyout_rect.contains(pos)) {
+            win_state.dock_flyout.clear();
+            return out;
+        }
+    }
+
+    if (win_state.dock_flyout.pinned) {
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_down => |md| {
+                    if (md.button != .left) continue;
+                    if (flyout_rect.contains(md.pos)) continue;
+                    if (left_rail_rect.contains(md.pos) or right_rail_rect.contains(md.pos)) continue;
+                    win_state.dock_flyout.clear();
+                    return out;
+                },
+                else => {},
+            }
+        }
+    }
+
+    panel_chrome.draw(dc, flyout_rect, .{
+        .radius = 0.0,
+        .draw_shadow = false,
+        .draw_frame = true,
+        .draw_border = false,
+    });
+    const layout_rect = panel_chrome.contentRect(flyout_rect);
+    const layout_size = layout_rect.size();
+    const tab_height = @min(layout_size[1], dc.lineHeight() + t.spacing.xs * 2.0);
+    const header_rect = draw_context.Rect.fromMinSize(layout_rect.min, .{ layout_size[0], tab_height });
+
+    if (ss.panel.header_overlay) |paint| {
+        panel_chrome.drawPaintRect(dc, header_rect, paint);
+    } else {
+        dc.drawRect(header_rect, .{ .fill = colors.withAlpha(t.colors.surface, 0.7) });
+    }
+
+    const focus_border = ss.panel.focus_border orelse t.colors.primary;
+    dc.drawRect(layout_rect, .{
+        .fill = null,
+        .stroke = focus_border,
+        .thickness = 1.0,
+    });
+
+    const button_size = @min(tab_height, @max(12.0, tab_height - t.spacing.xs * 2.0));
+    const button_y = layout_rect.min[1] + (tab_height - button_size) * 0.5;
+    var button_x = layout_rect.max[0] - t.spacing.xs - button_size;
+
+    const close_flyout_label = dockRailIconLabel(&ss.panel.dock_rail_icons.close_flyout, "x");
+    const close_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_size, button_size });
+    if (widgets.button.draw(dc, close_rect, close_flyout_label, queue, .{
+        .variant = .ghost,
+        .radius = t.radius.sm,
+        .style_override = &ss.panel.header_buttons.close,
+    })) {
+        win_state.dock_flyout.clear();
+        return out;
+    }
+    button_x -= button_size + t.spacing.xs;
+
+    const expand_fallback = switch (side) {
+        .left => "|>",
+        .right => "<|",
+    };
+    const pin_label = dockRailIconLabel(&ss.panel.dock_rail_icons.pin, expand_fallback);
+    const pin_rect = draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_size, button_size });
+    if (widgets.button.draw(dc, pin_rect, pin_label, queue, .{
+        .variant = .ghost,
+        .radius = t.radius.sm,
+        .style_override = &ss.panel.header_buttons.detach,
+    })) {
+        out.expand_node_id = node_id;
+    }
+
+    const tabs_right_edge = pin_rect.min[0] - t.spacing.xs;
+    var clicked_tab: ?usize = null;
+    var tab_x = layout_rect.min[0] + t.spacing.xs;
+    const tab_pad_x = t.spacing.sm;
+    const tab_radius = t.radius.sm;
+    for (tabs_node.tabs.items, 0..) |panel_id, idx| {
+        const panel = findPanelById(manager, panel_id) orelse continue;
+        const label = panel.title;
+        const label_w = dc.measureText(label, 0.0)[0];
+        const tab_w = label_w + tab_pad_x * 2.0;
+        if (tab_x + tab_w > tabs_right_edge) break;
+
+        const tab_rect = draw_context.Rect.fromMinSize(
+            .{ tab_x, header_rect.min[1] + t.spacing.xs * 0.4 },
+            .{ tab_w, header_rect.size()[1] - t.spacing.xs * 0.8 },
+        );
+        const active = idx == @min(tabs_node.active, tabs_node.tabs.items.len - 1);
+        const hovered = tab_rect.contains(queue.state.mouse_pos);
+        const fill = if (active)
+            colors.withAlpha(t.colors.primary, 0.18)
+        else if (hovered and theme_runtime.allowHover(queue))
+            colors.withAlpha(t.colors.primary, 0.10)
+        else
+            colors.withAlpha(t.colors.surface, 0.50);
+        const stroke = if (active) t.colors.primary else colors.withAlpha(t.colors.border, 0.7);
+
+        dc.drawRoundedRect(tab_rect, tab_radius, .{
+            .fill = fill,
+            .stroke = stroke,
+            .thickness = 1.0,
+        });
+        dc.drawText(label, .{
+            tab_rect.min[0] + tab_pad_x,
+            tab_rect.min[1] + (tab_rect.size()[1] - dc.lineHeight()) * 0.5,
+        }, .{ .color = if (active) t.colors.text_primary else t.colors.text_secondary });
+
+        for (queue.events.items) |evt| {
+            switch (evt) {
+                .mouse_up => |mu| {
+                    if (mu.button != .left) continue;
+                    if (!tab_rect.contains(mu.pos)) continue;
+                    if (queue.state.pointer_kind == .mouse or !queue.state.pointer_dragging) {
+                        clicked_tab = idx;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        tab_x = tab_rect.max[0] + t.spacing.xs;
+    }
+
+    if (clicked_tab) |idx| {
+        if (manager.workspace.dock_layout.setActiveTab(node_id, idx)) {
+            out.changed_layout = true;
+        }
+    }
+
+    const divider_rect = draw_context.Rect.fromMinSize(
+        .{ layout_rect.min[0], header_rect.max[1] - 1.0 },
+        .{ layout_rect.size()[0], 1.0 },
+    );
+    dc.drawRect(divider_rect, .{ .fill = t.colors.divider });
+
+    const content_height = @max(0.0, layout_size[1] - tab_height);
+    const panel_rect = draw_context.Rect.fromMinSize(
+        .{ layout_rect.min[0], layout_rect.min[1] + tab_height },
+        .{ layout_size[0], content_height },
+    );
+
+    var frame_clicked = false;
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and flyout_rect.contains(md.pos)) frame_clicked = true;
+            },
+            else => {},
+        }
+    }
+
+    const active_panel_id = activePanelForNode(manager, node_id) orelse return out;
+    const panel = findPanelById(manager, active_panel_id) orelse return out;
+
+    nav_router.pushScope(panel.id);
+    defer nav_router.popScope();
+
+    if (frame_clicked) out.focus_panel_id = panel.id;
+    panel.state.is_focused = manager.workspace.focused_panel_id != null and manager.workspace.focused_panel_id.? == panel.id;
+    const draw_result = drawPanelContents(
+        allocator,
+        ctx,
+        cfg,
+        registry,
+        is_connected,
+        app_version,
+        panel,
+        panel_rect,
+        inbox,
+        manager,
+        action,
+        pending_attachment,
+        win_state,
+    );
+    if (panel.kind == .Chat and draw_result.session_key != null) {
+        out.session_key = draw_result.session_key;
+        out.agent_id = draw_result.agent_id;
+    }
+
+    return out;
+}
+
+fn activePanelForNode(
+    manager: *panel_manager.PanelManager,
+    node_id: dock_graph.NodeId,
+) ?workspace.PanelId {
+    const node = manager.workspace.dock_layout.getNode(node_id) orelse return null;
+    const tabs = switch (node.*) {
+        .tabs => |t| t,
+        .split => return null,
+    };
+    if (tabs.tabs.items.len == 0) return null;
+    const active_index = @min(tabs.active, tabs.tabs.items.len - 1);
+    return tabs.tabs.items[active_index];
+}
+
+fn railIconForPanel(panel: *const workspace.Panel, icons: *const style_sheet.DockRailIconsStyle) []const u8 {
+    return switch (panel.kind) {
+        .Chat => dockRailIconLabel(&icons.chat, "C"),
+        .CodeEditor => dockRailIconLabel(&icons.code_editor, "E"),
+        .ToolOutput => dockRailIconLabel(&icons.tool_output, "T"),
+        .Control => dockRailIconLabel(&icons.control, "W"),
+        .Agents => dockRailIconLabel(&icons.agents, "A"),
+        .Operator => dockRailIconLabel(&icons.operator, "OP"),
+        .ApprovalsInbox => dockRailIconLabel(&icons.approvals_inbox, "AP"),
+        .Inbox => dockRailIconLabel(&icons.inbox, "I"),
+        .Settings => dockRailIconLabel(&icons.settings, "SE"),
+        .Showcase => dockRailIconLabel(&icons.showcase, "S"),
+    };
+}
+
+fn dockRailIconLabel(icon: *const style_sheet.IconLabel, fallback: []const u8) []const u8 {
+    if (icon.isSet()) return icon.slice();
+    return fallback;
+}
+
+fn findSplitterAt(splitters: *const dock_graph.SplitterResult, pos: [2]f32) ?dock_graph.Splitter {
+    // Prefer the last appended splitters (deepest children) for predictable hit-testing.
+    var idx: usize = splitters.len;
+    while (idx > 0) {
+        idx -= 1;
+        const sp = splitters.splitters[idx];
+        if (sp.handle_rect.contains(pos)) return sp;
+    }
+    return null;
+}
+
+fn findSplitterByNode(splitters: *const dock_graph.SplitterResult, node_id: dock_graph.NodeId) ?dock_graph.Splitter {
+    for (splitters.slice()) |sp| {
+        if (sp.node_id == node_id) return sp;
+    }
+    return null;
+}
+
+fn handleDockSplitInteractions(
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    win_state: *WindowUiState,
+    splitters: *const dock_graph.SplitterResult,
+) bool {
+    var changed = false;
+    const hovered = findSplitterAt(splitters, queue.state.mouse_pos);
+    if (hovered) |sp| {
+        cursor.set(if (sp.axis == .vertical) .resize_ew else .resize_ns);
+    }
+
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .focus_lost => win_state.split_drag.clear(),
+            .mouse_down => |md| {
+                if (md.button != .left) continue;
+                if (hovered) |sp| {
+                    win_state.split_drag.node_id = sp.node_id;
+                    win_state.split_drag.axis = sp.axis;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left) {
+                    win_state.split_drag.clear();
+                }
+            },
+            else => {},
+        }
+    }
+
+    const dragging_node = win_state.split_drag.node_id orelse return changed;
+    const active_sp = findSplitterByNode(splitters, dragging_node) orelse {
+        win_state.split_drag.clear();
+        return changed;
+    };
+
+    cursor.set(if (active_sp.axis == .vertical) .resize_ew else .resize_ns);
+
+    const container = active_sp.container_rect;
+    const size = container.size();
+    const min_px: f32 = 120.0;
+    if (active_sp.axis == .vertical and size[0] > 0.0) {
+        const min_ratio = std.math.clamp(min_px / size[0], 0.05, 0.45);
+        const max_ratio = 1.0 - min_ratio;
+        const ratio = std.math.clamp((queue.state.mouse_pos[0] - container.min[0]) / size[0], min_ratio, max_ratio);
+        if (manager.workspace.dock_layout.setSplitRatio(active_sp.node_id, ratio)) {
+            changed = true;
+        }
+    } else if (active_sp.axis == .horizontal and size[1] > 0.0) {
+        const min_ratio = std.math.clamp(min_px / size[1], 0.05, 0.45);
+        const max_ratio = 1.0 - min_ratio;
+        const ratio = std.math.clamp((queue.state.mouse_pos[1] - container.min[1]) / size[1], min_ratio, max_ratio);
+        if (manager.workspace.dock_layout.setSplitRatio(active_sp.node_id, ratio)) {
+            changed = true;
+        }
+    }
+
+    if (!queue.state.mouse_down_left) {
+        win_state.split_drag.clear();
+    }
+    return changed;
+}
+
+fn drawDockSplitters(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    win_state: *const WindowUiState,
+    splitters: *const dock_graph.SplitterResult,
+) void {
+    for (splitters.slice()) |sp| {
+        const hovered = sp.handle_rect.contains(queue.state.mouse_pos);
+        const active = win_state.split_drag.node_id != null and win_state.split_drag.node_id.? == sp.node_id;
+        const fill = if (active)
+            colors.withAlpha(dc.theme.colors.primary, 0.22)
+        else if (hovered)
+            colors.withAlpha(dc.theme.colors.primary, 0.12)
+        else
+            colors.withAlpha(dc.theme.colors.border, 0.08);
+        dc.drawRect(sp.handle_rect, .{ .fill = fill });
+    }
+}
+
+const DockInteractionResult = struct {
+    focus_panel_id: ?workspace.PanelId = null,
+    changed_layout: bool = false,
+    detach_panel_id: ?workspace.PanelId = null,
+};
+
+fn handleDockTabInteractions(
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    win_state: *WindowUiState,
+    tab_hits: *const DockTabHitList,
+    drop_targets: *const DockDropTargetList,
+    dock_rect: draw_context.Rect,
+) DockInteractionResult {
+    var out = DockInteractionResult{};
+    var left_release = false;
+
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .focus_lost => {
+                if (win_state.dock_drag.panel_id) |pid| {
+                    if (win_state.dock_drag.dragging) {
+                        out.detach_panel_id = pid;
+                        out.focus_panel_id = pid;
+                    }
+                }
+                win_state.dock_drag.clear();
+            },
+            .mouse_down => |md| {
+                if (md.button != .left) continue;
+                if (findTabHitAt(tab_hits, md.pos)) |hit| {
+                    win_state.dock_drag.panel_id = hit.panel_id;
+                    win_state.dock_drag.source_node_id = hit.node_id;
+                    win_state.dock_drag.source_tab_index = hit.tab_index;
+                    win_state.dock_drag.press_pos = md.pos;
+                    win_state.dock_drag.dragging = false;
+                }
+            },
+            .mouse_up => |mu| {
+                if (mu.button == .left) {
+                    left_release = true;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (win_state.dock_drag.panel_id) |pid| {
+        if (findPanelById(manager, pid) == null) {
+            win_state.dock_drag.clear();
+        }
+    }
+
+    if (win_state.dock_drag.panel_id != null and queue.state.mouse_down_left and !left_release) {
+        if (!win_state.dock_drag.dragging) {
+            const dx = queue.state.mouse_pos[0] - win_state.dock_drag.press_pos[0];
+            const dy = queue.state.mouse_pos[1] - win_state.dock_drag.press_pos[1];
+            if (dx * dx + dy * dy >= 16.0) {
+                win_state.dock_drag.dragging = true;
+            }
+        }
+    }
+
+    if (left_release and win_state.dock_drag.panel_id != null) {
+        const drag_panel_id = win_state.dock_drag.panel_id.?;
+        const release_pos = queue.state.mouse_pos;
+        if (win_state.dock_drag.dragging) {
+            if (drop_targets.findAt(release_pos)) |target| {
+                const changed = if (target.location == .center)
+                    manager.workspace.dock_layout.movePanelToTabs(drag_panel_id, target.node_id, null) catch false
+                else
+                    manager.workspace.dock_layout.splitNodeWithPanel(target.node_id, drag_panel_id, target.location) catch false;
+                const repaired_layout = manager.workspace.syncDockLayout() catch false;
+                if (changed) {
+                    out.changed_layout = true;
+                    out.focus_panel_id = drag_panel_id;
+                    // Drag-drop targets are derived from the visible (collapsed-pruned) layout.
+                    // When collapsed groups exist, mutating the full graph can route the drop into
+                    // branches that remain hidden. Expand all collapsed groups after a successful
+                    // drop so the result is always visible and predictable.
+                    if (win_state.collapsed_docks.len > 0) {
+                        win_state.collapsed_docks = .{};
+                        win_state.dock_flyout.clear();
+                        out.changed_layout = true;
+                    }
+                    // Ensure drag-dropped tabs don't end up "invisible" inside a collapsed node.
+                    if (manager.workspace.dock_layout.findPanel(drag_panel_id)) |loc| {
+                        if (win_state.collapsed_docks.expand(loc.node_id)) {
+                            out.changed_layout = true;
+                        }
+                        if (win_state.dock_flyout.node_id != null and win_state.dock_flyout.node_id.? == loc.node_id) {
+                            win_state.dock_flyout.clear();
+                        }
+                    }
+                }
+                if (repaired_layout) {
+                    out.changed_layout = true;
+                    if (out.focus_panel_id == null) out.focus_panel_id = drag_panel_id;
+                }
+            } else {
+                if (!dock_rect.contains(release_pos)) {
+                    out.detach_panel_id = drag_panel_id;
+                    out.focus_panel_id = drag_panel_id;
+                } else {
+                    // Avoid accidental tear-off when release hit-testing misses a docking target.
+                    // Keep focus on the dragged panel and leave layout unchanged.
+                    out.focus_panel_id = drag_panel_id;
+                }
+            }
+        } else if (findTabHitAt(tab_hits, release_pos)) |hit| {
+            if (hit.panel_id == drag_panel_id) {
+                if (manager.workspace.dock_layout.setActiveTab(hit.node_id, hit.tab_index)) {
+                    out.changed_layout = true;
+                }
+                out.focus_panel_id = hit.panel_id;
+            }
+        }
+        win_state.dock_drag.clear();
+    } else if (!queue.state.mouse_down_left and win_state.dock_drag.panel_id != null) {
+        const drag_panel_id = win_state.dock_drag.panel_id.?;
+        if (win_state.dock_drag.dragging) {
+            const release_pos = queue.state.mouse_pos;
+            // Mouse-up can be dropped by the backend during cross-window drags. Treat this
+            // as a release and only tear-off when the pointer is truly outside dock bounds.
+            if (drop_targets.findAt(release_pos)) |target| {
+                const changed = if (target.location == .center)
+                    manager.workspace.dock_layout.movePanelToTabs(drag_panel_id, target.node_id, null) catch false
+                else
+                    manager.workspace.dock_layout.splitNodeWithPanel(target.node_id, drag_panel_id, target.location) catch false;
+                const repaired_layout = manager.workspace.syncDockLayout() catch false;
+                const committed = changed or repaired_layout;
+                if (changed) {
+                    out.changed_layout = true;
+                    out.focus_panel_id = drag_panel_id;
+                    if (win_state.collapsed_docks.len > 0) {
+                        win_state.collapsed_docks = .{};
+                        win_state.dock_flyout.clear();
+                        out.changed_layout = true;
+                    }
+                    if (manager.workspace.dock_layout.findPanel(drag_panel_id)) |loc| {
+                        if (win_state.collapsed_docks.expand(loc.node_id)) {
+                            out.changed_layout = true;
+                        }
+                        if (win_state.dock_flyout.node_id != null and win_state.dock_flyout.node_id.? == loc.node_id) {
+                            win_state.dock_flyout.clear();
+                        }
+                    }
+                }
+                if (repaired_layout) {
+                    out.changed_layout = true;
+                    if (out.focus_panel_id == null) out.focus_panel_id = drag_panel_id;
+                }
+                if (!committed) {
+                    if (!dock_rect.contains(release_pos)) {
+                        out.detach_panel_id = drag_panel_id;
+                        out.focus_panel_id = drag_panel_id;
+                    } else {
+                        out.focus_panel_id = drag_panel_id;
+                    }
+                }
+            } else if (!dock_rect.contains(release_pos)) {
+                out.detach_panel_id = drag_panel_id;
+                out.focus_panel_id = drag_panel_id;
+            } else {
+                out.focus_panel_id = drag_panel_id;
+            }
+        }
+        win_state.dock_drag.clear();
+    }
+
+    return out;
+}
+
+fn drawDockDragOverlay(
+    dc: *draw_context.DrawContext,
+    queue: *input_state.InputQueue,
+    manager: *panel_manager.PanelManager,
+    win_state: *WindowUiState,
+    drop_targets: *const DockDropTargetList,
+    dock_rect: draw_context.Rect,
+) void {
+    if (!win_state.dock_drag.dragging) return;
+    cursor.set(.arrow);
+    const ss = theme_runtime.getStyleSheet();
+
+    const hover_target = drop_targets.findAt(queue.state.mouse_pos);
+    if (hover_target) |target| {
+        // Show the target family for the hovered dock group so users can "read" all valid zones.
+        for (drop_targets.items[0..drop_targets.len]) |candidate| {
+            if (candidate.node_id != target.node_id or candidate.location == target.location) continue;
+            drawDockDropPreview(dc, candidate, false, &ss.panel.dock_drop_preview);
+        }
+        drawDockDropPreview(dc, target, true, &ss.panel.dock_drop_preview);
+    }
+
+    const pid = win_state.dock_drag.panel_id orelse return;
+    const panel = findPanelById(manager, pid) orelse return;
+    var hint: []const u8 = "No dock target";
+    if (hover_target) |target| {
+        hint = dockDropTargetLabel(target.location);
+    } else if (!dock_rect.contains(queue.state.mouse_pos)) {
+        hint = "Detach to new window";
+    }
+    var label_buf: [256]u8 = undefined;
+    const text = std.fmt.bufPrint(&label_buf, "{s} -> {s}", .{ panel.title, hint }) catch panel.title;
+    const text_w = dc.measureText(text, 0.0)[0];
+    const pad = dc.theme.spacing.xs;
+    const rect = draw_context.Rect.fromMinSize(
+        .{ queue.state.mouse_pos[0] + 14.0, queue.state.mouse_pos[1] + 14.0 },
+        .{ text_w + pad * 2.0, dc.lineHeight() + pad * 2.0 },
+    );
+    dc.drawRoundedRect(rect, dc.theme.radius.sm, .{
+        .fill = colors.withAlpha(dc.theme.colors.background, 0.92),
+        .stroke = colors.withAlpha(dc.theme.colors.border, 0.9),
+        .thickness = 1.0,
+    });
+    dc.drawText(text, .{ rect.min[0] + pad, rect.min[1] + pad }, .{ .color = dc.theme.colors.text_primary });
+}
+
+fn dockDropTargetLabel(location: dock_graph.DropLocation) []const u8 {
+    return switch (location) {
+        .center => "Dock Center",
+        .left => "Dock Left",
+        .right => "Dock Right",
+        .top => "Dock Top",
+        .bottom => "Dock Bottom",
+    };
+}
+
+fn drawDockDropPreview(
+    dc: *draw_context.DrawContext,
+    target: DockDropTarget,
+    active: bool,
+    style: *const style_sheet.DockDropPreviewStyle,
+) void {
+    const fill = if (active) style.active_fill else style.inactive_fill;
+    const fallback_fill = style_sheet.Paint{ .solid = colors.withAlpha(dc.theme.colors.primary, if (active) 0.20 else 0.07) };
+    panel_chrome.drawPaintRoundedRect(dc, target.rect, dc.theme.radius.sm, fill orelse fallback_fill);
+
+    const base_stroke: f32 = if (active) 0.86 else 0.35;
+    const stroke = if (active)
+        style.active_border orelse colors.withAlpha(dc.theme.colors.primary, base_stroke)
+    else
+        style.inactive_border orelse colors.withAlpha(dc.theme.colors.primary, base_stroke);
+    const thickness: f32 = std.math.clamp(if (active) (style.active_thickness orelse 2.0) else (style.inactive_thickness orelse 1.0), 0.5, 8.0);
+    dc.drawRoundedRect(target.rect, dc.theme.radius.sm, .{
+        .fill = null,
+        .stroke = stroke,
+        .thickness = thickness,
+    });
+    if (!active) return;
+
+    const c = rectCenter(target.rect);
+    const sz = target.rect.size();
+    const marker = std.math.clamp(@min(sz[0], sz[1]) * 0.20, 10.0, 28.0);
+    const marker_color = style.marker orelse colors.withAlpha(dc.theme.colors.primary, 0.9);
+    switch (target.location) {
+        .center => {
+            dc.drawLine(.{ c[0] - marker, c[1] }, .{ c[0] + marker, c[1] }, 2.0, marker_color);
+            dc.drawLine(.{ c[0], c[1] - marker }, .{ c[0], c[1] + marker }, 2.0, marker_color);
+        },
+        .left => dc.drawLine(.{ c[0] + marker * 0.7, c[1] }, .{ c[0] - marker, c[1] }, 2.0, marker_color),
+        .right => dc.drawLine(.{ c[0] - marker * 0.7, c[1] }, .{ c[0] + marker, c[1] }, 2.0, marker_color),
+        .top => dc.drawLine(.{ c[0], c[1] + marker * 0.7 }, .{ c[0], c[1] - marker }, 2.0, marker_color),
+        .bottom => dc.drawLine(.{ c[0], c[1] - marker * 0.7 }, .{ c[0], c[1] + marker }, 2.0, marker_color),
+    }
+}
+
 fn menuItemWidth(dc: *draw_context.DrawContext, label: []const u8, item_height: f32, t: *const theme.Theme) f32 {
     const line_height = dc.lineHeight();
     const box_size = @min(item_height, line_height) * 0.9;
@@ -1515,7 +3478,16 @@ fn computeWindowMenuWidth(
     const base_labels = [_][]const u8{
         "Workspace",
         "Chat",
+        "Agents",
+        "Operator",
+        "Approvals",
+        "Inbox",
+        "Settings",
         "Showcase",
+        "Layout: Reset",
+        "Layout: Move tab to new group",
+        "Layout: Close group",
+        "Layout: Move group to window",
         "Theme pack: Global",
         "Theme pack: Browse...",
         "Theme pack: Reload",
