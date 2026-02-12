@@ -380,8 +380,6 @@ fn runFfmpegDesktopCaptureVariant(
     try argv_list.appendSlice(allocator, &.{
         "-i",
         "desktop",
-        "-t",
-        duration_arg,
     });
 
     if (variant == .with_audio) {
@@ -423,6 +421,8 @@ fn runFfmpegDesktopCaptureVariant(
     }
 
     try argv_list.appendSlice(allocator, &.{
+        "-t",
+        duration_arg,
         "-movflags",
         "+faststart",
         "-y",
@@ -863,6 +863,92 @@ fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
     }
 
     return std.process.getCwdAlloc(allocator);
+}
+
+test "runFfmpegDesktopCaptureVariant places duration after audio input for with_audio" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const cwd = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+
+    const tmp_root = try std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer allocator.free(tmp_root);
+
+    const script_path = try std.fs.path.join(allocator, &.{ tmp_root, "fake-ffmpeg.sh" });
+    defer allocator.free(script_path);
+
+    const captured_args_path = try std.fs.path.join(allocator, &.{ tmp_root, "captured-args.txt" });
+    defer allocator.free(captured_args_path);
+
+    const out_path = try std.fs.path.join(allocator, &.{ tmp_root, "out.mp4" });
+    defer allocator.free(out_path);
+
+    const script_contents = try std.fmt.allocPrint(
+        allocator,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{s}'\nexit 0\n",
+        .{captured_args_path},
+    );
+    defer allocator.free(script_contents);
+
+    try tmp.dir.writeFile(.{ .sub_path = "fake-ffmpeg.sh", .data = script_contents });
+    try std.posix.chmod(script_path, 0o755);
+
+    const outcome = try runFfmpegDesktopCaptureVariant(
+        allocator,
+        .desktop,
+        "12",
+        "5.000",
+        null,
+        null,
+        null,
+        out_path,
+        script_path,
+        .with_audio,
+    );
+    try std.testing.expectEqual(ScreenRunOutcome.success, outcome);
+
+    const captured_args = try std.fs.cwd().readFileAlloc(allocator, captured_args_path, 64 * 1024);
+    defer allocator.free(captured_args);
+
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+
+    var it = std.mem.splitScalar(u8, captured_args, '\n');
+    while (it.next()) |arg| {
+        if (arg.len == 0) continue;
+        try args.append(allocator, arg);
+    }
+
+    var audio_input_idx: ?usize = null;
+    var duration_idx: ?usize = null;
+    var out_path_idx: ?usize = null;
+
+    for (args.items, 0..) |arg, idx| {
+        if (duration_idx == null and std.mem.eql(u8, arg, "-t")) {
+            duration_idx = idx;
+        }
+
+        if (std.mem.eql(u8, arg, out_path)) {
+            out_path_idx = idx;
+        }
+
+        if (idx + 1 < args.items.len and std.mem.eql(u8, arg, "-i") and std.mem.eql(u8, args.items[idx + 1], "audio=default")) {
+            audio_input_idx = idx;
+        }
+    }
+
+    try std.testing.expect(audio_input_idx != null);
+    try std.testing.expect(duration_idx != null);
+    try std.testing.expect(duration_idx.? + 1 < args.items.len);
+    try std.testing.expectEqualStrings("5.000", args.items[duration_idx.? + 1]);
+    try std.testing.expect(duration_idx.? > audio_input_idx.? + 1);
+    try std.testing.expect(out_path_idx != null);
+    try std.testing.expect(duration_idx.? < out_path_idx.?);
 }
 
 test "ScreenRecordFormat.fromString accepts mp4" {
