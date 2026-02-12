@@ -2,6 +2,8 @@
 
 ZiggyStarClaw node mode supports a visual canvas for HTML/CSS/JS rendering and A2UI.
 
+Windows parity roadmap: see `docs/windows_canvas_browser_parity_roadmap.md` and `docs/spec_windows_node_capabilities.md`.
+
 ## Backends
 
 Two canvas backends are supported:

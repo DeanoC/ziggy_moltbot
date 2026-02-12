@@ -115,6 +115,9 @@ pub const CameraClipRequest = struct {
     includeAudio: bool = true,
     deviceId: ?[]const u8 = null,
     preferredPosition: ?CameraPosition = null,
+    /// Optional DirectShow audio input device name (e.g. "Microphone Array (...)").
+    /// When omitted, ffmpeg uses `audio=default`.
+    audioDeviceId: ?[]const u8 = null,
 };
 
 pub const CameraClipResult = struct {
@@ -387,6 +390,17 @@ fn resolveCameraNameForCapture(
 
 fn formatDshowVideoInputAlloc(allocator: std.mem.Allocator, camera_name: []const u8) ![]u8 {
     return std.fmt.allocPrint(allocator, "video={s}", .{camera_name});
+}
+
+fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]const u8) ![]u8 {
+    if (audio_device_id) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            return std.fmt.allocPrint(allocator, "audio={s}", .{trimmed});
+        }
+    }
+
+    return allocator.dupe(u8, "audio=default");
 }
 
 fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -723,12 +737,24 @@ fn runFfmpegCameraClip(
     );
     defer allocator.free(duration_arg);
 
+    const audio_input_spec = try formatDshowAudioInputAlloc(allocator, req.audioDeviceId);
+    defer allocator.free(audio_input_spec);
+
     var saw_executable = false;
     var last_error: ?CameraClipError = null;
 
     for (ffmpegCandidates()) |exe| {
         if (req.includeAudio) {
-            const audio_outcome = try runFfmpegCameraClipVariant(allocator, req, input_spec, duration_arg, out_path, exe, .with_audio);
+            const audio_outcome = try runFfmpegCameraClipVariant(
+                allocator,
+                req,
+                input_spec,
+                audio_input_spec,
+                duration_arg,
+                out_path,
+                exe,
+                .with_audio,
+            );
             switch (audio_outcome) {
                 .success => return true,
                 .executable_missing => {},
@@ -736,14 +762,23 @@ fn runFfmpegCameraClip(
                     saw_executable = true;
                     last_error = error.CommandFailed;
                     logger.warn(
-                        "camera.clip backend={s}: includeAudio capture failed via {s}; retrying video-only",
-                        .{ clip_backend_name, exe },
+                        "camera.clip backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
+                        .{ clip_backend_name, exe, audio_input_spec },
                     );
                 },
             }
         }
 
-        const video_only_outcome = try runFfmpegCameraClipVariant(allocator, req, input_spec, duration_arg, out_path, exe, .video_only);
+        const video_only_outcome = try runFfmpegCameraClipVariant(
+            allocator,
+            req,
+            input_spec,
+            audio_input_spec,
+            duration_arg,
+            out_path,
+            exe,
+            .video_only,
+        );
         switch (video_only_outcome) {
             .success => return false,
             .executable_missing => continue,
@@ -763,6 +798,7 @@ fn runFfmpegCameraClipVariant(
     allocator: std.mem.Allocator,
     req: CameraClipRequest,
     input_spec: []const u8,
+    audio_input_spec: []const u8,
     duration_arg: []const u8,
     out_path: []const u8,
     exe: []const u8,
@@ -791,7 +827,7 @@ fn runFfmpegCameraClipVariant(
                 "-f",
                 "dshow",
                 "-i",
-                "audio=default",
+                audio_input_spec,
                 "-t",
                 duration_arg,
                 "-map",
@@ -1120,6 +1156,22 @@ test "CameraClipFormat.fromString accepts mp4/webm" {
     try std.testing.expect(CameraClipFormat.fromString("webm").? == .webm);
     try std.testing.expect(CameraClipFormat.fromString("WEBM").? == .webm);
     try std.testing.expect(CameraClipFormat.fromString("mkv") == null);
+}
+
+test "formatDshowAudioInputAlloc uses requested device or defaults" {
+    const allocator = std.testing.allocator;
+
+    const named = try formatDshowAudioInputAlloc(allocator, "Microphone Array");
+    defer allocator.free(named);
+    try std.testing.expectEqualStrings("audio=Microphone Array", named);
+
+    const blank = try formatDshowAudioInputAlloc(allocator, "   ");
+    defer allocator.free(blank);
+    try std.testing.expectEqualStrings("audio=default", blank);
+
+    const missing = try formatDshowAudioInputAlloc(allocator, null);
+    defer allocator.free(missing);
+    try std.testing.expectEqualStrings("audio=default", missing);
 }
 
 test "parsePngDimensions reads width/height from IHDR" {

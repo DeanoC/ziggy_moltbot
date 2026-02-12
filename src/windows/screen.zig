@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const logger = @import("../utils/logger.zig");
 
+const win = if (builtin.target.os.tag == .windows)
+    @cImport({
+        @cInclude("windows.h");
+    })
+else
+    struct {};
+
 pub const ScreenRecordFormat = enum {
     mp4,
 
@@ -31,6 +38,9 @@ pub const ScreenRecordRequest = struct {
     fps: u32 = 12,
     screenIndex: u32 = 0,
     includeAudio: bool = false,
+    /// Optional DirectShow audio input device name (e.g. "Microphone Array (...)").
+    /// When omitted, ffmpeg uses `audio=default`.
+    audioDeviceId: ?[]const u8 = null,
 };
 
 pub const ScreenRecordResult = struct {
@@ -56,7 +66,8 @@ pub const ScreenBackendSupport = struct {
 };
 
 const screen_backend_name = "ffmpeg-gdigrab";
-const monitor_backend_name = "powershell-forms";
+const monitor_backend_win32_name = "win32-user32";
+const monitor_backend_powershell_name = "powershell-forms";
 
 const ScreenMonitor = struct {
     deviceName: []const u8,
@@ -98,9 +109,9 @@ pub fn detectBackendSupport(allocator: std.mem.Allocator) ScreenBackendSupport {
 /// Record the Windows desktop and return an OpenClaw-compatible payload.
 ///
 /// Current limitations:
-/// - monitor-index mapping uses PowerShell Forms metadata; if unavailable,
-///   `screenIndex=0` falls back to legacy desktop capture and non-zero indices
-///   are rejected.
+/// - monitor-index mapping prefers native Win32 monitor metadata and falls back
+///   to PowerShell Forms metadata. If both are unavailable, `screenIndex=0`
+///   falls back to legacy desktop capture and non-zero indices are rejected.
 /// - when `includeAudio=true`, audio capture is best-effort and may fall back
 ///   to video-only output (`hasAudio=false`) if no usable audio source exists.
 pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) ScreenRecordError!ScreenRecordResult {
@@ -262,6 +273,9 @@ fn runFfmpegDesktopCapture(
     };
     defer if (video_size_arg) |s| allocator.free(s);
 
+    const audio_input_spec = try formatDshowAudioInputAlloc(allocator, req.audioDeviceId);
+    defer allocator.free(audio_input_spec);
+
     var saw_executable = false;
     var last_error: ?ScreenRecordError = null;
 
@@ -275,6 +289,7 @@ fn runFfmpegDesktopCapture(
                 offset_x_arg,
                 offset_y_arg,
                 video_size_arg,
+                audio_input_spec,
                 out_path,
                 exe,
                 .with_audio,
@@ -286,8 +301,8 @@ fn runFfmpegDesktopCapture(
                     saw_executable = true;
                     last_error = error.CommandFailed;
                     logger.warn(
-                        "screen.record backend={s}: includeAudio capture failed via {s}; retrying video-only",
-                        .{ screen_backend_name, exe },
+                        "screen.record backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
+                        .{ screen_backend_name, exe, audio_input_spec },
                     );
                 },
             }
@@ -301,6 +316,7 @@ fn runFfmpegDesktopCapture(
             offset_x_arg,
             offset_y_arg,
             video_size_arg,
+            audio_input_spec,
             out_path,
             exe,
             .video_only,
@@ -328,6 +344,7 @@ fn runFfmpegDesktopCaptureVariant(
     offset_x_arg: ?[]const u8,
     offset_y_arg: ?[]const u8,
     video_size_arg: ?[]const u8,
+    audio_input_spec: []const u8,
     out_path: []const u8,
     exe: []const u8,
     variant: ScreenRunVariant,
@@ -372,7 +389,7 @@ fn runFfmpegDesktopCaptureVariant(
             "-f",
             "dshow",
             "-i",
-            "audio=default",
+            audio_input_spec,
             "-map",
             "0:v:0",
             "-map",
@@ -442,6 +459,119 @@ fn runFfmpegDesktopCaptureVariant(
 }
 
 fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
+    if (builtin.target.os.tag == .windows) {
+        if (listMonitorsWin32(allocator)) |monitors| {
+            return monitors;
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                logger.warn(
+                    "screen.record monitor discovery backend={s} failed ({s}); falling back to {s}",
+                    .{ monitor_backend_win32_name, @errorName(err), monitor_backend_powershell_name },
+                );
+            },
+        }
+    }
+
+    return listMonitorsViaPowershell(allocator);
+}
+
+const EnumMonitorsState = struct {
+    allocator: std.mem.Allocator,
+    monitors: *std.ArrayList(ScreenMonitor),
+    failure: ?MonitorListError = null,
+};
+
+fn listMonitorsWin32(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
+    if (builtin.target.os.tag != .windows) return error.CommandFailed;
+
+    var monitors = std.ArrayList(ScreenMonitor).empty;
+    errdefer {
+        for (monitors.items) |monitor| {
+            allocator.free(@constCast(monitor.deviceName));
+        }
+        monitors.deinit(allocator);
+    }
+
+    var state = EnumMonitorsState{
+        .allocator = allocator,
+        .monitors = &monitors,
+    };
+
+    const ok = win.EnumDisplayMonitors(
+        null,
+        null,
+        enumDisplayMonitorsProc,
+        @as(win.LPARAM, @intCast(@intFromPtr(&state))),
+    );
+
+    if (state.failure) |failure| return failure;
+    if (ok == 0) {
+        logger.err("screen.record monitor discovery backend={s} failed to enumerate monitors", .{monitor_backend_win32_name});
+        return error.CommandFailed;
+    }
+
+    movePrimaryMonitorFirst(monitors.items);
+
+    if (monitors.items.len == 0) {
+        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_win32_name});
+        return error.InvalidOutput;
+    }
+
+    return monitors.toOwnedSlice(allocator);
+}
+
+fn enumDisplayMonitorsProc(
+    h_monitor: win.HMONITOR,
+    _: win.HDC,
+    _: ?*win.RECT,
+    l_param: win.LPARAM,
+) callconv(.c) win.BOOL {
+    const state: *EnumMonitorsState = @ptrFromInt(@as(usize, @intCast(l_param)));
+
+    var info: win.MONITORINFOEXW = std.mem.zeroes(win.MONITORINFOEXW);
+    info.unnamed_0.cbSize = @sizeOf(win.MONITORINFOEXW);
+
+    if (win.GetMonitorInfoW(h_monitor, @ptrCast(&info)) == 0) {
+        return @as(win.BOOL, 1);
+    }
+
+    const width_i64 = @as(i64, info.unnamed_0.rcMonitor.right) - @as(i64, info.unnamed_0.rcMonitor.left);
+    const height_i64 = @as(i64, info.unnamed_0.rcMonitor.bottom) - @as(i64, info.unnamed_0.rcMonitor.top);
+    if (width_i64 <= 0 or height_i64 <= 0 or width_i64 > std.math.maxInt(u32) or height_i64 > std.math.maxInt(u32)) {
+        return @as(win.BOOL, 1);
+    }
+
+    var name_len: usize = 0;
+    while (name_len < info.szDevice.len and info.szDevice[name_len] != 0) : (name_len += 1) {}
+
+    const name_wide: []const u16 = @as([*]const u16, @ptrCast(&info.szDevice[0]))[0..name_len];
+    const device_name = std.unicode.utf16LeToUtf8Alloc(state.allocator, name_wide) catch |err| {
+        state.failure = switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.CommandFailed,
+        };
+        return @as(win.BOOL, 0);
+    };
+    errdefer state.allocator.free(device_name);
+
+    state.monitors.append(state.allocator, .{
+        .deviceName = device_name,
+        .x = @as(i32, @intCast(info.unnamed_0.rcMonitor.left)),
+        .y = @as(i32, @intCast(info.unnamed_0.rcMonitor.top)),
+        .width = @as(u32, @intCast(width_i64)),
+        .height = @as(u32, @intCast(height_i64)),
+        .primary = (info.unnamed_0.dwFlags & win.MONITORINFOF_PRIMARY) != 0,
+    }) catch {
+        state.allocator.free(device_name);
+        state.failure = error.OutOfMemory;
+        return @as(win.BOOL, 0);
+    };
+
+    return @as(win.BOOL, 1);
+}
+
+fn listMonitorsViaPowershell(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
     const script =
         "$ErrorActionPreference='Stop'; " ++
         "Add-Type -AssemblyName System.Windows.Forms; " ++
@@ -452,12 +582,12 @@ fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
 
     const out = runPowershellJson(allocator, script) catch |err| switch (err) {
         error.FileNotFound => {
-            logger.err("screen.record monitor discovery backend={s} failed: PowerShell not found (tried powershell, pwsh)", .{monitor_backend_name});
+            logger.err("screen.record monitor discovery backend={s} failed: PowerShell not found (tried powershell, pwsh)", .{monitor_backend_powershell_name});
             return error.PowershellNotFound;
         },
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            logger.err("screen.record monitor discovery backend={s} failed to execute: {s}", .{ monitor_backend_name, @errorName(err) });
+            logger.err("screen.record monitor discovery backend={s} failed to execute: {s}", .{ monitor_backend_powershell_name, @errorName(err) });
             return error.CommandFailed;
         },
     };
@@ -466,14 +596,14 @@ fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
     const monitors = parseMonitorsJson(allocator, out) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            logger.err("screen.record monitor discovery backend={s} failed to parse JSON output: {s}", .{ monitor_backend_name, @errorName(err) });
+            logger.err("screen.record monitor discovery backend={s} failed to parse JSON output: {s}", .{ monitor_backend_powershell_name, @errorName(err) });
             return error.InvalidOutput;
         },
     };
 
     if (monitors.len == 0) {
         allocator.free(monitors);
-        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_name});
+        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_powershell_name});
         return error.InvalidOutput;
     }
 
@@ -607,6 +737,17 @@ fn freeMonitors(allocator: std.mem.Allocator, monitors: []ScreenMonitor) void {
     allocator.free(monitors);
 }
 
+fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]const u8) ![]u8 {
+    if (audio_device_id) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            return std.fmt.allocPrint(allocator, "audio={s}", .{trimmed});
+        }
+    }
+
+    return allocator.dupe(u8, "audio=default");
+}
+
 fn hasWorkingFfmpeg(allocator: std.mem.Allocator) bool {
     for (ffmpegCandidates()) |exe| {
         const argv = &[_][]const u8{ exe, "-version" };
@@ -647,11 +788,11 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
             .max_output_bytes = 1024 * 1024,
         }) catch |err| switch (err) {
             error.FileNotFound => {
-                logger.warn("screen.record monitor discovery backend={s}: executable not found: {s}", .{ monitor_backend_name, exe });
+                logger.warn("screen.record monitor discovery backend={s}: executable not found: {s}", .{ monitor_backend_powershell_name, exe });
                 continue;
             },
             else => {
-                logger.warn("screen.record monitor discovery backend={s}: failed to start {s}: {s}", .{ monitor_backend_name, exe, @errorName(err) });
+                logger.warn("screen.record monitor discovery backend={s}: failed to start {s}: {s}", .{ monitor_backend_powershell_name, exe, @errorName(err) });
                 saw_executable = true;
                 last_error = err;
                 continue;
@@ -662,7 +803,7 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
 
         const exit_code = childTermToExitCode(res.term);
         if (exit_code != 0) {
-            logger.warn("screen.record monitor discovery backend={s} failed via {s}: exit={d} stderr={s}", .{ monitor_backend_name, exe, exit_code, res.stderr });
+            logger.warn("screen.record monitor discovery backend={s} failed via {s}: exit={d} stderr={s}", .{ monitor_backend_powershell_name, exe, exit_code, res.stderr });
             allocator.free(res.stdout);
             allocator.free(res.stderr);
             last_error = error.CommandFailed;
@@ -728,6 +869,22 @@ test "ScreenRecordFormat.fromString accepts mp4" {
     try std.testing.expect(ScreenRecordFormat.fromString("mp4").? == .mp4);
     try std.testing.expect(ScreenRecordFormat.fromString("MP4").? == .mp4);
     try std.testing.expect(ScreenRecordFormat.fromString("webm") == null);
+}
+
+test "formatDshowAudioInputAlloc uses requested device or defaults" {
+    const allocator = std.testing.allocator;
+
+    const named = try formatDshowAudioInputAlloc(allocator, "Microphone Array");
+    defer allocator.free(named);
+    try std.testing.expectEqualStrings("audio=Microphone Array", named);
+
+    const blank = try formatDshowAudioInputAlloc(allocator, "   ");
+    defer allocator.free(blank);
+    try std.testing.expectEqualStrings("audio=default", blank);
+
+    const missing = try formatDshowAudioInputAlloc(allocator, null);
+    defer allocator.free(missing);
+    try std.testing.expectEqualStrings("audio=default", missing);
 }
 
 test "detectBackendSupport returns false on non-Windows targets" {
