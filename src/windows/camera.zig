@@ -161,7 +161,10 @@ pub fn listCameras(allocator: std.mem.Allocator) CameraListError![]CameraDevice 
 
     const script =
         "$ErrorActionPreference='Stop'; " ++
-        "$devices = Get-CimInstance Win32_PnPEntity | ? { $_.PNPClass -eq 'Camera' -or $_.PNPClass -eq 'Image' } | Select-Object Name,PNPDeviceID; " ++
+        // Ensure PowerShell 5.1 emits UTF-8 when stdout is redirected (Child.run pipes stdout).
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); " ++
+        // Prefer PNPClass=Camera, but also include legacy Image devices only when they map to USB video.
+        "$devices = Get-CimInstance Win32_PnPEntity | ? { ($_.PNPClass -eq 'Camera') -or ($_.PNPClass -eq 'Image' -and $_.Service -eq 'usbvideo') } | Select-Object Name,PNPDeviceID; " ++
         "$devices | ConvertTo-Json -Compress";
 
     const out = runPowershellJson(allocator, script) catch |err| switch (err) {
@@ -515,11 +518,103 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
 
         // Ignore stderr if exit code is 0; some PS setups may emit warnings.
         allocator.free(res.stderr);
-        return res.stdout;
+        return normalizePowershellJsonStdoutToUtf8Alloc(allocator, res.stdout);
     }
 
     if (!saw_executable) return error.FileNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn normalizePowershellJsonStdoutToUtf8Alloc(allocator: std.mem.Allocator, raw_owned: []u8) ![]u8 {
+    // `std.process.Child.run` captures stdout via pipes on Windows. Depending on the PowerShell
+    // version + host configuration, this may arrive as UTF-16LE (often with a BOM) or UTF-8.
+    // JSON parsing in Zig expects UTF-8, so we normalize here.
+    if (raw_owned.len == 0) return raw_owned;
+
+    // UTF-16LE BOM
+    if (raw_owned.len >= 2 and raw_owned[0] == 0xFF and raw_owned[1] == 0xFE) {
+        return decodeUtf16LeBytesToUtf8Alloc(allocator, raw_owned, 2);
+    }
+
+    // Heuristic: UTF-16LE text often has NUL bytes in every odd position for ASCII JSON.
+    if (looksLikeUtf16Le(raw_owned)) {
+        return decodeUtf16LeBytesToUtf8Alloc(allocator, raw_owned, 0);
+    }
+
+    var out = raw_owned;
+
+    // Strip UTF-8 BOM if present.
+    if (out.len >= 3 and out[0] == 0xEF and out[1] == 0xBB and out[2] == 0xBF) {
+        const trimmed = try allocator.dupe(u8, out[3..]);
+        allocator.free(out);
+        out = trimmed;
+    }
+
+    // Trim any trailing NUL bytes.
+    var end = out.len;
+    while (end > 0 and out[end - 1] == 0) : (end -= 1) {}
+    if (end != out.len) {
+        const trimmed = try allocator.dupe(u8, out[0..end]);
+        allocator.free(out);
+        out = trimmed;
+    }
+
+    return out;
+}
+
+fn looksLikeUtf16Le(bytes: []const u8) bool {
+    if (bytes.len < 4) return false;
+    if (bytes.len % 2 != 0) return false;
+
+    var odd_zeros: usize = 0;
+    var odd_total: usize = 0;
+    var i: usize = 1;
+    while (i < bytes.len) : (i += 2) {
+        odd_total += 1;
+        if (bytes[i] == 0) odd_zeros += 1;
+    }
+
+    // If >= 60% of odd bytes are NUL, it is very likely UTF-16LE ASCII text.
+    return odd_total > 0 and (odd_zeros * 10 >= odd_total * 6);
+}
+
+fn decodeUtf16LeBytesToUtf8Alloc(allocator: std.mem.Allocator, raw_owned: []u8, start: usize) ![]u8 {
+    defer allocator.free(raw_owned);
+
+    if (start >= raw_owned.len) return try allocator.dupe(u8, "");
+
+    const bytes = raw_owned[start..];
+    const even_len = bytes.len - (bytes.len % 2);
+    const utf16_len = even_len / 2;
+
+    var utf16 = try allocator.alloc(u16, utf16_len);
+    defer allocator.free(utf16);
+
+    var idx: usize = 0;
+    while (idx < utf16_len) : (idx += 1) {
+        const off = idx * 2;
+        utf16[idx] = std.mem.readInt(u16, bytes[off .. off + 2], .little);
+    }
+
+    var utf8_owned = try std.unicode.utf16LeToUtf8Alloc(allocator, utf16);
+
+    // Strip UTF-8 BOM if present after conversion.
+    if (utf8_owned.len >= 3 and utf8_owned[0] == 0xEF and utf8_owned[1] == 0xBB and utf8_owned[2] == 0xBF) {
+        const trimmed = try allocator.dupe(u8, utf8_owned[3..]);
+        allocator.free(utf8_owned);
+        utf8_owned = trimmed;
+    }
+
+    // Trim any trailing NUL bytes.
+    var end = utf8_owned.len;
+    while (end > 0 and utf8_owned[end - 1] == 0) : (end -= 1) {}
+    if (end != utf8_owned.len) {
+        const trimmed = try allocator.dupe(u8, utf8_owned[0..end]);
+        allocator.free(utf8_owned);
+        utf8_owned = trimmed;
+    }
+
+    return utf8_owned;
 }
 
 fn runFfmpegSingleFrame(
@@ -1022,6 +1117,24 @@ test "parseDevicesJson handles object/array/null payloads" {
     const empty = try parseDevicesJson(allocator, json_null);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "normalizePowershellJsonStdoutToUtf8Alloc converts UTF-16LE output" {
+    const allocator = std.testing.allocator;
+
+    // UTF-16LE BOM + "[]".
+    const utf16le_bom_bytes = &[_]u8{ 0xFF, 0xFE, '[', 0x00, ']', 0x00 };
+    const owned = try allocator.dupe(u8, utf16le_bom_bytes);
+    const normalized = try normalizePowershellJsonStdoutToUtf8Alloc(allocator, owned);
+    defer allocator.free(normalized);
+    try std.testing.expectEqualStrings("[]", normalized);
+
+    // Heuristic path (no BOM): UTF-16LE "null".
+    const utf16le_no_bom = &[_]u8{ 'n', 0x00, 'u', 0x00, 'l', 0x00, 'l', 0x00 };
+    const owned2 = try allocator.dupe(u8, utf16le_no_bom);
+    const normalized2 = try normalizePowershellJsonStdoutToUtf8Alloc(allocator, owned2);
+    defer allocator.free(normalized2);
+    try std.testing.expectEqualStrings("null", normalized2);
 }
 
 test "listCameras returns NotSupported on non-Windows targets" {
