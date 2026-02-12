@@ -1,6 +1,6 @@
 # ZiggyStarClaw CLI TUI Plan
 
-Status: Draft design plan for work item 14 (`[zsc]` no-auto-merge)
+Status: Design plan (ready for staged implementation) for work item 14 (`[zsc]` no-auto-merge)
 
 ## 1) Goals and scope
 
@@ -289,7 +289,47 @@ Acceptance:
 
 ---
 
-## 7) Testing strategy
+## 7) Command parity map (v1 scope)
+
+The following map keeps the first TUI release grounded in existing CLI capabilities.
+
+- **Dashboard**
+  - read-only status from: `session list`, `node list`, `approvals list`
+  - recent outcomes sourced from in-process command history ring buffer
+- **Chat**
+  - send: `chat send <message>`
+  - session switching: `session list`, `session use <key>`
+- **Sessions**
+  - list/select default session: `session list`, `session use <key>`
+- **Nodes**
+  - list/select default node: `node list`, `node use <id>`
+  - node operations: `node run`, `node which`, `node notify`
+- **Approvals**
+  - list/approve/deny: `approvals list`, `approvals approve`, `approvals deny`
+- **Processes**
+  - list/spawn/poll/stop: `node process list|spawn|poll|stop`
+- **Devices**
+  - pairing flows: `device list`, `device approve`, `device reject`
+- **Canvas**
+  - wrappers for: `node canvas present|hide|navigate|eval|snapshot`
+
+Out of scope for v1 (deferred until parity is stable):
+- introducing TUI-only actions with no CLI equivalent
+- introducing alternate semantics for existing noun-verb commands
+
+---
+
+## 8) Definition of done (for initial TUI release)
+
+- A user can complete daily operator flows (chat send, session/node selection, approvals, basic node commands) entirely from keyboard.
+- Core actions produce outcomes equivalent to CLI execution for the same inputs.
+- Failures are visible as structured, user-facing error banners (not silent log-only failures).
+- `ziggystarclaw-cli tui` is documented in user docs with keybindings and quickstart.
+- Smoke-tested on Linux, Windows Terminal, and at least one macOS terminal emulator.
+
+---
+
+## 9) Testing strategy
 
 - **Unit tests**
   - command palette parser and keybinding behavior
@@ -303,7 +343,7 @@ Acceptance:
 
 ---
 
-## 8) Risks and mitigations
+## 10) Risks and mitigations
 
 1. **Behavior drift between CLI and TUI**
    - Mitigation: prioritize shared action layer by Phase 4.
@@ -319,7 +359,7 @@ Acceptance:
 
 ---
 
-## 9) Delivery notes
+## 11) Delivery notes
 
 - This plan favors incremental, reviewable PR slices.
 - The first usable milestone is Phase 2 (core daily workflows).
