@@ -63,6 +63,10 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
+        # Accept either modern command docs or legacy option docs depending on which
+        # binary is present on the local machine.
+        assert "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
+        assert "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
 
     def test_node_service_help_prefers_verb_noun(self, cli):
         """Help text promotes node service verb-noun commands"""

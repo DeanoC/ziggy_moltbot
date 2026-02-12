@@ -27,23 +27,25 @@ Main sections:
   zig build -Dclient=false -Dcli_operator=false
   ```
 
-## Quick commands
+## Quick commands (preferred noun-verb style)
 - Send a message:
   ```bash
-  ziggystarclaw-cli --send "hello"
+  ziggystarclaw-cli chat send "hello"
   ```
 - List sessions:
   ```bash
-  ziggystarclaw-cli --list-sessions
+  ziggystarclaw-cli session list
   ```
 - List nodes:
   ```bash
-  ziggystarclaw-cli --list-nodes
+  ziggystarclaw-cli node list
   ```
 - Run a command on a node:
   ```bash
-  ziggystarclaw-cli --node <id> --run "uname -a"
+  ziggystarclaw-cli --node <id> node run "uname -a"
   ```
+
+Legacy flag-style options remain supported for compatibility.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
@@ -82,15 +84,23 @@ Commands:
 - `--run` uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
-  ziggystarclaw-cli --use-session <key> --use-node <id> --save-config
+  ziggystarclaw-cli session use <key> --save-config
+  ziggystarclaw-cli node use <id> --save-config
   ```
 
 ## Approvals
 If your server requires approval for certain actions:
 ```bash
-ziggystarclaw-cli --list-approvals
-ziggystarclaw-cli --approve <id>
-ziggystarclaw-cli --deny <id>
+ziggystarclaw-cli approvals list
+ziggystarclaw-cli approvals approve <id>
+ziggystarclaw-cli approvals deny <id>
+```
+
+Device pairing approvals (operator scope):
+```bash
+ziggystarclaw-cli device list
+ziggystarclaw-cli device approve <requestId>
+ziggystarclaw-cli device reject <requestId>
 ```
 
 ## Common pitfalls
