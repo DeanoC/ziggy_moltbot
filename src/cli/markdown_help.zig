@@ -28,13 +28,9 @@ pub fn detectRenderModeForStdout(allocator: std.mem.Allocator) RenderMode {
         if (trimmed.len == 1 and trimmed[0] == '0') return .plain;
     }
 
-    if (envVarValueOwned(allocator, "TERM")) |term| {
-        defer allocator.free(term);
-        const trimmed = std.mem.trim(u8, term, " \t\r\n");
-        if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "dumb")) return .plain;
-    } else {
-        return .plain;
-    }
+    // Use Zig stdlib detection so Windows consoles (and other non-POSIX terminals)
+    // can still get ANSI when it is supported/enabled.
+    if (!stdout.getOrEnableAnsiEscapeSupport()) return .plain;
 
     return .ansi;
 }
