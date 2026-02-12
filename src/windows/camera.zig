@@ -589,7 +589,7 @@ fn decodeUtf16LeBytesToUtf8Alloc(allocator: std.mem.Allocator, raw_owned: []u8, 
     var idx: usize = 0;
     while (idx < utf16_len) : (idx += 1) {
         const off = idx * 2;
-        utf16[idx] = std.mem.readInt(u16, bytes[off .. off + 2], .little);
+        utf16[idx] = (@as(u16, bytes[off])) | (@as(u16, bytes[off + 1]) << 8);
     }
 
     var utf8_owned = try std.unicode.utf16LeToUtf8Alloc(allocator, utf16);

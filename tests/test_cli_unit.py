@@ -102,6 +102,52 @@ class TestCliHelp:
         assert "Flag --runner-mode was removed" in result.stderr
         assert "--mode service|session" in result.stderr
 
+    @pytest.mark.parametrize(
+        ("legacy_args", "replacement"),
+        [
+            (["--send", "hello"], "chat send <message>"),
+            (["--list-sessions"], "session list"),
+            (["--list-nodes"], "node list"),
+            (["--run", "echo hi"], "node run <command>"),
+            (["--canvas-present"], "node canvas present"),
+            (["--exec-approvals-get"], "node approvals get"),
+            (["--list-approvals"], "approvals list"),
+        ],
+    )
+    def test_deprecated_legacy_action_flags_warn(self, cli, legacy_args, replacement):
+        """Legacy action flags should warn with noun-verb replacement guidance."""
+        result = subprocess.run(
+            [str(cli), *legacy_args, "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Legacy option" in result.stderr
+        assert "is deprecated" in result.stderr
+        assert replacement in result.stderr
+
+    @pytest.mark.parametrize(
+        "modern_args",
+        [
+            ["chat", "send", "hello"],
+            ["session", "list"],
+            ["node", "list"],
+            ["node", "process", "list"],
+            ["node", "canvas", "present"],
+            ["node", "approvals", "get"],
+            ["approvals", "list"],
+        ],
+    )
+    def test_modern_command_surface_parses_without_deprecation_warning(self, cli, modern_args):
+        """Modern noun-verb commands should parse without legacy deprecation warnings."""
+        result = subprocess.run(
+            [str(cli), *modern_args, "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "Legacy option" not in result.stderr
+
     def test_plural_session_alias_parses_actions(self, cli):
         """`sessions` should behave like `session`"""
         result = subprocess.run(

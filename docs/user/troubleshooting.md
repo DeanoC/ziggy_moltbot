@@ -5,7 +5,7 @@
 - Prefer using the latest release page and copy the asset link.
 
 ## “No node specified”
-- Use `--node <id>` or set a default with `--use-node <id> --save-config`.
+- Use `--node <id>` or set a default with `node use <id> --save-config`.
 
 ## “Server URL is empty”
 - Open Settings and set a `ws://` or `wss://` URL.
@@ -20,8 +20,8 @@
 ## Can’t find a session or node
 - Use the CLI to list sessions or nodes:
   ```bash
-  ziggystarclaw-cli --list-sessions
-  ziggystarclaw-cli --list-nodes
+  ziggystarclaw-cli session list
+  ziggystarclaw-cli node list
   ```
 
 Image placeholder: Screenshot of an error state (e.g., TLS error or invalid URL) with key fields highlighted.
