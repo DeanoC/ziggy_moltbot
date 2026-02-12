@@ -166,8 +166,9 @@ pub fn listCameras(allocator: std.mem.Allocator) CameraListError![]CameraDevice 
         "$ErrorActionPreference='Stop'; " ++
         // Ensure PowerShell 5.1 emits UTF-8 when stdout is redirected (Child.run pipes stdout).
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); " ++
-        // Prefer PNPClass=Camera, but also include legacy Image devices only when they map to USB video.
-        "$devices = Get-CimInstance Win32_PnPEntity | ? { ($_.PNPClass -eq 'Camera') -or ($_.PNPClass -eq 'Image' -and $_.Service -eq 'usbvideo') } | Select-Object Name,PNPDeviceID; " ++
+        // Prefer PNPClass=Camera, but keep legacy PNPClass=Image devices for compatibility.
+        // Some cameras expose as Image with non-usbvideo services; filtering those out breaks snap/clip.
+        "$devices = Get-CimInstance Win32_PnPEntity | ? { ($_.PNPClass -eq 'Camera') -or ($_.PNPClass -eq 'Image') } | Select-Object Name,PNPDeviceID; " ++
         "$devices | ConvertTo-Json -Compress";
 
     const out = runPowershellJson(allocator, script) catch |err| switch (err) {
