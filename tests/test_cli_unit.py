@@ -63,10 +63,11 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
+        assert "message|messages|chat send <message>" in result.stdout or "chat send <message>" in result.stdout or "--send <message>" in result.stdout
         # Accept either modern command docs or legacy option docs depending on which
         # binary is present on the local machine.
-        assert "session|sessions list|use <key>" in result.stdout or "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
-        assert "device|devices list|approve <requestId>|reject <requestId>" in result.stdout or "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
+        assert "session|sessions list|use <key>" in result.stdout or "sessions|session list|use <key>" in result.stdout or "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
+        assert "device|devices list|approve <requestId>|reject <requestId>" in result.stdout or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout or "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
         assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
     def test_node_service_help_prefers_verb_noun(self, cli):
@@ -105,12 +106,12 @@ class TestCliHelp:
     @pytest.mark.parametrize(
         ("legacy_args", "replacement"),
         [
-            (["--send", "hello"], "chat send <message>"),
-            (["--list-sessions"], "session list"),
-            (["--list-nodes"], "node list"),
-            (["--run", "echo hi"], "node run <command>"),
-            (["--canvas-present"], "node canvas present"),
-            (["--exec-approvals-get"], "node approvals get"),
+            (["--send", "hello"], "message send <message>"),
+            (["--list-sessions"], "sessions list"),
+            (["--list-nodes"], "nodes list"),
+            (["--run", "echo hi"], "nodes run <command>"),
+            (["--canvas-present"], "nodes canvas present"),
+            (["--exec-approvals-get"], "nodes approvals get"),
             (["--list-approvals"], "approvals list"),
         ],
     )
@@ -130,12 +131,20 @@ class TestCliHelp:
         "modern_args",
         [
             ["chat", "send", "hello"],
+            ["message", "send", "hello"],
+            ["messages", "send", "hello"],
             ["session", "list"],
+            ["sessions", "list"],
             ["node", "list"],
+            ["nodes", "list"],
             ["node", "process", "list"],
+            ["nodes", "process", "list"],
             ["node", "canvas", "present"],
+            ["nodes", "canvas", "present"],
             ["node", "approvals", "get"],
+            ["nodes", "approvals", "get"],
             ["approvals", "list"],
+            ["devices", "list"],
         ],
     )
     def test_modern_command_surface_parses_without_deprecation_warning(self, cli, modern_args):
@@ -158,6 +167,16 @@ class TestCliHelp:
         assert result.returncode != 0
         assert "Unknown session action: nope" in result.stderr
 
+    def test_plural_node_alias_parses_actions(self, cli):
+        """`nodes` should behave like `node`"""
+        result = subprocess.run(
+            [str(cli), "nodes", "nope"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode != 0
+        assert "Unknown subcommand: nodes nope" in result.stderr
+
     def test_plural_device_alias_parses_actions(self, cli):
         """`devices` should behave like `device`"""
         result = subprocess.run(
@@ -167,6 +186,16 @@ class TestCliHelp:
         )
         assert result.returncode != 0
         assert "Unknown device action: nope" in result.stderr
+
+    def test_message_alias_parses_actions(self, cli):
+        """`message` should behave like `chat`"""
+        result = subprocess.run(
+            [str(cli), "message", "nope", "hello"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode != 0
+        assert "Unknown message action: nope" in result.stderr
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows parse-path check")
     def test_tray_startup_modern_and_legacy_aliases_parse(self, cli):
