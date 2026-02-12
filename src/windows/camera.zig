@@ -623,46 +623,8 @@ fn runFfmpegSingleFrame(
     var last_error: ?CameraSnapError = null;
 
     for (ffmpegCandidates()) |exe| {
-        const jpeg_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            "-update",
-            "1",
-            "-y",
-            out_path,
-        };
-
-        const png_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-frames:v",
-            "1",
-            "-update",
-            "1",
-            "-y",
-            out_path,
-        };
-
-        const argv = switch (format) {
-            .jpeg => jpeg_argv,
-            .png => png_argv,
-        };
+        const argv = try buildFfmpegSingleFrameArgv(allocator, exe, format, input_spec, out_path);
+        defer allocator.free(argv);
 
         const res = std.process.Child.run(.{
             .allocator = allocator,
@@ -697,6 +659,50 @@ fn runFfmpegSingleFrame(
 
     if (!saw_executable) return error.FfmpegNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn buildFfmpegSingleFrameArgv(
+    allocator: std.mem.Allocator,
+    exe: []const u8,
+    format: CameraSnapFormat,
+    input_spec: []const u8,
+    out_path: []const u8,
+) ![]const []const u8 {
+    var argv = std.ArrayList([]const u8).empty;
+    errdefer argv.deinit(allocator);
+
+    try argv.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "dshow",
+        "-i",
+        input_spec,
+        "-frames:v",
+        "1",
+    });
+
+    if (format == .jpeg) {
+        try argv.appendSlice(allocator, &.{ "-q:v", "2" });
+    }
+
+    try argv.appendSlice(allocator, &.{
+        "-update",
+        "1",
+        "-y",
+        out_path,
+    });
+
+    return argv.toOwnedSlice(allocator);
+}
+
+fn argvContains(args: []const []const u8, needle: []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, needle)) return true;
+    }
+    return false;
 }
 
 const ClipRunVariant = enum {
@@ -1132,6 +1138,45 @@ test "parsePngDimensions reads width/height from IHDR" {
     const dims = try parsePngDimensions(&png_bytes);
     try std.testing.expectEqual(@as(u32, 1280), dims.width);
     try std.testing.expectEqual(@as(u32, 720), dims.height);
+}
+
+test "buildFfmpegSingleFrameArgv enforces single-frame dshow capture for jpeg" {
+    const allocator = std.testing.allocator;
+
+    const argv = try buildFfmpegSingleFrameArgv(
+        allocator,
+        "ffmpeg",
+        .jpeg,
+        "video=Integrated Camera",
+        "C:/tmp/snap.jpg",
+    );
+    defer allocator.free(argv);
+
+    try std.testing.expect(argvContains(argv, "-f"));
+    try std.testing.expect(argvContains(argv, "dshow"));
+    try std.testing.expect(argvContains(argv, "-frames:v"));
+    try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(argvContains(argv, "-q:v"));
+    try std.testing.expect(argvContains(argv, "-update"));
+    try std.testing.expect(argvContains(argv, "-y"));
+}
+
+test "buildFfmpegSingleFrameArgv omits jpeg quality flag for png" {
+    const allocator = std.testing.allocator;
+
+    const argv = try buildFfmpegSingleFrameArgv(
+        allocator,
+        "ffmpeg",
+        .png,
+        "video=Integrated Camera",
+        "C:/tmp/snap.png",
+    );
+    defer allocator.free(argv);
+
+    try std.testing.expect(argvContains(argv, "-frames:v"));
+    try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(!argvContains(argv, "-q:v"));
+    try std.testing.expect(argvContains(argv, "-update"));
 }
 
 test "parseJpegDimensions reads width/height from SOF" {
