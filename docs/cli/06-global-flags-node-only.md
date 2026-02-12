@@ -1,0 +1,4 @@
+  --save-config            Save --url, --token, --update-url to config file
+  --version                Print version and exit
+  -h, --help               Show help
+  --node-mode-help         Show node mode help

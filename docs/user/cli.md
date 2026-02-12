@@ -7,13 +7,25 @@ The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded dir
 
 Main sections:
 - [Overview](../cli/01-overview.md)
-- [Options](../cli/02-options.md)
+- [Options (full build)](../cli/02-options.md)
+- [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
 - [Tray startup (Windows)](../cli/04-tray-startup.md)
 - [Node service helpers](../cli/05-node-service.md)
-- [Global flags](../cli/06-global-flags.md)
+- [Global flags (full build)](../cli/06-global-flags.md)
+- [Global flags (node-only build)](../cli/06-global-flags-node-only.md)
 - [Node mode help](../cli/node-mode.md)
 - [Operator mode help](../cli/operator-mode.md)
+
+## Build profiles
+- Full CLI (default):
+  ```bash
+  zig build -Dclient=false
+  ```
+- Node-only CLI (smaller binary; operator commands disabled):
+  ```bash
+  zig build -Dclient=false -Dcli_operator=false
+  ```
 
 ## Quick commands
 - Send a message:

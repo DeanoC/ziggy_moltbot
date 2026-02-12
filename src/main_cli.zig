@@ -11,8 +11,27 @@ const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
-const main_operator = @import("main_operator.zig");
 const build_options = @import("build_options");
+const cli_features = @import("cli/features.zig");
+const main_operator = if (cli_features.supports_operator_client)
+    @import("main_operator.zig")
+else
+    struct {
+        pub const usage =
+            "ZiggyStarClaw Operator Mode\n\n" ++
+            "This CLI build was compiled without operator capabilities.\n" ++
+            "Rebuild with -Dcli_operator=true to enable operator-mode.\n";
+
+        pub const OperatorOptionsUnavailable = struct {};
+
+        pub fn parseOperatorOptions(_: std.mem.Allocator, _: []const []const u8) !OperatorOptionsUnavailable {
+            return error.Unsupported;
+        }
+
+        pub fn runOperatorMode(_: std.mem.Allocator, _: OperatorOptionsUnavailable) !void {
+            return error.Unsupported;
+        }
+    };
 // Node mode support is cross-platform (Windows included).
 const main_node = @import("main_node.zig");
 const win_service = @import("windows/service.zig");
@@ -594,11 +613,17 @@ var cli_log_level: std.log.Level = .warn;
 
 const usage =
     @embedFile("../docs/cli/01-overview.md") ++ "\n" ++
-    @embedFile("../docs/cli/02-options.md") ++ "\n" ++
+    (if (cli_features.supports_operator_client)
+        @embedFile("../docs/cli/02-options.md")
+    else
+        @embedFile("../docs/cli/02-options-node-only.md")) ++ "\n" ++
     @embedFile("../docs/cli/03-node-runner.md") ++ "\n" ++
     @embedFile("../docs/cli/04-tray-startup.md") ++ "\n" ++
     @embedFile("../docs/cli/05-node-service.md") ++ "\n" ++
-    @embedFile("../docs/cli/06-global-flags.md");
+    (if (cli_features.supports_operator_client)
+        @embedFile("../docs/cli/06-global-flags.md")
+    else
+        @embedFile("../docs/cli/06-global-flags-node-only.md"));
 
 const ReplCommand = enum {
     help,
@@ -1110,7 +1135,7 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or use_session != null or use_node != null or
-        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
+        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or operator_mode or windows_service_run or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
         node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
         node_runner_install or node_runner_start or node_runner_stop or node_runner_status or
@@ -1119,6 +1144,18 @@ pub fn main() !void {
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(usage);
         return;
+    }
+
+    const operator_action_requested = operator_mode or list_sessions or list_nodes or list_approvals or
+        send_message != null or session_key != null or use_session != null or node_id != null or use_node != null or
+        run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
+        poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
+        canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or interactive;
+
+    if (!cli_features.supports_operator_client and operator_action_requested) {
+        logger.err("{s}", .{cli_features.operator_disabled_hint});
+        return error.Unsupported;
     }
 
     if (extract_wsz) |path| {
@@ -1881,6 +1918,10 @@ pub fn main() !void {
 
     // Handle operator mode
     if (operator_mode) {
+        if (!cli_features.supports_operator_client) {
+            logger.err("{s}", .{cli_features.operator_disabled_hint});
+            return error.Unsupported;
+        }
         const op_opts = try main_operator.parseOperatorOptions(allocator, args[1..]);
         try main_operator.runOperatorMode(allocator, op_opts);
         return;
@@ -2026,6 +2067,11 @@ pub fn main() !void {
             logger.info("Config saved to {s}", .{config_path});
         }
         return;
+    }
+
+    if (comptime !cli_features.supports_operator_client) {
+        logger.err("{s}", .{cli_features.operator_disabled_hint});
+        return error.Unsupported;
     }
 
     var ws_client = websocket_client.WebSocketClient.init(
