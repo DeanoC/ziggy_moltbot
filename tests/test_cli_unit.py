@@ -65,8 +65,9 @@ class TestCliHelp:
         assert "ZiggyStarClaw CLI" in result.stdout
         # Accept either modern command docs or legacy option docs depending on which
         # binary is present on the local machine.
-        assert "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
-        assert "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
+        assert "session|sessions list|use <key>" in result.stdout or "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
+        assert "device|devices list|approve <requestId>|reject <requestId>" in result.stdout or "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
+        assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
     def test_node_service_help_prefers_verb_noun(self, cli):
         """Help text promotes node service verb-noun commands"""
@@ -100,7 +101,46 @@ class TestCliHelp:
         assert result.returncode != 0
         assert "Flag --runner-mode was removed" in result.stderr
         assert "--mode service|session" in result.stderr
-    
+
+    def test_plural_session_alias_parses_actions(self, cli):
+        """`sessions` should behave like `session`"""
+        result = subprocess.run(
+            [str(cli), "sessions", "nope"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode != 0
+        assert "Unknown session action: nope" in result.stderr
+
+    def test_plural_device_alias_parses_actions(self, cli):
+        """`devices` should behave like `device`"""
+        result = subprocess.run(
+            [str(cli), "devices", "nope"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode != 0
+        assert "Unknown device action: nope" in result.stderr
+
+    @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows parse-path check")
+    def test_tray_startup_modern_and_legacy_aliases_parse(self, cli):
+        """Both modern and legacy tray startup forms should parse on non-Windows"""
+        modern = subprocess.run(
+            [str(cli), "tray", "startup", "status"],
+            capture_output=True,
+            text=True
+        )
+        assert modern.returncode != 0
+        assert "tray startup helpers are only supported on Windows" in modern.stderr
+
+        legacy = subprocess.run(
+            [str(cli), "tray", "status"],
+            capture_output=True,
+            text=True
+        )
+        assert legacy.returncode != 0
+        assert "tray startup helpers are only supported on Windows" in legacy.stderr
+
     def test_node_mode_help(self, cli):
         """Node mode help is available"""
         result = subprocess.run(

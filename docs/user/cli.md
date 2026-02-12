@@ -101,7 +101,18 @@ Device pairing approvals (operator scope):
 ziggystarclaw-cli device list
 ziggystarclaw-cli device approve <requestId>
 ziggystarclaw-cli device reject <requestId>
+# plural alias (OpenClaw-style naming)
+ziggystarclaw-cli devices list
 ```
+
+Tray startup task management (Windows):
+```bash
+ziggystarclaw-cli tray startup status
+ziggystarclaw-cli tray startup install
+ziggystarclaw-cli tray startup uninstall
+```
+
+Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
 
 ## Common pitfalls
 - **No node specified for `--run`.**  
