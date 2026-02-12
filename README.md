@@ -44,6 +44,9 @@ zig build
 
 # Run
 zig build run
+
+# Build node-only CLI profile (no operator surface)
+zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
 ```
 
 ## Node install (virgin machine overview)

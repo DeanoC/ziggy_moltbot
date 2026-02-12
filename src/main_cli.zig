@@ -616,7 +616,10 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 
 var cli_log_level: std.log.Level = .warn;
 
-const usage_overview = @embedFile("../docs/cli/01-overview.md");
+const usage_overview = if (cli_features.supports_operator_client)
+    @embedFile("../docs/cli/01-overview.md")
+else
+    @embedFile("../docs/cli/01-overview-node-only.md");
 
 const usage_options = if (cli_features.supports_operator_client)
     @embedFile("../docs/cli/02-options.md")
@@ -1431,7 +1434,8 @@ pub fn main() !void {
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
-        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or interactive;
+        exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or interactive;
 
     if (!cli_features.supports_operator_client and operator_action_requested) {
         logger.err("{s}", .{cli_features.operator_disabled_hint});
