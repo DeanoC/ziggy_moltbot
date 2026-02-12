@@ -148,9 +148,9 @@ pub const CameraBackendSupport = struct {
     clip: bool,
 };
 
-const list_backend_name = "powershell-cim";
-const snap_backend_name = "ffmpeg-dshow";
-const clip_backend_name = "ffmpeg-dshow";
+pub const list_backend_name = "powershell-cim";
+pub const snap_backend_name = "ffmpeg-dshow";
+pub const clip_backend_name = "ffmpeg-dshow";
 
 /// Best-effort Windows camera enumeration.
 ///
