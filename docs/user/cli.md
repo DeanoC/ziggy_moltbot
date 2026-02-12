@@ -30,19 +30,20 @@ Main sections:
 ## Quick commands (preferred noun-verb style)
 - Send a message:
   ```bash
-  ziggystarclaw-cli chat send "hello"
+  ziggystarclaw-cli message send "hello"
   ```
+  (`chat send` and `messages send` are aliases)
 - List sessions:
   ```bash
-  ziggystarclaw-cli session list
+  ziggystarclaw-cli sessions list
   ```
 - List nodes:
   ```bash
-  ziggystarclaw-cli node list
+  ziggystarclaw-cli nodes list
   ```
 - Run a command on a node:
   ```bash
-  ziggystarclaw-cli --node <id> node run "uname -a"
+  ziggystarclaw-cli --node <id> nodes run "uname -a"
   ```
 
 Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
@@ -80,12 +81,12 @@ Commands:
 - `quit` / `exit`
 
 ## Default session/node behavior
-- `chat send` uses the default session if `--session` is not provided.
-- `node run` uses the default node if `--node` is not provided.
+- `message send` (and alias `chat send`) uses the default session if `--session` is not provided.
+- `nodes run` (alias `node run`) uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
-  ziggystarclaw-cli session use <key> --save-config
-  ziggystarclaw-cli node use <id> --save-config
+  ziggystarclaw-cli sessions use <key> --save-config
+  ziggystarclaw-cli nodes use <id> --save-config
   ```
 
 ## Approvals
@@ -98,11 +99,11 @@ ziggystarclaw-cli approvals deny <id>
 
 Device pairing approvals (operator scope):
 ```bash
-ziggystarclaw-cli device list
-ziggystarclaw-cli device approve <requestId>
-ziggystarclaw-cli device reject <requestId>
-# plural alias (OpenClaw-style naming)
 ziggystarclaw-cli devices list
+ziggystarclaw-cli devices approve <requestId>
+ziggystarclaw-cli devices reject <requestId>
+# singular aliases are also supported
+ziggystarclaw-cli device approve <requestId>
 ```
 
 Tray startup task management (Windows):
@@ -115,9 +116,9 @@ ziggystarclaw-cli tray startup uninstall
 Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
 
 ## Common pitfalls
-- **No node specified for `node run`.**  
+- **No node specified for `nodes run`.**  
   Pass `--node <id>` or set a default node in the config.
 - **No sessions available.**  
-  Use `session list` (legacy: `--list-sessions`) to verify the server is providing sessions.
+  Use `sessions list` (legacy: `--list-sessions`) to verify the server is providing sessions.
 - **Token missing/expired.**  
   Re-set `--token` and `--save-config` or update the config file.

@@ -781,11 +781,11 @@ pub fn main() !void {
             return;
         } else if (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes")) {
             // Modern noun-verb command surface (OpenClaw-style where possible):
-            //   ziggystarclaw-cli node list
-            //   ziggystarclaw-cli node run "uname -a"
-            //   ziggystarclaw-cli node process spawn "sleep 10"
-            //   ziggystarclaw-cli node canvas navigate "https://example.com"
-            //   ziggystarclaw-cli node service install
+            //   ziggystarclaw-cli nodes list
+            //   ziggystarclaw-cli nodes run "uname -a"
+            //   ziggystarclaw-cli nodes process spawn "sleep 10"
+            //   ziggystarclaw-cli nodes canvas navigate "https://example.com"
+            //   ziggystarclaw-cli nodes service install
             if (i + 1 >= args.len) return error.InvalidArguments;
             const noun = args[i + 1];
 
@@ -1042,11 +1042,11 @@ pub fn main() !void {
 
             logger.err("Unknown session action: {s}", .{action});
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, arg, "chat")) {
+        } else if (std.mem.eql(u8, arg, "chat") or std.mem.eql(u8, arg, "message") or std.mem.eql(u8, arg, "messages")) {
             if (i + 2 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (!std.mem.eql(u8, action, "send")) {
-                logger.err("Unknown chat action: {s}", .{action});
+                logger.err("Unknown message action: {s}", .{action});
                 return error.InvalidArguments;
             }
             send_message = args[i + 2];
@@ -1198,7 +1198,7 @@ pub fn main() !void {
         // Transitional compatibility shim:
         // keep legacy action-style flags working, but emit guidance toward strict noun-verb commands.
         } else if (std.mem.eql(u8, arg, "--send")) {
-            warnDeprecatedLegacyFlag("--send", "chat send <message>");
+            warnDeprecatedLegacyFlag("--send", "message send <message>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             send_message = args[i];
@@ -1207,89 +1207,89 @@ pub fn main() !void {
             if (i >= args.len) return error.InvalidArguments;
             session_key = args[i];
         } else if (std.mem.eql(u8, arg, "--list-sessions")) {
-            warnDeprecatedLegacyFlag("--list-sessions", "session list");
+            warnDeprecatedLegacyFlag("--list-sessions", "sessions list");
             list_sessions = true;
         } else if (std.mem.eql(u8, arg, "--use-session")) {
-            warnDeprecatedLegacyFlag("--use-session", "session use <key>");
+            warnDeprecatedLegacyFlag("--use-session", "sessions use <key>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             use_session = args[i];
         } else if (std.mem.eql(u8, arg, "--list-nodes")) {
-            warnDeprecatedLegacyFlag("--list-nodes", "node list");
+            warnDeprecatedLegacyFlag("--list-nodes", "nodes list");
             list_nodes = true;
         } else if (std.mem.eql(u8, arg, "--node")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_id = args[i];
         } else if (std.mem.eql(u8, arg, "--use-node")) {
-            warnDeprecatedLegacyFlag("--use-node", "node use <id>");
+            warnDeprecatedLegacyFlag("--use-node", "nodes use <id>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             use_node = args[i];
         } else if (std.mem.eql(u8, arg, "--run")) {
-            warnDeprecatedLegacyFlag("--run", "node run <command>");
+            warnDeprecatedLegacyFlag("--run", "nodes run <command>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             run_command = args[i];
         } else if (std.mem.eql(u8, arg, "--which")) {
-            warnDeprecatedLegacyFlag("--which", "node which <name>");
+            warnDeprecatedLegacyFlag("--which", "nodes which <name>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             which_name = args[i];
         } else if (std.mem.eql(u8, arg, "--notify")) {
-            warnDeprecatedLegacyFlag("--notify", "node notify <title>");
+            warnDeprecatedLegacyFlag("--notify", "nodes notify <title>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             notify_title = args[i];
         } else if (std.mem.eql(u8, arg, "--ps")) {
-            warnDeprecatedLegacyFlag("--ps", "node process list");
+            warnDeprecatedLegacyFlag("--ps", "nodes process list");
             ps_list = true;
         } else if (std.mem.eql(u8, arg, "--spawn")) {
-            warnDeprecatedLegacyFlag("--spawn", "node process spawn <command>");
+            warnDeprecatedLegacyFlag("--spawn", "nodes process spawn <command>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             spawn_command = args[i];
         } else if (std.mem.eql(u8, arg, "--poll")) {
-            warnDeprecatedLegacyFlag("--poll", "node process poll <processId>");
+            warnDeprecatedLegacyFlag("--poll", "nodes process poll <processId>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             poll_process_id = args[i];
         } else if (std.mem.eql(u8, arg, "--stop")) {
-            warnDeprecatedLegacyFlag("--stop", "node process stop <processId>");
+            warnDeprecatedLegacyFlag("--stop", "nodes process stop <processId>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             stop_process_id = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-present")) {
-            warnDeprecatedLegacyFlag("--canvas-present", "node canvas present");
+            warnDeprecatedLegacyFlag("--canvas-present", "nodes canvas present");
             canvas_present = true;
         } else if (std.mem.eql(u8, arg, "--canvas-hide")) {
-            warnDeprecatedLegacyFlag("--canvas-hide", "node canvas hide");
+            warnDeprecatedLegacyFlag("--canvas-hide", "nodes canvas hide");
             canvas_hide = true;
         } else if (std.mem.eql(u8, arg, "--canvas-navigate")) {
-            warnDeprecatedLegacyFlag("--canvas-navigate", "node canvas navigate <url>");
+            warnDeprecatedLegacyFlag("--canvas-navigate", "nodes canvas navigate <url>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             canvas_navigate = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-eval")) {
-            warnDeprecatedLegacyFlag("--canvas-eval", "node canvas eval <js>");
+            warnDeprecatedLegacyFlag("--canvas-eval", "nodes canvas eval <js>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             canvas_eval = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-snapshot")) {
-            warnDeprecatedLegacyFlag("--canvas-snapshot", "node canvas snapshot <path>");
+            warnDeprecatedLegacyFlag("--canvas-snapshot", "nodes canvas snapshot <path>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             canvas_snapshot = args[i];
         } else if (std.mem.eql(u8, arg, "--exec-approvals-get")) {
-            warnDeprecatedLegacyFlag("--exec-approvals-get", "node approvals get");
+            warnDeprecatedLegacyFlag("--exec-approvals-get", "nodes approvals get");
             exec_approvals_get = true;
         } else if (std.mem.eql(u8, arg, "--exec-allow")) {
-            warnDeprecatedLegacyFlag("--exec-allow", "node approvals allow <command>");
+            warnDeprecatedLegacyFlag("--exec-allow", "nodes approvals allow <command>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             exec_allow_cmd = args[i];
         } else if (std.mem.eql(u8, arg, "--exec-allow-file")) {
-            warnDeprecatedLegacyFlag("--exec-allow-file", "node approvals allow-file <path>");
+            warnDeprecatedLegacyFlag("--exec-allow-file", "nodes approvals allow-file <path>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             exec_allow_file = args[i];
@@ -2282,7 +2282,7 @@ pub fn main() !void {
 
     // Allow node commands with default node; only error if neither is provided.
     if (needs_node and node_id == null and cfg.default_node == null) {
-        logger.err("No node specified. Use --node or set a default via `node use <id> --save-config`.", .{});
+        logger.err("No node specified. Use --node or set a default via `nodes use <id> --save-config`.", .{});
         return error.InvalidArguments;
     }
 
@@ -2541,11 +2541,11 @@ pub fn main() !void {
         return;
     }
 
-    // Handle chat send (legacy: --send)
+    // Handle message send (legacy: --send)
     if (send_message) |message| {
         const target_session = session_key orelse cfg.default_session orelse blk: {
             if (ctx.sessions.items.len == 0) {
-                logger.err("No sessions available. Use --session <key> or set a default with `session use <key> --save-config`.", .{});
+                logger.err("No sessions available. Use --session <key> or set a default with `sessions use <key> --save-config`.", .{});
                 return error.NoSessionAvailable;
             }
             break :blk ctx.sessions.items[0].key;
@@ -2596,7 +2596,7 @@ pub fn main() !void {
             }
         }
         if (!node_exists) {
-            logger.err("Node '{s}' not found. Use `node list` (legacy: --list-nodes) to see available nodes.", .{target_node.?});
+            logger.err("Node '{s}' not found. Use `nodes list` (legacy: --list-nodes) to see available nodes.", .{target_node.?});
             return error.NodeNotFound;
         }
     }
