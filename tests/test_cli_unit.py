@@ -81,6 +81,24 @@ class TestCliHelp:
         assert "node service <action>" in result.stdout
         assert "--node-service-install" not in result.stdout
 
+    def test_cli_help_legacy_includes_deprecated_action_flags(self, cli):
+        """Preferred help should not list deprecated action flags; --help-legacy should."""
+        preferred = subprocess.run(
+            [str(cli), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert preferred.returncode == 0
+        assert "--send <message>" not in preferred.stdout
+
+        legacy = subprocess.run(
+            [str(cli), "--help-legacy"],
+            capture_output=True,
+            text=True,
+        )
+        assert legacy.returncode == 0
+        assert "--send <message>" in legacy.stdout
+
     def test_removed_node_service_flag_errors(self, cli):
         """Removed legacy node-service flags should hard-fail with guidance"""
         result = subprocess.run(
