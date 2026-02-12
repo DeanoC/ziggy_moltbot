@@ -10,7 +10,7 @@ The goal is to provide a lightweight alternative to the official companion apps.
 
 
 ## Status
-Active development (latest release: v0.3.1).
+Active development (latest release: v0.3.2).
 
 Highlights:
 - Cross-platform client (Linux, Windows, Android, WASM).

@@ -9,6 +9,7 @@ Always run all platform builds before final responses:
 - Android: `./.tools/zig-0.15.2/zig build -Dandroid=true`
 
 When handling PRs, always check review subcomments (inline threads), not just top-level reviews.
+Before opening or updating a PR, always merge the latest `main` into your branch and resolve conflicts first.
 
 ## Release Instructions
 
