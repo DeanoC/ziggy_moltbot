@@ -427,9 +427,6 @@ fn drawHeader(
 
     const select_label = "Select";
     const select_width = box_size + checkbox_spacing + ctx.measureText(select_label, 0.0)[0];
-    const select_rect = draw_context.Rect.fromMinSize(.{ controls_left, controls_y }, .{ select_width, control_height });
-    _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
-    controls_end = select_rect.max[0];
 
     const tier_label = switch (visibility_tier_ref.*) {
         .normal => "Normal",
@@ -439,36 +436,46 @@ fn drawHeader(
     var tier_buf: [48]u8 = undefined;
     const tier_button_label = std.fmt.bufPrint(&tier_buf, "Tier: {s}", .{tier_label}) catch "Tier";
     const tier_width = ctx.measureText(tier_button_label, 0.0)[0] + t.spacing.sm * 2.0;
-    const tier_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ tier_width, control_height });
-    if (widgets.button.draw(ctx, tier_rect, tier_button_label, queue, .{ .variant = .secondary })) {
-        visibility_tier_ref.* = switch (visibility_tier_ref.*) {
-            .normal => .dev,
-            .dev => .deep_debug,
-            .deep_debug => .normal,
-        };
-    }
-    controls_end = tier_rect.max[0];
 
     var approvals_label_buf: [32]u8 = undefined;
     const approvals_label = std.fmt.bufPrint(&approvals_label_buf, "Approvals ({d})", .{approvals_pending}) catch "Approvals";
     const approvals_width = ctx.measureText(approvals_label, 0.0)[0] + t.spacing.sm * 2.0;
-    const approvals_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ approvals_width, control_height });
-    const open_approvals = widgets.button.draw(ctx, approvals_rect, approvals_label, queue, .{
-        .variant = if (approvals_pending > 0) .primary else .secondary,
-    });
-    controls_end = approvals_rect.max[0];
 
     var activity_label_buf: [32]u8 = undefined;
     const activity_label = std.fmt.bufPrint(&activity_label_buf, "Activity ({d})", .{activity_attention}) catch "Activity";
     const activity_width = ctx.measureText(activity_label, 0.0)[0] + t.spacing.sm * 2.0;
-    const activity_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ activity_width, control_height });
-    const open_activity = widgets.button.draw(ctx, activity_rect, activity_label, queue, .{
-        .variant = if (activity_attention > 0) .primary else .secondary,
-    });
-    controls_end = activity_rect.max[0];
 
-    if (controls_end + gap + reserve_right > right_bound) {
-        controls_end = controls_left;
+    const controls_required = select_width + item_spacing + tier_width + item_spacing + approvals_width + item_spacing + activity_width;
+    const controls_fit = controls_left + controls_required + gap + reserve_right <= right_bound;
+
+    var open_approvals = false;
+    var open_activity = false;
+    if (controls_fit) {
+        const select_rect = draw_context.Rect.fromMinSize(.{ controls_left, controls_y }, .{ select_width, control_height });
+        _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
+        controls_end = select_rect.max[0];
+
+        const tier_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ tier_width, control_height });
+        if (widgets.button.draw(ctx, tier_rect, tier_button_label, queue, .{ .variant = .secondary })) {
+            visibility_tier_ref.* = switch (visibility_tier_ref.*) {
+                .normal => .dev,
+                .dev => .deep_debug,
+                .deep_debug => .normal,
+            };
+        }
+        controls_end = tier_rect.max[0];
+
+        const approvals_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ approvals_width, control_height });
+        open_approvals = widgets.button.draw(ctx, approvals_rect, approvals_label, queue, .{
+            .variant = if (approvals_pending > 0) .primary else .secondary,
+        });
+        controls_end = approvals_rect.max[0];
+
+        const activity_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, controls_y }, .{ activity_width, control_height });
+        open_activity = widgets.button.draw(ctx, activity_rect, activity_label, queue, .{
+            .variant = if (activity_attention > 0) .primary else .secondary,
+        });
+        controls_end = activity_rect.max[0];
     }
 
     var right_cursor = right_bound;

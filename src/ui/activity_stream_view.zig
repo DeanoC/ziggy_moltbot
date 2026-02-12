@@ -319,7 +319,7 @@ fn drawActivityTab(
 
     var total_h: f32 = 0.0;
     for (refs.items) |entry| {
-        total_h += cardHeight(dc, entry) + t.spacing.xs;
+        total_h += cardHeight(dc, ctx, entry) + t.spacing.xs;
     }
     list_scroll_max = @max(0.0, total_h - (list_rect.size()[1] - t.spacing.sm * 2.0));
     widgets.kinetic_scroll.apply(queue, list_rect, &list_scroll_y, list_scroll_max, 30.0);
@@ -332,7 +332,7 @@ fn drawActivityTab(
     dc.pushClip(inner);
     var y = inner.min[1] - list_scroll_y;
     for (refs.items) |entry| {
-        const h = cardHeight(dc, entry);
+        const h = cardHeight(dc, ctx, entry);
         const card_rect = draw_context.Rect.fromMinSize(.{ inner.min[0], y }, .{ inner.size()[0], h });
         if (card_rect.max[1] >= inner.min[1] and card_rect.min[1] <= inner.max[1]) {
             drawCard(allocator, dc, queue, ctx, card_rect, entry);
@@ -342,14 +342,15 @@ fn drawActivityTab(
     dc.popClip();
 }
 
-fn cardHeight(dc: *draw_context.DrawContext, entry: CardRef) f32 {
+fn cardHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, entry: CardRef) f32 {
     const t = dc.theme;
-    var h = dc.lineHeight() * 2.0 + t.spacing.sm * 2.0;
+    const line_h = dc.lineHeight();
+    const details_button_h = line_h + t.spacing.xs;
+    const summary_h = measureTextHeight(dc, entry.summary orelse "(no summary)");
+
+    var h = t.spacing.xs + line_h + t.spacing.xs + summary_h + t.spacing.xs + details_button_h + t.spacing.xs;
     if (isExpanded(expanded_keys[0..expanded_len], entry.key_hash)) {
-        h += dc.lineHeight() * 2.0 + t.spacing.xs * 2.0;
-        if (entry.stdout != null) h += @min(dc.lineHeight() * 6.0, dc.lineHeight() * 2.0 + t.spacing.xs * 2.0);
-        if (entry.stderr != null) h += @min(dc.lineHeight() * 6.0, dc.lineHeight() * 2.0 + t.spacing.xs * 2.0);
-        if (entry.raw_event_json != null and entry.raw_event_json.?.len > 0 and entry.summary != null) h += dc.lineHeight() + t.spacing.xs;
+        h += expandedContentHeight(dc, ctx, entry) + t.spacing.xs;
     }
     return h;
 }
@@ -379,6 +380,7 @@ fn drawCard(
     y += dc.lineHeight() + t.spacing.xs;
     const summary = entry.summary orelse "(no summary)";
     dc.drawText(summary, .{ x, y }, .{ .color = t.colors.text_secondary });
+    const summary_h = measureTextHeight(dc, summary);
 
     const expanded = isExpanded(expanded_keys[0..expanded_len], entry.key_hash);
     const details_label = if (expanded) "Hide details" else "Show details";
@@ -393,13 +395,13 @@ fn drawCard(
 
     if (!expanded) return;
 
-    var detail_y = y + dc.lineHeight() + t.spacing.xs;
+    var detail_y = y + summary_h + t.spacing.xs;
 
     if (entry.params) |params| {
         dc.drawText("params:", .{ x, detail_y }, .{ .color = t.colors.text_secondary });
         detail_y += dc.lineHeight();
         dc.drawText(params, .{ x, detail_y }, .{ .color = t.colors.text_secondary });
-        detail_y += dc.lineHeight() + t.spacing.xs;
+        detail_y += measureTextHeight(dc, params) + t.spacing.xs;
     }
 
     if (entry.stdout) |stdout| {
@@ -408,7 +410,7 @@ fn drawCard(
         dc.drawText("stdout:", .{ x, detail_y }, .{ .color = t.colors.text_secondary });
         detail_y += dc.lineHeight();
         dc.drawText(shown, .{ x, detail_y }, .{ .color = t.colors.text_secondary });
-        detail_y += dc.lineHeight();
+        detail_y += measureTextHeight(dc, shown);
         if (!full and stdout.len > shown.len) {
             const more_label = "show more";
             const more_w = dc.measureText(more_label, 0.0)[0] + t.spacing.sm * 1.5;
@@ -426,7 +428,7 @@ fn drawCard(
         dc.drawText("stderr:", .{ x, detail_y }, .{ .color = t.colors.warning });
         detail_y += dc.lineHeight();
         dc.drawText(shown, .{ x, detail_y }, .{ .color = t.colors.warning });
-        detail_y += dc.lineHeight();
+        detail_y += measureTextHeight(dc, shown);
         if (!full and stderr.len > shown.len) {
             const more_label = "show more";
             const more_w = dc.measureText(more_label, 0.0)[0] + t.spacing.sm * 1.5;
@@ -438,18 +440,58 @@ fn drawCard(
         }
     }
 
-    if (ctx.debug_visibility_tier == .deep_debug and entry.raw_event_json) |json| {
-        const copy_label = "Copy raw event JSON";
-        const copy_w = dc.measureText(copy_label, 0.0)[0] + t.spacing.sm * 2.0;
-        const copy_rect = draw_context.Rect.fromMinSize(.{ x, detail_y }, .{ copy_w, dc.lineHeight() + t.spacing.xs });
-        if (widgets.button.draw(dc, copy_rect, copy_label, queue, .{ .variant = .secondary })) {
-            var buf = allocator.alloc(u8, json.len + 1) catch return;
-            defer allocator.free(buf);
-            @memcpy(buf[0..json.len], json);
-            buf[json.len] = 0;
-            clipboard.setTextZ(buf[0..json.len :0]);
+    if (ctx.debug_visibility_tier == .deep_debug) {
+        if (entry.raw_event_json) |json| {
+            const copy_label = "Copy raw event JSON";
+            const copy_w = dc.measureText(copy_label, 0.0)[0] + t.spacing.sm * 2.0;
+            const copy_rect = draw_context.Rect.fromMinSize(.{ x, detail_y }, .{ copy_w, dc.lineHeight() + t.spacing.xs });
+            if (widgets.button.draw(dc, copy_rect, copy_label, queue, .{ .variant = .secondary })) {
+                var buf = allocator.alloc(u8, json.len + 1) catch return;
+                defer allocator.free(buf);
+                @memcpy(buf[0..json.len], json);
+                buf[json.len] = 0;
+                clipboard.setTextZ(buf[0..json.len :0]);
+            }
         }
     }
+}
+
+fn measureTextHeight(dc: *draw_context.DrawContext, text: []const u8) f32 {
+    return @max(dc.lineHeight(), dc.measureText(text, 0.0)[1]);
+}
+
+fn expandedContentHeight(dc: *draw_context.DrawContext, ctx: *state.ClientContext, entry: CardRef) f32 {
+    const t = dc.theme;
+    const line_h = dc.lineHeight();
+    const button_h = line_h + t.spacing.xs;
+    var h: f32 = 0.0;
+
+    if (entry.params) |params| {
+        h += line_h;
+        h += measureTextHeight(dc, params) + t.spacing.xs;
+    }
+
+    if (entry.stdout) |stdout| {
+        const full = isExpanded(expanded_stdout[0..expanded_stdout_len], entry.key_hash);
+        const shown = if (full) stdout else shorten(stdout, 800);
+        h += line_h;
+        h += measureTextHeight(dc, shown);
+        if (!full and stdout.len > shown.len) h += button_h;
+    }
+
+    if (entry.stderr) |stderr| {
+        const full = isExpanded(expanded_stderr[0..expanded_stderr_len], entry.key_hash);
+        const shown = if (full) stderr else shorten(stderr, 800);
+        h += line_h;
+        h += measureTextHeight(dc, shown);
+        if (!full and stderr.len > shown.len) h += button_h;
+    }
+
+    if (ctx.debug_visibility_tier == .deep_debug and entry.raw_event_json != null and entry.raw_event_json.?.len > 0) {
+        h += button_h;
+    }
+
+    return h;
 }
 
 fn matchesTab(source: state.ActivitySource) bool {

@@ -1353,6 +1353,8 @@ fn drawWorkspaceHost(
         }
     }
 
+    ctx.debug_visibility_tier = .normal;
+
     for (layout_result.slice()) |group| {
         const node = layout_graph.getNode(group.node_id) orelse continue;
         const tabs_node = switch (node.*) {
@@ -2015,7 +2017,9 @@ fn drawPanelContents(
                     allocator.free(message);
                 }
             }
-            ctx.debug_visibility_tier = panel.data.Chat.visibility_tier;
+            if (panel.state.is_focused) {
+                ctx.debug_visibility_tier = panel.data.Chat.visibility_tier;
+            }
 
             replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
             setOwnedSlice(allocator, &action.select_session_id, chat_action.select_session_id);
