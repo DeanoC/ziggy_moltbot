@@ -109,3 +109,14 @@ pub fn acquireNodeOwnerMutex(allocator: std.mem.Allocator) !AcquireResult {
         node_owner_lock_local,
     );
 }
+
+/// Acquire a process mutex using shared Global->Local fallback semantics.
+///
+/// Intended for process single-instance guards (for example, tray startup).
+pub fn acquireNamedProcessMutex(
+    allocator: std.mem.Allocator,
+    global_name: []const u8,
+    local_name: []const u8,
+) !AcquireResult {
+    return acquireNamedMutex(allocator, global_name, local_name);
+}

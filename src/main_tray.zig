@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const scm_service = @import("windows/scm_service.zig");
 const win_task = @import("windows/service.zig");
+const win_single_instance = @import("windows/single_instance.zig");
 
 // Windows tray app MVP: status + start/stop/restart + open logs.
 //
@@ -41,6 +42,9 @@ const TIMER_TRAY_ATTACH: usize = 2;
 
 const NODE_CONTROL_PIPE: []const u8 = "\\\\.\\pipe\\ZiggyStarClaw.NodeControl";
 
+const tray_lock_global = "Global\\ZiggyStarClaw.Tray.Singleton";
+const tray_lock_local = "Local\\ZiggyStarClaw.Tray.Singleton";
+
 const IDM_COPY_VERSION: u16 = 998;
 const IDM_VERSION: u16 = 999;
 const IDM_STATUS: u16 = 1000;
@@ -78,24 +82,43 @@ var g_last_tray_add_error: u32 = 0xffffffff;
 fn trayMain(allocator: std.mem.Allocator) !void {
     g_allocator = allocator;
 
-    // Single instance guard (best-effort).
-    const tray_lock_name = "ZiggyStarClaw.Tray.Singleton";
+    // Single instance guard for the tray process itself.
     const tray_pid: u32 = @intCast(win.GetCurrentProcessId());
-    const mutex_name = try utf16Z(allocator, tray_lock_name);
-    defer allocator.free(mutex_name);
-    const hMutex = win.CreateMutexW(null, win.TRUE, mutex_name.ptr);
-    if (hMutex != null) {
-        // ERROR_ALREADY_EXISTS = 183
-        if (win.GetLastError() == 183) {
-            var denied_buf: [160]u8 = undefined;
-            const denied = std.fmt.bufPrint(&denied_buf, "single_instance_denied_existing_owner mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_denied_existing_owner mode=tray";
-            logLine(denied);
-            _ = win.CloseHandle(hMutex);
-            return;
+    const mutex = win_single_instance.acquireNamedProcessMutex(
+        allocator,
+        tray_lock_global,
+        tray_lock_local,
+    ) catch |err| {
+        var err_buf: [160]u8 = undefined;
+        const err_line = std.fmt.bufPrint(&err_buf, "single_instance_error mode=tray pid={d} err={s}", .{ tray_pid, @errorName(err) }) catch "single_instance_error mode=tray";
+        logLine(err_line);
+        return err;
+    };
+    const owns_single_instance = !mutex.already_running;
+    defer {
+        if (owns_single_instance) {
+            var released_buf: [180]u8 = undefined;
+            const released = std.fmt.bufPrint(&released_buf, "single_instance_owner_released mode=tray pid={d} lock={s}", .{ tray_pid, mutex.name_used_utf8 }) catch "single_instance_owner_released mode=tray";
+            logLine(released);
         }
-        var acquired_buf: [160]u8 = undefined;
-        const acquired = std.fmt.bufPrint(&acquired_buf, "single_instance_acquired mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_acquired mode=tray";
-        logLine(acquired);
+        std.os.windows.CloseHandle(mutex.handle);
+    }
+
+    if (mutex.already_running) {
+        var denied_buf: [180]u8 = undefined;
+        const denied = std.fmt.bufPrint(&denied_buf, "single_instance_denied_existing_owner mode=tray pid={d} lock={s}", .{ tray_pid, mutex.name_used_utf8 }) catch "single_instance_denied_existing_owner mode=tray";
+        logLine(denied);
+        return;
+    }
+
+    var acquired_buf: [180]u8 = undefined;
+    const acquired = std.fmt.bufPrint(&acquired_buf, "single_instance_acquired mode=tray pid={d} lock={s}", .{ tray_pid, mutex.name_used_utf8 }) catch "single_instance_acquired mode=tray";
+    logLine(acquired);
+
+    if (std.mem.startsWith(u8, mutex.name_used_utf8, "Local\\")) {
+        var scope_buf: [180]u8 = undefined;
+        const scope_line = std.fmt.bufPrint(&scope_buf, "single_instance_scope_local mode=tray pid={d} lock={s}", .{ tray_pid, mutex.name_used_utf8 }) catch "single_instance_scope_local mode=tray";
+        logLine(scope_line);
     }
 
     const hInstance = win.GetModuleHandleW(null);
@@ -162,13 +185,6 @@ fn trayMain(allocator: std.mem.Allocator) !void {
     while (win.GetMessageW(&msg, null, 0, 0) > 0) {
         _ = win.TranslateMessage(&msg);
         _ = win.DispatchMessageW(&msg);
-    }
-
-    if (hMutex != null) {
-        var released_buf: [160]u8 = undefined;
-        const released = std.fmt.bufPrint(&released_buf, "single_instance_owner_released mode=tray pid={d} lock={s}", .{ tray_pid, tray_lock_name }) catch "single_instance_owner_released mode=tray";
-        logLine(released);
-        _ = win.CloseHandle(hMutex);
     }
 }
 
