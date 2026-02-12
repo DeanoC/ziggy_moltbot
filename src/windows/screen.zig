@@ -101,7 +101,8 @@ pub fn detectBackendSupport(allocator: std.mem.Allocator) ScreenBackendSupport {
 /// - monitor-index mapping uses PowerShell Forms metadata; if unavailable,
 ///   `screenIndex=0` falls back to legacy desktop capture and non-zero indices
 ///   are rejected.
-/// - video-only capture (`includeAudio` is ignored, `hasAudio=false`)
+/// - when `includeAudio=true`, audio capture is best-effort and may fall back
+///   to video-only output (`hasAudio=false`) if no usable audio source exists.
 pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) ScreenRecordError!ScreenRecordResult {
     if (builtin.target.os.tag != .windows) return error.NotSupported;
 
@@ -110,10 +111,6 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
 
     if (req.durationMs == 0 or req.durationMs > 300_000) return error.InvalidParams;
     if (req.fps == 0 or req.fps > 60) return error.InvalidParams;
-
-    if (req.includeAudio) {
-        logger.warn("screen.record backend={s}: includeAudio requested but audio capture is not implemented yet; capturing video-only", .{screen_backend_name});
-    }
 
     const capture_target = resolveCaptureTarget(allocator, req.screenIndex) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -139,7 +136,7 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
     defer allocator.free(out_path);
     defer std.fs.deleteFileAbsolute(out_path) catch {};
 
-    try runFfmpegDesktopCapture(allocator, req, capture_target, out_path);
+    const has_audio = try runFfmpegDesktopCapture(allocator, req, capture_target, out_path);
 
     const file = std.fs.openFileAbsolute(out_path, .{}) catch {
         logger.err("screen.record backend={s} output file missing: {s}", .{ screen_backend_name, out_path });
@@ -166,7 +163,7 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
         .durationMs = req.durationMs,
         .fps = req.fps,
         .screenIndex = req.screenIndex,
-        .hasAudio = false,
+        .hasAudio = has_audio,
     };
 }
 
@@ -220,14 +217,23 @@ fn resolveCaptureTarget(allocator: std.mem.Allocator, screen_index: u32) ScreenR
     } };
 }
 
+const ScreenRunVariant = enum {
+    video_only,
+    with_audio,
+};
+
+const ScreenRunOutcome = enum {
+    executable_missing,
+    failed,
+    success,
+};
+
 fn runFfmpegDesktopCapture(
     allocator: std.mem.Allocator,
     req: ScreenRecordRequest,
     capture_target: CaptureTarget,
     out_path: []const u8,
-) ScreenRecordError!void {
-    _ = req.includeAudio;
-
+) ScreenRecordError!bool {
     const fps_arg = try std.fmt.allocPrint(allocator, "{d}", .{req.fps});
     defer allocator.free(fps_arg);
 
@@ -260,87 +266,179 @@ fn runFfmpegDesktopCapture(
     var last_error: ?ScreenRecordError = null;
 
     for (ffmpegCandidates()) |exe| {
-        var argv_list = std.ArrayList([]const u8).empty;
-        defer argv_list.deinit(allocator);
-
-        try argv_list.appendSlice(allocator, &.{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            fps_arg,
-        });
-
-        switch (capture_target) {
-            .desktop => {},
-            .monitor => {
-                try argv_list.appendSlice(allocator, &.{
-                    "-offset_x",
-                    offset_x_arg.?,
-                    "-offset_y",
-                    offset_y_arg.?,
-                    "-video_size",
-                    video_size_arg.?,
-                });
-            },
+        if (req.includeAudio) {
+            const audio_outcome = try runFfmpegDesktopCaptureVariant(
+                allocator,
+                capture_target,
+                fps_arg,
+                duration_arg,
+                offset_x_arg,
+                offset_y_arg,
+                video_size_arg,
+                out_path,
+                exe,
+                .with_audio,
+            );
+            switch (audio_outcome) {
+                .success => return true,
+                .executable_missing => {},
+                .failed => {
+                    saw_executable = true;
+                    last_error = error.CommandFailed;
+                    logger.warn(
+                        "screen.record backend={s}: includeAudio capture failed via {s}; retrying video-only",
+                        .{ screen_backend_name, exe },
+                    );
+                },
+            }
         }
 
-        try argv_list.appendSlice(allocator, &.{
-            "-i",
-            "desktop",
-            "-t",
+        const video_only_outcome = try runFfmpegDesktopCaptureVariant(
+            allocator,
+            capture_target,
+            fps_arg,
             duration_arg,
-            "-pix_fmt",
-            "yuv420p",
-            "-c:v",
-            "mpeg4",
-            "-q:v",
-            "5",
-            "-movflags",
-            "+faststart",
-            "-y",
+            offset_x_arg,
+            offset_y_arg,
+            video_size_arg,
             out_path,
-        });
-
-        const argv = try argv_list.toOwnedSlice(allocator);
-        defer allocator.free(argv);
-
-        const res = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = argv,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
+            exe,
+            .video_only,
+        );
+        switch (video_only_outcome) {
+            .success => return false,
+            .executable_missing => continue,
+            .failed => {
                 saw_executable = true;
-                logger.warn("screen.record backend={s} failed to start {s}: {s}", .{ screen_backend_name, exe, @errorName(err) });
                 last_error = error.CommandFailed;
                 continue;
             },
-        };
-
-        saw_executable = true;
-
-        const exit_code = childTermToExitCode(res.term);
-        if (exit_code != 0) {
-            logger.warn("screen.record backend={s} failed via {s}: exit={d} stderr={s}", .{ screen_backend_name, exe, exit_code, res.stderr });
-            allocator.free(res.stdout);
-            allocator.free(res.stderr);
-            last_error = error.CommandFailed;
-            continue;
         }
-
-        allocator.free(res.stdout);
-        allocator.free(res.stderr);
-        return;
     }
 
     if (!saw_executable) return error.FfmpegNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn runFfmpegDesktopCaptureVariant(
+    allocator: std.mem.Allocator,
+    capture_target: CaptureTarget,
+    fps_arg: []const u8,
+    duration_arg: []const u8,
+    offset_x_arg: ?[]const u8,
+    offset_y_arg: ?[]const u8,
+    video_size_arg: ?[]const u8,
+    out_path: []const u8,
+    exe: []const u8,
+    variant: ScreenRunVariant,
+) ScreenRecordError!ScreenRunOutcome {
+    var argv_list = std.ArrayList([]const u8).empty;
+    defer argv_list.deinit(allocator);
+
+    try argv_list.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "gdigrab",
+        "-framerate",
+        fps_arg,
+    });
+
+    switch (capture_target) {
+        .desktop => {},
+        .monitor => {
+            try argv_list.appendSlice(allocator, &.{
+                "-offset_x",
+                offset_x_arg.?,
+                "-offset_y",
+                offset_y_arg.?,
+                "-video_size",
+                video_size_arg.?,
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-i",
+        "desktop",
+        "-t",
+        duration_arg,
+    });
+
+    if (variant == .with_audio) {
+        try argv_list.appendSlice(allocator, &.{
+            "-f",
+            "dshow",
+            "-i",
+            "audio=default",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+        });
+    } else {
+        try argv_list.append(allocator, "-an");
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-pix_fmt",
+        "yuv420p",
+        "-c:v",
+        "mpeg4",
+        "-q:v",
+        "5",
+    });
+
+    if (variant == .with_audio) {
+        try argv_list.appendSlice(allocator, &.{
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-ac",
+            "1",
+            "-ar",
+            "22050",
+            "-shortest",
+        });
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-movflags",
+        "+faststart",
+        "-y",
+        out_path,
+    });
+
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer allocator.free(argv);
+
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 1024 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return .executable_missing,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            logger.warn("screen.record backend={s} failed to start {s}: {s}", .{ screen_backend_name, exe, @errorName(err) });
+            return .failed;
+        },
+    };
+
+    const exit_code = childTermToExitCode(res.term);
+    if (exit_code != 0) {
+        logger.warn("screen.record backend={s} failed via {s}: exit={d} stderr={s}", .{ screen_backend_name, exe, exit_code, res.stderr });
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+        return .failed;
+    }
+
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+    return .success;
 }
 
 fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
