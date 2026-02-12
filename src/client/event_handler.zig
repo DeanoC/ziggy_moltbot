@@ -129,6 +129,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             std.mem.eql(u8, ctx.pending_node_invoke_request_id.?, response_id);
         const is_node_describe = ctx.pending_node_describe_request_id != null and
             std.mem.eql(u8, ctx.pending_node_describe_request_id.?, response_id);
+        const is_agents_create = ctx.pending_agents_create_request_id != null and
+            std.mem.eql(u8, ctx.pending_agents_create_request_id.?, response_id);
+        const is_agents_update = ctx.pending_agents_update_request_id != null and
+            std.mem.eql(u8, ctx.pending_agents_update_request_id.?, response_id);
+        const is_agents_delete = ctx.pending_agents_delete_request_id != null and
+            std.mem.eql(u8, ctx.pending_agents_delete_request_id.?, response_id);
         const is_approval_resolve = ctx.pending_approval_resolve_request_id != null and
             std.mem.eql(u8, ctx.pending_approval_resolve_request_id.?, response_id);
 
@@ -139,6 +145,9 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             if (is_nodes) ctx.clearPendingNodesRequest();
             if (is_node_invoke) ctx.clearPendingNodeInvokeRequest();
             if (is_node_describe) ctx.clearPendingNodeDescribeRequest();
+            if (is_agents_create) ctx.clearPendingAgentsCreateRequest();
+            if (is_agents_update) ctx.clearPendingAgentsUpdateRequest();
+            if (is_agents_delete) ctx.clearPendingAgentsDeleteRequest();
             if (is_approval_resolve) ctx.clearPendingApprovalResolveRequest();
 
             if (frame.value.@"error") |err| {
@@ -149,6 +158,10 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 }
                 if (is_node_describe or is_approval_resolve) {
                     ctx.setOperatorNotice(err.message) catch {};
+                }
+                if (is_agents_create or is_agents_update or is_agents_delete) {
+                    ctx.setOperatorNotice(err.message) catch {};
+                    return null;
                 }
                 if (err.details) |details| {
                     if (details == .object) {
@@ -161,6 +174,10 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 }
             } else {
                 logger.err("Gateway request failed: {s}", .{raw});
+                if (is_agents_create or is_agents_update or is_agents_delete) {
+                    ctx.setOperatorNotice("Agent request failed.") catch {};
+                    return null;
+                }
             }
             ctx.state = .error_state;
             return null;
@@ -174,6 +191,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 {
                     ctx.state = .connected;
                     logger.info("Gateway connected", .{});
+
+                    if (try extractGatewayMethods(ctx.allocator, payload)) |methods| {
+                        ctx.setGatewayMethodsOwned(methods);
+                    } else {
+                        ctx.clearGatewayMethods();
+                    }
 
                     if (extractGatewayIdentity(payload)) |identity| {
                         try ctx.setGatewayIdentity(identity.kind, identity.mode, identity.source);
@@ -233,6 +256,23 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 return null;
             }
 
+            if (is_agents_create) {
+                ctx.clearPendingAgentsCreateRequest();
+                ctx.setOperatorNotice("Agent created on gateway.") catch {};
+                return null;
+            }
+
+            if (is_agents_update) {
+                ctx.clearPendingAgentsUpdateRequest();
+                return null;
+            }
+
+            if (is_agents_delete) {
+                ctx.clearPendingAgentsDeleteRequest();
+                ctx.setOperatorNotice("Agent deleted on gateway.") catch {};
+                return null;
+            }
+
             if (is_approval_resolve) {
                 handleExecApprovalResolveResponse(ctx, payload) catch |err| {
                     logger.warn("exec.approval.resolve handling failed ({s})", .{@errorName(err)});
@@ -244,6 +284,17 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
         // Some responses may omit a payload; ensure chat.send is still resolved.
         if (is_send) {
             ctx.resolvePendingSendRequest(true);
+        }
+        if (is_agents_create) {
+            ctx.clearPendingAgentsCreateRequest();
+            ctx.setOperatorNotice("Agent created on gateway.") catch {};
+        }
+        if (is_agents_update) {
+            ctx.clearPendingAgentsUpdateRequest();
+        }
+        if (is_agents_delete) {
+            ctx.clearPendingAgentsDeleteRequest();
+            ctx.setOperatorNotice("Agent deleted on gateway.") catch {};
         }
         return null;
     }
@@ -281,6 +332,7 @@ fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void 
             .label = if (row.label) |label| try ctx.allocator.dupe(u8, label) else null,
             .kind = if (row.kind) |kind| try ctx.allocator.dupe(u8, kind) else null,
             .updated_at = row.updatedAt,
+            .session_id = if (row.sessionId) |id| try ctx.allocator.dupe(u8, id) else null,
         };
         filled = index + 1;
     }
@@ -620,6 +672,31 @@ fn extractAuthUpdate(allocator: std.mem.Allocator, payload: std.json.Value) !?Au
     };
 }
 
+fn extractGatewayMethods(allocator: std.mem.Allocator, payload: std.json.Value) !?[][]u8 {
+    if (payload != .object) return null;
+    const features_val = payload.object.get("features") orelse return null;
+    if (features_val != .object) return null;
+    const methods_val = features_val.object.get("methods") orelse return null;
+    if (methods_val != .array) return null;
+
+    var list = std.ArrayList([]u8).empty;
+    errdefer {
+        for (list.items) |item| {
+            allocator.free(item);
+        }
+        list.deinit(allocator);
+    }
+
+    for (methods_val.array.items) |item| {
+        if (item != .string) continue;
+        try list.append(allocator, try allocator.dupe(u8, item.string));
+    }
+
+    const owned = try list.toOwnedSlice(allocator);
+    list.deinit(allocator);
+    return owned;
+}
+
 fn buildChatMessage(allocator: std.mem.Allocator, msg: chat.ChatHistoryMessage) !types.ChatMessage {
     const id = if (msg.id) |value| try allocator.dupe(u8, value) else try requests.makeRequestId(allocator);
     errdefer allocator.free(id);
@@ -804,6 +881,7 @@ fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void 
     if (session.display_name) |name| allocator.free(name);
     if (session.label) |label| allocator.free(label);
     if (session.kind) |kind| allocator.free(kind);
+    if (session.session_id) |id| allocator.free(id);
 }
 
 fn dupStringList(allocator: std.mem.Allocator, list: ?[]const []const u8) !?[]const []const u8 {

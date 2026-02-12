@@ -14,6 +14,7 @@ const profiler = @import("../utils/profiler.zig");
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
     show_tool_output: bool = false,
+    assistant_label: ?[]const u8 = null,
 };
 
 pub const ViewState = struct {
@@ -594,6 +595,7 @@ pub fn drawCustom(
                         rect,
                         msg.id,
                         msg.role,
+                        opts.assistant_label,
                         status,
                         msg.content,
                         msg.timestamp,
@@ -643,6 +645,7 @@ pub fn drawCustom(
                             rect,
                             "streaming",
                             "assistant",
+                            opts.assistant_label,
                             null,
                             stream,
                             now_ms,
@@ -1199,6 +1202,7 @@ fn drawMessage(
     rect: draw_context.Rect,
     id: []const u8,
     role: []const u8,
+    assistant_label: ?[]const u8,
     status: ?[]const u8,
     content: []const u8,
     timestamp_ms: ?i64,
@@ -1273,7 +1277,7 @@ fn drawMessage(
         ctx.pushClip(bubble_rect);
         defer ctx.popClip();
 
-        const label = components.composite.message_bubble.roleLabel(role);
+        const label = components.composite.message_bubble.roleLabel(role, assistant_label);
         const label_pos = .{ bubble_x + padding, bubble_y + padding };
         ctx.drawText(label, label_pos, .{ .color = bubble.accent });
 

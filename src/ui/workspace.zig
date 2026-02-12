@@ -40,6 +40,8 @@ pub const ChatPanel = struct {
     agent_id: ?[]const u8 = null,
     session_key: ?[]const u8 = null,
     view: chat_view.ViewState = .{},
+    composer_ratio: f32 = 0.24,
+    composer_split_dragging: bool = false,
 };
 
 pub const CodeEditorPanel = struct {
@@ -333,6 +335,7 @@ pub const PanelStateSnapshot = struct {
 pub const ChatPanelSnapshot = struct {
     agent_id: ?[]const u8 = null,
     session: ?[]const u8 = null,
+    composer_ratio: ?f32 = null,
 };
 
 pub const CodeEditorPanelSnapshot = struct {
@@ -475,6 +478,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
             snap.chat = .{
                 .agent_id = if (chat.agent_id) |id| try allocator.dupe(u8, id) else null,
                 .session = if (chat.session_key) |key| try allocator.dupe(u8, key) else null,
+                .composer_ratio = chat.composer_ratio,
             };
         },
         .CodeEditor => |editor| {
@@ -561,11 +565,17 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 if (chat.agent_id) |agent| try allocator.dupe(u8, agent) else null
             else
                 null;
+            const composer_ratio = if (snap.chat) |chat| chat.composer_ratio orelse 0.24 else 0.24;
             return .{
                 .id = snap.id,
                 .kind = .Chat,
                 .title = title_copy,
-                .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
+                .data = .{ .Chat = .{
+                    .agent_id = agent_copy,
+                    .session_key = session_copy,
+                    .composer_ratio = composer_ratio,
+                    .composer_split_dragging = false,
+                } },
                 .state = state_val,
             };
         },
@@ -746,7 +756,12 @@ pub fn makeChatPanel(
         .id = id,
         .kind = .Chat,
         .title = title,
-        .data = .{ .Chat = .{ .agent_id = agent_copy, .session_key = session_copy } },
+        .data = .{ .Chat = .{
+            .agent_id = agent_copy,
+            .session_key = session_copy,
+            .composer_ratio = 0.24,
+            .composer_split_dragging = false,
+        } },
         .state = .{},
     };
 }

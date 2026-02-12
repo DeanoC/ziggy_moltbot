@@ -73,6 +73,9 @@ pub const ClientContext = struct {
     pending_nodes_request_id: ?[]const u8 = null,
     pending_node_invoke_request_id: ?[]const u8 = null,
     pending_node_describe_request_id: ?[]const u8 = null,
+    pending_agents_create_request_id: ?[]const u8 = null,
+    pending_agents_update_request_id: ?[]const u8 = null,
+    pending_agents_delete_request_id: ?[]const u8 = null,
     pending_approval_resolve_request_id: ?[]const u8 = null,
     pending_approval_target_id: ?[]const u8 = null,
     pending_approval_decision: ?[]const u8 = null,
@@ -83,6 +86,7 @@ pub const ClientContext = struct {
     update_state: update_checker.UpdateState = .{},
     gateway_identity: GatewayIdentity = .{},
     gateway_compatibility: GatewayCompatibilityMode = .unknown,
+    gateway_methods: std.ArrayList([]u8),
 
     pub fn init(allocator: std.mem.Allocator) !ClientContext {
         return .{
@@ -107,6 +111,9 @@ pub const ClientContext = struct {
             .pending_nodes_request_id = null,
             .pending_node_invoke_request_id = null,
             .pending_node_describe_request_id = null,
+            .pending_agents_create_request_id = null,
+            .pending_agents_update_request_id = null,
+            .pending_agents_delete_request_id = null,
             .pending_approval_resolve_request_id = null,
             .pending_approval_target_id = null,
             .pending_approval_decision = null,
@@ -117,11 +124,13 @@ pub const ClientContext = struct {
             .update_state = .{},
             .gateway_identity = .{},
             .gateway_compatibility = .unknown,
+            .gateway_methods = std.ArrayList([]u8).empty,
         };
     }
 
     pub fn deinit(self: *ClientContext) void {
         self.update_state.deinit(self.allocator);
+        self.clearGatewayMethods();
         self.clearGatewayIdentity();
         if (self.current_session) |session| {
             self.allocator.free(session);
@@ -153,6 +162,27 @@ pub const ClientContext = struct {
         self.approvals.deinit(self.allocator);
         self.approvals_resolved.deinit(self.allocator);
         self.users.deinit(self.allocator);
+        self.gateway_methods.deinit(self.allocator);
+    }
+
+    pub fn setGatewayMethodsOwned(self: *ClientContext, methods: [][]u8) void {
+        self.clearGatewayMethods();
+        self.gateway_methods.deinit(self.allocator);
+        self.gateway_methods = std.ArrayList([]u8).fromOwnedSlice(methods);
+    }
+
+    pub fn clearGatewayMethods(self: *ClientContext) void {
+        for (self.gateway_methods.items) |method| {
+            self.allocator.free(method);
+        }
+        self.gateway_methods.clearRetainingCapacity();
+    }
+
+    pub fn supportsGatewayMethod(self: *const ClientContext, method: []const u8) bool {
+        for (self.gateway_methods.items) |known| {
+            if (std.ascii.eqlIgnoreCase(known, method)) return true;
+        }
+        return false;
     }
 
     pub fn setSessions(self: *ClientContext, sessions: []const types.Session) !void {
@@ -684,6 +714,48 @@ pub const ClientContext = struct {
         self.pending_node_describe_request_id = null;
     }
 
+    pub fn setPendingAgentsCreateRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_agents_create_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_create_request_id = id;
+    }
+
+    pub fn clearPendingAgentsCreateRequest(self: *ClientContext) void {
+        if (self.pending_agents_create_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_create_request_id = null;
+    }
+
+    pub fn setPendingAgentsDeleteRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_agents_delete_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_delete_request_id = id;
+    }
+
+    pub fn setPendingAgentsUpdateRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_agents_update_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_update_request_id = id;
+    }
+
+    pub fn clearPendingAgentsUpdateRequest(self: *ClientContext) void {
+        if (self.pending_agents_update_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_update_request_id = null;
+    }
+
+    pub fn clearPendingAgentsDeleteRequest(self: *ClientContext) void {
+        if (self.pending_agents_delete_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_agents_delete_request_id = null;
+    }
+
     pub fn setPendingApprovalResolveRequest(
         self: *ClientContext,
         id: []const u8,
@@ -726,6 +798,9 @@ pub const ClientContext = struct {
         self.clearPendingNodesRequest();
         self.clearPendingNodeInvokeRequest();
         self.clearPendingNodeDescribeRequest();
+        self.clearPendingAgentsCreateRequest();
+        self.clearPendingAgentsUpdateRequest();
+        self.clearPendingAgentsDeleteRequest();
         self.clearPendingApprovalResolveRequest();
     }
 
@@ -935,6 +1010,7 @@ fn cloneSession(allocator: std.mem.Allocator, session: types.Session) !types.Ses
         .label = if (session.label) |label| try allocator.dupe(u8, label) else null,
         .kind = if (session.kind) |kind| try allocator.dupe(u8, kind) else null,
         .updated_at = session.updated_at,
+        .session_id = if (session.session_id) |id| try allocator.dupe(u8, id) else null,
     };
 }
 
@@ -948,6 +1024,9 @@ fn freeSession(allocator: std.mem.Allocator, session: *types.Session) void {
     }
     if (session.kind) |kind| {
         allocator.free(kind);
+    }
+    if (session.session_id) |id| {
+        allocator.free(id);
     }
 }
 

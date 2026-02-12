@@ -17,6 +17,7 @@ const text_input_backend = @import("ui/input/text_input_backend.zig");
 const clipboard = @import("ui/clipboard.zig");
 const client_state = @import("client/state.zig");
 const agent_registry = @import("client/agent_registry.zig");
+const agent_control_adapter = @import("client/agent_control_adapter.zig");
 const session_keys = @import("client/session_keys.zig");
 const session_kind = @import("client/session_kind.zig");
 const config = @import("client/config.zig");
@@ -27,6 +28,7 @@ const messages = @import("protocol/messages.zig");
 const requests = @import("protocol/requests.zig");
 const chat_proto = @import("protocol/chat.zig");
 const sessions_proto = @import("protocol/sessions.zig");
+const agents_proto = @import("protocol/agents.zig");
 const nodes_proto = @import("protocol/nodes.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
@@ -35,6 +37,7 @@ const wasm_storage = @import("platform/wasm_storage.zig");
 const logger = @import("utils/logger.zig");
 const builtin = @import("builtin");
 const update_checker = @import("client/update_checker.zig");
+const ui_command = @import("ui/ui_command.zig");
 const build_options = @import("build_options");
 const webgpu_renderer = @import("client/renderer.zig");
 const font_system = @import("ui/font_system.zig");
@@ -81,6 +84,18 @@ const app_state_storage_key: [:0]const u8 = "ziggystarclaw.state";
 const agents_storage_key: [:0]const u8 = "ziggystarclaw.agents";
 var app_state_state: app_state.AppState = app_state.initDefault();
 var auto_connect_pending = false;
+var pending_agent_file_open: ?PendingAgentFileOpen = null;
+
+const PendingAgentFileOpen = struct {
+    request_id: []u8,
+    agent_id: []u8,
+    kind: agent_control_adapter.AgentFileKind,
+
+    pub fn deinit(self: *PendingAgentFileOpen, alloc: std.mem.Allocator) void {
+        alloc.free(self.request_id);
+        alloc.free(self.agent_id);
+    }
+};
 
 const MessageQueue = struct {
     items: std.ArrayList([]u8) = .empty,
@@ -198,6 +213,10 @@ fn deinitApp() void {
     }
     saveAppStateToStorage();
     message_queue.deinit(allocator);
+    if (pending_agent_file_open) |*pending| {
+        pending.deinit(allocator);
+        pending_agent_file_open = null;
+    }
     if (connect_nonce) |nonce| {
         allocator.free(nonce);
         connect_nonce = null;
@@ -596,7 +615,7 @@ fn handleConnectChallenge(raw: []const u8) void {
 }
 
 fn makeNewSessionKey(alloc: std.mem.Allocator, agent_id: []const u8) ![]u8 {
-    return try session_keys.buildChatSessionKey(alloc, agent_id);
+    return try session_keys.buildMainSessionKey(alloc, agent_id);
 }
 
 fn sendSessionsResetRequest(session_key: []const u8) void {
@@ -844,6 +863,297 @@ fn sendExecApprovalResolveRequest(request_id: []const u8, decision: operator_vie
     }
 }
 
+fn defaultAgentWorkspace(alloc: std.mem.Allocator, agent_id: []const u8) ?[]u8 {
+    return std.fmt.allocPrint(alloc, "~/.openclaw/workspace/{s}", .{agent_id}) catch null;
+}
+
+fn sendAgentsCreateRequest(agent_id: []const u8, icon: ?[]const u8) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_create_request_id != null) {
+        ctx.setOperatorNotice("Another agent create request is still in progress.") catch {};
+        return;
+    }
+    if (!ctx.supportsGatewayMethod("agents.create")) return;
+
+    const workspace_path = defaultAgentWorkspace(allocator, agent_id) orelse {
+        ctx.setOperatorNotice("Failed to prepare agent workspace path.") catch {};
+        return;
+    };
+    defer allocator.free(workspace_path);
+
+    const icon_value = if (icon) |value|
+        if (std.mem.trim(u8, value, " \t\r\n").len > 0) std.mem.trim(u8, value, " \t\r\n") else null
+    else
+        null;
+    const avatar = if (icon_value) |value|
+        if (std.mem.startsWith(u8, value, "http://") or
+            std.mem.startsWith(u8, value, "https://") or
+            std.mem.startsWith(u8, value, "file://"))
+            value
+        else
+            null
+    else
+        null;
+    const emoji = if (icon_value) |value|
+        if (avatar == null) value else null
+    else
+        null;
+
+    const params = agents_proto.AgentsCreateParams{
+        .name = agent_id,
+        .workspace = workspace_path,
+        .avatar = avatar,
+        .emoji = emoji,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.create", params) catch |err| {
+        logger.warn("Failed to build agents.create request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingAgentsCreateRequest(request.id);
+        ctx.setOperatorNotice("Creating agent on gateway...") catch {};
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendAgentsUpdateRequest(agent_id: []const u8, display_name: []const u8) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_update_request_id != null) return;
+    if (!ctx.supportsGatewayMethod("agents.update")) return;
+
+    const trimmed_name = std.mem.trim(u8, display_name, " \t\r\n");
+    if (trimmed_name.len == 0) return;
+    if (std.ascii.eqlIgnoreCase(trimmed_name, agent_id)) return;
+
+    const params = agents_proto.AgentsUpdateParams{
+        .agentId = agent_id,
+        .name = trimmed_name,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.update", params) catch |err| {
+        logger.warn("Failed to build agents.update request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingAgentsUpdateRequest(request.id);
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendAgentsDeleteRequest(agent_id: []const u8) void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (ctx.pending_agents_delete_request_id != null) {
+        ctx.setOperatorNotice("Another agent delete request is still in progress.") catch {};
+        return;
+    }
+    if (!ctx.supportsGatewayMethod("agents.delete")) return;
+
+    const params = agents_proto.AgentsDeleteParams{
+        .agentId = agent_id,
+        .deleteFiles = false,
+    };
+    const request = requests.buildRequestPayload(allocator, "agents.delete", params) catch |err| {
+        logger.warn("Failed to build agents.delete request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingAgentsDeleteRequest(request.id);
+        ctx.setOperatorNotice("Deleting agent on gateway...") catch {};
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn clearPendingAgentFileOpen() void {
+    if (pending_agent_file_open) |*pending| {
+        pending.deinit(allocator);
+        pending_agent_file_open = null;
+    }
+}
+
+fn sendAgentFileOpenRequest(action: agent_control_adapter.AgentFileOpenAction) void {
+    if (!ws_connected or ctx.state != .connected) {
+        ctx.setOperatorNotice("Connect to the gateway before opening agent files.") catch {};
+        return;
+    }
+    if (pending_agent_file_open != null) {
+        ctx.setOperatorNotice("Another agent file request is still in progress.") catch {};
+        return;
+    }
+
+    const resolved = agent_control_adapter.resolveRequest(&ctx, action);
+    switch (resolved) {
+        .open_url => |url| {
+            openUrl(url);
+            ctx.clearOperatorNotice();
+        },
+        .unsupported => |message| {
+            ctx.setOperatorNotice(message) catch {};
+        },
+        .rpc => |rpc| {
+            const request = switch (rpc.params) {
+                .legacy_file_open => |params| requests.buildRequestPayload(allocator, rpc.method, params),
+                .agents_files_get => |params| requests.buildRequestPayload(allocator, rpc.method, params),
+            } catch |err| {
+                logger.warn("Failed to build agent file request: {}", .{err});
+                ctx.setOperatorNotice("Failed to build agent file request.") catch {};
+                return;
+            };
+            errdefer {
+                allocator.free(request.payload);
+                allocator.free(request.id);
+            }
+
+            const id_copy = allocator.dupe(u8, request.id) catch {
+                allocator.free(request.payload);
+                allocator.free(request.id);
+                return;
+            };
+            errdefer allocator.free(id_copy);
+            const agent_copy = allocator.dupe(u8, action.agent_id) catch {
+                allocator.free(request.payload);
+                allocator.free(request.id);
+                allocator.free(id_copy);
+                return;
+            };
+            errdefer allocator.free(agent_copy);
+
+            if (sendWsText(request.payload)) {
+                allocator.free(request.payload);
+                allocator.free(request.id);
+                pending_agent_file_open = .{
+                    .request_id = id_copy,
+                    .agent_id = agent_copy,
+                    .kind = action.kind,
+                };
+                ctx.setOperatorNotice("Requesting agent file from gateway...") catch {};
+            } else {
+                allocator.free(request.payload);
+                allocator.free(request.id);
+                allocator.free(id_copy);
+                allocator.free(agent_copy);
+            }
+        },
+    }
+}
+
+fn handlePendingAgentFileResponse(raw: []const u8) bool {
+    if (pending_agent_file_open == null) return false;
+
+    const Frame = struct {
+        type: []const u8,
+        id: []const u8,
+        ok: bool,
+        payload: ?std.json.Value = null,
+        @"error": ?struct {
+            message: []const u8,
+        } = null,
+    };
+
+    var parsed = std.json.parseFromSlice(Frame, allocator, raw, .{ .ignore_unknown_fields = true }) catch return false;
+    defer parsed.deinit();
+
+    if (!std.mem.eql(u8, parsed.value.type, "res")) return false;
+    if (!std.mem.eql(u8, parsed.value.id, pending_agent_file_open.?.request_id)) return false;
+
+    var pending = pending_agent_file_open.?;
+    pending_agent_file_open = null;
+    defer pending.deinit(allocator);
+
+    if (!parsed.value.ok) {
+        if (parsed.value.@"error") |err| {
+            ctx.setOperatorNotice(err.message) catch {};
+        } else {
+            ctx.setOperatorNotice("Agent file request failed.") catch {};
+        }
+        return true;
+    }
+
+    const payload = parsed.value.payload orelse {
+        ctx.setOperatorNotice("Agent file request succeeded without payload.") catch {};
+        return true;
+    };
+    const open_result = agent_control_adapter.extractOpenResult(payload);
+
+    if (open_result.url) |url| {
+        openUrl(url);
+        ctx.clearOperatorNotice();
+        return true;
+    }
+
+    if (open_result.content) |content| {
+        const file_name = open_result.file_name orelse switch (pending.kind) {
+            .soul => "agent.soul",
+            .config => "agent.config.json",
+            .personality => "agent.personality.md",
+        };
+        const language = open_result.language orelse switch (pending.kind) {
+            .config => "json",
+            else => "text",
+        };
+        openContentInEditor(file_name, language, content);
+        ctx.clearOperatorNotice();
+        return true;
+    }
+
+    ctx.setOperatorNotice("Agent file response did not include a URL or inline content.") catch {};
+    return true;
+}
+
+fn openContentInEditor(file_name: []const u8, language: []const u8, content: []const u8) void {
+    const file_copy = allocator.dupe(u8, file_name) catch return;
+    const lang_copy = allocator.dupe(u8, language) catch {
+        allocator.free(file_copy);
+        return;
+    };
+    const content_copy = allocator.dupe(u8, content) catch {
+        allocator.free(file_copy);
+        allocator.free(lang_copy);
+        return;
+    };
+
+    var cmd = ui_command.UiCommand{
+        .OpenPanel = .{
+            .kind = .CodeEditor,
+            .title = null,
+            .data = .{
+                .CodeEditor = .{
+                    .file = file_copy,
+                    .language = lang_copy,
+                    .content = content_copy,
+                },
+            },
+        },
+    };
+    defer cmd.deinit(allocator);
+
+    manager.applyUiCommand(cmd) catch |err| {
+        logger.warn("Failed to open inline agent file content: {}", .{err});
+    };
+}
+
 fn buildUserMessage(id: []const u8, content: []const u8) !types.ChatMessage {
     const id_copy = try std.fmt.allocPrint(allocator, "user:{s}", .{id});
     errdefer allocator.free(id_copy);
@@ -908,6 +1218,7 @@ fn findBestConversationSessionKey(sessions: []const types.Session) ?[]const u8 {
     var best_updated: i64 = -1;
     for (sessions) |session| {
         if (isAutomationSession(session)) continue;
+        _ = session_keys.parse(session.key) orelse continue;
         const updated = session.updated_at orelse 0;
         if (updated > best_updated) {
             best_updated = updated;
@@ -1147,6 +1458,7 @@ fn closeWebSocket() void {
     ws_connecting = false;
     ws_connected = false;
     connect_sent = false;
+    clearPendingAgentFileOpen();
     clearConnectNonce();
     molt_ws_close();
 }
@@ -1168,10 +1480,12 @@ export fn molt_ws_on_close(code: c_int) void {
     ws_connected = false;
     ws_connecting = false;
     connect_sent = false;
+    clearPendingAgentFileOpen();
     clearConnectNonce();
     ws_opened_ms = 0;
     ctx.state = .disconnected;
     ctx.clearGatewayIdentity();
+    ctx.clearGatewayMethods();
     ctx.clearPendingRequests();
     logger.warn("WebSocket closed (code={d})", .{code});
 }
@@ -1181,9 +1495,11 @@ export fn molt_ws_on_error() void {
     ws_connected = false;
     ws_connecting = false;
     connect_sent = false;
+    clearPendingAgentFileOpen();
     ws_opened_ms = 0;
     ctx.state = .error_state;
     ctx.clearGatewayIdentity();
+    ctx.clearGatewayMethods();
     ctx.clearPendingRequests();
     logger.warn("WebSocket error", .{});
 }
@@ -1254,6 +1570,7 @@ fn frame() callconv(.c) void {
         defer zone.end();
         for (drained.items) |payload| {
             handleConnectChallenge(payload);
+            if (handlePendingAgentFileResponse(payload)) continue;
             const update = event_handler.handleRawMessage(&ctx, payload) catch |err| blk: {
                 logger.err("Failed to handle server message: {}", .{err});
                 break :blk null;
@@ -1449,6 +1766,7 @@ fn frame() callconv(.c) void {
         closeWebSocket();
         ctx.state = .disconnected;
         ctx.clearGatewayIdentity();
+        ctx.clearGatewayMethods();
         app_state_state.last_connected = false;
         saveAppStateToStorage();
         ctx.clearPendingRequests();
@@ -1467,26 +1785,58 @@ fn frame() callconv(.c) void {
 
     if (ui_action.new_session) {
         if (ws_connected) {
-            const key = makeNewSessionKey(allocator, "main") catch null;
-            if (key) |session_key| {
-                defer allocator.free(session_key);
-                sendSessionsResetRequest(session_key);
-                if (agents.setDefaultSession(allocator, "main", session_key) catch false) {
+            const target_key = ctx.current_session orelse (makeNewSessionKey(allocator, "main") catch "");
+            const owns_key = ctx.current_session == null;
+            if (target_key.len > 0) {
+                defer if (owns_key) allocator.free(target_key);
+                sendSessionsResetRequest(target_key);
+                const target_agent_id = if (session_keys.parse(target_key)) |parts| parts.agent_id else "main";
+                if (agents.setDefaultSession(allocator, target_agent_id, target_key) catch false) {
                     saveAgentRegistryToStorage();
                 }
-                _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
-                ctx.clearSessionState(session_key);
-                ctx.setCurrentSession(session_key) catch {};
-                sendChatHistoryRequest(session_key);
+                _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), target_key) catch {};
+                ctx.clearSessionState(target_key);
+                ctx.setCurrentSession(target_key) catch {};
+                sendChatHistoryRequest(target_key);
                 sendSessionsListRequest();
             }
+        }
+    }
+
+    if (ui_action.new_chat_session_key) |session_key| {
+        defer allocator.free(session_key);
+        if (ws_connected and session_key.len > 0) {
+            sendSessionsResetRequest(session_key);
+            const target_agent_id = if (session_keys.parse(session_key)) |parts| parts.agent_id else "main";
+            if (agents.setDefaultSession(allocator, target_agent_id, session_key) catch false) {
+                saveAgentRegistryToStorage();
+            }
+            _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), session_key) catch {};
+            ctx.clearSessionState(session_key);
+            ctx.setCurrentSession(session_key) catch {};
+            sendChatHistoryRequest(session_key);
+            sendSessionsListRequest();
         }
     }
 
     if (ui_action.new_chat_agent_id) |agent_id| {
         defer allocator.free(agent_id);
         if (ws_connected) {
-            const key = makeNewSessionKey(allocator, agent_id) catch null;
+            var key: ?[]u8 = null;
+            if (agents.find(agent_id)) |agent| {
+                if (agent.default_session_key) |default_key| {
+                    if (session_keys.parse(default_key)) |parts| {
+                        if (!session_kind.isAutomationLabel(parts.label) and
+                            !(parts.label.len >= 5 and std.ascii.eqlIgnoreCase(parts.label[0..5], "chat-")))
+                        {
+                            key = allocator.dupe(u8, default_key) catch null;
+                        }
+                    }
+                }
+            }
+            if (key == null) {
+                key = makeNewSessionKey(allocator, agent_id) catch null;
+            }
             if (key) |session_key| {
                 defer allocator.free(session_key);
                 sendSessionsResetRequest(session_key);
@@ -1566,6 +1916,8 @@ fn frame() callconv(.c) void {
         })) |_| {
             saveAgentRegistryToStorage();
             _ = manager.ensureChatPanelForAgent(owned.id, agentDisplayName(&agents, owned.id), null) catch {};
+            sendAgentsCreateRequest(owned.id, owned.icon);
+            sendAgentsUpdateRequest(owned.id, owned.display_name);
         } else |err| {
             logger.warn("Failed to add agent: {}", .{err});
             allocator.free(owned.id);
@@ -1579,7 +1931,22 @@ fn frame() callconv(.c) void {
         if (agents.remove(allocator, agent_id)) {
             saveAgentRegistryToStorage();
             closeAgentChatPanels(&manager, agent_id);
+            sendAgentsDeleteRequest(agent_id);
         }
+    }
+
+    if (ui_action.open_agent_file) |open_action| {
+        var open_mut = open_action;
+        defer open_mut.deinit(allocator);
+        sendAgentFileOpenRequest(.{
+            .agent_id = open_mut.agent_id,
+            .kind = switch (open_mut.kind) {
+                .soul => .soul,
+                .config => .config,
+                .personality => .personality,
+            },
+            .path = open_mut.path,
+        });
     }
 
     if (ui_action.focus_session) |session_key| {

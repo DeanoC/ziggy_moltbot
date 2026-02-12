@@ -234,9 +234,7 @@ fn drawSessionRow(
     }
 
     const label = session.display_name orelse session.label orelse session.key;
-    const text_pos = .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs };
-    dc.drawText(label, text_pos, .{ .color = t.colors.text_primary });
-
+    const left = rect.min[0] + t.spacing.sm;
     var badge_right = rect.max[0] - t.spacing.sm;
 
     if (selected) {
@@ -253,14 +251,20 @@ fn drawSessionRow(
     if (session_kind.isAutomationSession(session)) {
         const badge_label = "automation";
         const badge_w = badgeWidth(dc, badge_label, t);
-        if (badge_right - badge_w > rect.min[0] + t.spacing.sm) {
+        if (badge_right - badge_w > left + 28.0) {
             const badge_rect = draw_context.Rect.fromMinSize(
                 .{ badge_right - badge_w, rect.min[1] + t.spacing.xs * 0.5 },
                 .{ badge_w, rect.size()[1] - t.spacing.xs },
             );
             drawBadge(dc, badge_rect, badge_label, t.colors.warning, t);
+            badge_right = badge_rect.min[0] - t.spacing.xs;
         }
     }
+
+    const label_max = @max(0.0, badge_right - left);
+    var label_fit_buf: [256]u8 = undefined;
+    const label_fit = fitTextEnd(dc, label, label_max, &label_fit_buf);
+    dc.drawText(label_fit, .{ left, rect.min[1] + t.spacing.xs }, .{ .color = t.colors.text_primary });
 
     return clicked;
 }
@@ -542,6 +546,41 @@ fn messagesForSession(ctx: *state.ClientContext, session_key: []const u8) []cons
 
 fn displayName(session: types.Session) []const u8 {
     return session.display_name orelse session.label orelse session.key;
+}
+
+fn fitTextEnd(
+    dc: *draw_context.DrawContext,
+    text: []const u8,
+    max_width: f32,
+    buf: []u8,
+) []const u8 {
+    if (text.len == 0) return "";
+    if (max_width <= 0.0) return "";
+    if (dc.measureText(text, 0.0)[0] <= max_width) return text;
+
+    const ellipsis = "...";
+    const ellipsis_w = dc.measureText(ellipsis, 0.0)[0];
+    if (ellipsis_w > max_width) return "";
+    if (buf.len <= ellipsis.len) return ellipsis;
+
+    var low: usize = 0;
+    var high: usize = @min(text.len, buf.len - ellipsis.len - 1);
+    var best: usize = 0;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const candidate = std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..mid], ellipsis }) catch ellipsis;
+        const w = dc.measureText(candidate, 0.0)[0];
+        if (w <= max_width) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    if (best == 0) return ellipsis;
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..best], ellipsis }) catch ellipsis;
 }
 
 fn collectArtifacts(

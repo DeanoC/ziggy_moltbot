@@ -42,6 +42,7 @@ pub fn draw(
     queue: *input_state.InputQueue,
     editor_enabled: bool,
     send_enabled: bool,
+    activity_text: ?[]const u8,
 ) ?[]u8 {
     if (editor_state == null) {
         editor_state = text_editor.TextEditor.init(allocator) catch null;
@@ -177,6 +178,22 @@ pub fn draw(
         .{ rect.max[0] - send_width, row_y },
         .{ send_width, button_height },
     );
+
+    if (activity_text) |text| {
+        const text_left = emoji_rect.max[0] + gap;
+        const text_right = send_rect.min[0] - gap;
+        if (text_right > text_left + 12.0) {
+            var fit_buf: [96]u8 = undefined;
+            const text_fit = fitTextEnd(ctx, text, text_right - text_left, &fit_buf);
+            const text_color = if (std.mem.startsWith(u8, text, "Thinking"))
+                t.colors.primary
+            else
+                t.colors.text_secondary;
+            const text_y = row_y + (button_height - line_h) * 0.5;
+            ctx.drawText(text_fit, .{ text_left, text_y }, .{ .color = text_color });
+        }
+    }
+
     if (widgets.button.draw(ctx, send_rect, send_label, active_queue, .{
         .variant = .primary,
         .disabled = !editor_enabled or !send_enabled,
@@ -192,6 +209,41 @@ pub fn draw(
     if (!send_enabled) send = false;
     if (!send or !editor_enabled) return null;
     return editor.takeText(allocator);
+}
+
+fn fitTextEnd(
+    ctx: *draw_context.DrawContext,
+    text: []const u8,
+    max_width: f32,
+    buf: []u8,
+) []const u8 {
+    if (text.len == 0) return "";
+    if (max_width <= 0.0) return "";
+    if (ctx.measureText(text, 0.0)[0] <= max_width) return text;
+
+    const ellipsis = "...";
+    const ellipsis_w = ctx.measureText(ellipsis, 0.0)[0];
+    if (ellipsis_w > max_width) return "";
+    if (buf.len <= ellipsis.len) return ellipsis;
+
+    var low: usize = 0;
+    var high: usize = @min(text.len, buf.len - ellipsis.len - 1);
+    var best: usize = 0;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const candidate = std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..mid], ellipsis }) catch ellipsis;
+        const w = ctx.measureText(candidate, 0.0)[0];
+        if (w <= max_width) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    if (best == 0) return ellipsis;
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..best], ellipsis }) catch ellipsis;
 }
 
 fn drawEmojiPicker(

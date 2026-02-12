@@ -3,6 +3,7 @@ const state = @import("../../client/state.zig");
 const agent_registry = @import("../../client/agent_registry.zig");
 const session_keys = @import("../../client/session_keys.zig");
 const session_kind = @import("../../client/session_kind.zig");
+const session_presenter = @import("../session_presenter.zig");
 const types = @import("../../protocol/types.zig");
 const workspace = @import("../workspace.zig");
 const draw_context = @import("../draw_context.zig");
@@ -29,12 +30,30 @@ pub const AddAgentAction = struct {
     icon: []u8,
 };
 
+pub const AgentFileKind = enum {
+    soul,
+    config,
+    personality,
+};
+
+pub const AgentFileOpenAction = struct {
+    agent_id: []u8,
+    kind: AgentFileKind,
+    path: ?[]u8 = null,
+
+    pub fn deinit(self: *AgentFileOpenAction, allocator: std.mem.Allocator) void {
+        allocator.free(self.agent_id);
+        if (self.path) |path| allocator.free(path);
+    }
+};
+
 pub const AgentsPanelAction = struct {
     refresh: bool = false,
     new_chat_agent_id: ?[]u8 = null,
     open_session: ?AgentSessionAction = null,
     set_default: ?AgentSessionAction = null,
     delete_session: ?[]u8 = null,
+    open_agent_file: ?AgentFileOpenAction = null,
     add_agent: ?AddAgentAction = null,
     remove_agent_id: ?[]u8 = null,
 };
@@ -49,11 +68,17 @@ var list_scroll_y: f32 = 0.0;
 var list_scroll_max: f32 = 0.0;
 var details_scroll_y: f32 = 0.0;
 var details_scroll_max: f32 = 0.0;
+var show_system_sessions = false;
+var pending_remove_agent_id: ?[]u8 = null;
+var add_agent_modal_open = false;
 
 pub fn deinit(allocator: std.mem.Allocator) void {
     if (add_id_editor) |*editor| editor.deinit(allocator);
     if (add_name_editor) |*editor| editor.deinit(allocator);
     if (add_icon_editor) |*editor| editor.deinit(allocator);
+    if (pending_remove_agent_id) |agent_id| allocator.free(agent_id);
+    pending_remove_agent_id = null;
+    add_agent_modal_open = false;
     add_id_editor = null;
     add_name_editor = null;
     add_icon_editor = null;
@@ -103,10 +128,18 @@ pub fn draw(
     );
 
     const queue = input_router.getQueue();
-    drawAgentList(allocator, registry, panel, &dc, left_rect, queue, &action);
-    handleSplitResize(&dc, panel_rect, left_rect, queue, gap, min_left, max_left);
+    var blocked_queue = input_state.InputQueue{ .events = .empty, .state = .{} };
+    blocked_queue.state.mouse_pos = .{ -10000.0, -10000.0 };
+    const interaction_queue = if (add_agent_modal_open) &blocked_queue else queue;
+
+    drawAgentList(allocator, registry, panel, &dc, left_rect, interaction_queue, &action);
+    handleSplitResize(&dc, panel_rect, left_rect, interaction_queue, gap, min_left, max_left);
     if (right_rect.size()[0] > 0.0) {
-        drawAgentDetailsPane(allocator, ctx, registry, panel, &dc, right_rect, queue, &action);
+        drawAgentDetailsPane(allocator, ctx, registry, panel, &dc, right_rect, interaction_queue, &action);
+    }
+
+    if (add_agent_modal_open) {
+        drawAddAgentModal(allocator, registry, panel, &dc, panel_rect, queue, &action);
     }
 
     return action;
@@ -141,13 +174,36 @@ fn drawAgentList(
     cursor_y += line_height + t.spacing.xs;
 
     const refresh_label = "Refresh Sessions";
+    const add_label = "Add Agent";
     const refresh_width = buttonWidth(dc, refresh_label, t);
-    const refresh_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ refresh_width, button_height });
+    const add_width = buttonWidth(dc, add_label, t);
+    const buttons_gap = t.spacing.xs;
+    const use_stacked = refresh_width + buttons_gap + add_width > rect.size()[0] - padding * 2.0;
+
+    const refresh_rect = draw_context.Rect.fromMinSize(
+        .{ left, cursor_y },
+        .{ if (use_stacked) rect.size()[0] - padding * 2.0 else refresh_width, button_height },
+    );
     if (widgets.button.draw(dc, refresh_rect, refresh_label, queue, .{ .variant = .secondary })) {
         action.refresh = true;
     }
-
-    cursor_y += button_height + t.spacing.sm;
+    if (use_stacked) {
+        cursor_y += button_height + buttons_gap;
+        const add_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ rect.size()[0] - padding * 2.0, button_height });
+        if (widgets.button.draw(dc, add_rect, add_label, queue, .{ .variant = .primary })) {
+            openAddAgentModal(allocator);
+        }
+        cursor_y += button_height + t.spacing.sm;
+    } else {
+        const add_rect = draw_context.Rect.fromMinSize(
+            .{ refresh_rect.max[0] + buttons_gap, cursor_y },
+            .{ add_width, button_height },
+        );
+        if (widgets.button.draw(dc, add_rect, add_label, queue, .{ .variant = .primary })) {
+            openAddAgentModal(allocator);
+        }
+        cursor_y += button_height + t.spacing.sm;
+    }
     const divider = draw_context.Rect.fromMinSize(
         .{ rect.min[0], cursor_y },
         .{ rect.size()[0], 1.0 },
@@ -230,8 +286,15 @@ fn drawAgentRow(
     }
 
     var label_buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&label_buf, "{s} {s}", .{ agent.icon, agent.display_name }) catch agent.display_name;
-    dc.drawText(text, .{ rect.min[0] + t.spacing.sm, rect.min[1] + t.spacing.xs }, .{ .color = t.colors.text_primary });
+    const text = if (std.mem.eql(u8, agent.display_name, agent.id))
+        (std.fmt.bufPrint(&label_buf, "{s} {s}", .{ agent.icon, agent.display_name }) catch agent.display_name)
+    else
+        (std.fmt.bufPrint(&label_buf, "{s} {s} ({s})", .{ agent.icon, agent.display_name, agent.id }) catch agent.display_name);
+    const left = rect.min[0] + t.spacing.sm;
+    const text_max = @max(0.0, rect.max[0] - left - t.spacing.sm);
+    var fit_buf: [256]u8 = undefined;
+    const text_fit = fitTextEnd(dc, text, text_max, &fit_buf);
+    dc.drawText(text_fit, .{ left, rect.min[1] + t.spacing.xs }, .{ .color = t.colors.text_primary });
 
     return clicked;
 }
@@ -267,13 +330,9 @@ fn drawAgentDetailsPane(
 
     if (panel.selected_agent_id) |selected_id| {
         if (registry.find(selected_id)) |agent| {
-            cursor_y += drawAgentDetailsCard(dc, .{ inner_rect.min[0], cursor_y }, inner_rect.size()[0], agent);
-            cursor_y += t.spacing.md;
             cursor_y += drawAgentActionsCard(allocator, dc, .{ inner_rect.min[0], cursor_y }, inner_rect.size()[0], agent, panel, queue, action);
             cursor_y += t.spacing.md;
             cursor_y += drawAgentSessionsCard(allocator, ctx, dc, .{ inner_rect.min[0], cursor_y }, inner_rect.size()[0], agent, queue, action);
-            cursor_y += t.spacing.md;
-            cursor_y += drawAddAgentCard(allocator, registry, panel, dc, .{ inner_rect.min[0], cursor_y }, inner_rect.size()[0], queue, action);
         } else {
             cursor_y += drawEmptyState(dc, .{ inner_rect.min[0], cursor_y }, "Select an agent to view details.");
         }
@@ -301,39 +360,6 @@ fn drawEmptyState(
     return line_height + t.spacing.sm;
 }
 
-fn drawAgentDetailsCard(
-    dc: *draw_context.DrawContext,
-    pos: [2]f32,
-    width: f32,
-    agent: *agent_registry.AgentProfile,
-) f32 {
-    const t = dc.theme;
-    const padding = t.spacing.md;
-    const line_height = dc.lineHeight();
-    const field_gap = t.spacing.sm;
-    const field_height = line_height * 2.0 + t.spacing.xs;
-    const content_height = field_height * 5.0 + field_gap * 4.0;
-    const height = padding + line_height + t.spacing.xs + content_height + padding;
-    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
-
-    var cursor_y = drawCardBase(dc, rect, "Agent Details");
-    const left = rect.min[0] + padding;
-
-    var name_buf: [256]u8 = undefined;
-    const display = std.fmt.bufPrint(&name_buf, "{s} {s}", .{ agent.icon, agent.display_name }) catch agent.display_name;
-    cursor_y += drawLabelValue(dc, left, cursor_y, "Display Name", display);
-    cursor_y += field_gap;
-    cursor_y += drawLabelValue(dc, left, cursor_y, "Id", agent.id);
-    cursor_y += field_gap;
-    cursor_y += drawLabelValue(dc, left, cursor_y, "Soul", agent.soul_path orelse "(not set)");
-    cursor_y += field_gap;
-    cursor_y += drawLabelValue(dc, left, cursor_y, "Config", agent.config_path orelse "(not set)");
-    cursor_y += field_gap;
-    _ = drawLabelValue(dc, left, cursor_y, "Personality", agent.personality_path orelse "(not set)");
-
-    return height;
-}
-
 fn drawAgentActionsCard(
     allocator: std.mem.Allocator,
     dc: *draw_context.DrawContext,
@@ -351,13 +377,23 @@ fn drawAgentActionsCard(
     const content_width = width - padding * 2.0;
     const gap = t.spacing.sm;
 
-    const new_label = "New Chat";
+    const open_current_label = "Open Current";
     const remove_label = "Remove Agent";
-    const new_w = buttonWidth(dc, new_label, t);
+    const soul_label = "Open Soul";
+    const config_label = "Open Config";
+    const personality_label = "Open Personality";
+    const open_current_w = buttonWidth(dc, open_current_label, t);
     const remove_w = buttonWidth(dc, remove_label, t);
-    const stacked = new_w + gap + remove_w > content_width;
+    const stacked = open_current_w + gap + remove_w > content_width;
     const is_main = std.mem.eql(u8, agent.id, "main");
+    const pending_remove = pending_remove_agent_id != null and std.mem.eql(u8, pending_remove_agent_id.?, agent.id);
     var content_height = if (stacked) button_height * 2.0 + gap else button_height;
+    if (pending_remove) {
+        content_height += t.spacing.xs;
+        content_height += line_height * 2.0 + t.spacing.xs + button_height;
+    }
+    content_height += gap;
+    content_height += button_height * 3.0 + gap * 2.0;
     if (is_main) {
         content_height += line_height + t.spacing.xs;
     }
@@ -369,32 +405,93 @@ fn drawAgentActionsCard(
 
     if (stacked) {
         const full_width = content_width;
-        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ full_width, button_height }), new_label, queue, .{ .variant = .primary })) {
-            action.new_chat_agent_id = allocator.dupe(u8, agent.id) catch null;
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ full_width, button_height }), open_current_label, queue, .{ .variant = .primary })) {
+            if (makeMainSessionAction(allocator, agent.id)) |session_action| {
+                action.open_session = session_action;
+            }
         }
         cursor_y += button_height + gap;
         if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ full_width, button_height }), remove_label, queue, .{
             .variant = .secondary,
             .disabled = is_main,
         })) {
-            action.remove_agent_id = allocator.dupe(u8, agent.id) catch null;
-            clearSelectedAgent(allocator, panel);
+            setPendingRemoveAgent(allocator, agent.id);
         }
         cursor_y += button_height;
     } else {
         const btn_w = (content_width - gap) * 0.5;
-        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ btn_w, button_height }), new_label, queue, .{ .variant = .primary })) {
-            action.new_chat_agent_id = allocator.dupe(u8, agent.id) catch null;
+        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ btn_w, button_height }), open_current_label, queue, .{ .variant = .primary })) {
+            if (makeMainSessionAction(allocator, agent.id)) |session_action| {
+                action.open_session = session_action;
+            }
         }
         if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left + btn_w + gap, cursor_y }, .{ btn_w, button_height }), remove_label, queue, .{
             .variant = .secondary,
             .disabled = is_main,
         })) {
-            action.remove_agent_id = allocator.dupe(u8, agent.id) catch null;
-            clearSelectedAgent(allocator, panel);
+            setPendingRemoveAgent(allocator, agent.id);
         }
         cursor_y += button_height;
     }
+
+    if (pending_remove) {
+        cursor_y += t.spacing.xs;
+        const prompt_h = line_height * 2.0 + t.spacing.xs + button_height;
+        const prompt_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_width, prompt_h });
+        dc.drawRoundedRect(prompt_rect, t.radius.sm, .{
+            .fill = colors.withAlpha(t.colors.warning, 0.10),
+            .stroke = colors.withAlpha(t.colors.warning, 0.45),
+            .thickness = 1.0,
+        });
+
+        const inner_left = prompt_rect.min[0] + t.spacing.xs;
+        var prompt_y = prompt_rect.min[1] + t.spacing.xs;
+        var prompt_buf: [160]u8 = undefined;
+        const prompt = std.fmt.bufPrint(&prompt_buf, "Delete agent \"{s}\"?", .{agent.display_name}) catch "Delete this agent?";
+        dc.drawText(prompt, .{ inner_left, prompt_y }, .{ .color = t.colors.text_primary });
+        prompt_y += line_height;
+        dc.drawText("This removes it locally and requests gateway delete.", .{ inner_left, prompt_y }, .{ .color = t.colors.text_secondary });
+        prompt_y += line_height + t.spacing.xs;
+
+        const confirm_gap = t.spacing.sm;
+        const confirm_w = (content_width - confirm_gap) * 0.5;
+        const proceed_rect = draw_context.Rect.fromMinSize(.{ left, prompt_y }, .{ confirm_w, button_height });
+        const cancel_rect = draw_context.Rect.fromMinSize(.{ left + confirm_w + confirm_gap, prompt_y }, .{ confirm_w, button_height });
+
+        if (widgets.button.draw(dc, proceed_rect, "Proceed", queue, .{ .variant = .primary })) {
+            action.remove_agent_id = allocator.dupe(u8, agent.id) catch null;
+            clearPendingRemoveAgent(allocator);
+            clearSelectedAgent(allocator, panel);
+        }
+        if (widgets.button.draw(dc, cancel_rect, "Cancel", queue, .{ .variant = .secondary })) {
+            clearPendingRemoveAgent(allocator);
+        }
+
+        cursor_y += prompt_h;
+    }
+
+    cursor_y += gap;
+
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_width, button_height }), soul_label, queue, .{ .variant = .ghost })) {
+        if (makeAgentFileAction(allocator, agent.id, .soul, agent.soul_path)) |file_action| {
+            action.open_agent_file = file_action;
+        }
+    }
+    cursor_y += button_height + gap;
+
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_width, button_height }), config_label, queue, .{ .variant = .ghost })) {
+        if (makeAgentFileAction(allocator, agent.id, .config, agent.config_path)) |file_action| {
+            action.open_agent_file = file_action;
+        }
+    }
+    cursor_y += button_height + gap;
+
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_width, button_height }), personality_label, queue, .{ .variant = .ghost })) {
+        if (makeAgentFileAction(allocator, agent.id, .personality, agent.personality_path)) |file_action| {
+            action.open_agent_file = file_action;
+        }
+    }
+    cursor_y += button_height;
 
     if (is_main) {
         cursor_y += t.spacing.xs;
@@ -419,23 +516,22 @@ fn drawAgentSessionsCard(
     const line_height = dc.lineHeight();
     const button_height = widgets.button.defaultHeight(t, line_height);
     const row_gap = t.spacing.sm;
-    const row_height = line_height * 3.0 + t.spacing.xs * 2.0 + t.spacing.sm * 2.0 + button_height;
+    const row_height = line_height * 2.0 + t.spacing.xs * 2.0 + t.spacing.sm * 2.0 + button_height;
+
+    const toggle_label = "Show system sessions";
+    const toggle_width = line_height + t.spacing.xs + dc.measureText(toggle_label, 0.0)[0];
+    const toggle_height = @max(line_height, 20.0);
 
     var session_indices = std.ArrayList(usize).empty;
     defer session_indices.deinit(allocator);
     if (ctx.sessions.items.len > 0) {
         for (ctx.sessions.items, 0..) |session, index| {
-            if (isNotificationSession(session)) continue;
-            if (session_keys.parse(session.key)) |parts| {
-                if (!std.mem.eql(u8, parts.agent_id, agent.id)) continue;
-            } else {
-                if (!std.mem.eql(u8, agent.id, "main")) continue;
-            }
+            if (!session_presenter.includeForAgent(session, agent.id, show_system_sessions)) continue;
             session_indices.append(allocator, index) catch {};
         }
     }
     if (session_indices.items.len > 1) {
-        std.sort.heap(usize, session_indices.items, ctx.sessions.items, sessionUpdatedDesc);
+        std.sort.heap(usize, session_indices.items, ctx.sessions.items, session_presenter.updatedDesc);
     }
 
     var list_height: f32 = 0.0;
@@ -449,12 +545,15 @@ fn drawAgentSessionsCard(
         }
     }
 
-    const height = padding + line_height + t.spacing.xs + list_height + padding;
+    const height = padding + line_height + t.spacing.xs + toggle_height + t.spacing.xs + list_height + padding;
     const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
 
     var cursor_y = drawCardBase(dc, rect, "Chats");
     const left = rect.min[0] + padding;
     const content_width = width - padding * 2.0;
+    const toggle_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ toggle_width, toggle_height });
+    _ = widgets.checkbox.draw(dc, toggle_rect, toggle_label, &show_system_sessions, queue, .{});
+    cursor_y += toggle_height + t.spacing.xs;
 
     if (empty_list) {
         dc.drawText("No chats for this agent.", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
@@ -462,10 +561,10 @@ fn drawAgentSessionsCard(
     }
 
     const now_ms = std.time.milliTimestamp();
-    for (session_indices.items) |idx| {
+    for (session_indices.items, 0..) |idx, ordinal| {
         const session = ctx.sessions.items[idx];
         const row_rect = draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ content_width, row_height });
-        drawAgentSessionRow(allocator, dc, row_rect, agent, session, now_ms, queue, action);
+        drawAgentSessionRow(allocator, dc, row_rect, agent, session, ordinal, now_ms, queue, action);
         cursor_y += row_height + row_gap;
     }
 
@@ -478,6 +577,7 @@ fn drawAgentSessionRow(
     rect: draw_context.Rect,
     agent: *agent_registry.AgentProfile,
     session: types.Session,
+    ordinal: usize,
     now_ms: i64,
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
@@ -494,37 +594,32 @@ fn drawAgentSessionRow(
     dc.pushClip(inner_rect);
 
     var cursor_y = inner_rect.min[1];
-    const legacy = session_keys.parse(session.key) == null;
-    const base_label = session.display_name orelse session.label orelse session.key;
-    var label_buf: [256]u8 = undefined;
-    const label = if (legacy)
-        (std.fmt.bufPrint(&label_buf, "[legacy] {s}", .{base_label}) catch base_label)
-    else
-        base_label;
-    dc.drawText(label, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
+    var label_buf: [96]u8 = undefined;
+    const label = session_presenter.displayLabel(session, agent.id, ordinal, &label_buf);
+    const text_width = @max(0.0, inner_rect.size()[0]);
+    var label_fit_buf: [128]u8 = undefined;
+    const label_fit = fitTextEnd(dc, label, text_width, &label_fit_buf);
+    dc.drawText(label_fit, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_primary });
     cursor_y += line_height + t.spacing.xs;
 
-    var time_buf: [32]u8 = undefined;
-    const time_label = relativeTimeLabel(now_ms, session.updated_at, &time_buf);
-    dc.drawText(time_label, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
-
-    var meta_x = inner_rect.min[0] + dc.measureText(time_label, 0.0)[0] + t.spacing.sm;
+    var time_buf: [64]u8 = undefined;
+    const time_label = session_presenter.secondaryLabel(now_ms, session, &time_buf);
     const is_default = agent.default_session_key != null and std.mem.eql(u8, agent.default_session_key.?, session.key);
-    if (is_default) {
-        const default_label = "Default";
-        dc.drawText(default_label, .{ meta_x, cursor_y }, .{ .color = t.colors.text_secondary });
-        meta_x += dc.measureText(default_label, 0.0)[0] + t.spacing.sm;
-    }
+    const is_system = session_kind.isAutomationSession(session) and !std.mem.startsWith(u8, time_label, "System");
+    var secondary_buf: [192]u8 = undefined;
+    const secondary = if (is_default and is_system)
+        std.fmt.bufPrint(&secondary_buf, "{s} • Default • System", .{time_label}) catch time_label
+    else if (is_default)
+        std.fmt.bufPrint(&secondary_buf, "{s} • Default", .{time_label}) catch time_label
+    else if (is_system)
+        std.fmt.bufPrint(&secondary_buf, "{s} • System", .{time_label}) catch time_label
+    else
+        time_label;
+    var secondary_fit_buf: [192]u8 = undefined;
+    const secondary_fit = fitTextEnd(dc, secondary, text_width, &secondary_fit_buf);
+    dc.drawText(secondary_fit, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
 
-    if (session_kind.isAutomationSession(session)) {
-        dc.drawText("Automation", .{ meta_x, cursor_y }, .{ .color = t.colors.warning });
-    }
-
-    cursor_y += line_height + t.spacing.xs;
-
-    dc.drawText(session.key, .{ inner_rect.min[0], cursor_y }, .{ .color = t.colors.text_secondary });
-
-    const button_count: f32 = if (is_default) 2.0 else 3.0;
+    const button_count: f32 = 2.0;
     const button_gap = t.spacing.sm;
     const total_gap = button_gap * (button_count - 1.0);
     const button_width = (inner_rect.size()[0] - total_gap) / button_count;
@@ -542,14 +637,6 @@ fn drawAgentSessionRow(
         }
     }
     button_x += button_width + button_gap;
-    if (!is_default) {
-        if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_width, button_height }), "Make Default", queue, .{ .variant = .ghost })) {
-            if (setSessionAction(allocator, agent.id, session.key)) |session_action| {
-                action.set_default = session_action;
-            }
-        }
-        button_x += button_width + button_gap;
-    }
     if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ button_x, button_y }, .{ button_width, button_height }), "Delete", queue, .{ .variant = .ghost })) {
         action.delete_session = allocator.dupe(u8, session.key) catch action.delete_session;
     }
@@ -557,16 +644,15 @@ fn drawAgentSessionRow(
     dc.popClip();
 }
 
-fn drawAddAgentCard(
+fn drawAddAgentModal(
     allocator: std.mem.Allocator,
     registry: *agent_registry.AgentRegistry,
     panel: *workspace.ControlPanel,
     dc: *draw_context.DrawContext,
-    pos: [2]f32,
-    width: f32,
+    panel_rect: draw_context.Rect,
     queue: *input_state.InputQueue,
     action: *AgentsPanelAction,
-) f32 {
+) void {
     const t = dc.theme;
     const padding = t.spacing.md;
     const line_height = dc.lineHeight();
@@ -576,21 +662,45 @@ fn drawAddAgentCard(
     const id_text = editorText(add_id_editor);
     const name_text = editorText(add_name_editor);
     const icon_text = editorText(add_icon_editor);
-    const valid_id = session_keys.isAgentIdValid(id_text);
-    const exists = id_text.len > 0 and registry.find(id_text) != null;
-    const can_add = valid_id and !exists and id_text.len > 0;
+    const requested_id = std.mem.trim(u8, id_text, " \t\r\n");
+    const requested_name = std.mem.trim(u8, name_text, " \t\r\n");
+    const requested_icon = std.mem.trim(u8, icon_text, " \t\r\n");
+    const gateway_name = if (requested_name.len > 0) requested_name else requested_id;
+    var normalized_id_buf: [128]u8 = undefined;
+    const normalized_id = normalizeAgentIdForGateway(gateway_name, &normalized_id_buf);
+    const valid_id = normalized_id.len > 0 and session_keys.isAgentIdValid(normalized_id);
+    const exists = valid_id and registry.find(normalized_id) != null;
+    const can_add = valid_id and !exists and gateway_name.len > 0;
 
     var content_height: f32 = 0.0;
     content_height += labeledInputHeight(input_height, line_height, t) * 3.0;
     content_height += button_height + t.spacing.sm;
-    if (!valid_id and id_text.len > 0) {
-        content_height += line_height + t.spacing.xs;
-    } else if (exists) {
-        content_height += line_height + t.spacing.xs;
+    content_height += line_height;
+
+    const width = std.math.clamp(panel_rect.size()[0] * 0.46, 340.0, 560.0);
+    const height = padding + line_height + t.spacing.xs + content_height + padding;
+    const rect = draw_context.Rect.fromMinSize(
+        .{
+            panel_rect.min[0] + (panel_rect.size()[0] - width) * 0.5,
+            panel_rect.min[1] + (panel_rect.size()[1] - height) * 0.5,
+        },
+        .{ width, height },
+    );
+
+    dc.drawRect(panel_rect, .{ .fill = colors.withAlpha(t.colors.background, 0.55) });
+
+    for (queue.events.items) |evt| {
+        switch (evt) {
+            .mouse_down => |md| {
+                if (md.button == .left and !rect.contains(md.pos)) {
+                    add_agent_modal_open = false;
+                    return;
+                }
+            },
+            else => {},
+        }
     }
 
-    const height = padding + line_height + t.spacing.xs + content_height + padding;
-    const rect = draw_context.Rect.fromMinSize(pos, .{ width, height });
     var cursor_y = drawCardBase(dc, rect, "Add Agent");
     const left = rect.min[0] + padding;
     const content_width = width - padding * 2.0;
@@ -599,43 +709,52 @@ fn drawAddAgentCard(
     cursor_y += drawLabeledInput(dc, queue, allocator, left, cursor_y, content_width, "Name", ensureEditor(&add_name_editor, allocator), .{});
     cursor_y += drawLabeledInput(dc, queue, allocator, left, cursor_y, content_width, "Icon", ensureEditor(&add_icon_editor, allocator), .{});
 
-    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ left, cursor_y }, .{ buttonWidth(dc, "Add", t), button_height }), "Add", queue, .{
+    const cancel_w = buttonWidth(dc, "Cancel", t);
+    const add_w = buttonWidth(dc, "Add", t);
+    const buttons_gap = t.spacing.sm;
+    const cancel_x = rect.max[0] - padding - cancel_w;
+    const add_x = cancel_x - buttons_gap - add_w;
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ add_x, cursor_y }, .{ add_w, button_height }), "Add", queue, .{
         .variant = .primary,
         .disabled = !can_add,
     })) {
-        const display = if (name_text.len > 0) name_text else id_text;
-        const icon = if (icon_text.len > 0) icon_text else "?";
-        const id_copy = allocator.dupe(u8, id_text) catch return height;
+        const display = if (requested_name.len > 0) requested_name else normalized_id;
+        const icon = if (requested_icon.len > 0) requested_icon else "?";
+        const id_copy = allocator.dupe(u8, normalized_id) catch return;
         errdefer allocator.free(id_copy);
         const name_copy = allocator.dupe(u8, display) catch {
             allocator.free(id_copy);
-            return height;
+            return;
         };
         errdefer allocator.free(name_copy);
         const icon_copy = allocator.dupe(u8, icon) catch {
             allocator.free(id_copy);
             allocator.free(name_copy);
-            return height;
+            return;
         };
         action.add_agent = .{
             .id = id_copy,
             .display_name = name_copy,
             .icon = icon_copy,
         };
-        setSelectedAgent(allocator, panel, id_text);
+        setSelectedAgent(allocator, panel, normalized_id);
         ensureEditor(&add_id_editor, allocator).clear();
         ensureEditor(&add_name_editor, allocator).clear();
         ensureEditor(&add_icon_editor, allocator).setText(allocator, "A");
+        add_agent_modal_open = false;
+    }
+    if (widgets.button.draw(dc, draw_context.Rect.fromMinSize(.{ cancel_x, cursor_y }, .{ cancel_w, button_height }), "Cancel", queue, .{
+        .variant = .secondary,
+    })) {
+        add_agent_modal_open = false;
     }
     cursor_y += button_height + t.spacing.sm;
 
-    if (!valid_id and id_text.len > 0) {
-        dc.drawText("Use letters, numbers, _ or -.", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
+    if (!valid_id and gateway_name.len > 0) {
+        dc.drawText("Provide a name or id with letters or numbers.", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
     } else if (exists) {
         dc.drawText("Agent id already exists.", .{ left, cursor_y }, .{ .color = t.colors.text_secondary });
     }
-
-    return height;
 }
 
 fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: []const u8) f32 {
@@ -653,20 +772,6 @@ fn drawCardBase(dc: *draw_context.DrawContext, rect: draw_context.Rect, title: [
     theme.pop();
 
     return rect.min[1] + padding + line_height + t.spacing.xs;
-}
-
-fn drawLabelValue(
-    dc: *draw_context.DrawContext,
-    x: f32,
-    y: f32,
-    label: []const u8,
-    value: []const u8,
-) f32 {
-    const t = dc.theme;
-    const line_height = dc.lineHeight();
-    dc.drawText(label, .{ x, y }, .{ .color = t.colors.text_secondary });
-    dc.drawText(value, .{ x, y + line_height }, .{ .color = t.colors.text_primary });
-    return line_height * 2.0 + t.spacing.xs;
 }
 
 fn drawLabeledInput(
@@ -695,27 +800,6 @@ fn labeledInputHeight(input_height: f32, line_height: f32, t: *const theme.Theme
     return line_height + t.spacing.xs + input_height + t.spacing.sm;
 }
 
-fn relativeTimeLabel(now_ms: i64, updated_at: ?i64, buf: []u8) []const u8 {
-    const ts = updated_at orelse 0;
-    if (ts <= 0) return "never";
-    const delta_ms = if (now_ms > ts) now_ms - ts else 0;
-    const seconds = @as(u64, @intCast(@divTrunc(delta_ms, 1000)));
-    const minutes = seconds / 60;
-    const hours = minutes / 60;
-    const days = hours / 24;
-
-    if (seconds < 60) {
-        return std.fmt.bufPrint(buf, "{d}s ago", .{seconds}) catch "now";
-    }
-    if (minutes < 60) {
-        return std.fmt.bufPrint(buf, "{d}m ago", .{minutes}) catch "now";
-    }
-    if (hours < 24) {
-        return std.fmt.bufPrint(buf, "{d}h ago", .{hours}) catch "today";
-    }
-    return std.fmt.bufPrint(buf, "{d}d ago", .{days}) catch "days ago";
-}
-
 fn setSessionAction(
     allocator: std.mem.Allocator,
     agent_id: []const u8,
@@ -728,6 +812,41 @@ fn setSessionAction(
         return null;
     };
     return .{ .agent_id = agent_copy, .session_key = session_copy };
+}
+
+fn makeMainSessionAction(allocator: std.mem.Allocator, agent_id: []const u8) ?AgentSessionAction {
+    const main_key = session_keys.buildMainSessionKey(allocator, agent_id) catch return null;
+    defer allocator.free(main_key);
+    return setSessionAction(allocator, agent_id, main_key);
+}
+
+fn openAddAgentModal(allocator: std.mem.Allocator) void {
+    ensureEditor(&add_id_editor, allocator).clear();
+    ensureEditor(&add_name_editor, allocator).clear();
+    ensureEditor(&add_icon_editor, allocator).setText(allocator, "A");
+    add_agent_modal_open = true;
+}
+
+fn makeAgentFileAction(
+    allocator: std.mem.Allocator,
+    agent_id: []const u8,
+    kind: AgentFileKind,
+    path: ?[]const u8,
+) ?AgentFileOpenAction {
+    const agent_copy = allocator.dupe(u8, agent_id) catch return null;
+    errdefer allocator.free(agent_copy);
+    const path_copy = if (path) |value|
+        allocator.dupe(u8, value) catch {
+            allocator.free(agent_copy);
+            return null;
+        }
+    else
+        null;
+    return .{
+        .agent_id = agent_copy,
+        .kind = kind,
+        .path = path_copy,
+    };
 }
 
 fn handleSplitResize(
@@ -834,23 +953,94 @@ fn setSelectedAgent(allocator: std.mem.Allocator, panel: *workspace.ControlPanel
         if (std.mem.eql(u8, selected, id)) return;
         allocator.free(selected);
     }
+    clearPendingRemoveAgent(allocator);
     panel.selected_agent_id = allocator.dupe(u8, id) catch panel.selected_agent_id;
 }
 
 fn clearSelectedAgent(allocator: std.mem.Allocator, panel: *workspace.ControlPanel) void {
+    clearPendingRemoveAgent(allocator);
     if (panel.selected_agent_id) |selected| {
         allocator.free(selected);
     }
     panel.selected_agent_id = null;
 }
 
-fn sessionUpdatedDesc(sessions: []const types.Session, a: usize, b: usize) bool {
-    const updated_a = sessions[a].updated_at orelse 0;
-    const updated_b = sessions[b].updated_at orelse 0;
-    return updated_a > updated_b;
+fn setPendingRemoveAgent(allocator: std.mem.Allocator, id: []const u8) void {
+    if (pending_remove_agent_id) |existing| {
+        if (std.mem.eql(u8, existing, id)) return;
+        allocator.free(existing);
+    }
+    pending_remove_agent_id = allocator.dupe(u8, id) catch pending_remove_agent_id;
 }
 
-fn isNotificationSession(session: types.Session) bool {
-    const kind = session.kind orelse return false;
-    return std.ascii.eqlIgnoreCase(kind, "cron") or std.ascii.eqlIgnoreCase(kind, "heartbeat");
+fn clearPendingRemoveAgent(allocator: std.mem.Allocator) void {
+    if (pending_remove_agent_id) |existing| {
+        allocator.free(existing);
+    }
+    pending_remove_agent_id = null;
+}
+
+fn normalizeAgentIdForGateway(value: []const u8, buf: []u8) []const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return "";
+
+    var out_len: usize = 0;
+    var prev_dash = false;
+    for (trimmed) |ch| {
+        if (out_len >= 64 or out_len >= buf.len) break;
+        if (std.ascii.isAlphanumeric(ch) or ch == '_' or ch == '-') {
+            buf[out_len] = std.ascii.toLower(ch);
+            out_len += 1;
+            prev_dash = false;
+        } else if (!prev_dash and out_len > 0) {
+            buf[out_len] = '-';
+            out_len += 1;
+            prev_dash = true;
+        }
+    }
+
+    while (out_len > 0 and buf[0] == '-') {
+        std.mem.copyForwards(u8, buf[0 .. out_len - 1], buf[1..out_len]);
+        out_len -= 1;
+    }
+    while (out_len > 0 and buf[out_len - 1] == '-') {
+        out_len -= 1;
+    }
+
+    return buf[0..out_len];
+}
+
+fn fitTextEnd(
+    dc: *draw_context.DrawContext,
+    text: []const u8,
+    max_width: f32,
+    buf: []u8,
+) []const u8 {
+    if (text.len == 0) return "";
+    if (max_width <= 0.0) return "";
+    if (dc.measureText(text, 0.0)[0] <= max_width) return text;
+
+    const ellipsis = "...";
+    const ellipsis_w = dc.measureText(ellipsis, 0.0)[0];
+    if (ellipsis_w > max_width) return "";
+    if (buf.len <= ellipsis.len) return ellipsis;
+
+    var low: usize = 0;
+    var high: usize = @min(text.len, buf.len - ellipsis.len - 1);
+    var best: usize = 0;
+    while (low <= high) {
+        const mid = low + (high - low) / 2;
+        const candidate = std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..mid], ellipsis }) catch ellipsis;
+        const w = dc.measureText(candidate, 0.0)[0];
+        if (w <= max_width) {
+            best = mid;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    if (best == 0) return ellipsis;
+    return std.fmt.bufPrint(buf, "{s}{s}", .{ text[0..best], ellipsis }) catch ellipsis;
 }

@@ -38,6 +38,7 @@ const operator_view = @import("operator_view.zig");
 const approvals_inbox_view = @import("approvals_inbox_view.zig");
 const sessions_panel = @import("panels/sessions_panel.zig");
 const showcase_panel = @import("panels/showcase_panel.zig");
+const session_presenter = @import("session_presenter.zig");
 const status_bar = @import("status_bar.zig");
 const widgets = @import("widgets/widgets.zig");
 const text_input_backend = @import("input/text_input_backend.zig");
@@ -127,6 +128,7 @@ pub const UiAction = struct {
     spawn_window_template: ?u32 = null,
     refresh_sessions: bool = false,
     new_session: bool = false,
+    new_chat_session_key: ?[]u8 = null,
     select_session: ?[]u8 = null,
     new_chat_agent_id: ?[]u8 = null,
     open_session: ?@import("panels/agents_panel.zig").AgentSessionAction = null,
@@ -134,6 +136,7 @@ pub const UiAction = struct {
     delete_session: ?[]u8 = null,
     add_agent: ?@import("panels/agents_panel.zig").AddAgentAction = null,
     remove_agent_id: ?[]u8 = null,
+    open_agent_file: ?@import("panels/agents_panel.zig").AgentFileOpenAction = null,
     focus_session: ?[]u8 = null,
     check_updates: bool = false,
     open_release: bool = false,
@@ -1418,7 +1421,7 @@ fn drawWorkspaceHost(
             installer_profile_only_mode,
         );
         if (panel.kind == .Chat and draw_result.session_key != null) {
-            if (focused or active_session_key == null) {
+            if (focused) {
                 active_session_key = draw_result.session_key;
                 active_agent_id = draw_result.agent_id;
             }
@@ -1516,16 +1519,71 @@ fn drawWorkspaceHost(
         drawCustomMenuBar(&dc, menu_rect, queue, manager, cfg, action, win_state);
     }
 
+    var total_chat_panels: usize = 0;
+    var unique_agent_ids: [32][]const u8 = undefined;
+    var unique_agent_count: usize = 0;
+    var counted_session_keys: [64][]const u8 = undefined;
+    var counted_session_count: usize = 0;
+    var lone_session_key: ?[]const u8 = null;
+    var lone_agent_id: ?[]const u8 = null;
+    var total_messages_across_chats: usize = 0;
+
+    for (manager.workspace.panels.items) |panel| {
+        if (panel.kind != .Chat) continue;
+        total_chat_panels += 1;
+
+        const panel_agent_id = if (panel.data.Chat.agent_id) |id|
+            id
+        else if (panel.data.Chat.session_key) |session_key|
+            if (session_keys.parse(session_key)) |parts| parts.agent_id else "main"
+        else
+            "main";
+        appendUniqueSlice(unique_agent_ids[0..], &unique_agent_count, panel_agent_id);
+
+        if (panel.data.Chat.session_key) |session_key| {
+            if (lone_session_key == null) {
+                lone_session_key = session_key;
+                lone_agent_id = panel_agent_id;
+            } else if (!std.mem.eql(u8, lone_session_key.?, session_key)) {
+                lone_session_key = null;
+                lone_agent_id = null;
+            }
+
+            if (!containsSlice(counted_session_keys[0..counted_session_count], session_key)) {
+                appendUniqueSlice(counted_session_keys[0..], &counted_session_count, session_key);
+                if (ctx.findSessionState(session_key)) |session_state| {
+                    total_messages_across_chats += session_state.messages.items.len;
+                }
+            }
+        } else {
+            lone_session_key = null;
+            lone_agent_id = null;
+        }
+    }
+
     var agent_name: ?[]const u8 = null;
     var session_label: ?[]const u8 = null;
+    var session_label_buf: [96]u8 = undefined;
+    var aggregate_label_buf: [64]u8 = undefined;
     var message_count: usize = 0;
     if (active_session_key) |session_key| {
-        session_label = resolveSessionLabel(ctx.sessions.items, session_key);
+        session_label = resolveSessionLabel(ctx.sessions.items, session_key, &session_label_buf);
         if (ctx.findSessionState(session_key)) |session_state| {
             message_count = session_state.messages.items.len;
         }
         const info = resolveAgentInfo(registry, active_agent_id);
         agent_name = info.name;
+    } else if (total_chat_panels == 1 and lone_session_key != null) {
+        session_label = resolveSessionLabel(ctx.sessions.items, lone_session_key.?, &session_label_buf);
+        if (ctx.findSessionState(lone_session_key.?)) |session_state| {
+            message_count = session_state.messages.items.len;
+        }
+        const info = resolveAgentInfo(registry, lone_agent_id);
+        agent_name = info.name;
+    } else if (total_chat_panels > 1) {
+        agent_name = if (unique_agent_count > 1) "Multiple" else if (unique_agent_count == 1) resolveAgentInfo(registry, unique_agent_ids[0]).name else "Multiple";
+        session_label = std.fmt.bufPrint(&aggregate_label_buf, "{d} chats open", .{total_chat_panels}) catch "Multiple chats";
+        message_count = total_messages_across_chats;
     }
 
     if (win_state.show_status_bar) {
@@ -1909,10 +1967,11 @@ fn drawPanelContents(
             }
 
             const agent_info = resolveAgentInfo(registry, agent_id);
-            const session_label = if (resolved_session_key) |session_key|
-                resolveSessionLabel(ctx.sessions.items, session_key)
-            else
-                null;
+            if (!std.mem.eql(u8, panel.title, agent_info.name)) {
+                allocator.free(panel.title);
+                panel.title = allocator.dupe(u8, agent_info.name) catch panel.title;
+                manager.workspace.markDirty();
+            }
 
             const session_state = if (resolved_session_key) |session_key|
                 ctx.getOrCreateSessionState(session_key) catch null
@@ -1922,11 +1981,12 @@ fn drawPanelContents(
             const chat_action = chat_panel.draw(
                 allocator,
                 &panel.data.Chat,
+                agent_id orelse "main",
                 resolved_session_key,
                 session_state,
                 agent_info.icon,
                 agent_info.name,
-                session_label,
+                ctx.sessions.items,
                 inbox,
                 panel_rect,
             );
@@ -1942,6 +2002,8 @@ fn drawPanelContents(
                     allocator.free(message);
                 }
             }
+            replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
+            replaceOwnedSlice(allocator, &action.new_chat_session_key, chat_action.new_chat_session_key);
 
             result.session_key = resolved_session_key;
             result.agent_id = agent_id;
@@ -2054,6 +2116,7 @@ fn drawPanelContents(
             if (agents_action.remove_agent_id) |agent_id| {
                 replaceOwnedSlice(allocator, &action.remove_agent_id, agent_id);
             }
+            replaceAgentFileAction(allocator, &action.open_agent_file, agents_action.open_agent_file);
         },
         .Operator => {
             const op_action = operator_view.draw(allocator, ctx, is_connected, panel_rect);
@@ -2163,6 +2226,18 @@ fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8)
     target.* = value;
 }
 
+fn replaceAgentFileAction(
+    allocator: std.mem.Allocator,
+    target: *?@import("panels/agents_panel.zig").AgentFileOpenAction,
+    value: ?@import("panels/agents_panel.zig").AgentFileOpenAction,
+) void {
+    if (value == null) return;
+    if (target.*) |*existing| {
+        existing.deinit(allocator);
+    }
+    target.* = value;
+}
+
 const AgentInfo = struct {
     name: []const u8,
     icon: []const u8,
@@ -2178,13 +2253,24 @@ fn resolveAgentInfo(registry: *agent_registry.AgentRegistry, agent_id: ?[]const 
     return .{ .name = "Agent", .icon = "?" };
 }
 
-fn resolveSessionLabel(sessions: []const types.Session, key: []const u8) ?[]const u8 {
-    for (sessions) |session| {
-        if (std.mem.eql(u8, session.key, key)) {
-            return session.display_name orelse session.label orelse session.key;
-        }
+fn resolveSessionLabel(sessions: []const types.Session, key: []const u8, label_buf: []u8) ?[]const u8 {
+    const agent_id = if (session_keys.parse(key)) |parts| parts.agent_id else "main";
+    return session_presenter.displayLabelForKey(sessions, agent_id, key, label_buf);
+}
+
+fn containsSlice(values: []const []const u8, value: []const u8) bool {
+    for (values) |existing| {
+        if (std.mem.eql(u8, existing, value)) return true;
     }
-    return null;
+    return false;
+}
+
+fn appendUniqueSlice(storage: []([]const u8), len: *usize, value: []const u8) void {
+    const available = storage[0..len.*];
+    if (containsSlice(available, value)) return;
+    if (len.* >= storage.len) return;
+    storage[len.*] = value;
+    len.* += 1;
 }
 
 const DockKeyboardResult = struct {
@@ -2531,9 +2617,9 @@ fn nearestDockNodeInDirection(
 
         const matches_direction =
             ((dir[0] < 0 and dx < -1.0) or
-            (dir[0] > 0 and dx > 1.0) or
-            (dir[1] < 0 and dy < -1.0) or
-            (dir[1] > 0 and dy > 1.0));
+                (dir[0] > 0 and dx > 1.0) or
+                (dir[1] < 0 and dy < -1.0) or
+                (dir[1] > 0 and dy > 1.0));
         if (!matches_direction) continue;
 
         const d2 = dx * dx + dy * dy;
