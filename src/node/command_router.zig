@@ -1356,3 +1356,83 @@ fn processListHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.js
         return CommandError.ExecutionFailed;
     };
 }
+
+test "initStandardRouter media/location wiring matches backend support" {
+    var router = try initStandardRouter(std.testing.allocator);
+    defer router.deinit();
+
+    const location_support = node_location.detectBackendSupport(std.testing.allocator);
+    try std.testing.expectEqual(location_support.get, router.isRegistered(Command.location_get.toString()));
+
+    if (builtin.target.os.tag == .windows) {
+        const camera_support = windows_camera.detectBackendSupport(std.testing.allocator);
+        const screen_support = windows_screen.detectBackendSupport(std.testing.allocator);
+
+        try std.testing.expectEqual(camera_support.list, router.isRegistered(Command.camera_list.toString()));
+        try std.testing.expectEqual(camera_support.snap, router.isRegistered(Command.camera_snap.toString()));
+        try std.testing.expectEqual(camera_support.clip, router.isRegistered(Command.camera_clip.toString()));
+        try std.testing.expectEqual(screen_support.record, router.isRegistered(Command.screen_record.toString()));
+    } else {
+        try std.testing.expect(!router.isRegistered(Command.camera_list.toString()));
+        try std.testing.expect(!router.isRegistered(Command.camera_snap.toString()));
+        try std.testing.expect(!router.isRegistered(Command.camera_clip.toString()));
+        try std.testing.expect(!router.isRegistered(Command.screen_record.toString()));
+    }
+}
+
+test "initRouterWithCommands gates windows media commands by host support" {
+    const media_support = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const camera = windows_camera.detectBackendSupport(std.testing.allocator);
+            const screen = windows_screen.detectBackendSupport(std.testing.allocator);
+            break :blk .{
+                .camera_list = camera.list,
+                .camera_snap = camera.snap,
+                .camera_clip = camera.clip,
+                .screen_record = screen.record,
+            };
+        }
+
+        break :blk .{
+            .camera_list = false,
+            .camera_snap = false,
+            .camera_clip = false,
+            .screen_record = false,
+        };
+    };
+
+    const cases = [_]struct {
+        cmd: Command,
+        supported: bool,
+    }{
+        .{ .cmd = .camera_list, .supported = media_support.camera_list },
+        .{ .cmd = .camera_snap, .supported = media_support.camera_snap },
+        .{ .cmd = .camera_clip, .supported = media_support.camera_clip },
+        .{ .cmd = .screen_record, .supported = media_support.screen_record },
+    };
+
+    for (cases) |case| {
+        var cmds = [_]Command{case.cmd};
+
+        if (case.supported) {
+            var router = try initRouterWithCommands(std.testing.allocator, &cmds);
+            defer router.deinit();
+            try std.testing.expect(router.isRegistered(case.cmd.toString()));
+        } else {
+            try std.testing.expectError(error.CommandNotSupported, initRouterWithCommands(std.testing.allocator, &cmds));
+        }
+    }
+}
+
+test "initRouterWithCommands gates location.get by backend support" {
+    const support = node_location.detectBackendSupport(std.testing.allocator);
+    var cmds = [_]Command{.location_get};
+
+    if (support.get) {
+        var router = try initRouterWithCommands(std.testing.allocator, &cmds);
+        defer router.deinit();
+        try std.testing.expect(router.isRegistered(Command.location_get.toString()));
+    } else {
+        try std.testing.expectError(error.CommandNotSupported, initRouterWithCommands(std.testing.allocator, &cmds));
+    }
+}
