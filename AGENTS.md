@@ -10,6 +10,32 @@ Always run all platform builds before final responses:
 
 When handling PRs, always check review subcomments (inline threads), not just top-level reviews.
 
+## Release Instructions
+
+For releases, always follow this order:
+- Increment the least significant version number only: `X.Y.Z -> X.Y.(Z+1)` (patch bump).
+- Update `README.md` for the new release version/highlights.
+- Rebuild all platforms after the version bump:
+  ```bash
+  ./.tools/zig-0.15.2/zig build
+  ./.tools/zig-0.15.2/zig build -Dtarget=x86_64-windows-gnu
+  source ./scripts/emsdk-env.sh && ./.tools/zig-0.15.2/zig build -Dwasm=true
+  ./.tools/zig-0.15.2/zig build -Dandroid=true
+  ```
+- After platform builds complete, check whether the host is Windows or WSL and build the Windows installer:
+  ```bash
+  if [[ "$OS" == "Windows_NT" ]] || grep -qi microsoft /proc/version 2>/dev/null; then
+    if command -v pwsh >/dev/null 2>&1; then
+      pwsh -File ./scripts/windows/Build-ZscInstaller.ps1 -Version X.Y.Z
+    else
+      /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows/Build-ZscInstaller.ps1 -Version X.Y.Z
+    fi
+  fi
+  ```
+- Verify installer output exists: `dist/inno-out/ZiggyStarClaw_Setup_X.Y.Z_x64.exe`.
+- Package release artifacts without rebuilding: `./scripts/package-release.sh --no-build --version=X.Y.Z --require-windows-installer`.
+- Create and publish GitHub release `vX.Y.Z`, uploading all artifacts from `dist/ziggystarclaw_X.Y.Z_<date>/`, including the installer `.exe`, release archives, `checksums.txt`, and `update.json`.
+
 ## Native (Linux)
 
 Build:
