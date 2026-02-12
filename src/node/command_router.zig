@@ -8,6 +8,7 @@ const requests = @import("../protocol/requests.zig");
 const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
+const node_location = @import("location.zig");
 
 const windows_camera = if (builtin.target.os.tag == .windows)
     @import("../windows/camera.zig")
@@ -137,6 +138,11 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
         }
     }
 
+    const location_support = node_location.detectBackendSupport(allocator);
+    if (location_support.get) {
+        try router.register(.location_get, locationGetHandler);
+    }
+
     return router;
 }
 
@@ -166,6 +172,8 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             .screen_record = false,
         };
     };
+
+    const location_support = node_location.detectBackendSupport(allocator);
 
     for (cmds) |cmd| {
         switch (cmd) {
@@ -216,9 +224,12 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
                 }
                 try router.register(.camera_clip, cameraClipHandler);
             },
-            // Not implemented yet in this codebase (but present in enum)
-            .location_get,
-            => return error.CommandNotSupported,
+            .location_get => {
+                if (!location_support.get) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.location_get, locationGetHandler);
+            },
         }
     }
 
@@ -668,6 +679,99 @@ fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: st
     var result = std.json.ObjectMap.init(allocator);
     try result.put("ok", std.json.Value{ .bool = true });
     return std.json.Value{ .object = result };
+}
+
+// ============================================================================
+// Location Command Handlers
+// ============================================================================
+
+fn locationGetHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const max_age_ms = blk: {
+        if (params.object.get("maxAgeMs")) |raw| {
+            break :blk try parseNonNegativeU32Param(raw);
+        }
+        break :blk null;
+    };
+
+    const location_timeout_ms = blk: {
+        if (params.object.get("locationTimeoutMs")) |raw| {
+            break :blk try parsePositiveOptionalU32Param(raw);
+        }
+        break :blk null;
+    };
+
+    const desired_accuracy = blk: {
+        if (params.object.get("desiredAccuracy")) |raw| {
+            if (raw != .string) return CommandError.InvalidParams;
+            if (std.ascii.eqlIgnoreCase(raw.string, "coarse")) break :blk node_location.DesiredAccuracy.coarse;
+            if (std.ascii.eqlIgnoreCase(raw.string, "balanced")) break :blk node_location.DesiredAccuracy.balanced;
+            if (std.ascii.eqlIgnoreCase(raw.string, "precise")) break :blk node_location.DesiredAccuracy.precise;
+            return CommandError.InvalidParams;
+        }
+        break :blk null;
+    };
+
+    const location = node_location.getLocation(allocator, .{
+        .maxAgeMs = max_age_ms,
+        .locationTimeoutMs = location_timeout_ms,
+        .desiredAccuracy = desired_accuracy,
+    }) catch |err| {
+        logger.err("location.get failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.NotSupported => CommandError.CommandNotSupported,
+            error.InvalidParams => CommandError.InvalidParams,
+            error.PermissionDenied => CommandError.PermissionRequired,
+            error.Timeout => CommandError.Timeout,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("latitude", std.json.Value{ .float = location.latitude });
+    try out.put("longitude", std.json.Value{ .float = location.longitude });
+    if (location.accuracyM) |accuracy| {
+        try out.put("accuracyM", std.json.Value{ .float = accuracy });
+    }
+    if (location.timestampMs) |timestamp_ms| {
+        try out.put("timestampMs", std.json.Value{ .integer = timestamp_ms });
+    }
+    return std.json.Value{ .object = out };
+}
+
+fn parseNonNegativeU32Param(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival < 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+            if (fval < 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        else => CommandError.InvalidParams,
+    };
+}
+
+fn parsePositiveOptionalU32Param(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival <= 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+            if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        else => CommandError.InvalidParams,
+    };
 }
 
 // ============================================================================

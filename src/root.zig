@@ -70,6 +70,7 @@ pub const utils = struct {
 
 pub const node = struct {
     pub const node_context = @import("node/node_context.zig");
+    pub const command_router = @import("node/command_router.zig");
 };
 
 pub const windows = struct {
