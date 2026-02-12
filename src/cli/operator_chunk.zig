@@ -1341,7 +1341,7 @@ fn invokeNode(
     defer allocator.free(request.payload);
 
     // Mark as pending so response routing can populate ctx.node_result.
-    ctx.setPendingNodeInvokeRequest(request.id);
+    ctx.setPendingNodeInvokeRequest(request.id, command);
 
     logger.info("Invoking node {s}: {s}", .{ target_node, command });
     try ws_client.send(request.payload);

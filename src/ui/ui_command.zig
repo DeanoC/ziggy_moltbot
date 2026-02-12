@@ -47,6 +47,7 @@ pub const PanelDataPayload = union(enum) {
     Agents: ControlPanelPayload,
     Operator: void,
     ApprovalsInbox: void,
+    ActivityStream: void,
     Inbox: ControlPanelPayload,
     Settings: void,
     Showcase: void,
@@ -74,6 +75,7 @@ pub const PanelDataPayload = union(enum) {
             },
             .Operator => {},
             .ApprovalsInbox => {},
+            .ActivityStream => {},
             .Inbox => |*ctrl| {
                 if (ctrl.active_tab) |tab| allocator.free(tab);
             },
@@ -158,9 +160,9 @@ fn parseOpen(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !?UiCommand 
         .ToolOutput => blk: {
             const tool_name = parseStringDupFrom(allocator, obj, payload_obj, "tool_name") orelse
                 parseStringDupFrom(allocator, obj, payload_obj, "tool") orelse {
-                    if (title) |value| allocator.free(value);
-                    return null;
-                };
+                if (title) |value| allocator.free(value);
+                return null;
+            };
             const stdout = parseStringDupFrom(allocator, obj, payload_obj, "stdout");
             const stderr = parseStringDupFrom(allocator, obj, payload_obj, "stderr");
             const exit_code = parseIntFrom(obj, payload_obj, "exit_code");
@@ -181,6 +183,7 @@ fn parseOpen(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !?UiCommand 
         },
         .Operator => PanelDataPayload{ .Operator = {} },
         .ApprovalsInbox => PanelDataPayload{ .ApprovalsInbox = {} },
+        .ActivityStream => PanelDataPayload{ .ActivityStream = {} },
         .Inbox => blk: {
             const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
             break :blk PanelDataPayload{ .Inbox = .{ .active_tab = active_tab } };
@@ -287,6 +290,7 @@ fn parseDataPayloadForKind(
         },
         .Operator => return .{ .Operator = {} },
         .ApprovalsInbox => return .{ .ApprovalsInbox = {} },
+        .ActivityStream => return .{ .ActivityStream = {} },
         .Inbox => {
             const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
             if (!allow_partial and active_tab == null) return error.MissingPanelData;
@@ -307,6 +311,8 @@ fn parsePanelKind(label: []const u8) ?workspace.PanelKind {
     if (std.mem.eql(u8, label, "Operator")) return .Operator;
     if (std.mem.eql(u8, label, "ApprovalsInbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Approvals")) return .ApprovalsInbox;
+    if (std.mem.eql(u8, label, "ActivityStream")) return .ActivityStream;
+    if (std.mem.eql(u8, label, "Activity")) return .ActivityStream;
     if (std.mem.eql(u8, label, "Inbox")) return .Inbox;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;

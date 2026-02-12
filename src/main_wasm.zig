@@ -782,7 +782,7 @@ fn sendNodeInvokeRequest(
 
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
-        ctx.setPendingNodeInvokeRequest(request.id);
+        ctx.setPendingNodeInvokeRequest(request.id, command);
         ctx.clearOperatorNotice();
     } else {
         allocator.free(request.payload);

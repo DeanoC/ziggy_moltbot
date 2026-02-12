@@ -220,6 +220,11 @@ pub const PanelManager = struct {
                     if (panel.kind == .ApprovalsInbox) return panel;
                 }
             },
+            .ActivityStream => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .ActivityStream) return panel;
+                }
+            },
             .Inbox => {
                 for (self.workspace.panels.items) |*panel| {
                     if (panel.kind == .Inbox) return panel;
@@ -317,6 +322,10 @@ pub const PanelManager = struct {
             .ApprovalsInbox => {
                 const panel_data = workspace.PanelData{ .ApprovalsInbox = {} };
                 return try self.openPanel(.ApprovalsInbox, "Approvals", panel_data);
+            },
+            .ActivityStream => {
+                const panel_data = workspace.PanelData{ .ActivityStream = {} };
+                return try self.openPanel(.ActivityStream, "Activity", panel_data);
             },
             .Inbox => {
                 const panel_data = workspace.PanelData{ .Inbox = .{
@@ -489,6 +498,14 @@ pub const PanelManager = struct {
                 const panel_data = workspace.PanelData{ .ApprovalsInbox = {} };
                 _ = try self.openPanel(.ApprovalsInbox, open.title orelse "Approvals", panel_data);
             },
+            .ActivityStream => {
+                if (self.findReusablePanel(.ActivityStream, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .ActivityStream = {} };
+                _ = try self.openPanel(.ActivityStream, open.title orelse "Activity", panel_data);
+            },
             .Inbox => {
                 if (self.findReusablePanel(.Inbox, null)) |panel| {
                     self.focusPanel(panel.id);
@@ -584,6 +601,9 @@ pub const PanelManager = struct {
                 },
                 .ApprovalsInbox => {
                     if (panel.kind != .ApprovalsInbox) return false;
+                },
+                .ActivityStream => {
+                    if (panel.kind != .ActivityStream) return false;
                 },
                 .Inbox => |data| {
                     if (panel.kind != .Inbox) return false;

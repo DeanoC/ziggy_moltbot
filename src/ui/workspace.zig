@@ -1,6 +1,7 @@
 const std = @import("std");
 const text_buffer = @import("text_buffer.zig");
 const chat_view = @import("chat_view.zig");
+const client_state = @import("../client/state.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const dock_graph = @import("layout/dock_graph.zig");
 const dock_rail = @import("layout/dock_rail.zig");
@@ -17,6 +18,7 @@ pub const PanelKind = enum {
     Agents,
     Operator,
     ApprovalsInbox,
+    ActivityStream,
     Inbox,
     Settings,
     Showcase,
@@ -42,6 +44,7 @@ pub const ChatPanel = struct {
     selected_session_id: ?[]const u8 = null,
     view: chat_view.ViewState = .{},
     select_copy_mode: bool = false,
+    visibility_tier: client_state.DebugVisibilityTier = .normal,
     show_tool_output: bool = false,
     show_system_sessions: bool = false,
     session_picker_open: bool = false,
@@ -101,6 +104,7 @@ pub const PanelData = union(enum) {
     Agents: ControlPanel,
     Operator: void,
     ApprovalsInbox: void,
+    ActivityStream: void,
     Inbox: ControlPanel,
     Settings: void,
     Showcase: void,
@@ -143,6 +147,7 @@ pub const PanelData = union(enum) {
             },
             .Operator => {},
             .ApprovalsInbox => {},
+            .ActivityStream => {},
             .Inbox => |*ctrl| {
                 if (ctrl.selected_agent_id) |id| allocator.free(id);
             },
@@ -344,6 +349,7 @@ pub const ChatPanelSnapshot = struct {
     agent_id: ?[]const u8 = null,
     session: ?[]const u8 = null,
     selected_session_id: ?[]const u8 = null,
+    visibility_tier: ?[]const u8 = null,
     composer_ratio: ?f32 = null,
 };
 
@@ -488,6 +494,11 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .agent_id = if (chat.agent_id) |id| try allocator.dupe(u8, id) else null,
                 .session = if (chat.session_key) |key| try allocator.dupe(u8, key) else null,
                 .selected_session_id = if (chat.selected_session_id) |id| try allocator.dupe(u8, id) else null,
+                .visibility_tier = try allocator.dupe(u8, switch (chat.visibility_tier) {
+                    .normal => "normal",
+                    .dev => "dev",
+                    .deep_debug => "deep_debug",
+                }),
                 .composer_ratio = chat.composer_ratio,
             };
         },
@@ -539,6 +550,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
         },
         .Operator => {},
         .ApprovalsInbox => {},
+        .ActivityStream => {},
         .Inbox => |ctrl| {
             snap.control = .{
                 .active_tab = try allocator.dupe(u8, "Inbox"),
@@ -579,6 +591,12 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 if (chat.selected_session_id) |id| try allocator.dupe(u8, id) else null
             else
                 null;
+            const visibility_tier: client_state.DebugVisibilityTier = if (snap.chat) |chat| blk: {
+                const label = chat.visibility_tier orelse break :blk .normal;
+                if (std.mem.eql(u8, label, "dev")) break :blk .dev;
+                if (std.mem.eql(u8, label, "deep_debug") or std.mem.eql(u8, label, "deep-debug")) break :blk .deep_debug;
+                break :blk .normal;
+            } else .normal;
             const composer_ratio = if (snap.chat) |chat| chat.composer_ratio orelse 0.24 else 0.24;
             return .{
                 .id = snap.id,
@@ -588,6 +606,8 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                     .agent_id = agent_copy,
                     .session_key = session_copy,
                     .selected_session_id = selected_session_id,
+                    .visibility_tier = visibility_tier,
+                    .show_tool_output = visibility_tier == .deep_debug,
                     .composer_ratio = composer_ratio,
                     .composer_split_dragging = false,
                 } },
@@ -680,6 +700,15 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                 .state = state_val,
             };
         },
+        .ActivityStream => {
+            return .{
+                .id = snap.id,
+                .kind = .ActivityStream,
+                .title = title_copy,
+                .data = .{ .ActivityStream = {} },
+                .state = state_val,
+            };
+        },
         .Inbox => {
             const ctrl_snap = snap.control orelse ControlPanelSnapshot{};
             return .{
@@ -739,6 +768,7 @@ pub fn freePanelSnapshot(allocator: std.mem.Allocator, panel: PanelSnapshot) voi
         if (chat.agent_id) |agent| allocator.free(agent);
         if (chat.session) |session| allocator.free(session);
         if (chat.selected_session_id) |session_id| allocator.free(session_id);
+        if (chat.visibility_tier) |tier| allocator.free(tier);
     }
     if (panel.code_editor) |editor| {
         allocator.free(editor.file_id);
@@ -889,6 +919,17 @@ pub fn makeApprovalsInboxPanel(allocator: std.mem.Allocator, id: PanelId) !Panel
         .kind = .ApprovalsInbox,
         .title = title,
         .data = .{ .ApprovalsInbox = {} },
+        .state = .{},
+    };
+}
+
+pub fn makeActivityStreamPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Activity");
+    return .{
+        .id = id,
+        .kind = .ActivityStream,
+        .title = title,
+        .data = .{ .ActivityStream = {} },
         .state = .{},
     };
 }

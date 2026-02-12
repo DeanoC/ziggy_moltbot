@@ -68,6 +68,15 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
         if (std.mem.eql(u8, frame.value.event, "device.pair.requested")) {
             logger.warn("Gateway pairing required: {s}", .{raw});
+            recordSystemActivity(
+                ctx,
+                "system:pairing",
+                "Pairing approval required",
+                "Gateway pairing required before command execution can continue.",
+                .warn,
+                .pending,
+                raw,
+            ) catch {};
             return null;
         }
 
@@ -106,6 +115,19 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             return null;
         }
         logger.debug("Gateway event: {s}", .{frame.value.event});
+        var key_buf = std.ArrayList(u8).empty;
+        defer key_buf.deinit(ctx.allocator);
+        key_buf.writer(ctx.allocator).print("event:{s}", .{frame.value.event}) catch {};
+        const key = if (key_buf.items.len > 0) key_buf.items else "event:unknown";
+        recordSystemActivity(
+            ctx,
+            key,
+            frame.value.event,
+            "Gateway event received",
+            .info,
+            .info,
+            raw,
+        ) catch {};
         return null;
     }
 
@@ -129,6 +151,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             std.mem.eql(u8, ctx.pending_node_invoke_request_id.?, response_id);
         const is_node_describe = ctx.pending_node_describe_request_id != null and
             std.mem.eql(u8, ctx.pending_node_describe_request_id.?, response_id);
+        const pending_node_command = if (is_node_invoke) ctx.pending_node_invoke_command else null;
         const is_agents_create = ctx.pending_agents_create_request_id != null and
             std.mem.eql(u8, ctx.pending_agents_create_request_id.?, response_id);
         const is_agents_update = ctx.pending_agents_update_request_id != null and
@@ -139,6 +162,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             std.mem.eql(u8, ctx.pending_approval_resolve_request_id.?, response_id);
 
         if (!frame.value.ok) {
+            if (is_node_invoke) {
+                recordNodeInvokeFailureActivity(ctx, pending_node_command, frame.value.@"error", raw) catch {};
+            } else {
+                recordResponseFailureActivity(ctx, response_id, frame.value.@"error", raw) catch {};
+            }
+
             if (is_sessions) ctx.clearPendingSessionsRequest();
             if (is_history) ctx.clearPendingHistoryById(response_id);
             if (is_send) ctx.resolvePendingSendRequest(false);
@@ -241,10 +270,10 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             }
 
             if (is_node_invoke) {
-                ctx.clearPendingNodeInvokeRequest();
-                handleNodeInvokeResponse(ctx, payload) catch |err| {
+                handleNodeInvokeResponse(ctx, payload, pending_node_command, raw) catch |err| {
                     logger.warn("node.invoke handling failed ({s})", .{@errorName(err)});
                 };
+                ctx.clearPendingNodeInvokeRequest();
                 return null;
             }
 
@@ -305,6 +334,15 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
 
 pub fn handleConnectionState(ctx: *state.ClientContext, new_state: state.ClientState) void {
     ctx.state = new_state;
+    const severity: state.ActivitySeverity = switch (new_state) {
+        .error_state => .@"error",
+        .connecting, .authenticating => .info,
+        .connected => .info,
+        .disconnected => .debug,
+    };
+    var summary_buf: [64]u8 = undefined;
+    const summary = std.fmt.bufPrint(&summary_buf, "Connection state: {s}", .{@tagName(new_state)}) catch "Connection state changed";
+    recordSystemActivity(ctx, "system:connection", "Connection", summary, severity, .info, null) catch {};
 }
 
 fn handleSessionsList(ctx: *state.ClientContext, payload: std.json.Value) !void {
@@ -426,9 +464,15 @@ fn handleNodesList(ctx: *state.ClientContext, payload: std.json.Value) !void {
     }
 }
 
-fn handleNodeInvokeResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
+fn handleNodeInvokeResponse(
+    ctx: *state.ClientContext,
+    payload: std.json.Value,
+    command: ?[]const u8,
+    raw: []const u8,
+) !void {
     const rendered = try stringifyJsonValue(ctx.allocator, payload);
     ctx.setNodeResultOwned(rendered);
+    recordNodeInvokeActivity(ctx, command, payload, raw) catch {};
     ctx.clearOperatorNotice();
 }
 
@@ -451,6 +495,18 @@ fn handleExecApprovalResolveResponse(ctx: *state.ClientContext, payload: std.jso
             ctx.pending_approval_decision,
             "local",
             std.time.milliTimestamp(),
+        ) catch {};
+        const denied = if (ctx.pending_approval_decision) |decision|
+            std.mem.eql(u8, decision, "deny")
+        else
+            false;
+        recordApprovalActivity(
+            ctx,
+            target_id,
+            if (denied) "deny" else "approved",
+            if (denied) .denied else .approved,
+            if (denied) .warn else .info,
+            null,
         ) catch {};
     }
     ctx.clearPendingApprovalResolveRequest();
@@ -498,6 +554,8 @@ fn handleExecApprovalRequested(ctx: *state.ClientContext, payload: ?std.json.Val
     extracted.requested_by = null;
     try ctx.upsertApprovalOwned(approval);
 
+    recordApprovalActivity(ctx, approval_id, summary orelse "Approval requested", .pending, .warn, rendered) catch {};
+
     if (!can_resolve) {
         ctx.setOperatorNotice("Approval request missing id; cannot resolve automatically.") catch {};
     }
@@ -513,6 +571,13 @@ fn handleExecApprovalResolved(ctx: *state.ClientContext, payload: ?std.json.Valu
 
     // This will also remove the pending approval when present.
     try ctx.markApprovalResolvedOwned(id, decision, resolved_by, resolved_at_ms);
+
+    const status: state.ActivityStatus = if (decision) |d|
+        if (std.mem.eql(u8, d, "deny")) .denied else .approved
+    else
+        .approved;
+    const summary = if (decision) |d| d else "resolved";
+    recordApprovalActivity(ctx, id, summary, status, if (status == .denied) .warn else .info, null) catch {};
 }
 
 fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
@@ -545,6 +610,7 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
             logger.warn("Failed to upsert stream message ({s})", .{@errorName(err)});
             freeChatMessageOwned(ctx.allocator, &msg);
         };
+        recordChatRunActivity(ctx, event.runId, session_key, .running, .info, "Assistant streaming…") catch {};
         return;
     }
 
@@ -563,6 +629,9 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
     if (std.mem.eql(u8, event.state, "error")) {
         if (event.errorMessage) |msg| {
             ctx.setError(msg) catch {};
+            recordChatRunActivity(ctx, event.runId, session_key, .failed, .@"error", msg) catch {};
+        } else {
+            recordChatRunActivity(ctx, event.runId, session_key, .failed, .@"error", "Run failed") catch {};
         }
         return;
     }
@@ -582,10 +651,20 @@ fn handleChatEvent(ctx: *state.ClientContext, payload: ?std.json.Value) !void {
             defer ctx.allocator.free(stream_id);
             _ = ctx.removeSessionMessageById(session_key, stream_id);
         }
-        ctx.upsertSessionMessageOwned(session_key, message) catch |err| {
-            logger.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
-            freeChatMessageOwned(ctx.allocator, &message);
+        const role_for_activity = parsed_msg.value.role;
+        const content_for_activity = message.content;
+        const upsert_ok = blk: {
+            ctx.upsertSessionMessageOwned(session_key, message) catch |err| {
+                logger.warn("Failed to upsert chat message ({s})", .{@errorName(err)});
+                freeChatMessageOwned(ctx.allocator, &message);
+                break :blk false;
+            };
+            break :blk true;
         };
+        if (upsert_ok) {
+            recordChatRunActivity(ctx, event.runId, session_key, .succeeded, .info, "Run completed") catch {};
+            recordChatMessageActivity(ctx, event.runId, session_key, role_for_activity, content_for_activity) catch {};
+        }
     }
 }
 
@@ -1138,4 +1217,327 @@ fn extractNodeId(value: std.json.Value) ?[]const u8 {
         }
     }
     return null;
+}
+
+const ActivityInput = struct {
+    key: []const u8,
+    title: []const u8,
+    summary: ?[]const u8 = null,
+    source: state.ActivitySource,
+    severity: state.ActivitySeverity,
+    scope: state.ActivityScope = .background,
+    status: state.ActivityStatus = .info,
+    run_id: ?[]const u8 = null,
+    tool_call_id: ?[]const u8 = null,
+    process_session_id: ?[]const u8 = null,
+    conversation_session: ?[]const u8 = null,
+    params: ?[]const u8 = null,
+    stdout: ?[]const u8 = null,
+    stderr: ?[]const u8 = null,
+    raw_event_json: ?[]const u8 = null,
+};
+
+fn appendActivity(ctx: *state.ClientContext, input: ActivityInput) !void {
+    const now = std.time.milliTimestamp();
+    const entry = state.ActivityEntry{
+        .key = try ctx.allocator.dupe(u8, input.key),
+        .title = try ctx.allocator.dupe(u8, input.title),
+        .summary = if (input.summary) |value| try dupClipped(ctx.allocator, value, 4096, 80) else null,
+        .source = input.source,
+        .severity = input.severity,
+        .scope = input.scope,
+        .status = input.status,
+        .run_id = if (input.run_id) |value| try ctx.allocator.dupe(u8, value) else null,
+        .tool_call_id = if (input.tool_call_id) |value| try ctx.allocator.dupe(u8, value) else null,
+        .process_session_id = if (input.process_session_id) |value| try ctx.allocator.dupe(u8, value) else null,
+        .conversation_session = if (input.conversation_session) |value| try ctx.allocator.dupe(u8, value) else null,
+        .started_at_ms = now,
+        .updated_at_ms = now,
+        .update_count = 1,
+        .last_running_notice_ms = 0,
+        .params = if (input.params) |value| try dupClipped(ctx.allocator, value, 16_384, 240) else null,
+        .stdout = if (input.stdout) |value| try dupClipped(ctx.allocator, value, 24_576, 280) else null,
+        .stderr = if (input.stderr) |value| try dupClipped(ctx.allocator, value, 24_576, 280) else null,
+        .raw_event_json = if (input.raw_event_json) |value| try dupClipped(ctx.allocator, value, 32_768, 480) else null,
+    };
+    errdefer freeActivityOwned(ctx.allocator, &entry);
+
+    try ctx.upsertActivityOwned(entry);
+}
+
+fn freeActivityOwned(allocator: std.mem.Allocator, entry: *const state.ActivityEntry) void {
+    allocator.free(entry.key);
+    allocator.free(entry.title);
+    if (entry.summary) |value| allocator.free(value);
+    if (entry.run_id) |value| allocator.free(value);
+    if (entry.tool_call_id) |value| allocator.free(value);
+    if (entry.process_session_id) |value| allocator.free(value);
+    if (entry.conversation_session) |value| allocator.free(value);
+    if (entry.params) |value| allocator.free(value);
+    if (entry.stdout) |value| allocator.free(value);
+    if (entry.stderr) |value| allocator.free(value);
+    if (entry.raw_event_json) |value| allocator.free(value);
+}
+
+fn dupClipped(allocator: std.mem.Allocator, text: []const u8, max_bytes: usize, max_lines: usize) ![]u8 {
+    const total_lines = countLines(text);
+    const needs_clip = text.len > max_bytes or total_lines > max_lines;
+    if (!needs_clip) {
+        return allocator.dupe(u8, text);
+    }
+
+    var line_count: usize = 0;
+    var end_index: usize = 0;
+    while (end_index < text.len and end_index < max_bytes) : (end_index += 1) {
+        if (text[end_index] == '\n') {
+            line_count += 1;
+            if (line_count >= max_lines) {
+                end_index += 1;
+                break;
+            }
+        }
+    }
+
+    const clipped = text[0..@min(end_index, text.len)];
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}\n\n… [truncated preview: showing {d}/{d} bytes, {d}/{d} lines]",
+        .{ clipped, clipped.len, text.len, @min(line_count, max_lines), total_lines },
+    );
+}
+
+fn countLines(text: []const u8) usize {
+    if (text.len == 0) return 0;
+    var lines: usize = 1;
+    for (text) |ch| {
+        if (ch == '\n') lines += 1;
+    }
+    return lines;
+}
+
+fn recordSystemActivity(
+    ctx: *state.ClientContext,
+    key: []const u8,
+    title: []const u8,
+    summary: ?[]const u8,
+    severity: state.ActivitySeverity,
+    status: state.ActivityStatus,
+    raw: ?[]const u8,
+) !void {
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = title,
+        .summary = summary,
+        .source = .system,
+        .severity = severity,
+        .scope = .background,
+        .status = status,
+        .raw_event_json = raw,
+    });
+}
+
+fn recordApprovalActivity(
+    ctx: *state.ClientContext,
+    approval_id: []const u8,
+    summary: []const u8,
+    status: state.ActivityStatus,
+    severity: state.ActivitySeverity,
+    raw_json: ?[]const u8,
+) !void {
+    var key_buf: [192]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "approval:{s}", .{approval_id}) catch "approval";
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = "Execution approval",
+        .summary = summary,
+        .source = .approval,
+        .severity = severity,
+        .scope = .background,
+        .status = status,
+        .tool_call_id = approval_id,
+        .raw_event_json = raw_json,
+    });
+}
+
+fn recordChatRunActivity(
+    ctx: *state.ClientContext,
+    run_id: []const u8,
+    session_key: []const u8,
+    status: state.ActivityStatus,
+    severity: state.ActivitySeverity,
+    summary: []const u8,
+) !void {
+    var key_buf: [192]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "run:{s}", .{run_id}) catch "run";
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = "Chat run",
+        .summary = summary,
+        .source = .tool,
+        .severity = severity,
+        .scope = .conversation,
+        .status = status,
+        .run_id = run_id,
+        .conversation_session = session_key,
+    });
+}
+
+fn recordChatMessageActivity(
+    ctx: *state.ClientContext,
+    run_id: []const u8,
+    session_key: []const u8,
+    role: []const u8,
+    content: []const u8,
+) !void {
+    if (!std.mem.startsWith(u8, role, "tool") and !std.mem.eql(u8, role, "toolResult")) return;
+
+    const lower_failed = containsCaseInsensitive(content, "failed") or
+        containsCaseInsensitive(content, "error") or
+        containsCaseInsensitive(content, "denied") or
+        containsCaseInsensitive(content, "exit code") or
+        containsCaseInsensitive(content, "\"ok\":false") or
+        containsCaseInsensitive(content, "\"status\":\"failed\"");
+
+    var key_buf: [192]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "run:{s}:tool", .{run_id}) catch "run:tool";
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = "Tool output",
+        .summary = content,
+        .source = .tool,
+        .severity = if (lower_failed) .warn else .info,
+        .scope = .conversation,
+        .status = if (lower_failed) .failed else .succeeded,
+        .run_id = run_id,
+        .conversation_session = session_key,
+        .stdout = content,
+    });
+}
+
+fn recordResponseFailureActivity(
+    ctx: *state.ClientContext,
+    response_id: []const u8,
+    err: ?gateway.GatewayError,
+    raw: []const u8,
+) !void {
+    var key_buf: [192]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "response:{s}", .{response_id}) catch "response:error";
+    const summary = if (err) |e| e.message else "Gateway request failed";
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = "Gateway response",
+        .summary = summary,
+        .source = .system,
+        .severity = .@"error",
+        .scope = .background,
+        .status = .failed,
+        .raw_event_json = raw,
+    });
+}
+
+fn recordNodeInvokeFailureActivity(
+    ctx: *state.ClientContext,
+    command: ?[]const u8,
+    err: ?gateway.GatewayError,
+    raw: []const u8,
+) !void {
+    const cmd = command orelse "node.invoke";
+    var key_buf: [256]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "node.invoke:{s}", .{cmd}) catch "node.invoke";
+    const summary = if (err) |e| e.message else "Node invoke failed";
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = cmd,
+        .summary = summary,
+        .source = if (std.mem.startsWith(u8, cmd, "process.")) .process else .tool,
+        .severity = .@"error",
+        .scope = .background,
+        .status = .failed,
+        .raw_event_json = raw,
+    });
+}
+
+fn recordNodeInvokeActivity(
+    ctx: *state.ClientContext,
+    command: ?[]const u8,
+    payload: std.json.Value,
+    raw: []const u8,
+) !void {
+    const cmd = command orelse "node.invoke";
+    const source: state.ActivitySource = if (std.mem.startsWith(u8, cmd, "process.")) .process else .tool;
+
+    var key_buf: [256]u8 = undefined;
+    var process_id: ?[]const u8 = null;
+    if (payload == .object) {
+        if (payload.object.get("processId")) |pid| {
+            if (pid == .string) {
+                process_id = pid.string;
+            }
+        }
+    }
+
+    const key = if (process_id) |pid|
+        std.fmt.bufPrint(&key_buf, "process:{s}", .{pid}) catch "process"
+    else
+        std.fmt.bufPrint(&key_buf, "node.invoke:{s}", .{cmd}) catch "node.invoke";
+
+    const status = parseNodeInvokeStatus(payload);
+    const severity: state.ActivitySeverity = switch (status) {
+        .failed, .denied => .warn,
+        else => .info,
+    };
+
+    const stdout = extractPayloadString(payload, "stdout");
+    const stderr = extractPayloadString(payload, "stderr");
+    const summary = if (extractPayloadString(payload, "status")) |s| s else cmd;
+
+    try appendActivity(ctx, .{
+        .key = key,
+        .title = cmd,
+        .summary = summary,
+        .source = source,
+        .severity = severity,
+        .scope = .background,
+        .status = status,
+        .process_session_id = process_id,
+        .stdout = stdout,
+        .stderr = stderr,
+        .raw_event_json = raw,
+    });
+}
+
+fn parseNodeInvokeStatus(payload: std.json.Value) state.ActivityStatus {
+    const status_raw = extractPayloadString(payload, "status") orelse return .succeeded;
+    if (std.ascii.eqlIgnoreCase(status_raw, "running")) return .running;
+    if (std.ascii.eqlIgnoreCase(status_raw, "pending")) return .pending;
+    if (std.ascii.eqlIgnoreCase(status_raw, "failed") or std.ascii.eqlIgnoreCase(status_raw, "error")) return .failed;
+    if (std.ascii.eqlIgnoreCase(status_raw, "denied")) return .denied;
+    return .succeeded;
+}
+
+fn extractPayloadString(payload: std.json.Value, key: []const u8) ?[]const u8 {
+    if (payload != .object) return null;
+    if (payload.object.get(key)) |v| {
+        if (v == .string) return v.string;
+    }
+    return null;
+}
+
+fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
+    return false;
 }

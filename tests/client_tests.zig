@@ -215,3 +215,63 @@ test "exec approval resolve response records audit trail" {
     try std.testing.expect(entry.resolved_by != null);
     try std.testing.expectEqualStrings("local", entry.resolved_by.?);
 }
+
+test "exec approval requested updates activity stream" {
+    const allocator = std.testing.allocator;
+    var ctx = try state.ClientContext.init(allocator);
+    defer ctx.deinit();
+
+    const raw =
+        "{" ++
+        "\"type\":\"event\"," ++
+        "\"event\":\"exec.approval.requested\"," ++
+        "\"payload\":{" ++
+        "\"id\":\"a2\"," ++
+        "\"request\":{" ++
+        "\"command\":\"rm -rf /tmp/x\"" ++
+        "}" ++
+        "}" ++
+        "}";
+    _ = try event_handler.handleRawMessage(&ctx, raw);
+
+    try std.testing.expectEqual(@as(usize, 1), ctx.activity.items.len);
+    const item = ctx.activity.items[0];
+    try std.testing.expectEqual(state.ActivitySource.approval, item.source);
+    try std.testing.expectEqual(state.ActivityStatus.pending, item.status);
+}
+
+test "node process activity aggregates by process id" {
+    const allocator = std.testing.allocator;
+    var ctx = try state.ClientContext.init(allocator);
+    defer ctx.deinit();
+
+    ctx.setPendingNodeInvokeRequest(try allocator.dupe(u8, "req-node-1"), "process.poll");
+    const running =
+        "{" ++
+        "\"type\":\"res\"," ++
+        "\"id\":\"req-node-1\"," ++
+        "\"ok\":true," ++
+        "\"payload\":{" ++
+        "\"processId\":\"p123\"," ++
+        "\"status\":\"running\"" ++
+        "}" ++
+        "}";
+    _ = try event_handler.handleRawMessage(&ctx, running);
+
+    ctx.setPendingNodeInvokeRequest(try allocator.dupe(u8, "req-node-2"), "process.poll");
+    const done =
+        "{" ++
+        "\"type\":\"res\"," ++
+        "\"id\":\"req-node-2\"," ++
+        "\"ok\":true," ++
+        "\"payload\":{" ++
+        "\"processId\":\"p123\"," ++
+        "\"status\":\"succeeded\"" ++
+        "}" ++
+        "}";
+    _ = try event_handler.handleRawMessage(&ctx, done);
+
+    try std.testing.expectEqual(@as(usize, 1), ctx.activity.items.len);
+    try std.testing.expectEqual(state.ActivitySource.process, ctx.activity.items[0].source);
+    try std.testing.expectEqual(state.ActivityStatus.succeeded, ctx.activity.items[0].status);
+}

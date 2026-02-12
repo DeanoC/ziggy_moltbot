@@ -1,4 +1,5 @@
 const std = @import("std");
+const client_state = @import("../client/state.zig");
 const types = @import("../protocol/types.zig");
 const ui_command_inbox = @import("ui_command_inbox.zig");
 const image_cache = @import("image_cache.zig");
@@ -13,7 +14,7 @@ const profiler = @import("../utils/profiler.zig");
 
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
-    show_tool_output: bool = false,
+    visibility_tier: client_state.DebugVisibilityTier = .normal,
     assistant_label: ?[]const u8 = null,
 };
 
@@ -32,7 +33,7 @@ pub const ViewState = struct {
     last_last_id_hash: u64 = 0,
     last_last_len: usize = 0,
     last_stream_len: usize = 0,
-    last_show_tool_output: bool = false,
+    last_visibility_tier: client_state.DebugVisibilityTier = .normal,
     select_copy_editor: ?text_editor.TextEditor = null,
     message_cache: ?std.StringHashMap(MessageCache) = null,
     virt: VirtualState = .{},
@@ -119,7 +120,7 @@ const VirtualState = struct {
     scanned_last_id_hash: u64 = 0,
 
     built_for_session_hash: u64 = 0,
-    built_for_show_tool_output: bool = false,
+    built_for_visibility_tier: client_state.DebugVisibilityTier = .normal,
     built_for_bubble_width: f32 = 0.0,
     built_for_line_height: f32 = 0.0,
     built_for_padding: f32 = 0.0,
@@ -139,7 +140,7 @@ const VirtualState = struct {
         self.scanned_message_count = 0;
         self.scanned_last_id_hash = 0;
         self.built_for_session_hash = 0;
-        self.built_for_show_tool_output = false;
+        self.built_for_visibility_tier = .normal;
         self.built_for_bubble_width = 0.0;
         self.built_for_line_height = 0.0;
         self.built_for_padding = 0.0;
@@ -178,9 +179,9 @@ pub fn copyAllToClipboard(
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) void {
-    if (ensureChatBuffer(allocator, messages, stream_text, inbox, show_tool_output)) {
+    if (ensureChatBuffer(allocator, messages, stream_text, inbox, visibility_tier)) {
         const zbuf = bufferZ();
         clipboard.setTextZ(zbuf);
     }
@@ -192,10 +193,10 @@ pub fn copySelectionToClipboard(
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) void {
     const range = selectionRange(state) orelse return;
-    const buf = buildSelectableBuffer(allocator, messages, stream_text, inbox, show_tool_output) orelse return;
+    const buf = buildSelectableBuffer(allocator, messages, stream_text, inbox, visibility_tier) orelse return;
     defer allocator.free(buf);
     if (buf.len == 0) return;
     const start = @min(range[0], buf.len);
@@ -256,13 +257,13 @@ pub fn drawSelectCopy(
     state.last_last_id_hash = last_id_hash;
     state.last_last_len = last_len;
     state.last_stream_len = if (stream_text) |stream| stream.len else 0;
-    if (opts.show_tool_output != state.last_show_tool_output) {
+    if (opts.visibility_tier != state.last_visibility_tier) {
         content_changed = true;
     }
-    state.last_show_tool_output = opts.show_tool_output;
+    state.last_visibility_tier = opts.visibility_tier;
 
     if (content_changed or editor.isEmpty()) {
-        _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.show_tool_output);
+        _ = ensureChatBuffer(allocator, messages, stream_text, inbox, opts.visibility_tier);
         const zbuf = bufferZ();
         const slice = std.mem.sliceTo(zbuf, 0);
         editor.setText(allocator, slice);
@@ -366,11 +367,11 @@ pub fn drawCustom(
     state.last_last_len = last_len;
     state.last_stream_len = if (stream_text) |stream| stream.len else 0;
 
-    const show_tool_output_changed = opts.show_tool_output != state.last_show_tool_output;
-    state.last_show_tool_output = opts.show_tool_output;
+    const visibility_tier_changed = opts.visibility_tier != state.last_visibility_tier;
+    state.last_visibility_tier = opts.visibility_tier;
 
-    // const content_changed = messages_changed or stream_changed or show_tool_output_changed;
-    if (session_changed or show_tool_output_changed) {
+    // const content_changed = messages_changed or stream_changed or visibility_tier_changed;
+    if (session_changed or visibility_tier_changed) {
         state.selection_anchor = null;
         state.selection_focus = null;
         state.selecting = false;
@@ -399,14 +400,14 @@ pub fn drawCustom(
         messages,
         stream_text,
         inbox,
-        opts.show_tool_output,
+        opts.visibility_tier,
         bubble_width,
         line_height,
         padding,
         gap,
         separator_len,
         messages_changed,
-        show_tool_output_changed,
+        visibility_tier_changed,
         stream_changed,
     );
 
@@ -445,7 +446,7 @@ pub fn drawCustom(
     }
 
     if (!prevent_auto_follow_tail_pre and state.follow_tail and !state.scrollbar_dragging and
-        (session_changed or messages_changed or show_tool_output_changed))
+        (session_changed or messages_changed or visibility_tier_changed))
     {
         // When pinned to bottom, session switches / history refreshes can refine message height
         // estimates in the same frame (as the tail messages get measured), which shifts
@@ -802,7 +803,7 @@ pub fn drawCustom(
         state.selecting = false;
     }
     if (copy_requested and state.focused) {
-        copySelectionToClipboard(allocator, state, messages, stream_text, inbox, opts.show_tool_output);
+        copySelectionToClipboard(allocator, state, messages, stream_text, inbox, opts.visibility_tier);
     }
 
     const near_bottom = state.scroll_y >= max_scroll - 4.0;
@@ -896,37 +897,37 @@ fn upsertMessageCacheFromLayout(
 
 fn ensureVirtualState(
     allocator: std.mem.Allocator,
-    state: *ViewState,
+    view_state: *ViewState,
     session_hash: u64,
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
     bubble_width: f32,
     line_height: f32,
     padding: f32,
     gap: f32,
     separator_len: usize,
     messages_changed: bool,
-    show_tool_output_changed: bool,
+    visibility_tier_changed: bool,
     stream_changed: bool,
 ) void {
-    const virt = &state.virt;
+    const virt = &view_state.virt;
 
     const params_changed = virt.built_for_session_hash != session_hash or
-        virt.built_for_show_tool_output != show_tool_output or
+        virt.built_for_visibility_tier != visibility_tier or
         virt.built_for_bubble_width != bubble_width or
         virt.built_for_line_height != line_height or
         virt.built_for_padding != padding or
         virt.built_for_gap != gap;
 
     // If something changed that could reorder/filter the list, rebuild.
-    const need_rebuild = params_changed or show_tool_output_changed or virt.scanned_message_count > messages.len or
+    const need_rebuild = params_changed or visibility_tier_changed or virt.scanned_message_count > messages.len or
         (messages_changed and messages.len <= virt.scanned_message_count);
     if (need_rebuild) {
         virt.reset(allocator);
         virt.built_for_session_hash = session_hash;
-        virt.built_for_show_tool_output = show_tool_output;
+        virt.built_for_visibility_tier = visibility_tier;
         virt.built_for_bubble_width = bubble_width;
         virt.built_for_line_height = line_height;
         virt.built_for_padding = padding;
@@ -937,7 +938,7 @@ fn ensureVirtualState(
         if (boundary_hash != virt.scanned_last_id_hash) {
             virt.reset(allocator);
             virt.built_for_session_hash = session_hash;
-            virt.built_for_show_tool_output = show_tool_output;
+            virt.built_for_visibility_tier = visibility_tier;
             virt.built_for_bubble_width = bubble_width;
             virt.built_for_line_height = line_height;
             virt.built_for_padding = padding;
@@ -949,9 +950,9 @@ fn ensureVirtualState(
     var idx: usize = virt.scanned_message_count;
     while (idx < messages.len) : (idx += 1) {
         const msg = messages[idx];
-        if (shouldSkipMessage(msg, inbox, show_tool_output)) continue;
+        if (shouldSkipMessage(msg, inbox, visibility_tier)) continue;
 
-        const cached = getMessageCacheIfValid(state, msg, bubble_width, line_height, padding);
+        const cached = getMessageCacheIfValid(view_state, msg, bubble_width, line_height, padding);
         const height = if (cached) |c| c.height else estimateMessageHeight(line_height, padding, msg.attachments);
         const text_len = if (cached) |c| c.text_len else displayTextLen(msg.content);
 
@@ -993,7 +994,7 @@ fn ensureVirtualState(
         const item = virt.items.items[idx_stream];
         const new_text_len = displayTextLen(stream);
         if (new_text_len != item.text_len) {
-            virtualUpdateItemMetrics(state, idx_stream, item.height, new_text_len, gap, separator_len);
+            virtualUpdateItemMetrics(view_state, idx_stream, item.height, new_text_len, gap, separator_len);
         }
     }
 }
@@ -1186,11 +1187,11 @@ fn isToolRole(role: []const u8) bool {
 fn countVisible(
     messages: []const types.ChatMessage,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) i32 {
     var count: i32 = 0;
     for (messages) |msg| {
-        if (shouldSkipMessage(msg, inbox, show_tool_output)) continue;
+        if (shouldSkipMessage(msg, inbox, visibility_tier)) continue;
         count += 1;
     }
     return count;
@@ -1948,12 +1949,12 @@ fn ensureChatBuffer(
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) bool {
     chat_buffer.clearRetainingCapacity();
     var writer = chat_buffer.writer(allocator);
     for (messages) |msg| {
-        if (shouldSkipMessage(msg, inbox, show_tool_output)) continue;
+        if (shouldSkipMessage(msg, inbox, visibility_tier)) continue;
         writer.print("[{s}] {s}\n\n", .{ msg.role, msg.content }) catch return false;
         if (msg.attachments) |attachments| {
             for (attachments) |attachment| {
@@ -1976,15 +1977,49 @@ fn bufferZ() [:0]u8 {
 fn shouldSkipMessage(
     msg: types.ChatMessage,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) bool {
     if (inbox) |store| {
         if (store.isCommandMessage(msg.id)) {
-            return !show_tool_output;
+            return visibility_tier != .deep_debug;
         }
     }
     if (isEmptyMessage(msg)) return true;
-    if (!show_tool_output and isToolRole(msg.role)) return true;
+    if (isToolRole(msg.role)) {
+        return switch (visibility_tier) {
+            .normal => true,
+            .dev => !isToolOutcomeMessage(msg.content),
+            .deep_debug => false,
+        };
+    }
+    return false;
+}
+
+fn isToolOutcomeMessage(content: []const u8) bool {
+    return containsAsciiCaseInsensitive(content, "failed") or
+        containsAsciiCaseInsensitive(content, "error") or
+        containsAsciiCaseInsensitive(content, "denied") or
+        containsAsciiCaseInsensitive(content, "exit code") or
+        containsAsciiCaseInsensitive(content, "\"ok\":false") or
+        containsAsciiCaseInsensitive(content, "\"status\":\"failed\"");
+}
+
+fn containsAsciiCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var matched = true;
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched) return true;
+    }
     return false;
 }
 
@@ -2009,14 +2044,14 @@ fn buildSelectableBuffer(
     messages: []const types.ChatMessage,
     stream_text: ?[]const u8,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
-    show_tool_output: bool,
+    visibility_tier: client_state.DebugVisibilityTier,
 ) ?[]u8 {
     var out = std.ArrayList(u8).empty;
     const separator = "\n\n";
 
     var wrote_any = false;
     for (messages) |msg| {
-        if (shouldSkipMessage(msg, inbox, show_tool_output)) continue;
+        if (shouldSkipMessage(msg, inbox, visibility_tier)) continue;
         var display = buildDisplayText(allocator, msg.content);
         defer display.deinit(allocator);
         if (wrote_any) {
