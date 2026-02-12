@@ -16,6 +16,11 @@ pub const AcquireResult = struct {
     name_used_utf8: []const u8,
 };
 
+pub const node_supervisor_lock_global = "Global\\ZiggyStarClaw.NodeSupervisor";
+pub const node_supervisor_lock_local = "Local\\ZiggyStarClaw.NodeSupervisor";
+pub const node_owner_lock_global = "Global\\ZiggyStarClaw.NodeOwner";
+pub const node_owner_lock_local = "Local\\ZiggyStarClaw.NodeOwner";
+
 fn utf16Z(a: std.mem.Allocator, s: []const u8) ![]u16 {
     const tmp = try std.unicode.utf8ToUtf16LeAlloc(a, s);
     defer a.free(tmp);
@@ -89,8 +94,8 @@ fn acquireNamedMutex(
 pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
     return acquireNamedMutex(
         allocator,
-        "Global\\ZiggyStarClaw.NodeSupervisor",
-        "Local\\ZiggyStarClaw.NodeSupervisor",
+        node_supervisor_lock_global,
+        node_supervisor_lock_local,
     );
 }
 
@@ -100,7 +105,7 @@ pub fn acquireNodeSupervisorMutex(allocator: std.mem.Allocator) !AcquireResult {
 pub fn acquireNodeOwnerMutex(allocator: std.mem.Allocator) !AcquireResult {
     return acquireNamedMutex(
         allocator,
-        "Global\\ZiggyStarClaw.NodeOwner",
-        "Local\\ZiggyStarClaw.NodeOwner",
+        node_owner_lock_global,
+        node_owner_lock_local,
     );
 }
