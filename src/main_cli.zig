@@ -1014,7 +1014,7 @@ pub fn main() !void {
 
             logger.err("Unknown subcommand: {s} {s}", .{ arg, noun });
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, arg, "session")) {
+        } else if (std.mem.eql(u8, arg, "session") or std.mem.eql(u8, arg, "sessions")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (std.mem.eql(u8, action, "list")) {
@@ -1061,7 +1061,7 @@ pub fn main() !void {
 
             logger.err("Unknown approvals action: {s}", .{action});
             return error.InvalidArguments;
-        } else if (std.mem.eql(u8, arg, "device")) {
+        } else if (std.mem.eql(u8, arg, "device") or std.mem.eql(u8, arg, "devices")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
             if (std.mem.eql(u8, action, "list")) {
@@ -1087,27 +1087,67 @@ pub fn main() !void {
                 try writeHelpText(allocator, usage);
                 return;
             }
-            const action = args[i + 1];
-            if (std.mem.eql(u8, action, "install-startup")) {
+
+            const noun_or_action = args[i + 1];
+            if (std.mem.eql(u8, noun_or_action, "startup")) {
+                if (i + 2 >= args.len) {
+                    try writeHelpText(allocator, usage);
+                    return;
+                }
+
+                const action = args[i + 2];
+                if (std.mem.eql(u8, action, "install")) {
+                    tray_install_startup = true;
+                } else if (std.mem.eql(u8, action, "uninstall")) {
+                    tray_uninstall_startup = true;
+                } else if (std.mem.eql(u8, action, "start")) {
+                    tray_start_startup = true;
+                } else if (std.mem.eql(u8, action, "stop")) {
+                    tray_stop_startup = true;
+                } else if (std.mem.eql(u8, action, "status")) {
+                    tray_status_startup = true;
+                } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+                    try writeHelpText(allocator, usage);
+                    return;
+                } else {
+                    logger.err("Unknown tray startup action: {s}", .{action});
+                    return error.InvalidArguments;
+                }
+
+                // Skip "tray startup <action>".
+                i += 2;
+                continue;
+            }
+
+            // Backward compatibility aliases:
+            //   tray install-startup|uninstall-startup|start|stop|status
+            const legacy_action = noun_or_action;
+            if (std.mem.eql(u8, legacy_action, "install-startup")) {
+                logger.warn("`tray install-startup` is deprecated; use `tray startup install`.", .{});
                 tray_install_startup = true;
-            } else if (std.mem.eql(u8, action, "uninstall-startup")) {
+            } else if (std.mem.eql(u8, legacy_action, "uninstall-startup")) {
+                logger.warn("`tray uninstall-startup` is deprecated; use `tray startup uninstall`.", .{});
                 tray_uninstall_startup = true;
-            } else if (std.mem.eql(u8, action, "start")) {
+            } else if (std.mem.eql(u8, legacy_action, "start")) {
+                logger.warn("`tray start` is deprecated; use `tray startup start`.", .{});
                 tray_start_startup = true;
-            } else if (std.mem.eql(u8, action, "stop")) {
+            } else if (std.mem.eql(u8, legacy_action, "stop")) {
+                logger.warn("`tray stop` is deprecated; use `tray startup stop`.", .{});
                 tray_stop_startup = true;
-            } else if (std.mem.eql(u8, action, "status")) {
+            } else if (std.mem.eql(u8, legacy_action, "status")) {
+                logger.warn("`tray status` is deprecated; use `tray startup status`.", .{});
                 tray_status_startup = true;
-            } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
+            } else if (std.mem.eql(u8, legacy_action, "help") or std.mem.eql(u8, legacy_action, "--help") or std.mem.eql(u8, legacy_action, "-h")) {
                 try writeHelpText(allocator, usage);
                 return;
             } else {
-                logger.err("Unknown tray action: {s}", .{action});
+                logger.err("Unknown tray command: {s}", .{legacy_action});
                 return error.InvalidArguments;
             }
 
-            // Skip "tray <action>".
+            // Skip legacy "tray <action>".
             i += 1;
+            continue;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;

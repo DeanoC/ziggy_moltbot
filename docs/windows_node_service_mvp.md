@@ -14,7 +14,13 @@ All of these are available on Windows:
 - `ziggystarclaw-cli node service stop`
 - `ziggystarclaw-cli node service status`
 
-Legacy `--node-service-*` action flags are still accepted for compatibility, but deprecated in favor of `node service <action>`.
+Legacy `--node-service-*` action flags were removed. Use `node service <action>`.
+If you still have old scripts, migrate them directly:
+- `--node-service-install` → `node service install`
+- `--node-service-uninstall` → `node service uninstall`
+- `--node-service-start` → `node service start`
+- `--node-service-stop` → `node service stop`
+- `--node-service-status` → `node service status`
 
 ### Mode
 

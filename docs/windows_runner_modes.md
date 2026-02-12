@@ -65,7 +65,7 @@ ziggystarclaw-cli node runner stop
 
 ziggystarclaw-cli node service install|uninstall|start|stop|status
 ziggystarclaw-cli node session install|uninstall|start|stop|status
-ziggystarclaw-cli tray install-startup|uninstall-startup|start|stop|status
+ziggystarclaw-cli tray startup install|uninstall|start|stop|status
 ```
 
 Client installer-handoff mode:
