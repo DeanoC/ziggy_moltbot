@@ -20,12 +20,18 @@ const session_presenter = @import("../session_presenter.zig");
 pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
     select_session: ?[]u8 = null,
+    select_session_id: ?[]u8 = null,
     new_chat_session_key: ?[]u8 = null,
 };
 
 const HeaderAction = struct {
     picker_rect: ?draw_context.Rect = null,
     request_new_chat: bool = false,
+};
+
+const SessionSelection = struct {
+    key: ?[]u8 = null,
+    session_id: ?[]u8 = null,
 };
 
 const CopyContextMenuAction = enum {
@@ -55,6 +61,8 @@ pub fn draw(
 ) ChatPanelAction {
     var action = ChatPanelAction{};
     const t = theme.activeTheme();
+
+    normalizeSelectedSessionId(allocator, panel_state, session_key, sessions);
 
     const status_text: []const u8 = if (session_state) |st| blk: {
         if (st.messages_loading) break :blk "loading";
@@ -117,6 +125,7 @@ pub fn draw(
         busy_phase,
         sessions,
         session_key,
+        panel_state.selected_session_id,
         has_session,
         &select_copy_mode,
         &show_tool_output,
@@ -297,19 +306,27 @@ pub fn draw(
 
     if (session_picker_open) {
         if (header_action.picker_rect) |picker_rect| {
-            action.select_session = drawSessionPicker(
+            const selection = drawSessionPicker(
                 allocator,
                 &panel_ctx,
                 queue,
                 sessions,
                 agent_id,
                 session_key,
+                panel_state.selected_session_id,
                 picker_rect,
                 &show_system_sessions,
             );
-            if (action.select_session != null) {
+            if (selection.key) |key| {
+                action.select_session = key;
+                action.select_session_id = selection.session_id;
+                clearSelectedSessionId(allocator, panel_state);
+                if (action.select_session_id) |sid| {
+                    panel_state.selected_session_id = allocator.dupe(u8, sid) catch null;
+                }
                 session_picker_open = false;
             } else {
+                if (selection.session_id) |sid| allocator.free(sid);
                 for (queue.events.items) |evt| {
                     switch (evt) {
                         .mouse_down => |md| {
@@ -330,6 +347,7 @@ pub fn draw(
     }
 
     if (header_action.request_new_chat) {
+        clearSelectedSessionId(allocator, panel_state);
         action.new_chat_session_key = resolveNewChatSessionKey(allocator, sessions, agent_id, session_key);
     }
 
@@ -348,6 +366,7 @@ fn drawHeader(
     busy_phase: u8,
     sessions: []const types.Session,
     session_key: ?[]const u8,
+    current_session_id: ?[]const u8,
     has_session: bool,
     select_copy_mode_ref: *bool,
     show_tool_output_ref: *bool,
@@ -360,7 +379,6 @@ fn drawHeader(
     _ = status_text;
     _ = is_busy;
     _ = busy_phase;
-    _ = sessions;
     ctx.pushClip(rect);
     defer ctx.popClip();
 
@@ -430,7 +448,7 @@ fn drawHeader(
             const picker_rect = draw_context.Rect.fromMinSize(.{ picker_x, start_y - t.spacing.xs * 0.2 }, .{ picker_w, picker_h });
 
             var picker_label_buf: [160]u8 = undefined;
-            const picker_label = resolveCurrentSessionLabel(session_key, &picker_label_buf);
+            const picker_label = resolveCurrentSessionLabel(sessions, session_key, current_session_id, &picker_label_buf);
             const picker_text_max = @max(0.0, picker_rect.size()[0] - t.spacing.sm * 2.0 - ctx.measureText(" v", 0.0)[0]);
             var fitted_picker_buf: [192]u8 = undefined;
             const fitted_picker = fitTextEnd(ctx, picker_label, picker_text_max, &fitted_picker_buf);
@@ -470,9 +488,10 @@ fn drawSessionPicker(
     sessions: []const types.Session,
     agent_id: []const u8,
     current_session: ?[]const u8,
+    current_session_id: ?[]const u8,
     picker_rect: draw_context.Rect,
     show_system_ref: *bool,
-) ?[]u8 {
+) SessionSelection {
     const t = ctx.theme;
     const menu_rect = pickerMenuRect(ctx, picker_rect);
     ctx.drawRoundedRect(menu_rect, t.radius.sm, .{
@@ -556,14 +575,18 @@ fn drawSessionPicker(
                 .{ menu_rect.min[0] + padding, cursor_y },
                 .{ menu_rect.size()[0] - padding * 2.0, row_h },
             );
-            const selected = current_session != null and std.mem.eql(u8, current_session.?, main_key);
+            const selected = current_session != null and std.mem.eql(u8, current_session.?, main_key) and current_session_id == null;
             if (drawPickerTextRow(ctx, queue, row_rect, "Current", "Latest", selected)) {
-                return allocator.dupe(u8, main_key) catch null;
+                return .{
+                    .key = allocator.dupe(u8, main_key) catch null,
+                    .session_id = null,
+                };
             }
             cursor_y += row_h + row_gap;
             drew_row = true;
         }
 
+        var selected_for_key = false;
         for (indices.items) |idx| {
             const session = sessions[idx];
             if (!std.mem.eql(u8, session_presenter.bucketKey(session), bucket)) continue;
@@ -573,10 +596,20 @@ fn drawSessionPicker(
                 .{ menu_rect.min[0] + padding, cursor_y },
                 .{ menu_rect.size()[0] - padding * 2.0, row_h },
             );
-            const selected = current_session != null and std.mem.eql(u8, current_session.?, session.key);
+            const selected = blk: {
+                if (current_session == null or !std.mem.eql(u8, current_session.?, session.key)) break :blk false;
+                if (current_session_id) |sid| {
+                    break :blk session.session_id != null and std.mem.eql(u8, session.session_id.?, sid);
+                }
+                if (!selected_for_key) {
+                    selected_for_key = true;
+                    break :blk true;
+                }
+                break :blk false;
+            };
             const clicked = drawPickerRow(ctx, queue, row_rect, session, agent_id, ordinal, selected);
-            if (clicked) {
-                return allocator.dupe(u8, session.key) catch null;
+            if (clicked.key != null) {
+                return clicked;
             }
             ordinal += 1;
             cursor_y += row_h + row_gap;
@@ -588,7 +621,7 @@ fn drawSessionPicker(
         }
     }
 
-    return null;
+    return .{};
 }
 
 fn drawPickerRow(
@@ -599,7 +632,7 @@ fn drawPickerRow(
     agent_id: []const u8,
     ordinal: usize,
     selected: bool,
-) bool {
+) SessionSelection {
     _ = agent_id;
     _ = ordinal;
     var label_buf: [64]u8 = undefined;
@@ -612,7 +645,13 @@ fn drawPickerRow(
     else
         rel;
 
-    return drawPickerTextRow(ctx, queue, rect, primary, secondary, selected);
+    if (drawPickerTextRow(ctx, queue, rect, primary, secondary, selected)) {
+        return .{
+            .key = ctx.allocator.dupe(u8, session.key) catch null,
+            .session_id = if (session.session_id) |id| ctx.allocator.dupe(u8, id) catch null else null,
+        };
+    }
+    return .{};
 }
 
 fn drawPickerTextRow(
@@ -656,11 +695,66 @@ fn drawPickerTextRow(
 }
 
 fn resolveCurrentSessionLabel(
+    sessions: []const types.Session,
     session_key: ?[]const u8,
+    current_session_id: ?[]const u8,
     label_buf: []u8,
 ) []const u8 {
     if (session_key == null) return "Select session";
+    if (current_session_id) |sid| {
+        const trimmed = std.mem.trim(u8, sid, " \t\r\n");
+        if (trimmed.len > 0) {
+            for (sessions) |session| {
+                if (!std.mem.eql(u8, session.key, session_key.?)) continue;
+                if (session.session_id) |row_sid| {
+                    if (std.mem.eql(u8, std.mem.trim(u8, row_sid, " \t\r\n"), trimmed)) {
+                        var sid_buf: [32]u8 = undefined;
+                        const short_sid = shortenSessionId(trimmed, &sid_buf);
+                        return std.fmt.bufPrint(label_buf, "Session {s}", .{short_sid}) catch "Session";
+                    }
+                }
+            }
+        }
+    }
     return session_presenter.bucketLabelFromKey(session_presenter.bucketKeyForSessionKey(session_key.?), label_buf);
+}
+
+fn shortenSessionId(session_id: []const u8, buf: []u8) []const u8 {
+    if (session_id.len <= 12) return session_id;
+    return std.fmt.bufPrint(buf, "{s}...", .{session_id[0..8]}) catch session_id;
+}
+
+fn clearSelectedSessionId(allocator: std.mem.Allocator, panel_state: *workspace.ChatPanel) void {
+    if (panel_state.selected_session_id) |sid| allocator.free(sid);
+    panel_state.selected_session_id = null;
+}
+
+fn normalizeSelectedSessionId(
+    allocator: std.mem.Allocator,
+    panel_state: *workspace.ChatPanel,
+    session_key: ?[]const u8,
+    sessions: []const types.Session,
+) void {
+    const selected = panel_state.selected_session_id orelse return;
+    const key = session_key orelse {
+        clearSelectedSessionId(allocator, panel_state);
+        return;
+    };
+
+    const trimmed_selected = std.mem.trim(u8, selected, " \t\r\n");
+    var valid = false;
+    for (sessions) |session| {
+        if (!std.mem.eql(u8, session.key, key)) continue;
+        if (session.session_id) |row_sid| {
+            if (std.mem.eql(u8, std.mem.trim(u8, row_sid, " \t\r\n"), trimmed_selected)) {
+                valid = true;
+                break;
+            }
+        }
+    }
+    if (!valid) {
+        clearSelectedSessionId(allocator, panel_state);
+    }
 }
 
 fn resolveNewChatSessionKey(

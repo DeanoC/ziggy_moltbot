@@ -2,6 +2,7 @@ const std = @import("std");
 
 pub const ChatHistoryParams = struct {
     sessionKey: []const u8,
+    sessionId: ?[]const u8 = null,
     limit: ?u32 = null,
 };
 

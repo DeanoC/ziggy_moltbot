@@ -262,6 +262,10 @@ pub const PanelManager = struct {
             if (session_key) |session| {
                 if (panel.data.Chat.session_key) |prev| self.allocator.free(prev);
                 panel.data.Chat.session_key = try self.allocator.dupe(u8, session);
+                if (panel.data.Chat.selected_session_id) |selected| {
+                    self.allocator.free(selected);
+                    panel.data.Chat.selected_session_id = null;
+                }
             }
 
             self.workspace.markDirty();
@@ -272,6 +276,7 @@ pub const PanelManager = struct {
         const data = workspace.PanelData{ .Chat = .{
             .agent_id = try self.allocator.dupe(u8, agent_id),
             .session_key = if (session_key) |session| try self.allocator.dupe(u8, session) else null,
+            .selected_session_id = null,
         } };
         const panel_id = try self.openPanel(.Chat, title, data);
         self.focusPanel(panel_id);

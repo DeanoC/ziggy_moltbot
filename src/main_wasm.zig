@@ -697,7 +697,7 @@ fn sendNodesListRequest() void {
 
 const chat_history_fetch_limit_default: u32 = 20;
 
-fn sendChatHistoryRequest(session_key: []const u8) void {
+fn sendChatHistoryRequest(session_key: []const u8, session_id: ?[]const u8) void {
     if (!ws_connected or ctx.state != .connected) return;
     if (ctx.findSessionState(session_key)) |state_ptr| {
         if (state_ptr.pending_history_request_id != null) return;
@@ -705,6 +705,7 @@ fn sendChatHistoryRequest(session_key: []const u8) void {
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
+        .sessionId = session_id,
         .limit = chat_history_fetch_limit_default,
     };
 
@@ -1338,10 +1339,10 @@ fn ensureChatPanelsReady(
         if (session_key) |key| {
             if (ctx_ptr.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
-                    sendChatHistoryRequest(key);
+                    sendChatHistoryRequest(key, null);
                 }
             } else {
-                sendChatHistoryRequest(key);
+                sendChatHistoryRequest(key, null);
             }
         }
     }
@@ -1797,7 +1798,7 @@ fn frame() callconv(.c) void {
                 _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), target_key) catch {};
                 ctx.clearSessionState(target_key);
                 ctx.setCurrentSession(target_key) catch {};
-                sendChatHistoryRequest(target_key);
+                sendChatHistoryRequest(target_key, null);
                 sendSessionsListRequest();
             }
         }
@@ -1814,7 +1815,7 @@ fn frame() callconv(.c) void {
             _ = manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), session_key) catch {};
             ctx.clearSessionState(session_key);
             ctx.setCurrentSession(session_key) catch {};
-            sendChatHistoryRequest(session_key);
+            sendChatHistoryRequest(session_key, null);
             sendSessionsListRequest();
         }
     }
@@ -1846,7 +1847,7 @@ fn frame() callconv(.c) void {
                 _ = manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
                 ctx.clearSessionState(session_key);
                 ctx.setCurrentSession(session_key) catch {};
-                sendChatHistoryRequest(session_key);
+                sendChatHistoryRequest(session_key, null);
                 sendSessionsListRequest();
             }
         }
@@ -1864,12 +1865,13 @@ fn frame() callconv(.c) void {
         };
         _ = manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
         if (ws_connected) {
-            sendChatHistoryRequest(open.session_key);
+            sendChatHistoryRequest(open.session_key, null);
         }
     }
 
     if (ui_action.select_session) |session_key| {
         defer allocator.free(session_key);
+        defer if (ui_action.select_session_id) |session_id| allocator.free(session_id);
         ctx.setCurrentSession(session_key) catch |err| {
             logger.warn("Failed to set session: {}", .{err});
         };
@@ -1879,8 +1881,10 @@ fn frame() callconv(.c) void {
             _ = manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
         }
         if (ws_connected) {
-            sendChatHistoryRequest(session_key);
+            sendChatHistoryRequest(session_key, ui_action.select_session_id);
         }
+    } else if (ui_action.select_session_id) |session_id| {
+        allocator.free(session_id);
     }
 
     if (ui_action.set_default_session) |choice| {

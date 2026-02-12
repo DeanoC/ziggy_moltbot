@@ -1376,6 +1376,7 @@ fn sendChatHistoryRequest(
     ctx: *client_state.ClientContext,
     ws_client: *websocket_client.WebSocketClient,
     session_key: []const u8,
+    session_id: ?[]const u8,
 ) void {
     if (!ws_client.is_connected) return;
     if (ctx.state != .connected) return;
@@ -1385,6 +1386,7 @@ fn sendChatHistoryRequest(
 
     const params = chat_proto.ChatHistoryParams{
         .sessionKey = session_key,
+        .sessionId = session_id,
         .limit = chat_history_fetch_limit,
     };
 
@@ -1969,10 +1971,10 @@ fn ensureChatPanelsReady(
         if (session_key) |key| {
             if (ctx.findSessionState(key)) |state_ptr| {
                 if (state_ptr.pending_history_request_id == null and !state_ptr.history_loaded) {
-                    sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                    sendChatHistoryRequest(allocator, ctx, ws_client, key, null);
                 }
             } else {
-                sendChatHistoryRequest(allocator, ctx, ws_client, key);
+                sendChatHistoryRequest(allocator, ctx, ws_client, key, null);
             }
         }
     }
@@ -3768,7 +3770,7 @@ pub fn main() !void {
                     _ = active_window.manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), target_key) catch {};
                     ctx.clearSessionState(target_key);
                     ctx.setCurrentSession(target_key) catch {};
-                    sendChatHistoryRequest(allocator, &ctx, &ws_client, target_key);
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, target_key, null);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
             }
@@ -3785,7 +3787,7 @@ pub fn main() !void {
                 _ = active_window.manager.ensureChatPanelForAgent(target_agent_id, agentDisplayName(&agents, target_agent_id), session_key) catch {};
                 ctx.clearSessionState(session_key);
                 ctx.setCurrentSession(session_key) catch {};
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, null);
                 sendSessionsListRequest(allocator, &ctx, &ws_client);
             }
         }
@@ -3818,7 +3820,7 @@ pub fn main() !void {
                     _ = active_window.manager.ensureChatPanelForAgent(agent_id, agentDisplayName(&agents, agent_id), session_key) catch {};
                     ctx.clearSessionState(session_key);
                     ctx.setCurrentSession(session_key) catch {};
-                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                    sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, null);
                     sendSessionsListRequest(allocator, &ctx, &ws_client);
                 }
             }
@@ -3836,12 +3838,13 @@ pub fn main() !void {
             };
             _ = active_window.manager.ensureChatPanelForAgent(open.agent_id, agentDisplayName(&agents, open.agent_id), open.session_key) catch {};
             if (ws_client.is_connected) {
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key);
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, open.session_key, null);
             }
         }
 
         if (ui_action.select_session) |session_key| {
             defer allocator.free(session_key);
+            defer if (ui_action.select_session_id) |session_id| allocator.free(session_id);
             ctx.setCurrentSession(session_key) catch |err| {
                 logger.warn("Failed to set session: {}", .{err});
             };
@@ -3851,8 +3854,10 @@ pub fn main() !void {
                 _ = active_window.manager.ensureChatPanelForAgent("main", agentDisplayName(&agents, "main"), session_key) catch {};
             }
             if (ws_client.is_connected) {
-                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key);
+                sendChatHistoryRequest(allocator, &ctx, &ws_client, session_key, ui_action.select_session_id);
             }
+        } else if (ui_action.select_session_id) |session_id| {
+            allocator.free(session_id);
         }
 
         if (ui_action.set_default_session) |choice| {

@@ -130,6 +130,7 @@ pub const UiAction = struct {
     new_session: bool = false,
     new_chat_session_key: ?[]u8 = null,
     select_session: ?[]u8 = null,
+    select_session_id: ?[]u8 = null,
     new_chat_agent_id: ?[]u8 = null,
     open_session: ?@import("panels/agents_panel.zig").AgentSessionAction = null,
     set_default_session: ?@import("panels/agents_panel.zig").AgentSessionAction = null,
@@ -2003,6 +2004,7 @@ fn drawPanelContents(
                 }
             }
             replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
+            setOwnedSlice(allocator, &action.select_session_id, chat_action.select_session_id);
             replaceOwnedSlice(allocator, &action.new_chat_session_key, chat_action.new_chat_session_key);
 
             result.session_key = resolved_session_key;
@@ -2087,6 +2089,9 @@ fn drawPanelContents(
                 pending_attachment.* = attachment;
             }
             replaceOwnedSlice(allocator, &action.select_session, control_action.select_session);
+            if (control_action.select_session != null) {
+                setOwnedSlice(allocator, &action.select_session_id, null);
+            }
             replaceOwnedSlice(allocator, &action.open_url, control_action.open_url);
         },
         .Agents => {
@@ -2220,6 +2225,13 @@ fn selectPanelForKind(
 
 fn replaceOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8) void {
     if (value == null) return;
+    if (target.*) |existing| {
+        allocator.free(existing);
+    }
+    target.* = value;
+}
+
+fn setOwnedSlice(allocator: std.mem.Allocator, target: *?[]u8, value: ?[]u8) void {
     if (target.*) |existing| {
         allocator.free(existing);
     }
