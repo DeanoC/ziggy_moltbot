@@ -81,7 +81,7 @@ This will:
 ```
 
 ### 4) (Optional) Always-on service
-- Windows: `--node-service-install`
+- Windows: `node service install`
 - Linux: use systemd (see docs/user/node-mode.md)
 
 Docs: `docs/user/node-mode.md`

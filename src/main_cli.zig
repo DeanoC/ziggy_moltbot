@@ -1017,15 +1017,20 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
         } else if (std.mem.eql(u8, arg, "--node-service-install")) {
-            node_service_install = true;
+            logger.err("Flag --node-service-install was removed. Use `node service install`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-uninstall")) {
-            node_service_uninstall = true;
+            logger.err("Flag --node-service-uninstall was removed. Use `node service uninstall`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-start")) {
-            node_service_start = true;
+            logger.err("Flag --node-service-start was removed. Use `node service start`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-stop")) {
-            node_service_stop = true;
+            logger.err("Flag --node-service-stop was removed. Use `node service stop`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-status")) {
-            node_service_status = true;
+            logger.err("Flag --node-service-status was removed. Use `node service status`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-mode")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1049,7 +1054,7 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             extract_dest = args[i];
-        } else if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "--runner-mode")) {
+        } else if (std.mem.eql(u8, arg, "--mode")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             const v = args[i];
@@ -1060,6 +1065,9 @@ pub fn main() !void {
             } else {
                 return error.InvalidArguments;
             }
+        } else if (std.mem.eql(u8, arg, "--runner-mode")) {
+            logger.err("Flag --runner-mode was removed. Use `--mode service|session`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--profile")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
