@@ -155,8 +155,10 @@ pub fn installTask(
     // - keep a control pipe for the tray app (start/stop)
     const task_run = try std.fmt.allocPrint(
         allocator,
-        // NOTE: schtasks expects a single command line string.
-        "\"{s}\" node supervise --hide-console --config \"{s}\" --as-node --no-operator --log-level info",
+        // NOTE: schtasks expects a single command line string, and /TR has a
+        // practical length ceiling. Keep this command short to avoid silent
+        // task creation failures on long install/user paths.
+        "\"{s}\" node supervise --hide-console --config \"{s}\"",
         .{ exe_path, config_path },
     );
     defer allocator.free(task_run);
