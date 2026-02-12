@@ -63,11 +63,28 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
-        assert "message|messages|chat send <message>" in result.stdout or "chat send <message>" in result.stdout or "--send <message>" in result.stdout
+        assert (
+            "message send <message>" in result.stdout
+            or "message|messages|chat send <message>" in result.stdout
+            or "chat send <message>" in result.stdout
+            or "--send <message>" in result.stdout
+        )
         # Accept either modern command docs or legacy option docs depending on which
         # binary is present on the local machine.
-        assert "session|sessions list|use <key>" in result.stdout or "sessions|session list|use <key>" in result.stdout or "session list|use <key>" in result.stdout or "--list-sessions" in result.stdout
-        assert "device|devices list|approve <requestId>|reject <requestId>" in result.stdout or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout or "device list|approve <requestId>|reject <requestId>" in result.stdout or "--list-approvals" in result.stdout
+        assert (
+            "sessions list|use <key>" in result.stdout
+            or "session list|use <key>" in result.stdout
+            or "session|sessions list|use <key>" in result.stdout
+            or "sessions|session list|use <key>" in result.stdout
+            or "--list-sessions" in result.stdout
+        )
+        assert (
+            "devices list|approve <requestId>|reject <requestId>" in result.stdout
+            or "device list|approve <requestId>|reject <requestId>" in result.stdout
+            or "device|devices list|approve <requestId>|reject <requestId>" in result.stdout
+            or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout
+            or "--list-approvals" in result.stdout
+        )
         assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
     def test_node_service_help_prefers_verb_noun(self, cli):
