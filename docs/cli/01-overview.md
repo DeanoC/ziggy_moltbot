@@ -2,7 +2,7 @@ ZiggyStarClaw CLI
 
 Usage:
   ziggystarclaw-cli <command> [options]
-  ziggystarclaw-cli [legacy options]
+  ziggystarclaw-cli [deprecated legacy options]
 
 Preferred command style (noun verb):
   chat send <message>
@@ -20,6 +20,6 @@ Preferred command style (noun verb):
   tray startup install|uninstall|start|stop|status
 
 Notes:
-  - Legacy flag-style options are still supported for compatibility.
-  - Legacy tray aliases are also supported: tray install-startup|uninstall-startup|start|stop|status.
-  - Use --help to see both command-style and legacy actions.
+  - Legacy flag-style action options are deprecated and emit warnings with the noun-verb replacement.
+  - Legacy tray aliases are also supported: tray install-startup|uninstall-startup|start|stop|status (deprecated; use tray startup ...).
+  - Use --help to see preferred command-style usage plus transitional compatibility flags.

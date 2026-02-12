@@ -45,7 +45,7 @@ Main sections:
   ziggystarclaw-cli --node <id> node run "uname -a"
   ```
 
-Legacy flag-style options remain supported for compatibility.
+Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
@@ -80,8 +80,8 @@ Commands:
 - `quit` / `exit`
 
 ## Default session/node behavior
-- `--send` uses the default session if `--session` is not provided.
-- `--run` uses the default node if `--node` is not provided.
+- `chat send` uses the default session if `--session` is not provided.
+- `node run` uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
   ziggystarclaw-cli session use <key> --save-config
@@ -115,9 +115,9 @@ ziggystarclaw-cli tray startup uninstall
 Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
 
 ## Common pitfalls
-- **No node specified for `--run`.**  
-  Either pass `--node <id>` or set a default node in the config.
+- **No node specified for `node run`.**  
+  Pass `--node <id>` or set a default node in the config.
 - **No sessions available.**  
-  Use `--list-sessions` to verify the server is providing sessions.
+  Use `session list` (legacy: `--list-sessions`) to verify the server is providing sessions.
 - **Token missing/expired.**  
   Re-set `--token` and `--save-config` or update the config file.
