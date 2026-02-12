@@ -14,10 +14,14 @@ Main sections:
 - [Node service helpers](../cli/05-node-service.md)
 - [Global flags (full build)](../cli/06-global-flags.md)
 - [Global flags (node-only build)](../cli/06-global-flags-node-only.md)
+- [CLI chunking internals](../cli/07-chunking.md)
 - [Node mode help](../cli/node-mode.md)
 - [Operator mode help](../cli/operator-mode.md)
 
 ## Build profiles
+
+Internally, the build is split into a core/local CLI chunk and an operator chunk (see [CLI chunking internals](../cli/07-chunking.md)).
+
 - Full CLI (default):
   ```bash
   zig build -Dclient=false
