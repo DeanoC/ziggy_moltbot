@@ -84,7 +84,7 @@ fn envVarValueOwned(allocator: std.mem.Allocator, name: []const u8) ?[]u8 {
 }
 
 pub fn writeMarkdown(writer: anytype, markdown: []const u8, mode: RenderMode) !void {
-    var in_fenced_code = false;
+    var fence_state = FencedCodeState{};
 
     var cursor: usize = 0;
     while (cursor < markdown.len) {
@@ -93,7 +93,7 @@ pub fn writeMarkdown(writer: anytype, markdown: []const u8, mode: RenderMode) !v
         const has_newline = rel_nl != null;
         const line = markdown[cursor..line_end];
 
-        try writeMarkdownLine(writer, line, has_newline, mode, &in_fenced_code);
+        try writeMarkdownLine(writer, line, has_newline, mode, &fence_state);
 
         if (!has_newline) break;
         cursor = line_end + 1;
@@ -105,23 +105,48 @@ pub fn writeMarkdown(writer: anytype, markdown: []const u8, mode: RenderMode) !v
     }
 }
 
+const FencedCodeState = struct {
+    active: bool = false,
+    marker: u8 = 0,
+    min_len: usize = 0,
+};
+
+const FenceRunInfo = struct {
+    marker: u8,
+    len: usize,
+    rest: []const u8,
+};
+
 fn writeMarkdownLine(
     writer: anytype,
     line: []const u8,
     has_newline: bool,
     mode: RenderMode,
-    in_fenced_code: *bool,
+    fence_state: *FencedCodeState,
 ) !void {
     const trimmed = std.mem.trimLeft(u8, line, " \t");
     const indent_len = line.len - trimmed.len;
 
-    if (std.mem.startsWith(u8, trimmed, "```")) {
-        in_fenced_code.* = !in_fenced_code.*;
-        if (has_newline) try writer.writeByte('\n');
-        return;
+    if (fenceRunInfo(trimmed)) |fence| {
+        if (fence_state.active) {
+            if (fence.marker == fence_state.marker and
+                fence.len >= fence_state.min_len and
+                std.mem.trim(u8, fence.rest, " \t\r").len == 0)
+            {
+                fence_state.* = .{};
+                if (has_newline) try writer.writeByte('\n');
+                return;
+            }
+        } else {
+            fence_state.active = true;
+            fence_state.marker = fence.marker;
+            fence_state.min_len = fence.len;
+            if (has_newline) try writer.writeByte('\n');
+            return;
+        }
     }
 
-    if (in_fenced_code.*) {
+    if (fence_state.active) {
         if (mode == .ansi) try writer.writeAll("\x1b[33m");
         try writer.writeAll(line);
         if (mode == .ansi) try writer.writeAll("\x1b[39m");
@@ -180,6 +205,23 @@ fn writeMarkdownLine(
     if (has_newline) try writer.writeByte('\n');
 }
 
+fn fenceRunInfo(trimmed_line: []const u8) ?FenceRunInfo {
+    if (trimmed_line.len < 3) return null;
+
+    const marker = trimmed_line[0];
+    if (marker != '`' and marker != '~') return null;
+
+    var idx: usize = 0;
+    while (idx < trimmed_line.len and trimmed_line[idx] == marker) : (idx += 1) {}
+    if (idx < 3) return null;
+
+    return .{
+        .marker = marker,
+        .len = idx,
+        .rest = trimmed_line[idx..],
+    };
+}
+
 const HeadingInfo = struct {
     level: u8,
     content: []const u8,
@@ -217,8 +259,8 @@ fn normalizeHeadingContent(raw_content: []const u8) []const u8 {
 fn unorderedListContent(trimmed_line: []const u8) ?[]const u8 {
     if (trimmed_line.len < 2) return null;
     const marker = trimmed_line[0];
-    if ((marker == '-' or marker == '*' or marker == '+') and trimmed_line[1] == ' ') {
-        return trimmed_line[2..];
+    if ((marker == '-' or marker == '*' or marker == '+') and isListWhitespace(trimmed_line[1])) {
+        return std.mem.trimLeft(u8, trimmed_line[2..], " \t");
     }
     return null;
 }
@@ -230,8 +272,15 @@ fn orderedListPrefixLen(trimmed_line: []const u8) ?usize {
     while (idx < trimmed_line.len and std.ascii.isDigit(trimmed_line[idx])) : (idx += 1) {}
     if (idx == 0) return null;
     if (idx + 1 >= trimmed_line.len) return null;
-    if (trimmed_line[idx] != '.' or trimmed_line[idx + 1] != ' ') return null;
+
+    const delimiter = trimmed_line[idx];
+    if (delimiter != '.' and delimiter != ')') return null;
+    if (!isListWhitespace(trimmed_line[idx + 1])) return null;
     return idx + 2;
+}
+
+fn isListWhitespace(ch: u8) bool {
+    return ch == ' ' or ch == '\t';
 }
 
 fn renderInline(writer: anytype, text: []const u8, mode: RenderMode) !void {
@@ -328,4 +377,69 @@ test "ansi mode adds formatting sequences for heading/list/inline" {
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[36m•\x1b[39m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[33mcode\x1b[39m") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.items, "\x1b[36m1. \x1b[39m") != null);
+}
+
+test "markdown renderer supports tilde fences and 1) ordered lists" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "1) __first__\n" ++
+        "~~~zig\n" ++
+        "const x = 1;\n" ++
+        "~~~\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "1) first\n" ++
+            "\n" ++
+            "const x = 1;\n" ++
+            "\n",
+        out.items,
+    );
+}
+
+test "markdown renderer only closes fences on matching marker" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "```\n" ++
+        "still code\n" ++
+        "~~~\n" ++
+        "```\n" ++
+        "after\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "\n" ++
+            "still code\n" ++
+            "~~~\n" ++
+            "\n" ++
+            "after\n",
+        out.items,
+    );
+}
+
+test "markdown renderer closes fenced code blocks on CRLF fence lines" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "```\r\n" ++
+        "echo hi\r\n" ++
+        "```\r\n" ++
+        "after\r\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "\n" ++
+            "echo hi\r\n" ++
+            "\n" ++
+            "after\r\n",
+        out.items,
+    );
 }
