@@ -82,10 +82,12 @@ pub const CameraSnapError = error{
 
 pub const CameraClipFormat = enum {
     mp4,
+    webm,
 
     pub fn toString(self: CameraClipFormat) []const u8 {
         return switch (self) {
             .mp4 => "mp4",
+            .webm => "webm",
         };
     }
 
@@ -93,12 +95,16 @@ pub const CameraClipFormat = enum {
         if (std.ascii.eqlIgnoreCase(raw, "mp4")) {
             return .mp4;
         }
+        if (std.ascii.eqlIgnoreCase(raw, "webm")) {
+            return .webm;
+        }
         return null;
     }
 
     fn fileExtension(self: CameraClipFormat) []const u8 {
         return switch (self) {
             .mp4 => "mp4",
+            .webm => "webm",
         };
     }
 };
@@ -651,8 +657,41 @@ fn runFfmpegCameraClip(
             out_path,
         };
 
+        const webm_argv = &[_][]const u8{
+            exe,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "dshow",
+            "-i",
+            input_spec,
+            "-t",
+            duration_arg,
+            "-an",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            "10",
+            "-c:v",
+            "libvpx",
+            "-b:v",
+            "350k",
+            "-maxrate",
+            "350k",
+            "-bufsize",
+            "700k",
+            "-deadline",
+            "realtime",
+            "-f",
+            "webm",
+            "-y",
+            out_path,
+        };
+
         const argv = switch (req.format) {
             .mp4 => mp4_argv,
+            .webm => webm_argv,
         };
 
         const res = std.process.Child.run(.{
@@ -894,10 +933,12 @@ test "CameraSnapFormat.fromString accepts jpeg/jpg/png" {
     try std.testing.expect(CameraSnapFormat.fromString("webp") == null);
 }
 
-test "CameraClipFormat.fromString accepts mp4" {
+test "CameraClipFormat.fromString accepts mp4/webm" {
     try std.testing.expect(CameraClipFormat.fromString("mp4").? == .mp4);
     try std.testing.expect(CameraClipFormat.fromString("MP4").? == .mp4);
-    try std.testing.expect(CameraClipFormat.fromString("webm") == null);
+    try std.testing.expect(CameraClipFormat.fromString("webm").? == .webm);
+    try std.testing.expect(CameraClipFormat.fromString("WEBM").? == .webm);
+    try std.testing.expect(CameraClipFormat.fromString("mkv") == null);
 }
 
 test "parsePngDimensions reads width/height from IHDR" {
