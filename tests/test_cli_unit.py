@@ -6,21 +6,33 @@ These tests verify the CLI binary works without needing
 an OpenClaw gateway connection.
 """
 
+import os
 import subprocess
+import sys
 import pytest
 from pathlib import Path
 
 
 def _resolve_cli_binary() -> Path | None:
     repo_root = Path(__file__).resolve().parents[1]
+    is_windows = sys.platform.startswith("win")
+
     candidates = [
         repo_root / "zig-out" / "bin" / "ziggystarclaw-cli",
-        repo_root / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
         Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli",
-        Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
     ]
+    if is_windows:
+        candidates.extend([
+            repo_root / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
+            Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
+        ])
+
     for candidate in candidates:
-        if candidate.exists():
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        if not is_windows and candidate.suffix.lower() == ".exe":
+            continue
+        if is_windows or os.access(candidate, os.X_OK):
             return candidate
     return None
 
@@ -63,27 +75,27 @@ class TestCliHelp:
         assert "node service <action>" in result.stdout
         assert "--node-service-install" not in result.stdout
 
-    def test_legacy_node_service_flag_warns(self, cli):
-        """Legacy node-service action flags remain compatible but warn"""
+    def test_removed_node_service_flag_errors(self, cli):
+        """Removed legacy node-service flags should hard-fail with guidance"""
         result = subprocess.run(
-            [str(cli), "--node-service-status", "--version"],
+            [str(cli), "--node-service-status"],
             capture_output=True,
             text=True
         )
-        assert result.returncode == 0
-        assert "Deprecated CLI flag --node-service-status" in result.stderr
+        assert result.returncode != 0
+        assert "Flag --node-service-status was removed" in result.stderr
         assert "node service status" in result.stderr
 
-    def test_legacy_runner_mode_alias_warns(self, cli):
-        """Legacy --runner-mode alias remains compatible but warn"""
+    def test_removed_runner_mode_alias_errors(self, cli):
+        """Removed --runner-mode alias should hard-fail with guidance"""
         result = subprocess.run(
-            [str(cli), "node", "runner", "install", "--runner-mode", "service", "--version"],
+            [str(cli), "node", "runner", "install", "--runner-mode", "service"],
             capture_output=True,
             text=True
         )
-        assert result.returncode == 0
-        assert "Deprecated CLI flag --runner-mode" in result.stderr
-        assert "--mode" in result.stderr
+        assert result.returncode != 0
+        assert "Flag --runner-mode was removed" in result.stderr
+        assert "--mode service|session" in result.stderr
     
     def test_node_mode_help(self, cli):
         """Node mode help is available"""

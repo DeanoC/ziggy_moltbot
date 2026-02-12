@@ -5,5 +5,3 @@ Node service helpers (Windows SCM service / Linux systemd)
   --extract-wsz <path>       Extract a Winamp .wsz skin to a directory (zip)
   --extract-dest <path>      Destination directory for --extract-wsz
 
-Legacy compatibility (deprecated): `--node-service-*` action flags still parse.
-Prefer `node service <action>`.

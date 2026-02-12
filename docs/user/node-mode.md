@@ -126,7 +126,6 @@ Useful commands:
 .\ziggystarclaw-cli.exe node service uninstall
 ```
 
-Legacy `--node-service-*` flags are still accepted for now, but are deprecated.
 
 Logs (default onstart/system config):
 
