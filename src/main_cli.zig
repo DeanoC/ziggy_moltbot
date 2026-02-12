@@ -481,7 +481,7 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
             "node supervise blocked: another node owner already holds {s}\n",
             .{mutex.name_used_utf8},
         ) catch "node supervise blocked: another node owner already running\n";
-        _ = std.fs.File.stderr().write(stderr_line) catch {};
+        std.fs.File.stderr().writeAll(stderr_line) catch {};
         return;
     }
 

@@ -131,7 +131,7 @@ fn writeMarkdownLine(
         if (fence_state.active) {
             if (fence.marker == fence_state.marker and
                 fence.len >= fence_state.min_len and
-                std.mem.trim(u8, fence.rest, " \t").len == 0)
+                std.mem.trim(u8, fence.rest, " \t\r").len == 0)
             {
                 fence_state.* = .{};
                 if (has_newline) try writer.writeByte('\n');
@@ -419,6 +419,27 @@ test "markdown renderer only closes fences on matching marker" {
             "~~~\n" ++
             "\n" ++
             "after\n",
+        out.items,
+    );
+}
+
+test "markdown renderer closes fenced code blocks on CRLF fence lines" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "```\r\n" ++
+        "echo hi\r\n" ++
+        "```\r\n" ++
+        "after\r\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "\n" ++
+            "echo hi\r\n" ++
+            "\n" ++
+            "after\r\n",
         out.items,
     );
 }
