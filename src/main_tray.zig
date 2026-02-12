@@ -37,6 +37,7 @@ const win = @cImport({
 
 const WM_TRAYICON: u32 = win.WM_APP + 1;
 const TIMER_STATUS: usize = 1;
+const TIMER_TRAY_ATTACH: usize = 2;
 
 const NODE_CONTROL_PIPE: []const u8 = "\\\\.\\pipe\\ZiggyStarClaw.NodeControl";
 
@@ -71,6 +72,8 @@ var g_hwnd: win.HWND = null;
 var g_nid: win.NOTIFYICONDATAW = undefined;
 var g_state: ServiceState = .unknown;
 var g_tip_buf: [128]u16 = undefined;
+var g_icon_added: bool = false;
+var g_last_tray_add_error: u32 = 0xffffffff;
 
 fn trayMain(allocator: std.mem.Allocator) !void {
     g_allocator = allocator;
@@ -139,11 +142,14 @@ fn trayMain(allocator: std.mem.Allocator) !void {
     updateTipText(.unknown);
     @memcpy(g_nid.szTip[0..g_tip_buf.len], g_tip_buf[0..g_tip_buf.len]);
 
-    if (win.Shell_NotifyIconW(win.NIM_ADD, &g_nid) == 0) return error.NotifyIconAddFailed;
+    // At logon, Explorer's notification area can still be initializing.
+    // Keep the process alive and retry tray attach on a short timer.
+    _ = tryAttachTrayIcon();
     // (No NIM_SETVERSION on some header versions; keep MVP simple.)
 
     // Poll status every 5s.
     _ = win.SetTimer(g_hwnd, TIMER_STATUS, 5000, null);
+    _ = win.SetTimer(g_hwnd, TIMER_TRAY_ATTACH, 2000, null);
     // Initial status update.
     refreshStatus();
 
@@ -164,10 +170,34 @@ fn refreshStatus() void {
     if (new_state != g_state) {
         g_state = new_state;
         updateTipText(g_state);
-        g_nid.uFlags = win.NIF_TIP;
         @memcpy(g_nid.szTip[0..g_tip_buf.len], g_tip_buf[0..g_tip_buf.len]);
+        if (!g_icon_added) {
+            _ = tryAttachTrayIcon();
+            return;
+        }
+        g_nid.uFlags = win.NIF_TIP;
         _ = win.Shell_NotifyIconW(win.NIM_MODIFY, &g_nid);
     }
+}
+
+fn tryAttachTrayIcon() bool {
+    if (g_icon_added) return true;
+
+    if (win.Shell_NotifyIconW(win.NIM_ADD, &g_nid) != 0) {
+        g_icon_added = true;
+        g_last_tray_add_error = 0xffffffff;
+        logLine("tray_icon_add_success");
+        return true;
+    }
+
+    const err_code: u32 = win.GetLastError();
+    if (err_code != g_last_tray_add_error) {
+        var line_buf: [96]u8 = undefined;
+        const line = std.fmt.bufPrint(&line_buf, "tray_icon_add_pending winerr={d}", .{err_code}) catch return false;
+        logLine(line);
+        g_last_tray_add_error = err_code;
+    }
+    return false;
 }
 
 fn updateTipText(state: ServiceState) void {
@@ -263,6 +293,10 @@ fn WndProc(hwnd: win.HWND, msg: u32, wparam: win.WPARAM, lparam: win.LPARAM) cal
         win.WM_TIMER => {
             if (wparam == TIMER_STATUS) {
                 refreshStatus();
+            } else if (wparam == TIMER_TRAY_ATTACH) {
+                if (tryAttachTrayIcon()) {
+                    _ = win.KillTimer(hwnd, TIMER_TRAY_ATTACH);
+                }
             }
             return 0;
         },
@@ -273,7 +307,10 @@ fn WndProc(hwnd: win.HWND, msg: u32, wparam: win.WPARAM, lparam: win.LPARAM) cal
         },
         win.WM_DESTROY => {
             _ = win.KillTimer(hwnd, TIMER_STATUS);
-            _ = win.Shell_NotifyIconW(win.NIM_DELETE, &g_nid);
+            _ = win.KillTimer(hwnd, TIMER_TRAY_ATTACH);
+            if (g_icon_added) {
+                _ = win.Shell_NotifyIconW(win.NIM_DELETE, &g_nid);
+            }
             win.PostQuitMessage(0);
             return 0;
         },
@@ -398,10 +435,19 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
     if (mode == .session) {
         if (try queryServiceStatePipe(allocator)) |st| return st;
 
-        const task_installed = win_task.taskInstalled(allocator, name) catch false;
+        var task_query_denied = false;
+        const task_installed_opt: ?bool = win_task.taskInstalled(allocator, name) catch |err| switch (err) {
+            win_task.ServiceError.AccessDenied => blk: {
+                task_query_denied = true;
+                break :blk null;
+            },
+            else => null,
+        };
+        const task_installed = task_installed_opt orelse false;
         if (try queryServiceStatePowerShell(allocator)) |ts| {
             // PowerShell task-state probing can fail/lie in some environments.
             if (ts == .not_installed and task_installed) return .stopped;
+            if (ts == .not_installed and task_query_denied) return .unknown;
             return switch (ts) {
                 .not_installed => .not_installed,
                 .running => .running,
@@ -410,6 +456,7 @@ fn queryServiceState(allocator: std.mem.Allocator) !ServiceState {
             };
         }
         if (task_installed) return .stopped;
+        if (task_query_denied) return .unknown;
         return .unknown;
     }
 
@@ -467,11 +514,18 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     // - the Scheduled Task being present (install-time artifact)
     // - the supervisor control pipe responding (runtime artifact)
     const task_state = queryServiceStatePowerShell(allocator) catch null;
-    const task_installed_opt: ?bool = win_task.taskInstalled(allocator, name) catch null;
+    var task_query_denied = false;
+    const task_installed_opt: ?bool = win_task.taskInstalled(allocator, name) catch |err| switch (err) {
+        win_task.ServiceError.AccessDenied => blk: {
+            task_query_denied = true;
+            break :blk null;
+        },
+        else => null,
+    };
     const has_task = if (task_installed_opt) |installed|
         installed
     else if (task_state) |ts|
-        ts != .not_installed
+        if (!task_query_denied) ts != .not_installed else false
     else
         false;
 
@@ -493,6 +547,7 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     }
 
     if (service_missing_confirmed) {
+        if (task_query_denied) return .unknown;
         if (task_installed_opt) |installed| {
             if (!installed) return .not_installed;
         } else if (task_state) |ts| {
