@@ -14,7 +14,7 @@ All of these are available on Windows:
 - `ziggystarclaw-cli node service stop`
 - `ziggystarclaw-cli node service status`
 
-(Equivalent flag form also exists: `--node-service-install|uninstall|start|stop|status`.)
+Legacy `--node-service-*` action flags are still accepted for compatibility, but deprecated in favor of `node service <action>`.
 
 ### Mode
 

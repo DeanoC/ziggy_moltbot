@@ -199,6 +199,10 @@ fn outputSuggestsAccessDenied(buf: []const u8) bool {
         containsIgnoreCase(buf, "error_access_denied");
 }
 
+fn warnLegacyFlag(flag: []const u8, replacement: []const u8) void {
+    logger.warn("Deprecated CLI flag {s}; use `{s}` instead.", .{ flag, replacement });
+}
+
 fn appendPowershellSingleQuoted(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
@@ -1017,14 +1021,19 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--interactive")) {
             interactive = true;
         } else if (std.mem.eql(u8, arg, "--node-service-install")) {
+            warnLegacyFlag("--node-service-install", "node service install");
             node_service_install = true;
         } else if (std.mem.eql(u8, arg, "--node-service-uninstall")) {
+            warnLegacyFlag("--node-service-uninstall", "node service uninstall");
             node_service_uninstall = true;
         } else if (std.mem.eql(u8, arg, "--node-service-start")) {
+            warnLegacyFlag("--node-service-start", "node service start");
             node_service_start = true;
         } else if (std.mem.eql(u8, arg, "--node-service-stop")) {
+            warnLegacyFlag("--node-service-stop", "node service stop");
             node_service_stop = true;
         } else if (std.mem.eql(u8, arg, "--node-service-status")) {
+            warnLegacyFlag("--node-service-status", "node service status");
             node_service_status = true;
         } else if (std.mem.eql(u8, arg, "--node-service-mode")) {
             i += 1;
@@ -1049,7 +1058,19 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             extract_dest = args[i];
-        } else if (std.mem.eql(u8, arg, "--mode") or std.mem.eql(u8, arg, "--runner-mode")) {
+        } else if (std.mem.eql(u8, arg, "--mode")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            const v = args[i];
+            if (std.mem.eql(u8, v, "service")) {
+                node_runner_mode = .service;
+            } else if (std.mem.eql(u8, v, "session")) {
+                node_runner_mode = .session;
+            } else {
+                return error.InvalidArguments;
+            }
+        } else if (std.mem.eql(u8, arg, "--runner-mode")) {
+            warnLegacyFlag("--runner-mode", "--mode");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             const v = args[i];

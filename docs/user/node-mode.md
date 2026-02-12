@@ -114,17 +114,19 @@ openclaw nodes invoke --node <id> --command system.execApprovals.set \
 Install the Windows SCM service (will ensure node-register first, using the same config file):
 
 ```powershell
-.\ziggystarclaw-cli.exe --node-service-install
+.\ziggystarclaw-cli.exe node service install
 ```
 
 Useful commands:
 
 ```powershell
-.\ziggystarclaw-cli.exe --node-service-status
-.\ziggystarclaw-cli.exe --node-service-start
-.\ziggystarclaw-cli.exe --node-service-stop
-.\ziggystarclaw-cli.exe --node-service-uninstall
+.\ziggystarclaw-cli.exe node service status
+.\ziggystarclaw-cli.exe node service start
+.\ziggystarclaw-cli.exe node service stop
+.\ziggystarclaw-cli.exe node service uninstall
 ```
+
+Legacy `--node-service-*` flags are still accepted for now, but are deprecated.
 
 Logs (default onstart/system config):
 

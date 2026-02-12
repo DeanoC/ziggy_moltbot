@@ -10,7 +10,22 @@ import subprocess
 import pytest
 from pathlib import Path
 
-ZIGGY_CLI = Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli"
+
+def _resolve_cli_binary() -> Path | None:
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates = [
+        repo_root / "zig-out" / "bin" / "ziggystarclaw-cli",
+        repo_root / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
+        Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli",
+        Path.home() / "ZiggyStarClaw" / "zig-out" / "bin" / "ziggystarclaw-cli.exe",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+ZIGGY_CLI = _resolve_cli_binary()
 
 
 class TestCliHelp:
@@ -18,8 +33,8 @@ class TestCliHelp:
     
     @pytest.fixture
     def cli(self):
-        if not ZIGGY_CLI.exists():
-            pytest.skip(f"CLI not found: {ZIGGY_CLI}")
+        if ZIGGY_CLI is None:
+            pytest.skip("CLI not found in zig-out/bin or ~/ZiggyStarClaw/zig-out/bin")
         return ZIGGY_CLI
     
     def test_cli_exists(self, cli):
@@ -36,6 +51,39 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
+
+    def test_node_service_help_prefers_verb_noun(self, cli):
+        """Help text promotes node service verb-noun commands"""
+        result = subprocess.run(
+            [str(cli), "--help"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode == 0
+        assert "node service <action>" in result.stdout
+        assert "--node-service-install" not in result.stdout
+
+    def test_legacy_node_service_flag_warns(self, cli):
+        """Legacy node-service action flags remain compatible but warn"""
+        result = subprocess.run(
+            [str(cli), "--node-service-status", "--version"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode == 0
+        assert "Deprecated CLI flag --node-service-status" in result.stderr
+        assert "node service status" in result.stderr
+
+    def test_legacy_runner_mode_alias_warns(self, cli):
+        """Legacy --runner-mode alias remains compatible but warn"""
+        result = subprocess.run(
+            [str(cli), "node", "runner", "install", "--runner-mode", "service", "--version"],
+            capture_output=True,
+            text=True
+        )
+        assert result.returncode == 0
+        assert "Deprecated CLI flag --runner-mode" in result.stderr
+        assert "--mode" in result.stderr
     
     def test_node_mode_help(self, cli):
         """Node mode help is available"""
@@ -54,8 +102,8 @@ class TestNodeConfig:
     
     @pytest.fixture
     def cli(self):
-        if not ZIGGY_CLI.exists():
-            pytest.skip(f"CLI not found: {ZIGGY_CLI}")
+        if ZIGGY_CLI is None:
+            pytest.skip("CLI not found in zig-out/bin or ~/ZiggyStarClaw/zig-out/bin")
         return ZIGGY_CLI
     
     def test_node_mode_without_gateway(self, cli):
