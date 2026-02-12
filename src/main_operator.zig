@@ -2,6 +2,7 @@ const std = @import("std");
 const logger = @import("utils/logger.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const requests = @import("protocol/requests.zig");
+const markdown_help = @import("cli/markdown_help.zig");
 
 pub const usage = @embedFile("../docs/cli/operator-mode.md");
 
@@ -20,7 +21,7 @@ pub const OperatorCliOptions = struct {
     watch_pairing: bool = false,
 };
 
-pub fn parseOperatorOptions(_: std.mem.Allocator, args: []const []const u8) !OperatorCliOptions {
+pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const u8) !OperatorCliOptions {
     var opts = OperatorCliOptions{};
 
     var i: usize = 0;
@@ -60,8 +61,8 @@ pub fn parseOperatorOptions(_: std.mem.Allocator, args: []const []const u8) !Ope
                 opts.log_level = .err;
             }
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.writeAll(usage);
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            try markdown_help.writeMarkdownForStdout(stdout, allocator, usage);
             return error.HelpPrinted;
         }
     }

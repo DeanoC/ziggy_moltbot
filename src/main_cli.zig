@@ -13,6 +13,7 @@ const requests = @import("protocol/requests.zig");
 const messages = @import("protocol/messages.zig");
 const build_options = @import("build_options");
 const cli_features = @import("cli/features.zig");
+const markdown_help = @import("cli/markdown_help.zig");
 const main_operator = if (cli_features.supports_operator_client)
     @import("main_operator.zig")
 else
@@ -625,6 +626,11 @@ const usage =
     else
         @embedFile("../docs/cli/06-global-flags-node-only.md"));
 
+fn writeHelpText(allocator: std.mem.Allocator, text: []const u8) !void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    try markdown_help.writeMarkdownForStdout(stdout, allocator, text);
+}
+
 const ReplCommand = enum {
     help,
     send,
@@ -755,8 +761,7 @@ pub fn main() !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.writeAll(usage);
+            try writeHelpText(allocator, usage);
             return;
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) {
             var stdout = std.fs.File.stdout().deprecatedWriter();
@@ -903,8 +908,7 @@ pub fn main() !void {
 
             if (std.mem.eql(u8, noun, "session")) {
                 if (i + 2 >= args.len) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 }
                 const action = args[i + 2];
@@ -919,8 +923,7 @@ pub fn main() !void {
                 } else if (std.mem.eql(u8, action, "status")) {
                     node_session_status = true;
                 } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 } else {
                     logger.err("Unknown node session action: {s}", .{action});
@@ -934,8 +937,7 @@ pub fn main() !void {
 
             if (std.mem.eql(u8, noun, "runner")) {
                 if (i + 2 >= args.len) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 }
                 const action = args[i + 2];
@@ -948,8 +950,7 @@ pub fn main() !void {
                 } else if (std.mem.eql(u8, action, "status")) {
                     node_runner_status = true;
                 } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 } else {
                     logger.err("Unknown node runner action: {s}", .{action});
@@ -963,16 +964,14 @@ pub fn main() !void {
 
             if (std.mem.eql(u8, noun, "profile")) {
                 if (i + 2 >= args.len) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 }
                 const action = args[i + 2];
                 if (std.mem.eql(u8, action, "apply")) {
                     node_profile_apply = true;
                 } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 } else {
                     logger.err("Unknown node profile action: {s}", .{action});
@@ -986,8 +985,7 @@ pub fn main() !void {
 
             if (std.mem.eql(u8, noun, "service")) {
                 if (i + 2 >= args.len) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 }
                 const action = args[i + 2];
@@ -1002,8 +1000,7 @@ pub fn main() !void {
                 } else if (std.mem.eql(u8, action, "status")) {
                     node_service_status = true;
                 } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                    var stdout = std.fs.File.stdout().deprecatedWriter();
-                    try stdout.writeAll(usage);
+                    try writeHelpText(allocator, usage);
                     return;
                 } else {
                     logger.err("Unknown node service action: {s}", .{action});
@@ -1087,8 +1084,7 @@ pub fn main() !void {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "tray")) {
             if (i + 1 >= args.len) {
-                var stdout = std.fs.File.stdout().deprecatedWriter();
-                try stdout.writeAll(usage);
+                try writeHelpText(allocator, usage);
                 return;
             }
             const action = args[i + 1];
@@ -1103,8 +1099,7 @@ pub fn main() !void {
             } else if (std.mem.eql(u8, action, "status")) {
                 tray_status_startup = true;
             } else if (std.mem.eql(u8, action, "help") or std.mem.eql(u8, action, "--help") or std.mem.eql(u8, action, "-h")) {
-                var stdout = std.fs.File.stdout().deprecatedWriter();
-                try stdout.writeAll(usage);
+                try writeHelpText(allocator, usage);
                 return;
             } else {
                 logger.err("Unknown tray action: {s}", .{action});
@@ -1312,12 +1307,10 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else if (std.mem.eql(u8, arg, "--node-mode-help")) {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.writeAll(main_node.usage);
+            try writeHelpText(allocator, main_node.usage);
             return;
         } else if (std.mem.eql(u8, arg, "--operator-mode-help")) {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.writeAll(main_operator.usage);
+            try writeHelpText(allocator, main_operator.usage);
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
@@ -1339,8 +1332,7 @@ pub fn main() !void {
         node_runner_install or node_runner_start or node_runner_stop or node_runner_status or
         node_profile_apply or tray_install_startup or tray_uninstall_startup or tray_start_startup or tray_stop_startup or tray_status_startup;
     if (!has_action) {
-        var stdout = std.fs.File.stdout().deprecatedWriter();
-        try stdout.writeAll(usage);
+        try writeHelpText(allocator, usage);
         return;
     }
 

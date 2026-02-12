@@ -16,6 +16,7 @@ const gateway = @import("protocol/gateway.zig");
 const health_reporter = @import("node/health_reporter.zig");
 const HealthReporter = health_reporter.HealthReporter;
 const logger = @import("utils/logger.zig");
+const markdown_help = @import("cli/markdown_help.zig");
 
 fn expandUserPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     if (path.len >= 2 and path[0] == '~' and (path[1] == '/' or path[1] == '\\')) {
@@ -154,8 +155,8 @@ pub fn parseNodeOptions(allocator: std.mem.Allocator, args: []const []const u8) 
             // Internal flag used when launched by SCM service host.
             opts.windows_service = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            var stdout = std.fs.File.stdout().deprecatedWriter();
-            try stdout.writeAll(usage);
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            try markdown_help.writeMarkdownForStdout(stdout, allocator, usage);
             return error.HelpPrinted;
         }
     }
