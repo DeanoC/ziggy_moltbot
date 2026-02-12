@@ -525,7 +525,7 @@ fn queryRunnerMode(allocator: std.mem.Allocator) RunnerMode {
     const has_task = if (task_installed_opt) |installed|
         installed
     else if (task_state) |ts|
-        if (!task_query_denied) ts != .not_installed else false
+        (ts == .running or ts == .stopped)
     else
         false;
 
