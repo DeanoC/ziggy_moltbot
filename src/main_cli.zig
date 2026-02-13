@@ -1405,7 +1405,7 @@ pub fn main() !void {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
             if (comptime !cli_features.supports_operator_client) {
-                logger.err("Flag --operator-mode is not supported in node-only builds. Rebuild with -Dcli_operator=true.", .{});
+                logger.err("This CLI build is node-only and cannot act as operator. Rebuild with -Dcli_operator=true.", .{});
                 return error.Unsupported;
             }
             logger.warn("Flag --operator-mode is deprecated; operator actions are available without it.", .{});
