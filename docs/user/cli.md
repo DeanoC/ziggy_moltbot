@@ -11,6 +11,7 @@ Main sections:
 - [Overview (full build)](../cli/01-overview.md)
 - [Overview (node-only build)](../cli/01-overview-node-only.md)
 - [Options (full build)](../cli/02-options.md)
+- Legacy action flags were removed; use noun-verb commands from the overview.
 - [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
 - [Tray startup (Windows)](../cli/04-tray-startup.md)
@@ -44,20 +45,20 @@ Release packaging (`scripts/package-release.sh`) also emits node-only CLI bundle
   (`chat send`, `message send`, and `messages send` are aliases)
 - List sessions:
   ```bash
-  ziggystarclaw session list
+  ziggystarclaw sessions list
   ```
 - List nodes:
   ```bash
-  ziggystarclaw node list
+  ziggystarclaw nodes list
   ```
 - Run a command on a node:
   ```bash
-  ziggystarclaw --node <id> node run "uname -a"
+  ziggystarclaw --node <id> nodes run "uname -a"
   ```
 
 `ziggystarclaw-cli` remains fully supported as a backward-compatible executable name.
 
-The CLI enforces strict noun-verb commands. Legacy action flags were removed.
+Legacy flag-style action options were removed. Use the noun-verb commands shown in `--help`.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
@@ -93,27 +94,27 @@ Commands:
 
 ## Default session/node behavior
 - `message send` (and alias `chat send`) uses the default session if `--session` is not provided.
-- `node run` (alias `nodes run`) uses the default node if `--node` is not provided.
+- `nodes run` (alias `node run`) uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
-  ziggystarclaw session use <key> --save-config
-  ziggystarclaw node use <id> --save-config
+  ziggystarclaw sessions use <key> --save-config
+  ziggystarclaw nodes use <id> --save-config
   ```
 
 ## Approvals
 If your server requires approval for certain actions:
 ```bash
-ziggystarclaw approval pending
-ziggystarclaw approval approve <id>
-ziggystarclaw approval deny <id>
+ziggystarclaw approvals pending
+ziggystarclaw approvals approve <id>
+ziggystarclaw approvals deny <id>
 ```
 (`approval`/`approvals` and `pending`/`list` are interchangeable aliases.)
 
 Device pairing approvals (operator scope):
 ```bash
-ziggystarclaw device pending
-ziggystarclaw device approve <requestId>
-ziggystarclaw device reject <requestId>
+ziggystarclaw devices pending
+ziggystarclaw devices approve <requestId>
+ziggystarclaw devices reject <requestId>
 ```
 (`device`/`devices` and `pending`/`list` are interchangeable aliases.)
 
@@ -124,10 +125,12 @@ ziggystarclaw tray startup install
 ziggystarclaw tray startup uninstall
 ```
 
+Tray commands require the explicit `tray startup <action>` form.
+
 ## Common pitfalls
-- **No node specified for `node run`.**  
+- **No node specified for `nodes run`.**
   Pass `--node <id>` or set a default node in the config.
-- **No sessions available.**  
-  Use `session list` to verify the server is providing sessions.
-- **Token missing/expired.**  
+- **No sessions available.**
+  Use `sessions list` to verify the server is providing sessions.
+- **Token missing/expired.**
   Re-set `--token` and `--save-config` or update the config file.
