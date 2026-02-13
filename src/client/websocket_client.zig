@@ -1,11 +1,12 @@
 const std = @import("std");
 const ws = @import("websocket");
-const messages = @import("../protocol/messages.zig");
-const gateway = @import("../protocol/gateway.zig");
-const identity = @import("../client/device_identity.zig");
-const requests = @import("../protocol/requests.zig");
+const ziggy = @import("ziggy-core");
+const identity = ziggy.identity;
+const messages = ziggy.protocol.messages;
+const gateway = ziggy.protocol.gateway;
+const requests = ziggy.protocol.requests;
 const ws_auth_pairing = @import("../protocol/ws_auth_pairing.zig");
-const logger = @import("../utils/logger.zig");
+const logger = ziggy.utils.logger;
 const builtin = @import("builtin");
 
 pub const WebSocketClient = struct {

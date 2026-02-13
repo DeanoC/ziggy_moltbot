@@ -1,7 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const unified_config = @import("../unified_config.zig");
 const main_node = @import("../main_node.zig");
 const node_platform = @import("../node/node_platform.zig");

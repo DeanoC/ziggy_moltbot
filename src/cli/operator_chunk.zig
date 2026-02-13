@@ -4,11 +4,12 @@ const config = @import("../client/config.zig");
 const event_handler = @import("../client/event_handler.zig");
 const update_checker = @import("../client/update_checker.zig");
 const websocket_client = @import("../openclaw_transport.zig").websocket;
-const logger = @import("../utils/logger.zig");
-const chat = @import("../protocol/chat.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
+const chat = ziggy.protocol.chat;
 const nodes_proto = @import("../protocol/nodes.zig");
 const approvals_proto = @import("../protocol/approvals.zig");
-const requests = @import("../protocol/requests.zig");
+const requests = ziggy.protocol.requests;
 const ws_auth_pairing = @import("../protocol/ws_auth_pairing.zig");
 const build_options = @import("build_options");
 

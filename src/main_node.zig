@@ -10,12 +10,13 @@ const websocket_client = @import("client/websocket_client.zig");
 const node_platform = @import("node/node_platform.zig");
 const SingleThreadConnectionManager = @import("node/connection_manager_singlethread.zig").SingleThreadConnectionManager;
 const event_handler = @import("client/event_handler.zig");
-const requests = @import("protocol/requests.zig");
-const messages = @import("protocol/messages.zig");
-const gateway = @import("protocol/gateway.zig");
+const requests = ziggy.protocol.requests;
+const ziggy = @import("ziggy-core");
+const messages = ziggy.protocol.messages;
+const gateway = ziggy.protocol.gateway;
 const health_reporter = @import("node/health_reporter.zig");
 const HealthReporter = health_reporter.HealthReporter;
-const logger = @import("utils/logger.zig");
+const logger = ziggy.utils.logger;
 const markdown_help = @import("cli/markdown_help.zig");
 
 fn expandUserPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {

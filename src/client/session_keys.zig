@@ -29,7 +29,8 @@ pub fn isAgentIdValid(id: []const u8) bool {
 }
 
 pub fn buildChatSessionKey(allocator: std.mem.Allocator, agent_id: []const u8) ![]u8 {
-    const requests = @import("../protocol/requests.zig");
+    const ziggy = @import("ziggy-core");
+    const requests = ziggy.protocol.requests;
     const suffix = try requests.makeRequestId(allocator);
     defer allocator.free(suffix);
     return try std.fmt.allocPrint(allocator, "agent:{s}:chat-{s}", .{ agent_id, suffix });

@@ -26,6 +26,13 @@ fn addFreetype(
 }
 
 fn unzipToOutputDir(b: *std.Build, zip_file: std.Build.LazyPath, basename: []const u8) std.Build.LazyPath {
+    if (b.graph.host.result.os.tag == .windows) {
+        const unzip = b.addSystemCommand(&.{ "tar", "-xf" });
+        unzip.addFileArg(zip_file);
+        unzip.addArg("-C");
+        return unzip.addOutputDirectoryArg(basename);
+    }
+
     const unzip = b.addSystemCommand(&.{ "unzip", "-q" });
     unzip.addFileArg(zip_file);
     unzip.addArg("-d");
@@ -64,17 +71,26 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "enable_ztracy_android", enable_ztracy_android);
     build_options.addOption(bool, "enable_wasm_perf_markers", enable_wasm_perf_markers);
     build_options.addOption(bool, "cli_enable_operator", cli_operator);
+    const websocket_dep = b.dependency("websocket", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const ws_native = websocket_dep.module("websocket");
+
+    const core_module = b.addModule("ziggy-core", .{
+        .root_source_file = b.path("libs/core/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_module.addImport("websocket", ws_native);
+
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
+    app_module.addImport("ziggy-core", core_module);
     app_module.addIncludePath(b.path("src"));
     app_module.addOptions("build_options", build_options);
-
-    const ws_native = b.dependency("websocket", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("websocket");
     app_module.addImport("websocket", ws_native);
 
     // Tracy profiling support:
@@ -96,52 +112,37 @@ pub fn build(b: *std.Build) void {
     // Allow building only the CLI (useful for node-mode / headless sandbox runs)
     // without pulling in UI deps.
     if (!build_client) {
-        const cli_module = b.createModule(.{
-            .root_source_file = b.path("main_cli_entry.zig"),
+        const cli_main_module = b.createModule(.{
+            .root_source_file = b.path("src/main_cli.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
+                .{ .name = "ziggy-core", .module = core_module },
             },
         });
+        cli_main_module.addOptions("build_options", build_options);
         if (enable_ztracy) {
-            cli_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+            cli_main_module.addImport("ztracy", ztracy_pkg.?.module("root"));
         }
 
         const cli_exe = b.addExecutable(.{
             .name = "ziggystarclaw-cli",
-            .root_module = cli_module,
+            .root_module = cli_main_module,
         });
-        cli_exe.root_module.addOptions("build_options", build_options);
         if (target.result.os.tag == .windows) {
-            // For named-pipe supervisor control channel security descriptor helpers.
             cli_exe.root_module.linkSystemLibrary("advapi32", .{});
-            // Windows screen monitor discovery uses user32 APIs.
             cli_exe.root_module.linkSystemLibrary("user32", .{});
         }
         if (enable_ztracy) {
             cli_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
         }
-
         b.installArtifact(cli_exe);
-
-        const cli_alias_module = b.createModule(.{
-            .root_source_file = b.path("main_cli_entry.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "websocket", .module = ws_native },
-            },
-        });
-        if (enable_ztracy) {
-            cli_alias_module.addImport("ztracy", ztracy_pkg.?.module("root"));
-        }
 
         const cli_alias_exe = b.addExecutable(.{
             .name = "ziggystarclaw",
-            .root_module = cli_alias_module,
+            .root_module = cli_main_module,
         });
-        cli_alias_exe.root_module.addOptions("build_options", build_options);
         if (target.result.os.tag == .windows) {
             cli_alias_exe.root_module.linkSystemLibrary("advapi32", .{});
             cli_alias_exe.root_module.linkSystemLibrary("user32", .{});
@@ -168,6 +169,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
+                .{ .name = "ziggy-core", .module = core_module },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -268,6 +270,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
+                .{ .name = "ziggy-core", .module = core_module },
             },
         });
 
@@ -295,6 +298,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
+                .{ .name = "ziggy-core", .module = core_module },
             },
         });
 
@@ -418,6 +422,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main_wasm.zig"),
             .target = wasm_target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ziggy-core", .module = core_module },
+            },
         });
 
         const wasm = b.addLibrary(.{
@@ -580,6 +587,9 @@ pub fn build(b: *std.Build) void {
                 .root_source_file = b.path("src/main_android_wgpu.zig"),
                 .target = android_target,
                 .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "ziggy-core", .module = core_module },
+                },
             });
             const freetype_android = addFreetype(b, android_target, optimize, null);
 

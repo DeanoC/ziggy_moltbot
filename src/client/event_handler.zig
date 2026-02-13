@@ -1,14 +1,15 @@
 const std = @import("std");
 const state = @import("state.zig");
 const types = @import("../protocol/types.zig");
-const gateway = @import("../protocol/gateway.zig");
-const messages = @import("../protocol/messages.zig");
+const ziggy = @import("ziggy-core");
+const gateway = ziggy.protocol.gateway;
+const messages = ziggy.protocol.messages;
 const sessions = @import("../protocol/sessions.zig");
-const chat = @import("../protocol/chat.zig");
+const chat = ziggy.protocol.chat;
 const nodes = @import("../protocol/nodes.zig");
 const workboard = @import("../protocol/workboard.zig");
-const requests = @import("../protocol/requests.zig");
-const logger = @import("../utils/logger.zig");
+const requests = ziggy.protocol.requests;
+const logger = ziggy.utils.logger;
 
 pub const AuthUpdate = struct {
     device_token: []const u8,

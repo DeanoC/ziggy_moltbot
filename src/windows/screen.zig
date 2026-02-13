@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 
 const win = if (builtin.target.os.tag == .windows)
     @cImport({
