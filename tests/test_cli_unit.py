@@ -308,12 +308,27 @@ class TestWindowsDuplicateSessionStartupContracts:
         cli_src = self._read_repo_file("src", "main_cli.zig")
         svc_src = self._read_repo_file("src", "windows", "scm_host.zig")
 
+        assert "single_instance_acquired mode=runner" in cli_src
         assert "single_instance_denied_existing_owner mode=runner" in cli_src
+        assert "single_instance_scope_local mode=runner" in cli_src
         assert "single_instance_owner_released mode=runner" in cli_src
         assert "node supervise blocked: another node owner already holds" in cli_src
 
+        assert "single_instance_acquired mode=service" in svc_src
         assert "single_instance_denied_existing_owner mode=service" in svc_src
+        assert "single_instance_scope_local mode=service" in svc_src
         assert "single_instance_owner_released mode=service" in svc_src
+
+    def test_tray_emits_single_instance_diagnostics(self):
+        tray_src = self._read_repo_file("src", "main_tray.zig")
+
+        assert "Global\\\\ZiggyStarClaw.Tray.Singleton" in tray_src
+        assert "Local\\\\ZiggyStarClaw.Tray.Singleton" in tray_src
+
+        assert "single_instance_acquired mode=tray" in tray_src
+        assert "single_instance_denied_existing_owner mode=tray" in tray_src
+        assert "single_instance_scope_local mode=tray" in tray_src
+        assert "single_instance_owner_released mode=tray" in tray_src
 
 
 if __name__ == "__main__":
