@@ -5,7 +5,6 @@
 ```text
 ziggystarclaw <noun> <verb> [args] [options]
 ziggystarclaw --help
-ziggystarclaw --help-legacy
 
 # Backward-compatible binary name:
 ziggystarclaw-cli <noun> <verb> [args] [options]
@@ -29,9 +28,8 @@ ziggystarclaw-cli <noun> <verb> [args] [options]
 
 ## Notes
 
-- Legacy flag-style action options are deprecated and emit warnings with the noun-verb replacement.
-- Use `--help-legacy` to see the deprecated legacy action flags.
-- Legacy tray aliases are also supported: `tray install-startup|uninstall-startup|start|stop|status` (deprecated; use `tray startup ...`).
+- The CLI now enforces strict noun-verb commands.
+- Legacy action flags and tray shortcut aliases were removed.
 
 ## Design docs
 

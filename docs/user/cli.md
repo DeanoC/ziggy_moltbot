@@ -10,7 +10,6 @@ The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded dir
 Main sections:
 - [Overview](../cli/01-overview.md)
 - [Options (full build)](../cli/02-options.md)
-- [Legacy action flags (deprecated)](../cli/02-legacy-action-flags.md)
 - [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
 - [Tray startup (Windows)](../cli/04-tray-startup.md)
@@ -55,9 +54,7 @@ Internally, the build is split into a core/local CLI chunk and an operator chunk
 
 `ziggystarclaw-cli` remains fully supported as a backward-compatible executable name.
 
-Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
-
-Use `ziggystarclaw --help-legacy` to see the deprecated legacy action flags.
+The CLI enforces strict noun-verb commands. Legacy action flags were removed.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
@@ -124,12 +121,10 @@ ziggystarclaw tray startup install
 ziggystarclaw tray startup uninstall
 ```
 
-Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
-
 ## Common pitfalls
 - **No node specified for `node run`.**  
   Pass `--node <id>` or set a default node in the config.
 - **No sessions available.**  
-  Use `session list` (legacy: `--list-sessions`) to verify the server is providing sessions.
+  Use `session list` to verify the server is providing sessions.
 - **Token missing/expired.**  
   Re-set `--token` and `--save-config` or update the config file.

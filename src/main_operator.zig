@@ -16,11 +16,47 @@ pub const OperatorCliOptions = struct {
     device_identity_path: []const u8 = "ziggystarclaw_operator_device.json",
 
     // Actions
-    pair_list: bool = false,
-    pair_approve_request_id: ?[]const u8 = null,
+    device_pair_list: bool = false,
+    device_pair_approve_request_id: ?[]const u8 = null,
+    device_pair_reject_request_id: ?[]const u8 = null,
     list_nodes: bool = false,
     watch_pairing: bool = false,
 };
+
+fn consumedGlobalArgArity(arg: []const u8) ?usize {
+    // main_cli parses these options before delegating to operator mode and still forwards
+    // the full argv slice into parseOperatorOptions.
+    if (std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "--update-url") or
+        std.mem.eql(u8, arg, "--read-timeout-ms") or
+        std.mem.eql(u8, arg, "--session") or
+        std.mem.eql(u8, arg, "--node") or
+        std.mem.eql(u8, arg, "--node-service-mode") or
+        std.mem.eql(u8, arg, "--node-service-name") or
+        std.mem.eql(u8, arg, "--extract-wsz") or
+        std.mem.eql(u8, arg, "--extract-dest") or
+        std.mem.eql(u8, arg, "--mode") or
+        std.mem.eql(u8, arg, "--profile") or
+        std.mem.eql(u8, arg, "--auth-token") or
+        std.mem.eql(u8, arg, "--auth_token") or
+        std.mem.eql(u8, arg, "--gateway-token"))
+    {
+        return 1;
+    }
+
+    if (std.mem.eql(u8, arg, "--print-update-url") or
+        std.mem.eql(u8, arg, "--insecure") or
+        std.mem.eql(u8, arg, "--check-update-only") or
+        std.mem.eql(u8, arg, "--interactive") or
+        std.mem.eql(u8, arg, "--windows-service") or
+        std.mem.eql(u8, arg, "--node-mode") or
+        std.mem.eql(u8, arg, "--save-config"))
+    {
+        return 0;
+    }
+
+    return null;
+}
 
 pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const u8) !OperatorCliOptions {
     var opts = OperatorCliOptions{};
@@ -28,7 +64,9 @@ pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
-        if (std.mem.eql(u8, arg, "--url")) {
+        if (std.mem.eql(u8, arg, "--operator-mode")) {
+            continue;
+        } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             opts.url = args[i];
@@ -37,15 +75,17 @@ pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const 
             if (i >= args.len) return error.InvalidArguments;
             opts.token = args[i];
         } else if (std.mem.eql(u8, arg, "--pair-list")) {
-            opts.pair_list = true;
+            logger.err("Flag --pair-list was removed. Use `device list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--pair-approve")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            opts.pair_approve_request_id = args[i];
+            logger.err("Flag --pair-approve was removed. Use `device approve <requestId>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--nodes")) {
-            opts.list_nodes = true;
+            logger.err("Flag --nodes was removed. Use `node list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--watch-pairing")) {
-            opts.watch_pairing = true;
+            logger.err("Flag --watch-pairing was removed. Use `device watch`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--insecure-tls")) {
             opts.insecure_tls = true;
         } else if (std.mem.eql(u8, arg, "--log-level")) {
@@ -60,15 +100,81 @@ pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const 
                 opts.log_level = .warn;
             } else if (std.mem.eql(u8, level_str, "error")) {
                 opts.log_level = .err;
+            } else {
+                return error.InvalidArguments;
             }
+        } else if (std.mem.eql(u8, arg, "device") or std.mem.eql(u8, arg, "devices")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "pending")) {
+                opts.device_pair_list = true;
+                i += 1;
+            } else if (std.mem.eql(u8, action, "approve")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                opts.device_pair_approve_request_id = args[i + 2];
+                i += 2;
+            } else if (std.mem.eql(u8, action, "reject")) {
+                if (i + 2 >= args.len) return error.InvalidArguments;
+                opts.device_pair_reject_request_id = args[i + 2];
+                i += 2;
+            } else if (std.mem.eql(u8, action, "watch")) {
+                opts.watch_pairing = true;
+                i += 1;
+            } else {
+                logger.err("Unknown device action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+        } else if (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            const action = args[i + 1];
+            if (std.mem.eql(u8, action, "list")) {
+                opts.list_nodes = true;
+                i += 1;
+            } else {
+                logger.err("Unknown node action: {s}", .{action});
+                return error.InvalidArguments;
+            }
+        } else if (consumedGlobalArgArity(arg)) |extra_arity| {
+            if (i + extra_arity >= args.len) return error.InvalidArguments;
+            i += extra_arity;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             const stdout = std.fs.File.stdout().deprecatedWriter();
             try markdown_help.writeMarkdownForStdout(stdout, allocator, usage);
             return error.HelpPrinted;
+        } else {
+            logger.err("Unknown operator-mode argument: {s}", .{arg});
+            return error.InvalidArguments;
         }
     }
 
     return opts;
+}
+
+test "parseOperatorOptions ignores global flags consumed by main_cli" {
+    const args = [_][]const u8{
+        "--operator-mode",
+        "--config",
+        "zsc.json",
+        "--read-timeout-ms",
+        "15000",
+        "--insecure",
+        "device",
+        "list",
+    };
+
+    const opts = try parseOperatorOptions(std.testing.allocator, &args);
+    try std.testing.expect(opts.device_pair_list);
+}
+
+test "parseOperatorOptions still rejects unknown operator args" {
+    const args = [_][]const u8{
+        "--operator-mode",
+        "--definitely-unknown",
+        "device",
+        "list",
+    };
+
+    try std.testing.expectError(error.InvalidArguments, parseOperatorOptions(std.testing.allocator, &args));
 }
 
 fn sendRequestAwait(
@@ -218,18 +324,31 @@ pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !
     logger.info("Operator connected (hello-ok) to {s}", .{opts.url});
 
     // Actions
-    if (opts.pair_list) {
+    if (opts.device_pair_list) {
         const payload = try sendRequestAwait(allocator, &ws_client, "device.pair.list", Empty{}, 5000);
         defer allocator.free(payload);
         printJsonText(payload);
         return;
     }
 
-    if (opts.pair_approve_request_id) |rid| {
+    if (opts.device_pair_approve_request_id) |rid| {
         const payload = try sendRequestAwait(
             allocator,
             &ws_client,
             "device.pair.approve",
+            ws_auth_pairing.PairingRequestIdParams{ .requestId = rid },
+            5000,
+        );
+        defer allocator.free(payload);
+        printJsonText(payload);
+        return;
+    }
+
+    if (opts.device_pair_reject_request_id) |rid| {
+        const payload = try sendRequestAwait(
+            allocator,
+            &ws_client,
+            "device.pair.reject",
             ws_auth_pairing.PairingRequestIdParams{ .requestId = rid },
             5000,
         );

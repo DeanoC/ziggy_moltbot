@@ -65,8 +65,8 @@ ziggystarclaw-cli --node-mode --auto-approve-pairing
 3) Operator CLI approval:
 
 ```bash
-ziggystarclaw-cli --operator-mode --pair-list
-ziggystarclaw-cli --operator-mode --pair-approve <requestId>
+ziggystarclaw-cli --operator-mode device list
+ziggystarclaw-cli --operator-mode device approve <requestId>
 ```
 
 The pairing prompt respects `--pairing-timeout <sec>` (default: 120). If no response arrives before the timeout, the pending request is cleared and late input is ignored.
