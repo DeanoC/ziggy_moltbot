@@ -323,7 +323,7 @@ pub const PanelManager = struct {
                     .active_tab = .Inbox,
                     .selected_agent_id = null,
                 } };
-                return try self.openPanel(.Inbox, "Inbox", panel_data);
+                return try self.openPanel(.Inbox, "Activity", panel_data);
             },
             .Settings => {
                 const panel_data = workspace.PanelData{ .Settings = {} };
@@ -498,7 +498,7 @@ pub const PanelManager = struct {
                     .active_tab = .Inbox,
                     .selected_agent_id = null,
                 } };
-                _ = try self.openPanel(.Inbox, open.title orelse "Inbox", panel_data);
+                _ = try self.openPanel(.Inbox, open.title orelse "Activity", panel_data);
             },
             .Settings => {
                 if (self.findReusablePanel(.Settings, null)) |panel| {
