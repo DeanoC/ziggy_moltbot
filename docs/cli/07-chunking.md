@@ -8,6 +8,11 @@ To support smaller binaries, the CLI is split into separable chunks:
   - Service/session/tray/supervisor helpers
   - Platform-local runner management
 
+- **Node-only maintenance chunk** (`src/cli/node_only_chunk.zig`)
+  - Local config/env override handling for node-only builds
+  - Update-manifest inspection (`--print-update-url`) and check flow (`--check-update-only`)
+  - Config persistence path for `--save-config` when operator chunk is absent
+
 - **Operator chunk** (`src/cli/operator_chunk.zig`)
   - Gateway operator connection and auth profile
   - Session/chat/approvals/device-pair commands
