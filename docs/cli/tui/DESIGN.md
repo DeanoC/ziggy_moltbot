@@ -1,280 +1,272 @@
-# ZiggyStarClaw CLI — TUI Design Plan
+# ZiggyStarClaw CLI TUI — Design Plan
 
-This document proposes a Terminal User Interface (TUI) for the ZiggyStarClaw (ZSC) CLI. The goal is to add an *optional* interactive surface that complements (not replaces) the existing scriptable CLI.
+Status: Proposed plan for work item 14 (`[zsc]`, **no-auto-merge**)
 
-## Goals
+## 1) Objective
 
-1. **Discoverability**: make ZSC capabilities easy to find (devices, capabilities, common actions).
-2. **Fast operator workflow**: connect to a gateway, select a node/device, run common actions (camera snap/clip, screen record, location), and view results.
-3. **Status-at-a-glance**: connection status, active session, paired nodes, last errors.
-4. **Cross-platform**: Linux/macOS first; Windows supported where feasible (ANSI + raw input).
-5. **Style continuity**: reuse the existing CLI’s ANSI conventions (see `src/cli/markdown_help.zig`).
+Design an interactive, keyboard-first TUI that complements the existing ZiggyStarClaw CLI command surface. The TUI must improve discoverability and operational speed while preserving CLI scriptability.
 
-## Non-goals (v1)
+## 2) Goals and non-goals
 
-- Replacing the existing non-interactive command surface.
-- A full “chat UI” or rich media viewer inside the terminal (we will link/open files instead).
-- Perfect feature parity with the web UI.
-- Remote rendering (SSH multiplexing, web sockets to a browser, etc.).
+### Goals
+- Provide a fast terminal UX for daily operator tasks (chat, sessions, nodes, approvals, processes).
+- Keep behavior aligned with the existing noun-verb CLI model.
+- Reuse command/business logic so TUI + CLI do not drift.
+- Stay cross-platform (Linux/macOS/Windows terminal) with graceful capability fallback.
 
-## Users / primary use-cases
+### Non-goals (v1)
+- Replacing the SDL/GUI client.
+- Introducing TUI-only backend semantics that diverge from CLI behavior.
+- Perfect feature parity with every advanced GUI workflow.
+- Building a separate persistent daemon solely for TUI.
 
-- **Operator**: connect to a gateway, see nodes, approve pairing (if enabled), run actions, and inspect results.
-- **Node runner**: run node-mode and monitor connection/logs from an interactive screen.
-- **Developer / support**: quickly view config, environment diagnostics, and logs.
+---
 
-## Framework / implementation options
+## 3) Framework choice
 
-ZSC is implemented in **Zig**, so the TUI should ideally be Zig-native. Below are the main options worth considering.
+## Recommendation: **Vaxis** (Zig-native)
 
-### Option A: Zig-native TUI library (recommended)
+Use a Zig-native TUI stack (Vaxis + std lib) instead of a sidecar binary in another language.
 
-**Candidate**: [`vaxis`](https://github.com/rockorager/vaxis) (Zig)
+### Why Vaxis
+- Native Zig integration (`build.zig`, dependency/toolchain consistency).
+- Shared types/modules with existing CLI code.
+- No second runtime/distribution channel.
+- Good-enough terminal primitives for pane layout, input handling, and redraw loops.
 
-- Pros:
-  - Same language/toolchain as the CLI (no extra runtime or build system).
-  - Good fit for a component-style UI with input/event loops.
-  - Can be wired to existing ZSC client code directly.
-- Cons:
-  - Smaller ecosystem than Go/Rust.
-  - Windows support may require additional work/validation depending on terminal/backends.
+### Alternatives considered
+1. **Bubble Tea (Go)**
+   - Pros: mature architecture and ecosystem.
+   - Cons: separate binary/runtime + duplicated protocol/action plumbing.
+2. **Ratatui (Rust)**
+   - Pros: polished widget ecosystem.
+   - Cons: same cross-language maintenance and packaging overhead.
+3. **ncurses/PDCurses via C interop**
+   - Pros: battle-tested.
+   - Cons: low-level API; higher complexity for modern state-driven UI.
 
-**Decision**: Start with a Zig-native library (vaxis) to keep the project cohesive and avoid shipping a second CLI binary.
+Decision: start with **Vaxis** and keep fallback rendering conservative (focus on readability over visual effects).
 
-### Option B: Go TUI binary (Bubble Tea / tview)
+---
 
-- Pros:
-  - Mature ecosystem and patterns (Bubble Tea MVU; tview widgets).
-  - Generally strong cross-platform terminal support.
-- Cons:
-  - Introduces a second language and build pipeline.
-  - Requires duplicating config parsing, gateway protocol calls, or creating a local RPC bridge.
-  - Packaging complexity (two artifacts, version skew).
+## 4) UX model
 
-**Use if** Zig-native options cannot meet cross-platform requirements.
+### Layout (default)
+- **Top status bar**: gateway URL, auth state, active session, active node, pending approvals count.
+- **Left nav**: views list.
+- **Main pane**: active view content.
+- **Right context pane** (toggleable): details/help/log snippet.
+- **Bottom command/input bar**: command palette and contextual key hints.
 
-### Option C: ncurses/termcap (C interop)
+### Core navigation patterns
+- `Tab` / `Shift+Tab`: cycle focus regions.
+- Arrow keys or `j/k`: move selection.
+- `Enter`: open/execute focused action.
+- `/`: filter/search in current list.
+- `:`: command palette (type CLI-like commands, execute in place).
+- `g` + key: jump group (`gc` chat, `gs` sessions, `gn` nodes, `ga` approvals, `gp` processes, `gd` devices).
+- `?`: global help overlay.
+- `Esc`/`q`: close modal/back.
+- `Ctrl+C`: exit application.
 
-- Pros: stable, widely available.
-- Cons: low-level ergonomics; additional FFI and platform footguns.
+### Accessibility/usability requirements
+- Fully keyboard operable.
+- Always-visible focus indicator.
+- High-contrast default palette.
+- Non-blocking operations with explicit loading/progress/error states.
 
-## Proposed CLI surface
+---
 
-Add a new command that launches the interactive UI:
+## 5) Key screens/views
 
-- `ziggystarclaw-cli tui` (primary)
+## 5.1 Dashboard
+Purpose: operational overview + jump-off actions.
+
+Data:
+- connection/auth state
+- current session/node
+- pending approvals
+- recent command outcomes
+
+## 5.2 Chat
+Purpose: interactive operator messaging flow.
+
+Actions:
+- session picker
+- compose/send message
+- stream response output
+- quick session switching
+
+## 5.3 Sessions
+Purpose: inspect/select session context.
+
+Actions:
+- list/search sessions
+- set active/default session
+
+## 5.4 Nodes
+Purpose: node discovery and command execution.
+
+Actions:
+- list/select nodes
+- show capability badges
+- run quick actions (`run`, `which`, `notify`)
+
+## 5.5 Approvals
+Purpose: fast approve/deny workflow for pending actions.
+
+Actions:
+- list pending approvals
+- inspect detail
+- approve/deny
+
+## 5.6 Processes
+Purpose: monitor and control background node processes.
+
+Actions:
+- list processes
+- spawn/poll/stop
+
+## 5.7 Devices (pairing)
+Purpose: pairing management.
+
+Actions:
+- list requests/devices
+- approve/reject pairing requests
+
+## 5.8 Canvas (advanced)
+Purpose: expose node canvas operations from terminal.
+
+Actions:
+- present/hide/navigate/eval/snapshot
+
+## 5.9 Logs/Activity
+Purpose: unified execution stream for command outcomes and errors.
+
+Actions:
+- filter by severity/text
+- inspect recent failures
+- copy-friendly output
+
+---
+
+## 6) Integration with existing CLI commands
+
+Principle: **single source of truth for behavior**.
+
+### 6.1 Command parity map
+
+| TUI view | Existing CLI commands |
+|---|---|
+| Chat | `message send <message>`, `sessions list`, `sessions use <key>` |
+| Sessions | `sessions list`, `sessions use <key>` |
+| Nodes | `nodes list`, `nodes use <id>`, `nodes run <command>`, `nodes which <name>`, `nodes notify <title>` |
+| Processes | `nodes process list`, `nodes process spawn <command>`, `nodes process poll <processId>`, `nodes process stop <processId>` |
+| Approvals | `approvals list`, `approvals approve <id>`, `approvals deny <id>` |
+| Devices | `devices list`, `devices approve <requestId>`, `devices reject <requestId>` |
+| Canvas | `nodes canvas present|hide|navigate|eval|snapshot` |
+| Windows maintenance | `node service ...`, `node session ...`, `node runner ...`, `node profile apply ...`, `tray startup ...` |
+
+### 6.2 Implementation strategy
+
+1. **Phase A (fast path)**: TUI invokes existing CLI action paths and captures structured outputs where available.
+2. **Phase B (shared action layer)**: move command logic into reusable `src/cli/actions/*.zig` modules consumed by both CLI parser and TUI.
+3. **Phase C (event stream)**: long-running operations expose progress events/callbacks so TUI can render live status without brittle log scraping.
+
+### 6.3 Proposed structure
+- `src/main_tui.zig`
+- `src/tui/app.zig`
+- `src/tui/router.zig`
+- `src/tui/views/*.zig`
+- `src/tui/components/*.zig`
+- `src/tui/commands.zig` (palette parser + command mapping)
+- `src/cli/actions/*.zig` (shared command behavior)
+
+### 6.4 Invocation
+- Primary: `ziggystarclaw-cli tui`
 - Optional alias: `ziggystarclaw-cli ui`
 
-The TUI command should accept the same connection/config inputs as existing modes:
+If not attached to a TTY, command should fail clearly and suggest equivalent non-interactive commands.
 
-- `--config <path>`
-- `--url <url>`
-- `--gateway-token <token>`
-- `--node-token <token>` (when relevant)
-- `--log-level <level>`
+---
 
-Behavior:
+## 7) Delivery phases
 
-- If stdout is not a TTY, print an error and suggest non-interactive commands.
-- Respect `NO_COLOR` / `CLICOLOR=0` for non-TUI outputs (the TUI itself will still require terminal capabilities).
+## Phase 0 — bootstrap
+- add TUI entrypoint + app loop shell
+- static layout + global keybindings + help overlay
 
-## Architecture (high-level)
+Exit criteria: `ziggystarclaw-cli tui` launches and exits reliably.
 
-### Directory/module layout
+## Phase 1 — read-only views
+- dashboard, sessions list, nodes list
+- status line, error banner primitives
 
-- `src/tui/`
-  - `app.zig` (root model + main event loop)
-  - `router.zig` (screen switching)
-  - `components/` (reusable UI components)
-  - `screens/` (top-level screens)
-  - `style.zig` (palette + styling helpers)
+Exit criteria: stable navigation and data refresh without mutating actions.
 
-### Pattern
+## Phase 2 — core mutating workflows
+- chat send
+- session/node selection
+- approvals approve/deny
+- node `run/which/notify`
 
-Use a **unidirectional data flow** similar to MVU:
+Exit criteria: daily operator flows possible end-to-end from keyboard.
 
-- **Model**: application state (connection status, selected device, results, errors).
-- **Messages/Events**: key presses, ticks, network updates, background task completions.
-- **Update**: pure-ish reducer that updates the model and schedules effects.
-- **View**: renders model → terminal widgets.
+## Phase 3 — advanced workflows
+- processes screen
+- devices pairing management
+- canvas tools
+- platform-gated Windows maintenance helpers
 
-### Background work
+Exit criteria: broad parity for high-value CLI workflows.
 
-Network and long-running actions (camera clip, screen record, downloads) should run in background tasks:
+## Phase 4 — shared action refactor + hardening
+- migrate from command-invocation wrappers to shared action modules
+- add regression and reducer tests
+- improve loading/empty/error states
 
-- Background task emits typed events into an in-process queue/channel.
-- UI thread consumes events and updates model.
+Exit criteria: minimal behavior drift risk between CLI and TUI.
 
-This avoids blocking input/rendering and keeps the UI responsive.
+---
 
-## Main screens (v1 MVP)
+## 8) Testing and verification strategy
 
-### 1) Home / Status
+### Automated
+- reducer/update-state unit tests
+- command palette parser + keymap tests
+- command mapping tests (TUI action -> CLI/shared action)
 
-Purpose: immediate confirmation that the CLI is configured and connected.
+### Manual smoke matrix
+- Linux terminal (xterm/kitty/gnome-terminal equivalent)
+- Windows Terminal (PowerShell + cmd)
+- macOS Terminal/iTerm2
 
-Contents:
+Minimum checks:
+- launch/quit, resize handling, focus changes
+- navigation across views
+- chat send flow
+- approvals flow
+- node run/which/notify flow
 
-- Gateway URL + connection state
-- Operator identity (if operator-mode enabled)
-- Node identity (if node-mode enabled)
-- Counts: paired nodes, pending approvals, active jobs
-- Last error / warning banner
+---
 
-### 2) Devices
+## 9) Risks and mitigations
 
-Purpose: list paired/known nodes and their advertised capabilities.
+1. **CLI/TUI drift**
+   - Mitigation: shared action layer and mapping tests.
+2. **Terminal capability variance**
+   - Mitigation: conservative rendering fallback; avoid hard dependency on mouse/truecolor.
+3. **Scope creep from too many views**
+   - Mitigation: phase gates and MVP-first acceptance criteria.
+4. **Long-running command UX**
+   - Mitigation: explicit progress state + cancellable operations where supported.
 
-Interactions:
+---
 
-- Search/filter box (type-to-filter)
-- Select a device → opens **Device Detail**
+## 10) Definition of done (initial TUI milestone)
 
-### 3) Device Detail + Actions
-
-Purpose: run common actions against the selected device.
-
-Sections:
-
-- Device metadata (name, id, platform)
-- Capabilities (camera, screen, location, canvas, etc.)
-- Actions menu (only show enabled actions)
-
-Action execution:
-
-- Confirm prompts for destructive/expensive actions
-- Progress indicator while running
-- Result viewer routes to **Jobs/Results**
-
-### 4) Approvals / Pairing
-
-Purpose: approve or reject pending pairing requests.
-
-- List pending approvals
-- Detail panel
-- Approve/Reject shortcuts
-
-### 5) Jobs / Results
-
-Purpose: view completed/active commands and where outputs were saved.
-
-- Recent actions list (timestamp, device, action, status)
-- Selecting a job shows:
-  - exit status / error
-  - stdout/stderr snippet
-  - output path(s)
-
-### 6) Logs
-
-Purpose: tail and filter logs for quick debugging.
-
-- Live log view with levels
-- Filter by substring/level
-- Copy-friendly (no forced wrapping by default)
-
-### 7) Help
-
-Purpose: show keybindings and optionally embedded markdown docs.
-
-- `?` opens a modal with keybindings
-- Optionally reuse `src/cli/markdown_help.zig` to render markdown help pages into a scrollable text region
-
-## Navigation & keybindings
-
-Consistent global keys:
-
-- `q` / `Esc`: back / close modal (quit from Home)
-- `Ctrl+C`: quit (always)
-- `Tab` / `Shift+Tab`: cycle top-level screens
-- `g`: Home/Status
-- `d`: Devices
-- `a`: Approvals
-- `j`: Jobs/Results
-- `l`: Logs
-- `?`: Help
-
-Screen-local:
-
-- Arrow keys / `j`/`k`: move selection
-- `Enter`: open / run selected action
-- `/`: focus search/filter
-
-All bindings should be shown in the Help modal and discoverable in-context.
-
-## Style / color scheme
-
-The existing CLI already uses ANSI in `src/cli/markdown_help.zig`:
-
-- Cyan accents for list markers / labels (`\x1b[36m`)
-- Yellow for fenced code blocks (`\x1b[33m`)
-- Bold/underline for headings
-
-TUI palette should align with this:
-
-- **Accent**: cyan (selection borders, active tab)
-- **Highlight**: yellow (warnings, inline code)
-- **Success**: green
-- **Error**: red
-- **Muted**: gray/dim
-
-Implementation notes:
-
-- Prefer a small palette that maps cleanly to 16-color terminals.
-- If 256/truecolor is available, optionally enrich backgrounds; keep a readable 16-color fallback.
-- For Windows, ensure ANSI mode is enabled (similar to existing stdout handling).
-
-## Config integration
-
-- Read from the same unified config as the CLI.
-- v1: configuration is read-only inside the TUI (display + diagnostics).
-- v2+: allow edits with explicit “Save” confirmation and safe writes.
-
-## Rollout plan (phases)
-
-### Phase 0 (this PR)
-
-- Document the TUI plan and expected architecture.
-
-### Phase 1 (skeleton)
-
-- `tui` command that starts a UI shell with:
-  - Home/Status (static)
-  - Help modal
-  - Logs screen (basic, from existing logger sink)
-
-### Phase 2 (devices + actions)
-
-- Devices screen populated from gateway connection
-- Device detail and a small set of actions
-- Jobs/results view
-
-### Phase 3 (approvals)
-
-- Pairing approvals workflow
-- Better error states and reconnect UX
-
-### Phase 4 (polish + theming)
-
-- Persisted UI preferences (last screen, filters)
-- Optional theme-pack → terminal palette mapping
-
-## Testing strategy
-
-- **Unit tests**:
-  - reducer/update functions (model + events)
-  - parsing/formatting utilities (rendered labels, status badges)
-- **Golden tests** (optional but recommended):
-  - render a screen into an offscreen buffer and compare against a stored snapshot
-- **Manual smoke tests**:
-  - Linux/macOS terminals (kitty, alacritty, iTerm2)
-  - Windows Terminal / PowerShell (ANSI + input)
-
-## Definition of Done (MVP)
-
-A first MVP is “done” when:
-
-- `ziggystarclaw-cli tui` launches reliably on at least one POSIX platform.
-- Home shows connection/config status.
-- Devices list shows nodes and selecting a node exposes at least one action.
-- Running an action reports progress and a result (or a clear error) in Jobs.
-- Quit/back/help keybindings work and are discoverable.
+- User can complete core operator workflows from keyboard only.
+- Results/errors are visible, structured, and actionable.
+- TUI command is documented and discoverable from CLI help/docs.
+- Smoke-tested on Linux + Windows Terminal + one macOS terminal.
+- Behavior parity validated against equivalent CLI commands for in-scope actions.
