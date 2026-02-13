@@ -390,18 +390,40 @@ fn resolveCameraNameForCapture(
 }
 
 fn formatDshowVideoInputAlloc(allocator: std.mem.Allocator, camera_name: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "video={s}", .{camera_name});
+    const escaped = try escapeDshowInputNameAlloc(allocator, camera_name);
+    defer allocator.free(escaped);
+
+    return std.fmt.allocPrint(allocator, "video={s}", .{escaped});
 }
 
 fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]const u8) ![]u8 {
     if (audio_device_id) |raw| {
         const trimmed = std.mem.trim(u8, raw, " \t\r\n");
         if (trimmed.len > 0) {
-            return std.fmt.allocPrint(allocator, "audio={s}", .{trimmed});
+            const escaped = try escapeDshowInputNameAlloc(allocator, trimmed);
+            defer allocator.free(escaped);
+
+            return std.fmt.allocPrint(allocator, "audio={s}", .{escaped});
         }
     }
 
     return allocator.dupe(u8, "audio=default");
+}
+
+/// Escape DirectShow input names passed to ffmpeg (`video=<name>` / `audio=<name>`).
+/// ffmpeg treats `:` and `\\` as special separators in dshow input specs.
+fn escapeDshowInputNameAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    for (input) |ch| {
+        if (ch == ':' or ch == '\\') {
+            try out.append(allocator, '\\');
+        }
+        try out.append(allocator, ch);
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -1172,12 +1194,25 @@ test "CameraClipFormat.fromString accepts mp4/webm" {
     try std.testing.expect(CameraClipFormat.fromString("mkv") == null);
 }
 
+test "formatDshowVideoInputAlloc escapes dshow separators" {
+    const allocator = std.testing.allocator;
+
+    const escaped = try formatDshowVideoInputAlloc(allocator, "Cam:USB\\Rear");
+    defer allocator.free(escaped);
+
+    try std.testing.expectEqualStrings("video=Cam\\:USB\\\\Rear", escaped);
+}
+
 test "formatDshowAudioInputAlloc uses requested device or defaults" {
     const allocator = std.testing.allocator;
 
     const named = try formatDshowAudioInputAlloc(allocator, "Microphone Array");
     defer allocator.free(named);
     try std.testing.expectEqualStrings("audio=Microphone Array", named);
+
+    const escaped = try formatDshowAudioInputAlloc(allocator, "Mic:USB\\Front");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("audio=Mic\\:USB\\\\Front", escaped);
 
     const blank = try formatDshowAudioInputAlloc(allocator, "   ");
     defer allocator.free(blank);
