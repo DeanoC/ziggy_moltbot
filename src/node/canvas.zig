@@ -499,6 +499,16 @@ pub const Canvas = struct {
     fn snapshotChromeBase64(self: *Canvas, format_raw: []const u8, quality_raw: ?u8, max_width: ?u32) ![]u8 {
         var session = try self.openChromeCdpSession();
         defer session.client.deinit();
+        var metrics_overridden = false;
+        defer {
+            if (metrics_overridden) {
+                if (self.cdpSendCommandAlloc(&session, "Emulation.clearDeviceMetricsOverride", .{})) |clear_resp| {
+                    self.allocator.free(clear_resp);
+                } else |err| {
+                    logger.warn("Failed to clear Chrome device metrics override after snapshot: {any}", .{err});
+                }
+            }
+        }
 
         const format = if (std.ascii.eqlIgnoreCase(format_raw, "jpg") or std.ascii.eqlIgnoreCase(format_raw, "jpeg")) "jpeg" else "png";
 
@@ -516,6 +526,7 @@ pub const Canvas = struct {
                     .mobile = false,
                 });
                 self.allocator.free(emulation_resp);
+                metrics_overridden = true;
             }
         }
 
