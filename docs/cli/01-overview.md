@@ -29,3 +29,7 @@ ziggystarclaw-cli --help-legacy
 - Legacy flag-style action options are deprecated and emit warnings with the noun-verb replacement.
 - Use `--help-legacy` to see the deprecated legacy action flags.
 - Legacy tray aliases are also supported: `tray install-startup|uninstall-startup|start|stop|status` (deprecated; use `tray startup ...`).
+
+## Design docs
+
+- TUI plan: [`docs/cli/tui/DESIGN.md`](./tui/DESIGN.md)
