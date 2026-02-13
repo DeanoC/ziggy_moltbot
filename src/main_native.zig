@@ -2593,6 +2593,7 @@ pub fn main() !void {
     var next_reconnect_at_ms: i64 = 0;
     var next_ping_at_ms: i64 = 0;
     var next_workboard_poll_at_ms: i64 = 0;
+    var workboard_empty_backoff_ms: i64 = 8_000; // Start with 8s, increase on empty responses
     defer {
         app_state_state.last_connected = auto_connect_enabled;
         const flags = sdl.SDL_GetWindowFlags(window);
@@ -2817,6 +2818,18 @@ pub fn main() !void {
             ctx.clearSessionsUpdated();
         }
 
+        // Adjust workboard polling backoff based on response content
+        if (ctx.workboard_updated) {
+            if (ctx.workboard_items.items.len == 0) {
+                // Empty workboard: increase backoff (max 60s)
+                workboard_empty_backoff_ms = @min(60_000, workboard_empty_backoff_ms + 8_000);
+            } else {
+                // Non-empty workboard: reset to default 8s
+                workboard_empty_backoff_ms = 8_000;
+            }
+            ctx.clearWorkboardUpdated();
+        }
+
         if (ws_client.is_connected and ctx.state == .connected) {
             const now_ms = std.time.milliTimestamp();
             if (next_ping_at_ms == 0 or now_ms >= next_ping_at_ms) {
@@ -2827,7 +2840,7 @@ pub fn main() !void {
             }
             if (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms) {
                 sendWorkboardListRequest(allocator, &ctx, &ws_client);
-                next_workboard_poll_at_ms = now_ms + 8_000;
+                next_workboard_poll_at_ms = now_ms + workboard_empty_backoff_ms;
             }
         } else {
             next_ping_at_ms = 0;
