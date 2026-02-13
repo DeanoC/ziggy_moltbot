@@ -19,8 +19,9 @@ ziggystarclaw-cli --help
 - `nodes process list|spawn <command>|poll <processId>|stop <processId>`
 - `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
 - `nodes approvals get|allow <command>|allow-file <path>`
-- `approvals pending|list|approve <id>|deny <id>` (alias: `approval`)
-- `devices list|approve <requestId>|reject <requestId>` (alias: `device`)
+<<<<<<< HEAD
+- `approvals list|approve <id>|deny <id>` (alias: `approval`; `pending` is an alias for `list`)
+- `devices list|watch|approve <requestId>|reject <requestId>` (alias: `device`; `pending` is an alias for `list`)
 - `node service ...`
 - `node session ...`
 - `node runner ...`

@@ -8,10 +8,9 @@ A staged TUI design plan for the CLI is tracked in [`docs/tui-plan.md`](../tui-p
 The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded directly by the CLI binary using `@embedFile`.
 
 Main sections:
-- [Overview (full build)](../cli/01-overview.md)
-- [Overview (node-only build)](../cli/01-overview-node-only.md)
+- [Overview](../cli/01-overview.md)
 - [Options (full build)](../cli/02-options.md)
-- Legacy action flags were removed; use noun-verb commands from the overview.
+- [Legacy action flags (deprecated)](../cli/02-legacy-action-flags.md)
 - [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
 - [Tray startup (Windows)](../cli/04-tray-startup.md)
@@ -30,12 +29,10 @@ Internally, the build is split into a core/local CLI chunk and an operator chunk
   ```bash
   zig build -Dclient=false
   ```
-- Node-only CLI (smaller/isolated operator surface; operator commands disabled):
+- Node-only CLI (smaller binary; operator commands disabled):
   ```bash
-  zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
+  zig build -Dclient=false -Dcli_operator=false
   ```
-
-Release packaging (`scripts/package-release.sh`) also emits node-only CLI bundles by default for Linux/Windows publish flows.
 
 ## Quick commands (preferred OpenClaw-style noun-verb)
 - Send a message:
@@ -58,7 +55,9 @@ Release packaging (`scripts/package-release.sh`) also emits node-only CLI bundle
 
 `ziggystarclaw-cli` remains fully supported as a backward-compatible executable name.
 
-Legacy flag-style action options were removed. Use the noun-verb commands shown in `--help`.
+Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
+
+Use `ziggystarclaw --help-legacy` to see the deprecated legacy action flags.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
@@ -94,7 +93,7 @@ Commands:
 
 ## Default session/node behavior
 - `message send` (and alias `chat send`) uses the default session if `--session` is not provided.
-- `nodes run` (alias `node run`) uses the default node if `--node` is not provided.
+- `nodes run` (alias: `node run`) uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
   ziggystarclaw sessions use <key> --save-config
@@ -104,17 +103,21 @@ Commands:
 ## Approvals
 If your server requires approval for certain actions:
 ```bash
-ziggystarclaw approvals pending
-ziggystarclaw approvals approve <id>
-ziggystarclaw approvals deny <id>
+ziggystarclaw approval pending
+ziggystarclaw approval approve <id>
+ziggystarclaw approval deny <id>
 ```
 (`approval`/`approvals` and `pending`/`list` are interchangeable aliases.)
 
 Device pairing approvals (operator scope):
 ```bash
-ziggystarclaw devices pending
+ziggystarclaw devices list
 ziggystarclaw devices approve <requestId>
 ziggystarclaw devices reject <requestId>
+# stream device.pair.* events:
+ziggystarclaw devices watch
+# singular aliases are also supported
+ziggystarclaw device approve <requestId>
 ```
 (`device`/`devices` and `pending`/`list` are interchangeable aliases.)
 
@@ -125,12 +128,12 @@ ziggystarclaw tray startup install
 ziggystarclaw tray startup uninstall
 ```
 
-Tray commands require the explicit `tray startup <action>` form.
+Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
 
 ## Common pitfalls
-- **No node specified for `nodes run`.**
+- **No node specified for `nodes run`.**  
   Pass `--node <id>` or set a default node in the config.
-- **No sessions available.**
-  Use `sessions list` to verify the server is providing sessions.
-- **Token missing/expired.**
+- **No sessions available.**  
+  Use `sessions list` (legacy: `--list-sessions`) to verify the server is providing sessions.
+- **Token missing/expired.**  
   Re-set `--token` and `--save-config` or update the config file.

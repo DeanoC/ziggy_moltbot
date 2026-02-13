@@ -1,15 +1,25 @@
-ZiggyStarClaw Operator Mode
+# ZiggyStarClaw operator commands
 
-Usage:
-  ziggystarclaw-cli --operator-mode <noun> <verb> [args] [options]
+Operator actions are available via the main CLI command surface.
 
-Actions:
-  device list|pending
-  device approve <requestId>
-  device reject <requestId>
-  device watch                 Watch for device.pair.* events
-  node list                    List connected nodes
+## Usage (preferred noun-verb style)
 
-Notes:
-  Legacy operator action flags were removed:
-    --pair-list, --pair-approve, --nodes, --watch-pairing
+```text
+ziggystarclaw-cli <noun> <verb> [args] [options]
+```
+
+Common operator commands:
+
+- `message send <message>`
+- `sessions list|use <key>`
+- `nodes list|use <id>|run <command>|which <name>|notify <title>`
+- `approvals list|approve <id>|deny <id>`
+- `devices list|watch|approve <requestId>|reject <requestId>`
+
+## Legacy operator-mode flag
+
+`--operator-mode` previously enabled a legacy operator-only CLI mode.
+
+It is now **deprecated** and unnecessary; use the noun-verb commands above.
+
+Use `--help-legacy` to see the remaining deprecated legacy action flags (ex: `--pair-list`, `--pair-approve`, `--watch-pairing`).
