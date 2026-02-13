@@ -328,7 +328,7 @@ const window_panel_toggles = [_]WindowPanelToggle{
     .{ .label = "Agents", .kind = .Agents },
     .{ .label = "Operator", .kind = .Operator },
     .{ .label = "Approvals", .kind = .ApprovalsInbox },
-    .{ .label = "Inbox", .kind = .Inbox },
+    .{ .label = "Activity", .kind = .Inbox },
     .{ .label = "Workboard", .kind = .Workboard },
     .{ .label = "Settings", .kind = .Settings },
     .{ .label = "Showcase", .kind = .Showcase },
@@ -2003,6 +2003,7 @@ fn drawPanelContents(
                 agent_info.name,
                 ctx.sessions.items,
                 inbox,
+                ctx.approvals.items.len,
                 panel_rect,
             );
             if (chat_action.send_message) |message| {
@@ -2020,6 +2021,13 @@ fn drawPanelContents(
             replaceOwnedSlice(allocator, &action.select_session, chat_action.select_session);
             setOwnedSlice(allocator, &action.select_session_id, chat_action.select_session_id);
             replaceOwnedSlice(allocator, &action.new_chat_session_key, chat_action.new_chat_session_key);
+
+            if (chat_action.open_activity_panel) {
+                manager.ensurePanel(.Inbox);
+            }
+            if (chat_action.open_approvals_panel) {
+                manager.ensurePanel(.ApprovalsInbox);
+            }
 
             result.session_key = resolved_session_key;
             result.agent_id = agent_id;
@@ -2160,7 +2168,10 @@ fn drawPanelContents(
         },
         .Inbox => {
             if (panel_rect) |content_rect| {
-                _ = inbox_panel.draw(allocator, ctx, &panel.data.Inbox, content_rect);
+                const inbox_action = inbox_panel.draw(allocator, ctx, &panel.data.Inbox, content_rect);
+                if (inbox_action.open_approvals_panel) {
+                    manager.ensurePanel(.ApprovalsInbox);
+                }
             }
         },
         .Workboard => {
@@ -3304,7 +3315,7 @@ fn railIconForPanel(panel: *const workspace.Panel, icons: *const style_sheet.Doc
         .Agents => dockRailIconLabel(&icons.agents, "A"),
         .Operator => dockRailIconLabel(&icons.operator, "OP"),
         .ApprovalsInbox => dockRailIconLabel(&icons.approvals_inbox, "AP"),
-        .Inbox => dockRailIconLabel(&icons.inbox, "I"),
+        .Inbox => dockRailIconLabel(&icons.inbox, "AC"),
         .Workboard => dockRailIconLabel(&icons.workboard, "WB"),
         .Settings => dockRailIconLabel(&icons.settings, "SE"),
         .Showcase => dockRailIconLabel(&icons.showcase, "S"),

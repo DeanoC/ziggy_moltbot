@@ -1,4 +1,4 @@
-  --save-config            Save --url, --token, --update-url, --use-session, --use-node to config file
+  --save-config            Save --url/--token/--update-url and current default session/node
   --version                Print version and exit
   -h, --help               Show help
   --node-mode-help         Show node mode help

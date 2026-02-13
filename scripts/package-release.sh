@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 BUILD=1
 SKIP_WASM=0
+BUILD_NODE_ONLY=1
 VERSION_OVERRIDE=""
 DATE_OVERRIDE=""
 WINDOWS_INSTALLER_PATH=""
@@ -14,15 +15,17 @@ for arg in "$@"; do
   case "$arg" in
     --no-build) BUILD=0 ;;
     --skip-wasm) SKIP_WASM=1 ;;
+    --skip-node-only) BUILD_NODE_ONLY=0 ;;
     --version=*) VERSION_OVERRIDE="${arg#*=}" ;;
     --date=*) DATE_OVERRIDE="${arg#*=}" ;;
     --windows-installer=*) WINDOWS_INSTALLER_PATH="${arg#*=}" ;;
     --require-windows-installer) REQUIRE_WINDOWS_INSTALLER=1 ;;
     -h|--help)
       cat <<'USAGE'
-Usage: scripts/package-release.sh [--no-build] [--skip-wasm] [--version=X.Y.Z] [--date=YYYYMMDD] [--windows-installer=PATH] [--require-windows-installer]
+Usage: scripts/package-release.sh [--no-build] [--skip-wasm] [--skip-node-only] [--version=X.Y.Z] [--date=YYYYMMDD] [--windows-installer=PATH] [--require-windows-installer]
 
 Builds all targets and produces release bundles under dist/.
+By default this also builds/packs a node-only CLI variant (-Dcli_operator=false).
 USAGE
       exit 0
       ;;
@@ -72,6 +75,14 @@ if [[ "${BUILD}" -eq 1 ]]; then
   echo "[release] building windows"
   "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast
 
+  if [[ "${BUILD_NODE_ONLY}" -eq 1 ]]; then
+    echo "[release] building node-only cli (linux)"
+    "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dclient=false -Dcli_operator=false -Doptimize=ReleaseFast --prefix "${ROOT_DIR}/zig-out-node-only-linux"
+
+    echo "[release] building node-only cli (windows)"
+    "${ROOT_DIR}/.tools/zig-0.15.2/zig" build -Dclient=false -Dcli_operator=false -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseFast --prefix "${ROOT_DIR}/zig-out-node-only-windows"
+  fi
+
   if [[ "${SKIP_WASM}" -eq 0 ]]; then
     if [[ -f "${ROOT_DIR}/scripts/emsdk-env.sh" ]]; then
       echo "[release] building wasm"
@@ -93,9 +104,17 @@ ANDROID_DIR="${DIST_DIR}/android"
 WASM_DIR="${DIST_DIR}/wasm"
 CLI_LINUX_DIR="${DIST_DIR}/cli-linux"
 CLI_WINDOWS_DIR="${DIST_DIR}/cli-windows"
+CLI_NODE_ONLY_LINUX_DIR="${DIST_DIR}/cli-node-only-linux"
+CLI_NODE_ONLY_WINDOWS_DIR="${DIST_DIR}/cli-node-only-windows"
 SYMBOLS_DIR="${DIST_DIR}/symbols"
 
+NODE_ONLY_LINUX_PREFIX="${ROOT_DIR}/zig-out-node-only-linux"
+NODE_ONLY_WINDOWS_PREFIX="${ROOT_DIR}/zig-out-node-only-windows"
+
 mkdir -p "${LINUX_DIR}" "${WINDOWS_DIR}" "${ANDROID_DIR}" "${WASM_DIR}" "${CLI_LINUX_DIR}" "${CLI_WINDOWS_DIR}" "${SYMBOLS_DIR}"
+if [[ "${BUILD_NODE_ONLY}" -eq 1 ]]; then
+  mkdir -p "${CLI_NODE_ONLY_LINUX_DIR}" "${CLI_NODE_ONLY_WINDOWS_DIR}"
+fi
 
 copy_or_fail() {
   local src="$1"
@@ -110,24 +129,24 @@ copy_or_fail() {
 copy_or_fail "${ROOT_DIR}/README.md" "${LINUX_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${LINUX_DIR}/LICENSE"
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client" "${LINUX_DIR}/"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${LINUX_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw" "${LINUX_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${LINUX_DIR}/"
 
 copy_or_fail "${ROOT_DIR}/README.md" "${CLI_LINUX_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_LINUX_DIR}/LICENSE"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${CLI_LINUX_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw" "${CLI_LINUX_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${CLI_LINUX_DIR}/"
 
 copy_or_fail "${ROOT_DIR}/README.md" "${WINDOWS_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${WINDOWS_DIR}/LICENSE"
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.exe" "${WINDOWS_DIR}/"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${WINDOWS_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw.exe" "${WINDOWS_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${WINDOWS_DIR}/"
 if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.pdb" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.pdb" "${SYMBOLS_DIR}/"
+fi
+if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw.pdb" ]]; then
+  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw.pdb" "${SYMBOLS_DIR}/"
 fi
 if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" "${SYMBOLS_DIR}/"
@@ -135,8 +154,17 @@ fi
 
 copy_or_fail "${ROOT_DIR}/README.md" "${CLI_WINDOWS_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_WINDOWS_DIR}/LICENSE"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${CLI_WINDOWS_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw.exe" "${CLI_WINDOWS_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${CLI_WINDOWS_DIR}/"
+
+if [[ "${BUILD_NODE_ONLY}" -eq 1 ]]; then
+  copy_or_fail "${ROOT_DIR}/README.md" "${CLI_NODE_ONLY_LINUX_DIR}/README.md"
+  copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_NODE_ONLY_LINUX_DIR}/LICENSE"
+  copy_or_fail "${NODE_ONLY_LINUX_PREFIX}/bin/ziggystarclaw-cli" "${CLI_NODE_ONLY_LINUX_DIR}/"
+
+  copy_or_fail "${ROOT_DIR}/README.md" "${CLI_NODE_ONLY_WINDOWS_DIR}/README.md"
+  copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_NODE_ONLY_WINDOWS_DIR}/LICENSE"
+  copy_or_fail "${NODE_ONLY_WINDOWS_PREFIX}/bin/ziggystarclaw-cli.exe" "${CLI_NODE_ONLY_WINDOWS_DIR}/"
 fi
 
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw_android.apk" "${ANDROID_DIR}/"
@@ -182,10 +210,19 @@ zip_dir(pathlib.Path("${ANDROID_DIR}"), "ziggystarclaw_android_${VERSION}.zip")
 zip_dir(pathlib.Path("${WASM_DIR}"), "ziggystarclaw_wasm_${VERSION}.zip")
 zip_dir(pathlib.Path("${CLI_LINUX_DIR}"), "ziggystarclaw_cli_linux_${VERSION}.zip")
 zip_dir(pathlib.Path("${CLI_WINDOWS_DIR}"), "ziggystarclaw_cli_windows_${VERSION}.zip")
+node_only_linux = pathlib.Path("${CLI_NODE_ONLY_LINUX_DIR}")
+if node_only_linux.exists():
+    zip_dir(node_only_linux, "ziggystarclaw_cli_node_only_linux_${VERSION}.zip")
+node_only_windows = pathlib.Path("${CLI_NODE_ONLY_WINDOWS_DIR}")
+if node_only_windows.exists():
+    zip_dir(node_only_windows, "ziggystarclaw_cli_node_only_windows_${VERSION}.zip")
 PY
 
 tar -czf "${DIST_DIR}/ziggystarclaw_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "linux"
 tar -czf "${DIST_DIR}/ziggystarclaw_cli_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "cli-linux"
+if [[ "${BUILD_NODE_ONLY}" -eq 1 ]]; then
+  tar -czf "${DIST_DIR}/ziggystarclaw_cli_node_only_linux_${VERSION}.tar.gz" -C "${DIST_DIR}" "cli-node-only-linux"
+fi
 
 (cd "${DIST_DIR}" && {
   sha256sum ziggystarclaw_*
@@ -229,7 +266,32 @@ manifest = {
             "sha256": checksums.get(f"ziggystarclaw_wasm_${VERSION}.zip", ""),
         },
     },
+    "cli": {
+        "linux": {
+            "file": f"ziggystarclaw_cli_linux_${VERSION}.tar.gz",
+            "sha256": checksums.get(f"ziggystarclaw_cli_linux_${VERSION}.tar.gz", ""),
+        },
+        "windows": {
+            "file": f"ziggystarclaw_cli_windows_${VERSION}.zip",
+            "sha256": checksums.get(f"ziggystarclaw_cli_windows_${VERSION}.zip", ""),
+        },
+    },
 }
+
+node_only_linux_name = f"ziggystarclaw_cli_node_only_linux_${VERSION}.tar.gz"
+if node_only_linux_name in checksums:
+    manifest["cli"]["node_only_linux"] = {
+        "file": node_only_linux_name,
+        "sha256": checksums[node_only_linux_name],
+    }
+
+node_only_windows_name = f"ziggystarclaw_cli_node_only_windows_${VERSION}.zip"
+if node_only_windows_name in checksums:
+    manifest["cli"]["node_only_windows"] = {
+        "file": node_only_windows_name,
+        "sha256": checksums[node_only_windows_name],
+    }
+
 installer_name = f"ZiggyStarClaw_Setup_${VERSION}_x64.exe"
 if installer_name in checksums:
     manifest["platforms"]["windows"]["installer_file"] = installer_name

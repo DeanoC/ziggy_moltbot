@@ -378,6 +378,7 @@ pub fn runNodeMode(allocator: std.mem.Allocator, opts: NodeCliOptions) !void {
     } else {
         logger.info("Windows service mode detected: skipping interactive capabilities (canvas/camera/screen)", .{});
     }
+    try node_ctx.registerLocationCapabilities();
 
     // Initialize command router from the exact advertised command set.
     // This avoids command-surface drift between node metadata and routing.

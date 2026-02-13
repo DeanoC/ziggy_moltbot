@@ -2,6 +2,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const logger = @import("../utils/logger.zig");
 
+const win = if (builtin.target.os.tag == .windows)
+    @cImport({
+        @cInclude("windows.h");
+    })
+else
+    struct {};
+
 pub const ScreenRecordFormat = enum {
     mp4,
 
@@ -31,6 +38,9 @@ pub const ScreenRecordRequest = struct {
     fps: u32 = 12,
     screenIndex: u32 = 0,
     includeAudio: bool = false,
+    /// Optional DirectShow audio input device name (e.g. "Microphone Array (...)").
+    /// When omitted, ffmpeg uses `audio=default`.
+    audioDeviceId: ?[]const u8 = null,
 };
 
 pub const ScreenRecordResult = struct {
@@ -56,7 +66,8 @@ pub const ScreenBackendSupport = struct {
 };
 
 const screen_backend_name = "ffmpeg-gdigrab";
-const monitor_backend_name = "powershell-forms";
+const monitor_backend_win32_name = "win32-user32";
+const monitor_backend_powershell_name = "powershell-forms";
 
 const ScreenMonitor = struct {
     deviceName: []const u8,
@@ -98,22 +109,21 @@ pub fn detectBackendSupport(allocator: std.mem.Allocator) ScreenBackendSupport {
 /// Record the Windows desktop and return an OpenClaw-compatible payload.
 ///
 /// Current limitations:
-/// - monitor-index mapping uses PowerShell Forms metadata; if unavailable,
-///   `screenIndex=0` falls back to legacy desktop capture and non-zero indices
-///   are rejected.
-/// - video-only capture (`includeAudio` is ignored, `hasAudio=false`)
+/// - monitor-index mapping prefers native Win32 monitor metadata and falls back
+///   to PowerShell Forms metadata. If both are unavailable, `screenIndex=0`
+///   falls back to legacy desktop capture and non-zero indices are rejected.
+/// - when `includeAudio=true`, audio capture is best-effort and may fall back
+///   to video-only output (`hasAudio=false`) if no usable audio source exists.
 pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) ScreenRecordError!ScreenRecordResult {
     if (builtin.target.os.tag != .windows) return error.NotSupported;
 
     const support = detectBackendSupport(allocator);
     if (!support.record) return error.FfmpegNotFound;
 
-    if (req.durationMs == 0 or req.durationMs > 300_000) return error.InvalidParams;
+    // `screen.record` returns the clip inline as base64. Keep clips short to avoid
+    // exceeding gateway payload limits.
+    if (req.durationMs == 0 or req.durationMs > 60_000) return error.InvalidParams;
     if (req.fps == 0 or req.fps > 60) return error.InvalidParams;
-
-    if (req.includeAudio) {
-        logger.warn("screen.record backend={s}: includeAudio requested but audio capture is not implemented yet; capturing video-only", .{screen_backend_name});
-    }
 
     const capture_target = resolveCaptureTarget(allocator, req.screenIndex) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -139,7 +149,7 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
     defer allocator.free(out_path);
     defer std.fs.deleteFileAbsolute(out_path) catch {};
 
-    try runFfmpegDesktopCapture(allocator, req, capture_target, out_path);
+    const has_audio = try runFfmpegDesktopCapture(allocator, req, capture_target, out_path);
 
     const file = std.fs.openFileAbsolute(out_path, .{}) catch {
         logger.err("screen.record backend={s} output file missing: {s}", .{ screen_backend_name, out_path });
@@ -147,7 +157,24 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
     };
     defer file.close();
 
-    const video_bytes = file.readToEndAlloc(allocator, 150 * 1024 * 1024) catch |err| switch (err) {
+    // Keep inline base64 payloads small enough for a single gateway frame.
+    // If we ever switch to an upload/streaming path, this cap can be revisited.
+    const max_record_bytes: usize = 2 * 1024 * 1024;
+
+    const stat = file.stat() catch |err| {
+        logger.err("screen.record backend={s} failed to stat output video: {s}", .{ screen_backend_name, @errorName(err) });
+        return error.CommandFailed;
+    };
+
+    if (stat.size > max_record_bytes) {
+        logger.warn(
+            "screen.record backend={s} output too large for gateway frame (bytes={d}, cap={d})",
+            .{ screen_backend_name, stat.size, max_record_bytes },
+        );
+        return error.CommandFailed;
+    }
+
+    const video_bytes = file.readToEndAlloc(allocator, max_record_bytes) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             logger.err("screen.record backend={s} failed to read output video: {s}", .{ screen_backend_name, @errorName(err) });
@@ -166,7 +193,7 @@ pub fn recordScreen(allocator: std.mem.Allocator, req: ScreenRecordRequest) Scre
         .durationMs = req.durationMs,
         .fps = req.fps,
         .screenIndex = req.screenIndex,
-        .hasAudio = false,
+        .hasAudio = has_audio,
     };
 }
 
@@ -220,14 +247,37 @@ fn resolveCaptureTarget(allocator: std.mem.Allocator, screen_index: u32) ScreenR
     } };
 }
 
+const ScreenRunVariant = enum {
+    video_only,
+    with_audio,
+};
+
+const ScreenVideoCodec = enum {
+    /// Best-effort H.264 encoder for smaller clips when available.
+    libx264,
+    /// Fallback codec available in most ffmpeg builds.
+    mpeg4,
+};
+
+const ScreenRunOutcome = enum {
+    executable_missing,
+    failed,
+    success,
+};
+
+const ScreenFailureDiagnostic = enum {
+    none,
+    monitor_source_unavailable,
+    audio_source_unavailable,
+    permission_denied,
+};
+
 fn runFfmpegDesktopCapture(
     allocator: std.mem.Allocator,
     req: ScreenRecordRequest,
     capture_target: CaptureTarget,
     out_path: []const u8,
-) ScreenRecordError!void {
-    _ = req.includeAudio;
-
+) ScreenRecordError!bool {
     const fps_arg = try std.fmt.allocPrint(allocator, "{d}", .{req.fps});
     defer allocator.free(fps_arg);
 
@@ -256,94 +306,411 @@ fn runFfmpegDesktopCapture(
     };
     defer if (video_size_arg) |s| allocator.free(s);
 
+    const audio_input_spec = try formatDshowAudioInputAlloc(allocator, req.audioDeviceId);
+    defer allocator.free(audio_input_spec);
+
     var saw_executable = false;
     var last_error: ?ScreenRecordError = null;
 
+    const codec_variants = [_]ScreenVideoCodec{ .libx264, .mpeg4 };
+
     for (ffmpegCandidates()) |exe| {
-        var argv_list = std.ArrayList([]const u8).empty;
-        defer argv_list.deinit(allocator);
+        if (req.includeAudio) {
+            var audio_outcome: ScreenRunOutcome = .executable_missing;
+            for (codec_variants) |codec| {
+                audio_outcome = try runFfmpegDesktopCaptureVariant(
+                    allocator,
+                    capture_target,
+                    fps_arg,
+                    duration_arg,
+                    offset_x_arg,
+                    offset_y_arg,
+                    video_size_arg,
+                    audio_input_spec,
+                    out_path,
+                    exe,
+                    .with_audio,
+                    codec,
+                );
+                switch (audio_outcome) {
+                    .success => return true,
+                    .executable_missing => break,
+                    .failed => {
+                        saw_executable = true;
+                        last_error = error.CommandFailed;
+                    },
+                }
+            }
 
-        try argv_list.appendSlice(allocator, &.{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            fps_arg,
-        });
-
-        switch (capture_target) {
-            .desktop => {},
-            .monitor => {
-                try argv_list.appendSlice(allocator, &.{
-                    "-offset_x",
-                    offset_x_arg.?,
-                    "-offset_y",
-                    offset_y_arg.?,
-                    "-video_size",
-                    video_size_arg.?,
-                });
-            },
+            if (audio_outcome == .failed) {
+                logger.warn(
+                    "screen.record backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
+                    .{ screen_backend_name, exe, audio_input_spec },
+                );
+                if (req.audioDeviceId) |audio_device_id| {
+                    logger.warn(
+                        "screen.record backend={s}: requested audioDeviceId appears unavailable or busy: {s}",
+                        .{ screen_backend_name, audio_device_id },
+                    );
+                }
+            }
         }
 
-        try argv_list.appendSlice(allocator, &.{
-            "-i",
-            "desktop",
-            "-t",
-            duration_arg,
-            "-pix_fmt",
-            "yuv420p",
-            "-c:v",
-            "mpeg4",
-            "-q:v",
-            "5",
-            "-movflags",
-            "+faststart",
-            "-y",
-            out_path,
-        });
-
-        const argv = try argv_list.toOwnedSlice(allocator);
-        defer allocator.free(argv);
-
-        const res = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = argv,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
-                saw_executable = true;
-                logger.warn("screen.record backend={s} failed to start {s}: {s}", .{ screen_backend_name, exe, @errorName(err) });
-                last_error = error.CommandFailed;
-                continue;
-            },
-        };
-
-        saw_executable = true;
-
-        const exit_code = childTermToExitCode(res.term);
-        if (exit_code != 0) {
-            logger.warn("screen.record backend={s} failed via {s}: exit={d} stderr={s}", .{ screen_backend_name, exe, exit_code, res.stderr });
-            allocator.free(res.stdout);
-            allocator.free(res.stderr);
-            last_error = error.CommandFailed;
-            continue;
+        var video_outcome: ScreenRunOutcome = .executable_missing;
+        for (codec_variants) |codec| {
+            video_outcome = try runFfmpegDesktopCaptureVariant(
+                allocator,
+                capture_target,
+                fps_arg,
+                duration_arg,
+                offset_x_arg,
+                offset_y_arg,
+                video_size_arg,
+                audio_input_spec,
+                out_path,
+                exe,
+                .video_only,
+                codec,
+            );
+            switch (video_outcome) {
+                .success => return false,
+                .executable_missing => break,
+                .failed => {
+                    saw_executable = true;
+                    last_error = error.CommandFailed;
+                },
+            }
         }
 
-        allocator.free(res.stdout);
-        allocator.free(res.stderr);
-        return;
+        if (video_outcome == .executable_missing) continue;
     }
 
     if (!saw_executable) return error.FfmpegNotFound;
     return last_error orelse error.CommandFailed;
 }
 
+fn runFfmpegDesktopCaptureVariant(
+    allocator: std.mem.Allocator,
+    capture_target: CaptureTarget,
+    fps_arg: []const u8,
+    duration_arg: []const u8,
+    offset_x_arg: ?[]const u8,
+    offset_y_arg: ?[]const u8,
+    video_size_arg: ?[]const u8,
+    audio_input_spec: []const u8,
+    out_path: []const u8,
+    exe: []const u8,
+    variant: ScreenRunVariant,
+    codec: ScreenVideoCodec,
+) ScreenRecordError!ScreenRunOutcome {
+    var argv_list = std.ArrayList([]const u8).empty;
+    defer argv_list.deinit(allocator);
+
+    try argv_list.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "gdigrab",
+        "-framerate",
+        fps_arg,
+    });
+
+    switch (capture_target) {
+        .desktop => {},
+        .monitor => {
+            try argv_list.appendSlice(allocator, &.{
+                "-offset_x",
+                offset_x_arg.?,
+                "-offset_y",
+                offset_y_arg.?,
+                "-video_size",
+                video_size_arg.?,
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-i",
+        "desktop",
+    });
+
+    if (variant == .with_audio) {
+        try argv_list.appendSlice(allocator, &.{
+            "-f",
+            "dshow",
+            "-i",
+            audio_input_spec,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+        });
+    } else {
+        try argv_list.append(allocator, "-an");
+    }
+
+    // Keep clips compact: downscale + bitrate cap.
+    try argv_list.appendSlice(allocator, &.{
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        fps_arg,
+        "-vf",
+        "scale=-2:720",
+    });
+
+    switch (codec) {
+        .libx264 => try argv_list.appendSlice(allocator, &.{
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "30",
+            "-maxrate",
+            "800k",
+            "-bufsize",
+            "1600k",
+        }),
+        .mpeg4 => try argv_list.appendSlice(allocator, &.{
+            "-c:v",
+            "mpeg4",
+            "-b:v",
+            "700k",
+            "-maxrate",
+            "700k",
+            "-bufsize",
+            "1400k",
+            "-q:v",
+            "7",
+        }),
+    }
+
+    if (variant == .with_audio) {
+        try argv_list.appendSlice(allocator, &.{
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-ac",
+            "1",
+            "-ar",
+            "22050",
+            "-shortest",
+        });
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-t",
+        duration_arg,
+        "-movflags",
+        "+faststart",
+        "-y",
+        out_path,
+    });
+
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer allocator.free(argv);
+
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 1024 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return .executable_missing,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            logger.warn("screen.record backend={s} failed to start {s}: {s}", .{ screen_backend_name, exe, @errorName(err) });
+            return .failed;
+        },
+    };
+
+    const exit_code = childTermToExitCode(res.term);
+    if (exit_code != 0) {
+        const diagnostic = classifyScreenFailureDiagnostic(res.stderr, variant, capture_target);
+        switch (diagnostic) {
+            .monitor_source_unavailable => logger.warn(
+                "screen.record backend={s}: requested monitor source unavailable (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .audio_source_unavailable => logger.warn(
+                "screen.record backend={s}: requested audio source unavailable (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .permission_denied => logger.warn(
+                "screen.record backend={s}: capture permission denied by OS/privacy settings (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .none => {},
+        }
+
+        logger.warn("screen.record backend={s} failed via {s}: exit={d} stderr={s}", .{ screen_backend_name, exe, exit_code, res.stderr });
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+        return .failed;
+    }
+
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+    return .success;
+}
+
+fn screenRunVariantName(variant: ScreenRunVariant) []const u8 {
+    return switch (variant) {
+        .video_only => "video_only",
+        .with_audio => "with_audio",
+    };
+}
+
+fn classifyScreenFailureDiagnostic(
+    stderr: []const u8,
+    variant: ScreenRunVariant,
+    capture_target: CaptureTarget,
+) ScreenFailureDiagnostic {
+    if (containsAsciiIgnoreCase(stderr, "permission denied") or
+        containsAsciiIgnoreCase(stderr, "access is denied") or
+        containsAsciiIgnoreCase(stderr, "denied by system"))
+    {
+        return .permission_denied;
+    }
+
+    if (variant == .with_audio and
+        (containsAsciiIgnoreCase(stderr, "could not find audio") or
+            containsAsciiIgnoreCase(stderr, "audio device") or
+            containsAsciiIgnoreCase(stderr, "unable to open audio") or
+            containsAsciiIgnoreCase(stderr, "no audio devices found")))
+    {
+        return .audio_source_unavailable;
+    }
+
+    if (capture_target == .monitor and
+        (containsAsciiIgnoreCase(stderr, "capture area") or
+            containsAsciiIgnoreCase(stderr, "outside window area") or
+            containsAsciiIgnoreCase(stderr, "invalid capture area") or
+            containsAsciiIgnoreCase(stderr, "cannot open display")))
+    {
+        return .monitor_source_unavailable;
+    }
+
+    return .none;
+}
+
 fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
+    if (builtin.target.os.tag == .windows) {
+        if (listMonitorsWin32(allocator)) |monitors| {
+            return monitors;
+        } else |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                logger.warn(
+                    "screen.record monitor discovery backend={s} failed ({s}); falling back to {s}",
+                    .{ monitor_backend_win32_name, @errorName(err), monitor_backend_powershell_name },
+                );
+            },
+        }
+    }
+
+    return listMonitorsViaPowershell(allocator);
+}
+
+const EnumMonitorsState = struct {
+    allocator: std.mem.Allocator,
+    monitors: *std.ArrayList(ScreenMonitor),
+    failure: ?MonitorListError = null,
+};
+
+fn listMonitorsWin32(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
+    if (builtin.target.os.tag != .windows) return error.CommandFailed;
+
+    var monitors = std.ArrayList(ScreenMonitor).empty;
+    errdefer {
+        for (monitors.items) |monitor| {
+            allocator.free(@constCast(monitor.deviceName));
+        }
+        monitors.deinit(allocator);
+    }
+
+    var state = EnumMonitorsState{
+        .allocator = allocator,
+        .monitors = &monitors,
+    };
+
+    const ok = win.EnumDisplayMonitors(
+        null,
+        null,
+        enumDisplayMonitorsProc,
+        @as(win.LPARAM, @intCast(@intFromPtr(&state))),
+    );
+
+    if (state.failure) |failure| return failure;
+    if (ok == 0) {
+        logger.err("screen.record monitor discovery backend={s} failed to enumerate monitors", .{monitor_backend_win32_name});
+        return error.CommandFailed;
+    }
+
+    movePrimaryMonitorFirst(monitors.items);
+
+    if (monitors.items.len == 0) {
+        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_win32_name});
+        return error.InvalidOutput;
+    }
+
+    return monitors.toOwnedSlice(allocator);
+}
+
+fn enumDisplayMonitorsProc(
+    h_monitor: win.HMONITOR,
+    _: win.HDC,
+    _: ?*win.RECT,
+    l_param: win.LPARAM,
+) callconv(.c) win.BOOL {
+    const state: *EnumMonitorsState = @ptrFromInt(@as(usize, @intCast(l_param)));
+
+    var info: win.MONITORINFOEXW = std.mem.zeroes(win.MONITORINFOEXW);
+    info.unnamed_0.cbSize = @sizeOf(win.MONITORINFOEXW);
+
+    if (win.GetMonitorInfoW(h_monitor, @ptrCast(&info)) == 0) {
+        return @as(win.BOOL, 1);
+    }
+
+    const width_i64 = @as(i64, info.unnamed_0.rcMonitor.right) - @as(i64, info.unnamed_0.rcMonitor.left);
+    const height_i64 = @as(i64, info.unnamed_0.rcMonitor.bottom) - @as(i64, info.unnamed_0.rcMonitor.top);
+    if (width_i64 <= 0 or height_i64 <= 0 or width_i64 > std.math.maxInt(u32) or height_i64 > std.math.maxInt(u32)) {
+        return @as(win.BOOL, 1);
+    }
+
+    var name_len: usize = 0;
+    while (name_len < info.szDevice.len and info.szDevice[name_len] != 0) : (name_len += 1) {}
+
+    const name_wide: []const u16 = @as([*]const u16, @ptrCast(&info.szDevice[0]))[0..name_len];
+    const device_name = std.unicode.utf16LeToUtf8Alloc(state.allocator, name_wide) catch |err| {
+        state.failure = switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => error.CommandFailed,
+        };
+        return @as(win.BOOL, 0);
+    };
+    errdefer state.allocator.free(device_name);
+
+    state.monitors.append(state.allocator, .{
+        .deviceName = device_name,
+        .x = @as(i32, @intCast(info.unnamed_0.rcMonitor.left)),
+        .y = @as(i32, @intCast(info.unnamed_0.rcMonitor.top)),
+        .width = @as(u32, @intCast(width_i64)),
+        .height = @as(u32, @intCast(height_i64)),
+        .primary = (info.unnamed_0.dwFlags & win.MONITORINFOF_PRIMARY) != 0,
+    }) catch {
+        state.allocator.free(device_name);
+        state.failure = error.OutOfMemory;
+        return @as(win.BOOL, 0);
+    };
+
+    return @as(win.BOOL, 1);
+}
+
+fn listMonitorsViaPowershell(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
     const script =
         "$ErrorActionPreference='Stop'; " ++
         "Add-Type -AssemblyName System.Windows.Forms; " ++
@@ -354,12 +721,12 @@ fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
 
     const out = runPowershellJson(allocator, script) catch |err| switch (err) {
         error.FileNotFound => {
-            logger.err("screen.record monitor discovery backend={s} failed: PowerShell not found (tried powershell, pwsh)", .{monitor_backend_name});
+            logger.err("screen.record monitor discovery backend={s} failed: PowerShell not found (tried powershell, pwsh)", .{monitor_backend_powershell_name});
             return error.PowershellNotFound;
         },
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            logger.err("screen.record monitor discovery backend={s} failed to execute: {s}", .{ monitor_backend_name, @errorName(err) });
+            logger.err("screen.record monitor discovery backend={s} failed to execute: {s}", .{ monitor_backend_powershell_name, @errorName(err) });
             return error.CommandFailed;
         },
     };
@@ -368,14 +735,14 @@ fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
     const monitors = parseMonitorsJson(allocator, out) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
-            logger.err("screen.record monitor discovery backend={s} failed to parse JSON output: {s}", .{ monitor_backend_name, @errorName(err) });
+            logger.err("screen.record monitor discovery backend={s} failed to parse JSON output: {s}", .{ monitor_backend_powershell_name, @errorName(err) });
             return error.InvalidOutput;
         },
     };
 
     if (monitors.len == 0) {
         allocator.free(monitors);
-        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_name});
+        logger.err("screen.record monitor discovery backend={s} returned no monitors", .{monitor_backend_powershell_name});
         return error.InvalidOutput;
     }
 
@@ -509,6 +876,31 @@ fn freeMonitors(allocator: std.mem.Allocator, monitors: []ScreenMonitor) void {
     allocator.free(monitors);
 }
 
+fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]const u8) ![]u8 {
+    if (audio_device_id) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            return std.fmt.allocPrint(allocator, "audio={s}", .{trimmed});
+        }
+    }
+
+    return allocator.dupe(u8, "audio=default");
+}
+
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 fn hasWorkingFfmpeg(allocator: std.mem.Allocator) bool {
     for (ffmpegCandidates()) |exe| {
         const argv = &[_][]const u8{ exe, "-version" };
@@ -549,11 +941,11 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
             .max_output_bytes = 1024 * 1024,
         }) catch |err| switch (err) {
             error.FileNotFound => {
-                logger.warn("screen.record monitor discovery backend={s}: executable not found: {s}", .{ monitor_backend_name, exe });
+                logger.warn("screen.record monitor discovery backend={s}: executable not found: {s}", .{ monitor_backend_powershell_name, exe });
                 continue;
             },
             else => {
-                logger.warn("screen.record monitor discovery backend={s}: failed to start {s}: {s}", .{ monitor_backend_name, exe, @errorName(err) });
+                logger.warn("screen.record monitor discovery backend={s}: failed to start {s}: {s}", .{ monitor_backend_powershell_name, exe, @errorName(err) });
                 saw_executable = true;
                 last_error = err;
                 continue;
@@ -564,7 +956,7 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
 
         const exit_code = childTermToExitCode(res.term);
         if (exit_code != 0) {
-            logger.warn("screen.record monitor discovery backend={s} failed via {s}: exit={d} stderr={s}", .{ monitor_backend_name, exe, exit_code, res.stderr });
+            logger.warn("screen.record monitor discovery backend={s} failed via {s}: exit={d} stderr={s}", .{ monitor_backend_powershell_name, exe, exit_code, res.stderr });
             allocator.free(res.stdout);
             allocator.free(res.stderr);
             last_error = error.CommandFailed;
@@ -626,10 +1018,143 @@ fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
     return std.process.getCwdAlloc(allocator);
 }
 
+test "runFfmpegDesktopCaptureVariant places duration after audio input for with_audio" {
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const cwd = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+
+    const tmp_root = try std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer allocator.free(tmp_root);
+
+    const script_path = try std.fs.path.join(allocator, &.{ tmp_root, "fake-ffmpeg.sh" });
+    defer allocator.free(script_path);
+
+    const captured_args_path = try std.fs.path.join(allocator, &.{ tmp_root, "captured-args.txt" });
+    defer allocator.free(captured_args_path);
+
+    const out_path = try std.fs.path.join(allocator, &.{ tmp_root, "out.mp4" });
+    defer allocator.free(out_path);
+
+    const script_contents = try std.fmt.allocPrint(
+        allocator,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{s}'\nexit 0\n",
+        .{captured_args_path},
+    );
+    defer allocator.free(script_contents);
+
+    try tmp.dir.writeFile(.{ .sub_path = "fake-ffmpeg.sh", .data = script_contents });
+    try std.posix.chmod(script_path, 0o755);
+
+    const outcome = try runFfmpegDesktopCaptureVariant(
+        allocator,
+        .desktop,
+        "12",
+        "5.000",
+        null,
+        null,
+        null,
+        "audio=default",
+        out_path,
+        script_path,
+        .with_audio,
+        .mpeg4,
+    );
+    try std.testing.expectEqual(ScreenRunOutcome.success, outcome);
+
+    const captured_args = try std.fs.cwd().readFileAlloc(allocator, captured_args_path, 64 * 1024);
+    defer allocator.free(captured_args);
+
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+
+    var it = std.mem.splitScalar(u8, captured_args, '\n');
+    while (it.next()) |arg| {
+        if (arg.len == 0) continue;
+        try args.append(allocator, arg);
+    }
+
+    var audio_input_idx: ?usize = null;
+    var duration_idx: ?usize = null;
+    var out_path_idx: ?usize = null;
+
+    for (args.items, 0..) |arg, idx| {
+        if (duration_idx == null and std.mem.eql(u8, arg, "-t")) {
+            duration_idx = idx;
+        }
+
+        if (std.mem.eql(u8, arg, out_path)) {
+            out_path_idx = idx;
+        }
+
+        if (idx + 1 < args.items.len and std.mem.eql(u8, arg, "-i") and std.mem.eql(u8, args.items[idx + 1], "audio=default")) {
+            audio_input_idx = idx;
+        }
+    }
+
+    try std.testing.expect(audio_input_idx != null);
+    try std.testing.expect(duration_idx != null);
+    try std.testing.expect(duration_idx.? + 1 < args.items.len);
+    try std.testing.expectEqualStrings("5.000", args.items[duration_idx.? + 1]);
+    try std.testing.expect(duration_idx.? > audio_input_idx.? + 1);
+    try std.testing.expect(out_path_idx != null);
+    try std.testing.expect(duration_idx.? < out_path_idx.?);
+}
+
+test "classifyScreenFailureDiagnostic detects monitor/audio/permission issues" {
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.monitor_source_unavailable,
+        classifyScreenFailureDiagnostic(
+            "gdigrab: Capture area ... outside window area",
+            .video_only,
+            .{ .monitor = .{ .x = 0, .y = 0, .width = 100, .height = 100 } },
+        ),
+    );
+
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.audio_source_unavailable,
+        classifyScreenFailureDiagnostic(
+            "Could not find audio only device with name",
+            .with_audio,
+            .desktop,
+        ),
+    );
+
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.permission_denied,
+        classifyScreenFailureDiagnostic(
+            "Error opening input: Permission denied",
+            .video_only,
+            .desktop,
+        ),
+    );
+}
+
 test "ScreenRecordFormat.fromString accepts mp4" {
     try std.testing.expect(ScreenRecordFormat.fromString("mp4").? == .mp4);
     try std.testing.expect(ScreenRecordFormat.fromString("MP4").? == .mp4);
     try std.testing.expect(ScreenRecordFormat.fromString("webm") == null);
+}
+
+test "formatDshowAudioInputAlloc uses requested device or defaults" {
+    const allocator = std.testing.allocator;
+
+    const named = try formatDshowAudioInputAlloc(allocator, "Microphone Array");
+    defer allocator.free(named);
+    try std.testing.expectEqualStrings("audio=Microphone Array", named);
+
+    const blank = try formatDshowAudioInputAlloc(allocator, "   ");
+    defer allocator.free(blank);
+    try std.testing.expectEqualStrings("audio=default", blank);
+
+    const missing = try formatDshowAudioInputAlloc(allocator, null);
+    defer allocator.free(missing);
+    try std.testing.expectEqualStrings("audio=default", missing);
 }
 
 test "detectBackendSupport returns false on non-Windows targets" {

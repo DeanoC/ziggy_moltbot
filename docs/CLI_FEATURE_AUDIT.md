@@ -158,19 +158,19 @@ The current CLI is essentially a **read-only log viewer**:
 
 ```bash
 # Send a message to current session
-ziggystarclaw-cli --send "Hello, world!"
+ziggystarclaw-cli message send "Hello, world!"
 
 # List available sessions
-ziggystarclaw-cli --list-sessions
+ziggystarclaw-cli sessions list
 
-# Switch to a session
-ziggystarclaw-cli --session <key>
+# Set default session
+ziggystarclaw-cli sessions use <key> --save-config
 
 # List nodes
-ziggystarclaw-cli --list-nodes
+ziggystarclaw-cli nodes list
 
-# Run command on node
-ziggystarclaw-cli --node <id> --run "uname -a"
+# Run command on a node
+ziggystarclaw-cli --node <id> nodes run "uname -a"
 
 # Interactive mode
 ziggystarclaw-cli --interactive

@@ -8,6 +8,8 @@ const requests = @import("../protocol/requests.zig");
 const messages = @import("../protocol/messages.zig");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
+const node_location = @import("location.zig");
+const node_canvas = @import("canvas.zig");
 
 const windows_camera = if (builtin.target.os.tag == .windows)
     @import("../windows/camera.zig")
@@ -137,6 +139,11 @@ pub fn initStandardRouter(allocator: std.mem.Allocator) !CommandRouter {
         }
     }
 
+    const location_support = node_location.detectBackendSupport(allocator);
+    if (location_support.get) {
+        try router.register(.location_get, locationGetHandler);
+    }
+
     return router;
 }
 
@@ -166,6 +173,8 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
             .screen_record = false,
         };
     };
+
+    const location_support = node_location.detectBackendSupport(allocator);
 
     for (cmds) |cmd| {
         switch (cmd) {
@@ -216,9 +225,12 @@ pub fn initRouterWithCommands(allocator: std.mem.Allocator, cmds: []const Comman
                 }
                 try router.register(.camera_clip, cameraClipHandler);
             },
-            // Not implemented yet in this codebase (but present in enum)
-            .location_get,
-            => return error.CommandNotSupported,
+            .location_get => {
+                if (!location_support.get) {
+                    return error.CommandNotSupported;
+                }
+                try router.register(.location_get, locationGetHandler);
+            },
         }
     }
 
@@ -579,18 +591,84 @@ fn systemExecApprovalsSetHandler(allocator: std.mem.Allocator, ctx: *NodeContext
 // Canvas Command Handlers
 // ============================================================================
 
+fn ensureRealCanvas(ctx: *NodeContext) ?*node_canvas.Canvas {
+    if (ctx.canvas_manager.getCanvas()) |canvas| return canvas;
+
+    ctx.canvas_manager.initialize(.{
+        .backend = .chrome,
+        .width = 1280,
+        .height = 720,
+        .headless = true,
+        .chrome_path = null,
+        // Ask Chrome to auto-select a free CDP port to avoid colliding with
+        // other node/browser processes.
+        .chrome_debug_port = 0,
+    }) catch |err| {
+        logger.warn("Canvas initialization failed: {s}", .{@errorName(err)});
+        return null;
+    };
+
+    return ctx.canvas_manager.getCanvas();
+}
+
+fn parseOptionalU8Percent(v: std.json.Value) CommandError!?u8 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival < 0 or ival > 100) return CommandError.InvalidParams;
+            break :blk @as(u8, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval) or @trunc(fval) != fval) return CommandError.InvalidParams;
+            if (fval < 0 or fval > 100) return CommandError.InvalidParams;
+            break :blk @as(u8, @intFromFloat(fval));
+        },
+        .null => null,
+        else => CommandError.InvalidParams,
+    };
+}
+
+fn parseOptionalPositiveU32(v: std.json.Value) CommandError!?u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival <= 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval) or @trunc(fval) != fval) return CommandError.InvalidParams;
+            if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        .null => null,
+        else => CommandError.InvalidParams,
+    };
+}
+
 fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
     ctx.canvas_manager.setVisible(true);
 
     // `openclaw nodes canvas present --target <...>` passes { url }.
-    if (params.object.get("url")) |url| {
-        if (url == .string and url.string.len > 0) {
-            ctx.canvas_manager.setUrl(url.string) catch return CommandError.ExecutionFailed;
+    if (params == .object) {
+        if (params.object.get("url")) |url| {
+            if (url == .string and url.string.len > 0) {
+                ctx.canvas_manager.setUrl(url.string) catch return CommandError.ExecutionFailed;
+            }
+        }
+    }
+
+    if (ensureRealCanvas(ctx)) |canvas| {
+        canvas.present() catch |err| {
+            logger.err("canvas.present failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+        if (ctx.canvas_manager.getUrl()) |u| {
+            canvas.navigate(u) catch |err| {
+                logger.err("canvas.present navigate failed: {s}", .{@errorName(err)});
+                return CommandError.ExecutionFailed;
+            };
         }
     }
 
     // placement is currently ignored.
-
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "visible") });
     if (ctx.canvas_manager.getUrl()) |u| {
@@ -602,17 +680,32 @@ fn canvasPresentHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params:
 fn canvasHideHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
     ctx.canvas_manager.setVisible(false);
 
+    if (ctx.canvas_manager.getCanvas()) |canvas| {
+        canvas.hide() catch |err| {
+            logger.err("canvas.hide failed: {s}", .{@errorName(err)});
+            return CommandError.ExecutionFailed;
+        };
+    }
+
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "hidden") });
     return std.json.Value{ .object = result };
 }
 
 fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) return CommandError.InvalidParams;
+
     const url_param = params.object.get("url") orelse return CommandError.InvalidParams;
     if (url_param != .string or url_param.string.len == 0) return CommandError.InvalidParams;
 
     ctx.canvas_manager.setUrl(url_param.string) catch return CommandError.ExecutionFailed;
     ctx.canvas_manager.setVisible(true);
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    canvas.navigate(url_param.string) catch |err| {
+        logger.err("canvas.navigate failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
 
     var result = std.json.ObjectMap.init(allocator);
     try result.put("status", std.json.Value{ .string = try allocator.dupe(u8, "navigated") });
@@ -620,33 +713,69 @@ fn canvasNavigateHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params
     return std.json.Value{ .object = result };
 }
 
-fn canvasEvalHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.Value) CommandError!std.json.Value {
-    // TODO: implement CDP/WebKit-based evaluation.
+fn canvasEvalHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) return CommandError.InvalidParams;
+
+    const js_param = if (params.object.get("javaScript")) |js|
+        js
+    else if (params.object.get("js")) |js|
+        js
+    else
+        return CommandError.InvalidParams;
+
+    if (js_param != .string or js_param.string.len == 0) return CommandError.InvalidParams;
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    const eval_result = canvas.eval(js_param.string) catch |err| {
+        logger.err("canvas.eval failed: {s}", .{@errorName(err)});
+        return CommandError.ExecutionFailed;
+    };
+    defer canvas.allocator.free(eval_result);
+
     var result = std.json.ObjectMap.init(allocator);
-    try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, "(canvas.eval not implemented yet)") });
+    try result.put("result", std.json.Value{ .string = try allocator.dupe(u8, eval_result) });
     return std.json.Value{ .object = result };
 }
 
 fn canvasSnapshotHandler(allocator: std.mem.Allocator, ctx: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
-    // Expected params (from OpenClaw canvas tool): { format: "png"|"jpeg", maxWidth?: number, quality?: number }
-    _ = params;
+    if (params != .object) return CommandError.InvalidParams;
 
-    const url = ctx.canvas_manager.getUrl() orelse "about:blank";
+    // Expected params (from OpenClaw canvas tool):
+    // { format: "png"|"jpeg", maxWidth?: number, quality?: number }
+    const format = blk: {
+        if (params.object.get("format")) |raw| {
+            if (raw != .string or raw.string.len == 0) return CommandError.InvalidParams;
+            if (std.ascii.eqlIgnoreCase(raw.string, "jpg") or std.ascii.eqlIgnoreCase(raw.string, "jpeg")) break :blk "jpeg";
+            if (std.ascii.eqlIgnoreCase(raw.string, "png")) break :blk "png";
+            return CommandError.InvalidParams;
+        }
+        break :blk "png";
+    };
 
-    const png_bytes = chromeScreenshotPngAlloc(allocator, url) catch |err| {
+    const quality = blk: {
+        if (params.object.get("quality")) |raw| {
+            break :blk try parseOptionalU8Percent(raw);
+        }
+        break :blk null;
+    };
+
+    const max_width = blk: {
+        if (params.object.get("maxWidth")) |raw| {
+            break :blk try parseOptionalPositiveU32(raw);
+        }
+        break :blk null;
+    };
+
+    const canvas = ensureRealCanvas(ctx) orelse return CommandError.ExecutionFailed;
+    const base64 = canvas.snapshotBase64(format, quality, max_width) catch |err| {
         logger.err("canvas.snapshot failed: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
-    defer allocator.free(png_bytes);
-
-    const b64_len = std.base64.standard.Encoder.calcSize(png_bytes.len);
-    const b64_buf = try allocator.alloc(u8, b64_len);
-    _ = std.base64.standard.Encoder.encode(b64_buf, png_bytes);
+    defer canvas.allocator.free(base64);
 
     var out = std.json.ObjectMap.init(allocator);
-    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, "png") });
-    // b64_buf is owned by the per-invocation arena allocator (see main_node.zig).
-    try out.put("base64", std.json.Value{ .string = b64_buf });
+    try out.put("format", std.json.Value{ .string = try allocator.dupe(u8, format) });
+    try out.put("base64", std.json.Value{ .string = try allocator.dupe(u8, base64) });
     return std.json.Value{ .object = out };
 }
 
@@ -668,6 +797,99 @@ fn canvasA2uiResetHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: st
     var result = std.json.ObjectMap.init(allocator);
     try result.put("ok", std.json.Value{ .bool = true });
     return std.json.Value{ .object = result };
+}
+
+// ============================================================================
+// Location Command Handlers
+// ============================================================================
+
+fn locationGetHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.json.Value) CommandError!std.json.Value {
+    if (params != .object) {
+        return CommandError.InvalidParams;
+    }
+
+    const max_age_ms = blk: {
+        if (params.object.get("maxAgeMs")) |raw| {
+            break :blk try parseNonNegativeU32Param(raw);
+        }
+        break :blk null;
+    };
+
+    const location_timeout_ms = blk: {
+        if (params.object.get("locationTimeoutMs")) |raw| {
+            break :blk try parsePositiveOptionalU32Param(raw);
+        }
+        break :blk null;
+    };
+
+    const desired_accuracy = blk: {
+        if (params.object.get("desiredAccuracy")) |raw| {
+            if (raw != .string) return CommandError.InvalidParams;
+            if (std.ascii.eqlIgnoreCase(raw.string, "coarse")) break :blk node_location.DesiredAccuracy.coarse;
+            if (std.ascii.eqlIgnoreCase(raw.string, "balanced")) break :blk node_location.DesiredAccuracy.balanced;
+            if (std.ascii.eqlIgnoreCase(raw.string, "precise")) break :blk node_location.DesiredAccuracy.precise;
+            return CommandError.InvalidParams;
+        }
+        break :blk null;
+    };
+
+    const location = node_location.getLocation(allocator, .{
+        .maxAgeMs = max_age_ms,
+        .locationTimeoutMs = location_timeout_ms,
+        .desiredAccuracy = desired_accuracy,
+    }) catch |err| {
+        logger.err("location.get failed: {s}", .{@errorName(err)});
+        return switch (err) {
+            error.NotSupported => CommandError.CommandNotSupported,
+            error.InvalidParams => CommandError.InvalidParams,
+            error.PermissionDenied => CommandError.PermissionRequired,
+            error.Timeout => CommandError.Timeout,
+            else => CommandError.ExecutionFailed,
+        };
+    };
+
+    var out = std.json.ObjectMap.init(allocator);
+    try out.put("latitude", std.json.Value{ .float = location.latitude });
+    try out.put("longitude", std.json.Value{ .float = location.longitude });
+    if (location.accuracyM) |accuracy| {
+        try out.put("accuracyM", std.json.Value{ .float = accuracy });
+    }
+    if (location.timestampMs) |timestamp_ms| {
+        try out.put("timestampMs", std.json.Value{ .integer = timestamp_ms });
+    }
+    return std.json.Value{ .object = out };
+}
+
+fn parseNonNegativeU32Param(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival < 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+            if (fval < 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        else => CommandError.InvalidParams,
+    };
+}
+
+fn parsePositiveOptionalU32Param(v: std.json.Value) CommandError!u32 {
+    return switch (v) {
+        .integer => |ival| blk: {
+            if (ival <= 0 or ival > std.math.maxInt(u32)) return CommandError.InvalidParams;
+            break :blk @as(u32, @intCast(ival));
+        },
+        .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
+            if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
+            break :blk @as(u32, @intFromFloat(fval));
+        },
+        else => CommandError.InvalidParams,
+    };
 }
 
 // ============================================================================
@@ -738,12 +960,29 @@ fn screenRecordHandler(allocator: std.mem.Allocator, _: *NodeContext, params: st
         break :blk false;
     };
 
+    const audio_device_id = blk: {
+        if (params.object.get("audioDeviceId")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        if (params.object.get("audioDevice")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        break :blk null;
+    };
+
     const rec = windows_screen.recordScreen(allocator, .{
         .format = format,
         .durationMs = duration_ms,
         .fps = fps,
         .screenIndex = screen_index,
         .includeAudio = include_audio,
+        .audioDeviceId = audio_device_id,
     }) catch |err| {
         logger.err("screen.record failed: {s}", .{@errorName(err)});
         return switch (err) {
@@ -771,7 +1010,9 @@ fn parsePositiveU32Param(v: std.json.Value) CommandError!u32 {
             break :blk @as(u32, @intCast(ival));
         },
         .float => |fval| blk: {
+            if (!std.math.isFinite(fval)) return CommandError.InvalidParams;
             if (fval <= 0 or fval > @as(f64, @floatFromInt(std.math.maxInt(u32)))) return CommandError.InvalidParams;
+            if (@trunc(fval) != fval) return CommandError.InvalidParams;
             break :blk @as(u32, @intFromFloat(fval));
         },
         else => CommandError.InvalidParams,
@@ -831,10 +1072,8 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
     var out_devices = std.json.Array.init(allocator);
     for (devices) |dev| {
         var obj = std.json.ObjectMap.init(allocator);
-        const id = try allocator.dupe(u8, dev.deviceId);
-        try obj.put("id", std.json.Value{ .string = id });
-        // Alias for tool/client compatibility.
-        try obj.put("deviceId", std.json.Value{ .string = id });
+
+        try obj.put("id", std.json.Value{ .string = try allocator.dupe(u8, dev.deviceId) });
         try obj.put("name", std.json.Value{ .string = try allocator.dupe(u8, dev.name) });
         if (dev.position) |position| {
             try obj.put("position", std.json.Value{ .string = try allocator.dupe(u8, position.toString()) });
@@ -843,7 +1082,6 @@ fn cameraListHandler(allocator: std.mem.Allocator, _: *NodeContext, _: std.json.
     }
 
     var out = std.json.ObjectMap.init(allocator);
-    try out.put("backend", std.json.Value{ .string = try allocator.dupe(u8, "powershell-cim") });
     try out.put("devices", std.json.Value{ .array = out_devices });
     return std.json.Value{ .object = out };
 }
@@ -965,12 +1203,29 @@ fn cameraClipHandler(allocator: std.mem.Allocator, _: *NodeContext, params: std.
         break :blk null;
     };
 
+    const audio_device_id = blk: {
+        if (params.object.get("audioDeviceId")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        if (params.object.get("audioDevice")) |audio_param| {
+            if (audio_param != .string) return CommandError.InvalidParams;
+            if (std.mem.trim(u8, audio_param.string, " \t\r\n").len == 0) return CommandError.InvalidParams;
+            break :blk audio_param.string;
+        }
+
+        break :blk null;
+    };
+
     const clip = windows_camera.clipCamera(allocator, .{
         .format = format,
         .durationMs = duration_ms,
         .includeAudio = include_audio,
         .deviceId = device_id,
         .preferredPosition = preferred_position,
+        .audioDeviceId = audio_device_id,
     }) catch |err| {
         logger.err("camera.clip failed: {s}", .{@errorName(err)});
         return switch (err) {
@@ -1251,4 +1506,98 @@ fn processListHandler(allocator: std.mem.Allocator, ctx: *NodeContext, _: std.js
         logger.err("Failed to list processes: {s}", .{@errorName(err)});
         return CommandError.ExecutionFailed;
     };
+}
+
+test "initStandardRouter media/location wiring matches backend support" {
+    var router = try initStandardRouter(std.testing.allocator);
+    defer router.deinit();
+
+    const location_support = node_location.detectBackendSupport(std.testing.allocator);
+    try std.testing.expectEqual(location_support.get, router.isRegistered(Command.location_get.toString()));
+
+    if (builtin.target.os.tag == .windows) {
+        const camera_support = windows_camera.detectBackendSupport(std.testing.allocator);
+        const screen_support = windows_screen.detectBackendSupport(std.testing.allocator);
+
+        try std.testing.expectEqual(camera_support.list, router.isRegistered(Command.camera_list.toString()));
+        try std.testing.expectEqual(camera_support.snap, router.isRegistered(Command.camera_snap.toString()));
+        try std.testing.expectEqual(camera_support.clip, router.isRegistered(Command.camera_clip.toString()));
+        try std.testing.expectEqual(screen_support.record, router.isRegistered(Command.screen_record.toString()));
+    } else {
+        try std.testing.expect(!router.isRegistered(Command.camera_list.toString()));
+        try std.testing.expect(!router.isRegistered(Command.camera_snap.toString()));
+        try std.testing.expect(!router.isRegistered(Command.camera_clip.toString()));
+        try std.testing.expect(!router.isRegistered(Command.screen_record.toString()));
+    }
+}
+
+test "initRouterWithCommands gates windows media commands by host support" {
+    const media_support = blk: {
+        if (builtin.target.os.tag == .windows) {
+            const camera = windows_camera.detectBackendSupport(std.testing.allocator);
+            const screen = windows_screen.detectBackendSupport(std.testing.allocator);
+            break :blk .{
+                .camera_list = camera.list,
+                .camera_snap = camera.snap,
+                .camera_clip = camera.clip,
+                .screen_record = screen.record,
+            };
+        }
+
+        break :blk .{
+            .camera_list = false,
+            .camera_snap = false,
+            .camera_clip = false,
+            .screen_record = false,
+        };
+    };
+
+    const cases = [_]struct {
+        cmd: Command,
+        supported: bool,
+    }{
+        .{ .cmd = .camera_list, .supported = media_support.camera_list },
+        .{ .cmd = .camera_snap, .supported = media_support.camera_snap },
+        .{ .cmd = .camera_clip, .supported = media_support.camera_clip },
+        .{ .cmd = .screen_record, .supported = media_support.screen_record },
+    };
+
+    for (cases) |case| {
+        var cmds = [_]Command{case.cmd};
+
+        if (case.supported) {
+            var router = try initRouterWithCommands(std.testing.allocator, &cmds);
+            defer router.deinit();
+            try std.testing.expect(router.isRegistered(case.cmd.toString()));
+        } else {
+            try std.testing.expectError(error.CommandNotSupported, initRouterWithCommands(std.testing.allocator, &cmds));
+        }
+    }
+}
+
+test "initRouterWithCommands gates location.get by backend support" {
+    const support = node_location.detectBackendSupport(std.testing.allocator);
+    var cmds = [_]Command{.location_get};
+
+    if (support.get) {
+        var router = try initRouterWithCommands(std.testing.allocator, &cmds);
+        defer router.deinit();
+        try std.testing.expect(router.isRegistered(Command.location_get.toString()));
+    } else {
+        try std.testing.expectError(error.CommandNotSupported, initRouterWithCommands(std.testing.allocator, &cmds));
+    }
+}
+
+test "parsePositiveU32Param accepts integral values and rejects fractional floats" {
+    try std.testing.expectEqual(@as(u32, 42), try parsePositiveU32Param(.{ .integer = 42 }));
+    try std.testing.expectEqual(@as(u32, 42), try parsePositiveU32Param(.{ .float = 42.0 }));
+
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = 42.5 }));
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = std.math.inf(f64) }));
+    try std.testing.expectError(CommandError.InvalidParams, parsePositiveU32Param(.{ .float = std.math.nan(f64) }));
+}
+
+test "parseDurationMsParam numeric values must be integral milliseconds" {
+    try std.testing.expectEqual(@as(u32, 1500), try parseDurationMsParam(.{ .float = 1500.0 }));
+    try std.testing.expectError(CommandError.InvalidParams, parseDurationMsParam(.{ .float = 1500.25 }));
 }

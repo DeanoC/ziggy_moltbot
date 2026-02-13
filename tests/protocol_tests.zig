@@ -5,6 +5,7 @@ const messages = moltbot.protocol.messages;
 const types = moltbot.protocol.types;
 const requests = moltbot.protocol.requests;
 const chat = moltbot.protocol.chat;
+const ws_auth_pairing = moltbot.protocol.ws_auth_pairing;
 
 test "serialize/deserialize chat message" {
     const allocator = std.testing.allocator;
@@ -79,4 +80,49 @@ test "parse chat history payload" {
 
     const msg = parsed.value.messages.?[0];
     try std.testing.expectEqualStrings("user", msg.role);
+}
+
+test "ws auth payload builder matches gateway v2 shape" {
+    const allocator = std.testing.allocator;
+
+    const payload = try ws_auth_pairing.buildDeviceAuthPayload(allocator, .{
+        .device_id = "device-1",
+        .client_id = "zsc-cli",
+        .client_mode = "cli",
+        .role = "operator",
+        .scopes = &.{ "operator.read", "operator.write" },
+        .signed_at_ms = 1737264000000,
+        .token = "gateway-token",
+        .nonce = "nonce-123",
+    });
+    defer allocator.free(payload);
+
+    try std.testing.expectEqualStrings(
+        "v2|device-1|zsc-cli|cli|operator|operator.read,operator.write|1737264000000|gateway-token|nonce-123",
+        payload,
+    );
+}
+
+test "ws auth + pairing example payload bundle builds valid frames" {
+    const allocator = std.testing.allocator;
+
+    var bundle = try ws_auth_pairing.buildExamplePayloadBundle(allocator);
+    defer bundle.deinit(allocator);
+
+    var connect = try std.json.parseFromSlice(std.json.Value, allocator, bundle.connect, .{});
+    defer connect.deinit();
+    try std.testing.expectEqualStrings("req", connect.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings("connect", connect.value.object.get("method").?.string);
+
+    var node_pair = try std.json.parseFromSlice(std.json.Value, allocator, bundle.node_pair_request, .{});
+    defer node_pair.deinit();
+    try std.testing.expectEqualStrings("node.pair.request", node_pair.value.object.get("method").?.string);
+
+    var approve = try std.json.parseFromSlice(std.json.Value, allocator, bundle.device_pair_approve, .{});
+    defer approve.deinit();
+    try std.testing.expectEqualStrings("device.pair.approve", approve.value.object.get("method").?.string);
+
+    var reject = try std.json.parseFromSlice(std.json.Value, allocator, bundle.device_pair_reject, .{});
+    defer reject.deinit();
+    try std.testing.expectEqualStrings("device.pair.reject", reject.value.object.get("method").?.string);
 }

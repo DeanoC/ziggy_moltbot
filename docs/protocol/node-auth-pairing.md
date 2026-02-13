@@ -1,207 +1,208 @@
-# Node auth + pairing protocol (field-level)
+# Gateway WS auth + pairing fields (client mirror)
 
-Status: **current (mirrors gateway implementation)**.
+Status: **current** (mirrors OpenClaw gateway docs + protocol schemas for ZiggyStarClaw clients).
 
-This doc answers:
-
-- What token goes **where**? (WebSocket `Authorization` header vs `connect.params.auth.token` vs the device-auth signed payload)
-- What exact fields are used for **device identity + pairing**?
-
-Gateway source-of-truth (server-side):
-
-- OpenClaw: `docs/protocol/auth-pairing.md`
-- `src/gateway/protocol/schema/frames.ts` (`ConnectParamsSchema`)
-- `src/gateway/device-auth.ts` (`buildDeviceAuthPayload`)
-- `src/gateway/server/ws-connection/message-handler.ts` (validation + nonce rules)
-
-ZiggyStarClaw (client-side) references:
-
-- `src/client/websocket_client.zig` (`sendConnectRequest()`)
-- `src/protocol/gateway.zig` (`ConnectParams`, `DeviceAuth`)
-- `src/client/device_identity.zig` (signing)
-- `src/main_node.zig` + `src/node_register.zig` (token invariants, node-mode lifecycle)
+This is the ZiggyStarClaw client-side mirror of Gateway WebSocket auth/pairing fields, with code pointers and an example payload builder.
 
 ---
 
-## 1) Terminology
+## Upstream docs reviewed (OpenClaw)
 
-- **Gateway auth token**: `gateway.authToken` in config. Shared secret used for:
-  - WebSocket handshake `Authorization` header
-  - `connect.params.auth.token`
+- `openclaw-fork/docs/gateway/protocol.md`
+- `openclaw-fork/docs/gateway/pairing.md`
+- `openclaw-fork/docs/web/control-ui.md` (pairing-required UX)
 
-- **Node device token**: `node.nodeToken` in config.
-  - Issued/rotated by gateway in `hello-ok.auth.deviceToken`.
-  - Used by node-mode inside the **device-auth signed payload** when available.
+Field-level schema sources used for exact names:
 
-- **Device identity**: keypair-backed identity stored at `node.deviceIdentityPath`.
-
----
-
-## 2) Connection: which token goes where?
-
-### 2.1 WebSocket handshake
-
-The client opens a WS connection and sends an `Authorization` header.
-
-**Current node-mode invariant (client-side):**
-
-- WS `Authorization` token MUST equal `connect.params.auth.token`.
-
-See:
-
-- `src/main_node.zig`: `connect.auth.token must match the WebSocket Authorization token.`
-- `src/node_register.zig`: same comment in the register utility.
-
-### 2.2 `connect` request (WS first frame)
-
-The first WS frame is a `connect` request. In addition to protocol negotiation + client info, it includes:
-
-- `params.auth.token` (the same token as the WS `Authorization` header)
-- `params.device.*` (device identity + signature)
-
-Illustrative minimal shape (wire has more fields; see gateway schema for the full set):
-
-```json
-{
-  "type": "req",
-  "id": "1",
-  "method": "connect",
-  "params": {
-    "minProtocol": 1,
-    "maxProtocol": 1,
-    "role": "node",
-    "scopes": ["node.*"],
-    "client": {
-      "id": "node-host",
-      "mode": "node",
-      "displayName": "ZiggyStarClaw Node"
-    },
-    "caps": ["system", "process", "canvas"],
-    "commands": ["system.run"],
-    "auth": {
-      "token": "<gateway.authToken>"
-    },
-    "device": {
-      "id": "<deviceId>",
-      "publicKey": "<base64url>",
-      "signedAt": 1737264000000,
-      "nonce": "<connect.challenge.nonce>",
-      "signature": "<signature-over-device-auth-payload>"
-    }
-  }
-}
-```
-
-Notes:
-
-- The gateway may emit `connect.challenge` (with a nonce) before `connect`.
-- `device.nonce` is required for non-loopback connections (nonce-bound signatures).
-- `device.signedAt` must be “fresh” (gateway currently allows about ±10 minutes of skew).
+- `openclaw-fork/src/gateway/protocol/schema/frames.ts`
+- `openclaw-fork/src/gateway/protocol/schema/devices.ts`
+- `openclaw-fork/src/gateway/protocol/schema/nodes.ts`
+- `openclaw-fork/src/gateway/device-auth.ts`
+- `openclaw-fork/src/infra/device-pairing.ts`
+- `openclaw-fork/src/infra/node-pairing.ts`
 
 ---
 
-## 3) Device-auth signed payload (node-mode)
+## ZiggyStarClaw code pointers (where these fields are used)
 
-On the wire, this appears inside `connect.params.device` as:
+### Connect/auth/device signature flow
 
-- `device.id`
-- `device.publicKey`
-- `device.signature`
-- `device.signedAt`
-- `device.nonce` (when the gateway has issued a `connect.challenge`)
+- `src/client/websocket_client.zig`
+  - `buildHeaders()` → WS `Authorization: Bearer <token>`
+  - `parseConnectNonce()` / `handleConnectChallenge()` → `connect.challenge` nonce handling
+  - `sendConnectRequest()` → sends `connect.params.auth` + `connect.params.device`
+  - delegates exact `v1`/`v2` signed payload string building to `protocol/ws_auth_pairing.zig`
+- `src/protocol/gateway.zig` (`ConnectAuth`, `DeviceAuth`, `ConnectParams`)
+- `src/protocol/ws_auth_pairing.zig` (mirrored field structs + payload/example builders)
+- `src/client/device_identity.zig`
+  - `signPayload()` → Ed25519 signature for device-auth payload
+- `src/client/event_handler.zig`
+  - `extractAuthUpdate()` → reads `hello-ok.auth.deviceToken`, `role`, `scopes`, `issuedAtMs`
+- `src/node/connection_manager_singlethread.zig` (node token invariants)
 
-Despite the name, the signed payload is **not JSON**. It is a UTF-8 string with pipe (`|`) separators.
+### Pairing flows
 
-### 3.1 Which token is used inside the signed payload?
-
-Node-mode uses a *device-auth token* when constructing the signed payload:
-
-- If `node.nodeToken` exists, use it.
-- Otherwise fall back to `gateway.authToken` (with a warning).
-
-See `src/main_node.zig`:
-
-- `device_auth_token = if (cfg.node.nodeToken.len > 0) cfg.node.nodeToken else cfg.gateway.authToken;`
-
-Important binding rule (gateway behavior):
-
-- The device-auth payload includes the requested `role`/`scopes` **and** includes `connect.auth.token` (when present), binding those claims into the signature.
-
-### 3.2 Signed payload schema (exact)
-
-Base fields:
-
-```
-version|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token
-```
-
-Nonce-bound (v2):
-
-```
-v2|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token|nonce
-```
-
-Legacy / loopback-only (v1, no nonce):
-
-```
-v1|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token
-```
-
-Where:
-
-- `scopesCsv` is `scopes` joined with `,` (comma), no additional escaping.
-- `signedAtMs` is `std.time.milliTimestamp()`.
-- `token` is `connect.auth.token` on the wire; node-mode generally uses `node.nodeToken` when available, else `gateway.authToken`.
-- `nonce` is `connect.challenge.payload.nonce` (aka `connect.device.nonce`).
-
-The signature is computed over the raw payload bytes.
-
-See:
-
-- `src/client/websocket_client.zig` (payload construction)
-- `src/client/device_identity.zig` (`key_pair.sign(payload, null)`)
+- `src/cli/operator_chunk.zig`
+  - `device.pair.list`
+  - `device.pair.approve` / `device.pair.reject`
+- `src/main_node.zig`
+  - handles `device.pair.requested` / `device.pair.resolved`
+  - handles `node.pair.requested` / `node.pair.resolved`
+  - persists paired token from `hello-ok.auth.deviceToken`, then reconnects
+- `src/node_register.zig` (bootstrap pairing flow, save `node.nodeToken`)
 
 ---
 
-## 4) Pairing lifecycle
+## 1) WS auth fields (connect handshake)
 
-### 4.1 First time / unpaired
+### `connect.challenge` event payload (Gateway -> client)
 
-When a new device identity connects, the gateway may require pairing approval.
+| Field | Type | Notes |
+|---|---|---|
+| `payload.nonce` | string | Challenge nonce for non-local clients (required in v2 signature payload). |
+| `payload.ts` | integer | Gateway timestamp (ms). |
 
-In `node-register` (`src/node_register.zig`):
+### `connect` request params (client -> Gateway)
 
-- Connects using the gateway auth token for both WS auth and `connect.auth.token`.
-- Waits for `hello-ok`.
-- If pairing is required, it prints the device id and instructs to approve in Control UI.
+| Field path | Type | Notes |
+|---|---|---|
+| `params.auth.token` | string? | Shared token / device token path; also bound into signed device-auth payload. |
+| `params.auth.password` | string? | Password mode alternative. |
+| `params.role` | string? | Requested role (`operator` / `node`) used in pairing checks. |
+| `params.scopes[]` | string[]? | Requested operator scopes; scope upgrades can trigger re-pairing. |
+| `params.device.id` | string | Device identity ID (fingerprint-derived). |
+| `params.device.publicKey` | string | Device public key used for signature verification. |
+| `params.device.signature` | string | Signature over `buildDeviceAuthPayload(...)` bytes. |
+| `params.device.signedAt` | integer | Signature timestamp (freshness checked server-side). |
+| `params.device.nonce` | string? | Nonce from `connect.challenge` (required for non-local device-auth path). |
 
-### 4.2 Approval
+### `hello-ok.auth` payload (Gateway -> client)
 
-After approval, reconnecting yields `hello-ok` with a `deviceToken`.
+| Field | Type | Notes |
+|---|---|---|
+| `auth.deviceToken` | string | Issued paired token for this device/role/scopes. |
+| `auth.role` | string | Role associated with issued token. |
+| `auth.scopes` | string[] | Scopes associated with issued token. |
+| `auth.issuedAtMs` | integer? | Optional token issue timestamp. |
 
-Node-register persists it:
+Token placement rule (important in Ziggy node-mode):
 
-- Saves into `node.nodeToken`.
+1. WS header bearer token
+2. `connect.params.auth.token`
+3. token field inside signed device-auth payload
 
-Node-mode then uses `node.nodeToken` for device-auth on subsequent runs.
-
-### 4.3 Rotation
-
-If the gateway rotates the device token, node-mode should persist the new one back to config.
-
-(See `docs/user/node-mode.md` for user-facing notes; confirm current node-mode code writes back automatically in all cases.)
+Keep these aligned to avoid role/token mismatches.
 
 ---
 
-## 5) Quick verification commands
+## 2) Pairing fields
 
-From repo root:
+### 2.1 Device pairing (WS device identity path)
+
+Methods:
+
+- `device.pair.list`: `{}`
+- `device.pair.approve`: `{ requestId: string }`
+- `device.pair.reject`: `{ requestId: string }`
+
+Events:
+
+`device.pair.requested` payload fields:
+
+- `requestId`, `deviceId`, `publicKey`, `ts`
+- optional: `displayName`, `platform`, `clientId`, `clientMode`, `role`, `roles[]`, `scopes[]`, `remoteIp`, `silent`, `isRepair`
+
+`device.pair.resolved` payload fields:
+
+- `requestId`, `deviceId`, `decision`, `ts`
+
+Common connect failure shape when pairing is required:
+
+- `error.code = "not_paired"`
+- `error.message = "pairing required"`
+- `error.details.requestId = <id>`
+
+### 2.2 Node pairing (`node.pair.*`, separate store)
+
+From OpenClaw pairing docs: node pairing is separate from the WS `connect` device-auth gate.
+
+Methods:
+
+- `node.pair.request`: `{ nodeId, displayName?, platform?, version?, coreVersion?, uiVersion?, deviceFamily?, modelIdentifier?, caps[]?, commands[]?, remoteIp?, silent? }`
+- `node.pair.list`: `{}`
+- `node.pair.approve`: `{ requestId }`
+- `node.pair.reject`: `{ requestId }`
+- `node.pair.verify`: `{ nodeId, token }`
+
+Events:
+
+- `node.pair.requested` (pending request fields, includes `requestId`, `nodeId`, metadata, optional `silent`, optional `isRepair`, `ts`)
+- `node.pair.resolved` (`requestId`, `nodeId`, `decision`, `ts`)
+
+Operational notes mirrored from OpenClaw docs:
+
+- pending pairing TTL is 5 minutes
+- approval rotates/creates a fresh token
+- repeated request is idempotent per node while pending
+
+---
+
+## 3) Device-auth payload format (exact mirror)
+
+OpenClaw builder source: `openclaw-fork/src/gateway/device-auth.ts`
+
+Signed payload fields:
+
+- base: `version|deviceId|clientId|clientMode|role|scopesCsv|signedAtMs|token`
+- v2 adds: `|nonce`
+
+Rules:
+
+- `version = "v2"` when nonce exists, else `"v1"`
+- `scopesCsv = scopes.join(",")`
+- `token = params.auth.token` (empty string if omitted)
+
+---
+
+## 4) Example payload builder (Zig)
+
+Implemented utility: `src/protocol/ws_auth_pairing.zig`
+
+- `buildDeviceAuthPayload(...)` → exact OpenClaw-compatible signature payload string
+- `buildExamplePayloadBundle(...)` → ready-to-print JSON examples for:
+  - `connect`
+  - `node.pair.request`
+  - `device.pair.approve`
+  - `device.pair.reject`
+
+Runnable example: `examples/ws_auth_pairing_payload_builder.zig`
+
+It provides:
+
+- `buildDeviceAuthPayload(...)`
+- `buildConnectRequestJson(...)`
+- `buildDevicePairApproveParamsJson(...)`
+- `buildNodePairRequestParamsJson(...)`
+
+Run:
 
 ```bash
-# Find all references to connect.auth.token invariants
-grep -RIn "connect\\.auth" src docs
-
-# Find hello-ok auth token handling
-grep -RIn "hello-ok" src docs
-grep -RIn "deviceToken" src docs
+./.tools/zig-0.15.2/zig run examples/ws_auth_pairing_payload_builder.zig
 ```
+
+For production connect flows:
+
+1. Build device-auth payload with `buildDeviceAuthPayload(...)` (include nonce when present).
+2. Sign bytes via `device_identity.signPayload(...)`.
+3. Send signature/public key/device id in `connect.params.device`.
+
+---
+
+## 5) Sync checklist for future updates
+
+When OpenClaw auth/pairing changes, verify these Ziggy spots together:
+
+- `src/client/websocket_client.zig` (connect + signature payload)
+- `src/client/event_handler.zig` (`hello-ok.auth` parsing)
+- `src/main_node.zig` + `src/node_register.zig` (pairing event handling + token persistence)
+- this mirror doc + example builder

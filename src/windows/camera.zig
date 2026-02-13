@@ -115,6 +115,9 @@ pub const CameraClipRequest = struct {
     includeAudio: bool = true,
     deviceId: ?[]const u8 = null,
     preferredPosition: ?CameraPosition = null,
+    /// Optional DirectShow audio input device name (e.g. "Microphone Array (...)").
+    /// When omitted, ffmpeg uses `audio=default`.
+    audioDeviceId: ?[]const u8 = null,
 };
 
 pub const CameraClipResult = struct {
@@ -148,9 +151,9 @@ pub const CameraBackendSupport = struct {
     clip: bool,
 };
 
-const list_backend_name = "powershell-cim";
-const snap_backend_name = "ffmpeg-dshow";
-const clip_backend_name = "ffmpeg-dshow";
+pub const list_backend_name = "powershell-cim";
+pub const snap_backend_name = "ffmpeg-dshow";
+pub const clip_backend_name = "ffmpeg-dshow";
 
 /// Best-effort Windows camera enumeration.
 ///
@@ -161,7 +164,11 @@ pub fn listCameras(allocator: std.mem.Allocator) CameraListError![]CameraDevice 
 
     const script =
         "$ErrorActionPreference='Stop'; " ++
-        "$devices = Get-CimInstance Win32_PnPEntity | ? { $_.PNPClass -eq 'Camera' -or $_.PNPClass -eq 'Image' } | Select-Object Name,PNPDeviceID; " ++
+        // Ensure PowerShell 5.1 emits UTF-8 when stdout is redirected (Child.run pipes stdout).
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); " ++
+        // Prefer PNPClass=Camera, but keep legacy PNPClass=Image devices for compatibility.
+        // Some cameras expose as Image with non-usbvideo services; filtering those out breaks snap/clip.
+        "$devices = Get-CimInstance Win32_PnPEntity | ? { ($_.PNPClass -eq 'Camera') -or ($_.PNPClass -eq 'Image') } | Select-Object Name,PNPDeviceID; " ++
         "$devices | ConvertTo-Json -Compress";
 
     const out = runPowershellJson(allocator, script) catch |err| switch (err) {
@@ -283,10 +290,6 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
 
     if (req.durationMs == 0 or req.durationMs > 60_000) return error.InvalidParams;
 
-    if (req.includeAudio) {
-        logger.warn("camera.clip backend={s}: includeAudio requested but audio capture is not implemented yet; capturing video-only", .{clip_backend_name});
-    }
-
     const camera_name = try resolveCameraNameForCapture(allocator, req.deviceId, req.preferredPosition);
     defer allocator.free(camera_name);
 
@@ -311,7 +314,7 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
     const input_spec = try formatDshowVideoInputAlloc(allocator, camera_name);
     defer allocator.free(input_spec);
 
-    try runFfmpegCameraClip(allocator, req, input_spec, out_path);
+    const has_audio = try runFfmpegCameraClip(allocator, req, input_spec, out_path);
 
     const file = std.fs.openFileAbsolute(out_path, .{}) catch {
         logger.err("camera.clip backend={s} output file missing: {s}", .{ clip_backend_name, out_path });
@@ -346,7 +349,7 @@ pub fn clipCamera(allocator: std.mem.Allocator, req: CameraClipRequest) CameraCl
         .format = req.format,
         .base64 = b64_buf,
         .durationMs = req.durationMs,
-        .hasAudio = false,
+        .hasAudio = has_audio,
     };
 }
 
@@ -387,7 +390,40 @@ fn resolveCameraNameForCapture(
 }
 
 fn formatDshowVideoInputAlloc(allocator: std.mem.Allocator, camera_name: []const u8) ![]u8 {
-    return std.fmt.allocPrint(allocator, "video={s}", .{camera_name});
+    const escaped = try escapeDshowInputNameAlloc(allocator, camera_name);
+    defer allocator.free(escaped);
+
+    return std.fmt.allocPrint(allocator, "video={s}", .{escaped});
+}
+
+fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]const u8) ![]u8 {
+    if (audio_device_id) |raw| {
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) {
+            const escaped = try escapeDshowInputNameAlloc(allocator, trimmed);
+            defer allocator.free(escaped);
+
+            return std.fmt.allocPrint(allocator, "audio={s}", .{escaped});
+        }
+    }
+
+    return allocator.dupe(u8, "audio=default");
+}
+
+/// Escape DirectShow input names passed to ffmpeg (`video=<name>` / `audio=<name>`).
+/// ffmpeg treats `:` and `\\` as special separators in dshow input specs.
+fn escapeDshowInputNameAlloc(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    for (input) |ch| {
+        if (ch == ':' or ch == '\\') {
+            try out.append(allocator, '\\');
+        }
+        try out.append(allocator, ch);
+    }
+
+    return out.toOwnedSlice(allocator);
 }
 
 fn getTempDirAlloc(allocator: std.mem.Allocator) ![]u8 {
@@ -515,11 +551,103 @@ fn runPowershellJson(allocator: std.mem.Allocator, script: []const u8) ![]u8 {
 
         // Ignore stderr if exit code is 0; some PS setups may emit warnings.
         allocator.free(res.stderr);
-        return res.stdout;
+        return normalizePowershellJsonStdoutToUtf8Alloc(allocator, res.stdout);
     }
 
     if (!saw_executable) return error.FileNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn normalizePowershellJsonStdoutToUtf8Alloc(allocator: std.mem.Allocator, raw_owned: []u8) ![]u8 {
+    // `std.process.Child.run` captures stdout via pipes on Windows. Depending on the PowerShell
+    // version + host configuration, this may arrive as UTF-16LE (often with a BOM) or UTF-8.
+    // JSON parsing in Zig expects UTF-8, so we normalize here.
+    if (raw_owned.len == 0) return raw_owned;
+
+    // UTF-16LE BOM
+    if (raw_owned.len >= 2 and raw_owned[0] == 0xFF and raw_owned[1] == 0xFE) {
+        return decodeUtf16LeBytesToUtf8Alloc(allocator, raw_owned, 2);
+    }
+
+    // Heuristic: UTF-16LE text often has NUL bytes in every odd position for ASCII JSON.
+    if (looksLikeUtf16Le(raw_owned)) {
+        return decodeUtf16LeBytesToUtf8Alloc(allocator, raw_owned, 0);
+    }
+
+    var out = raw_owned;
+
+    // Strip UTF-8 BOM if present.
+    if (out.len >= 3 and out[0] == 0xEF and out[1] == 0xBB and out[2] == 0xBF) {
+        const trimmed = try allocator.dupe(u8, out[3..]);
+        allocator.free(out);
+        out = trimmed;
+    }
+
+    // Trim any trailing NUL bytes.
+    var end = out.len;
+    while (end > 0 and out[end - 1] == 0) : (end -= 1) {}
+    if (end != out.len) {
+        const trimmed = try allocator.dupe(u8, out[0..end]);
+        allocator.free(out);
+        out = trimmed;
+    }
+
+    return out;
+}
+
+fn looksLikeUtf16Le(bytes: []const u8) bool {
+    if (bytes.len < 4) return false;
+    if (bytes.len % 2 != 0) return false;
+
+    var odd_zeros: usize = 0;
+    var odd_total: usize = 0;
+    var i: usize = 1;
+    while (i < bytes.len) : (i += 2) {
+        odd_total += 1;
+        if (bytes[i] == 0) odd_zeros += 1;
+    }
+
+    // If >= 60% of odd bytes are NUL, it is very likely UTF-16LE ASCII text.
+    return odd_total > 0 and (odd_zeros * 10 >= odd_total * 6);
+}
+
+fn decodeUtf16LeBytesToUtf8Alloc(allocator: std.mem.Allocator, raw_owned: []u8, start: usize) ![]u8 {
+    defer allocator.free(raw_owned);
+
+    if (start >= raw_owned.len) return try allocator.dupe(u8, "");
+
+    const bytes = raw_owned[start..];
+    const even_len = bytes.len - (bytes.len % 2);
+    const utf16_len = even_len / 2;
+
+    var utf16 = try allocator.alloc(u16, utf16_len);
+    defer allocator.free(utf16);
+
+    var idx: usize = 0;
+    while (idx < utf16_len) : (idx += 1) {
+        const off = idx * 2;
+        utf16[idx] = @as(u16, bytes[off]) | (@as(u16, bytes[off + 1]) << 8);
+    }
+
+    var utf8_owned = try std.unicode.utf16LeToUtf8Alloc(allocator, utf16);
+
+    // Strip UTF-8 BOM if present after conversion.
+    if (utf8_owned.len >= 3 and utf8_owned[0] == 0xEF and utf8_owned[1] == 0xBB and utf8_owned[2] == 0xBF) {
+        const trimmed = try allocator.dupe(u8, utf8_owned[3..]);
+        allocator.free(utf8_owned);
+        utf8_owned = trimmed;
+    }
+
+    // Trim any trailing NUL bytes.
+    var end = utf8_owned.len;
+    while (end > 0 and utf8_owned[end - 1] == 0) : (end -= 1) {}
+    if (end != utf8_owned.len) {
+        const trimmed = try allocator.dupe(u8, utf8_owned[0..end]);
+        allocator.free(utf8_owned);
+        utf8_owned = trimmed;
+    }
+
+    return utf8_owned;
 }
 
 fn runFfmpegSingleFrame(
@@ -532,46 +660,8 @@ fn runFfmpegSingleFrame(
     var last_error: ?CameraSnapError = null;
 
     for (ffmpegCandidates()) |exe| {
-        const jpeg_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            "-update",
-            "1",
-            "-y",
-            out_path,
-        };
-
-        const png_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-frames:v",
-            "1",
-            "-update",
-            "1",
-            "-y",
-            out_path,
-        };
-
-        const argv = switch (format) {
-            .jpeg => jpeg_argv,
-            .png => png_argv,
-        };
+        const argv = try buildFfmpegSingleFrameArgv(allocator, exe, format, input_spec, out_path);
+        defer allocator.free(argv);
 
         const res = std.process.Child.run(.{
             .allocator = allocator,
@@ -608,12 +698,82 @@ fn runFfmpegSingleFrame(
     return last_error orelse error.CommandFailed;
 }
 
+fn buildFfmpegSingleFrameArgv(
+    allocator: std.mem.Allocator,
+    exe: []const u8,
+    format: CameraSnapFormat,
+    input_spec: []const u8,
+    out_path: []const u8,
+) ![]const []const u8 {
+    var argv = std.ArrayList([]const u8).empty;
+    errdefer argv.deinit(allocator);
+
+    try argv.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "dshow",
+        "-i",
+        input_spec,
+        "-frames:v",
+        "1",
+    });
+
+    switch (format) {
+        .jpeg => {
+            // Force JPEG encoding for deterministic payload format.
+            try argv.appendSlice(allocator, &.{ "-c:v", "mjpeg", "-q:v", "2" });
+        },
+        .png => {
+            // Force PNG encoding for deterministic payload format.
+            try argv.appendSlice(allocator, &.{ "-c:v", "png" });
+        },
+    }
+
+    try argv.appendSlice(allocator, &.{
+        "-update",
+        "1",
+        "-y",
+        out_path,
+    });
+
+    return argv.toOwnedSlice(allocator);
+}
+
+fn argvContains(args: []const []const u8, needle: []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, needle)) return true;
+    }
+    return false;
+}
+
+const ClipRunVariant = enum {
+    video_only,
+    with_audio,
+};
+
+const ClipRunOutcome = enum {
+    executable_missing,
+    failed,
+    success,
+};
+
+const ClipFailureDiagnostic = enum {
+    none,
+    device_busy,
+    permission_denied,
+    video_source_unavailable,
+    audio_source_unavailable,
+};
+
 fn runFfmpegCameraClip(
     allocator: std.mem.Allocator,
     req: CameraClipRequest,
     input_spec: []const u8,
     out_path: []const u8,
-) CameraClipError!void {
+) CameraClipError!bool {
     const duration_arg = try std.fmt.allocPrint(
         allocator,
         "{d}.{d:0>3}",
@@ -621,112 +781,282 @@ fn runFfmpegCameraClip(
     );
     defer allocator.free(duration_arg);
 
+    const audio_input_spec = try formatDshowAudioInputAlloc(allocator, req.audioDeviceId);
+    defer allocator.free(audio_input_spec);
+
     var saw_executable = false;
     var last_error: ?CameraClipError = null;
 
     for (ffmpegCandidates()) |exe| {
-        const mp4_argv = &[_][]const u8{
-            exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
+        if (req.includeAudio) {
+            const audio_outcome = try runFfmpegCameraClipVariant(
+                allocator,
+                req,
+                input_spec,
+                audio_input_spec,
+                duration_arg,
+                out_path,
+                exe,
+                .with_audio,
+            );
+            switch (audio_outcome) {
+                .success => return true,
+                .executable_missing => {},
+                .failed => {
+                    saw_executable = true;
+                    last_error = error.CommandFailed;
+                    logger.warn(
+                        "camera.clip backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
+                        .{ clip_backend_name, exe, audio_input_spec },
+                    );
+                    if (req.audioDeviceId) |audio_device_id| {
+                        logger.warn(
+                            "camera.clip backend={s}: requested audioDeviceId appears unavailable or busy: {s}",
+                            .{ clip_backend_name, audio_device_id },
+                        );
+                    }
+                },
+            }
+        }
+
+        const video_only_outcome = try runFfmpegCameraClipVariant(
+            allocator,
+            req,
             input_spec,
-            "-t",
+            audio_input_spec,
             duration_arg,
-            "-an",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "10",
-            "-c:v",
-            "mpeg4",
-            "-b:v",
-            "450k",
-            "-maxrate",
-            "450k",
-            "-bufsize",
-            "900k",
-            "-q:v",
-            "7",
-            "-movflags",
-            "+faststart",
-            "-y",
             out_path,
-        };
-
-        const webm_argv = &[_][]const u8{
             exe,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "dshow",
-            "-i",
-            input_spec,
-            "-t",
-            duration_arg,
-            "-an",
-            "-pix_fmt",
-            "yuv420p",
-            "-r",
-            "10",
-            "-c:v",
-            "libvpx",
-            "-b:v",
-            "350k",
-            "-maxrate",
-            "350k",
-            "-bufsize",
-            "700k",
-            "-deadline",
-            "realtime",
-            "-f",
-            "webm",
-            "-y",
-            out_path,
-        };
-
-        const argv = switch (req.format) {
-            .mp4 => mp4_argv,
-            .webm => webm_argv,
-        };
-
-        const res = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = argv,
-            .max_output_bytes = 1024 * 1024,
-        }) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            error.OutOfMemory => return error.OutOfMemory,
-            else => {
+            .video_only,
+        );
+        switch (video_only_outcome) {
+            .success => return false,
+            .executable_missing => continue,
+            .failed => {
                 saw_executable = true;
-                logger.warn("camera.clip backend={s} failed to start {s}: {s}", .{ clip_backend_name, exe, @errorName(err) });
                 last_error = error.CommandFailed;
                 continue;
             },
-        };
-
-        saw_executable = true;
-
-        const exit_code = childTermToExitCode(res.term);
-        if (exit_code != 0) {
-            logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
-            allocator.free(res.stdout);
-            allocator.free(res.stderr);
-            last_error = error.CommandFailed;
-            continue;
         }
-
-        allocator.free(res.stdout);
-        allocator.free(res.stderr);
-        return;
     }
 
     if (!saw_executable) return error.FfmpegNotFound;
     return last_error orelse error.CommandFailed;
+}
+
+fn runFfmpegCameraClipVariant(
+    allocator: std.mem.Allocator,
+    req: CameraClipRequest,
+    input_spec: []const u8,
+    audio_input_spec: []const u8,
+    duration_arg: []const u8,
+    out_path: []const u8,
+    exe: []const u8,
+    variant: ClipRunVariant,
+) CameraClipError!ClipRunOutcome {
+    var argv_list = std.ArrayList([]const u8).empty;
+    defer argv_list.deinit(allocator);
+
+    try argv_list.appendSlice(allocator, &.{
+        exe,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "dshow",
+        "-i",
+        input_spec,
+    });
+
+    switch (variant) {
+        .video_only => {
+            try argv_list.appendSlice(allocator, &.{ "-t", duration_arg, "-an" });
+        },
+        .with_audio => {
+            try argv_list.appendSlice(allocator, &.{
+                "-f",
+                "dshow",
+                "-i",
+                audio_input_spec,
+                "-t",
+                duration_arg,
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-pix_fmt",
+        "yuv420p",
+        "-r",
+        "10",
+    });
+
+    switch (req.format) {
+        .mp4 => {
+            try argv_list.appendSlice(allocator, &.{
+                "-c:v",
+                "mpeg4",
+                "-b:v",
+                "450k",
+                "-maxrate",
+                "450k",
+                "-bufsize",
+                "900k",
+                "-q:v",
+                "7",
+            });
+
+            if (variant == .with_audio) {
+                try argv_list.appendSlice(allocator, &.{
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    "32k",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "22050",
+                    "-shortest",
+                });
+            }
+
+            try argv_list.appendSlice(allocator, &.{
+                "-movflags",
+                "+faststart",
+            });
+        },
+        .webm => {
+            try argv_list.appendSlice(allocator, &.{
+                "-c:v",
+                "libvpx",
+                "-b:v",
+                "350k",
+                "-maxrate",
+                "350k",
+                "-bufsize",
+                "700k",
+                "-deadline",
+                "realtime",
+            });
+
+            if (variant == .with_audio) {
+                try argv_list.appendSlice(allocator, &.{
+                    "-c:a",
+                    "libopus",
+                    "-b:a",
+                    "32k",
+                    "-ac",
+                    "1",
+                    "-shortest",
+                });
+            }
+
+            try argv_list.appendSlice(allocator, &.{
+                "-f",
+                "webm",
+            });
+        },
+    }
+
+    try argv_list.appendSlice(allocator, &.{
+        "-y",
+        out_path,
+    });
+
+    const argv = try argv_list.toOwnedSlice(allocator);
+    defer allocator.free(argv);
+
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+        .max_output_bytes = 1024 * 1024,
+    }) catch |err| switch (err) {
+        error.FileNotFound => return .executable_missing,
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            logger.warn("camera.clip backend={s} failed to start {s}: {s}", .{ clip_backend_name, exe, @errorName(err) });
+            return .failed;
+        },
+    };
+
+    const exit_code = childTermToExitCode(res.term);
+    if (exit_code != 0) {
+        const diagnostic = classifyClipFailureDiagnostic(res.stderr, variant);
+        switch (diagnostic) {
+            .device_busy => logger.warn(
+                "camera.clip backend={s}: source appears busy/in-use (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .permission_denied => logger.warn(
+                "camera.clip backend={s}: capture permission denied by OS/privacy settings (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .video_source_unavailable => logger.warn(
+                "camera.clip backend={s}: requested camera source unavailable (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .audio_source_unavailable => logger.warn(
+                "camera.clip backend={s}: requested audio source unavailable (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .none => {},
+        }
+
+        logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+        return .failed;
+    }
+
+    allocator.free(res.stdout);
+    allocator.free(res.stderr);
+    return .success;
+}
+
+fn clipRunVariantName(variant: ClipRunVariant) []const u8 {
+    return switch (variant) {
+        .video_only => "video_only",
+        .with_audio => "with_audio",
+    };
+}
+
+fn classifyClipFailureDiagnostic(stderr: []const u8, variant: ClipRunVariant) ClipFailureDiagnostic {
+    if (containsAsciiIgnoreCase(stderr, "permission denied") or
+        containsAsciiIgnoreCase(stderr, "access is denied") or
+        containsAsciiIgnoreCase(stderr, "denied by system"))
+    {
+        return .permission_denied;
+    }
+
+    if (containsAsciiIgnoreCase(stderr, "device or resource busy") or
+        containsAsciiIgnoreCase(stderr, "resource busy") or
+        containsAsciiIgnoreCase(stderr, "already in use") or
+        containsAsciiIgnoreCase(stderr, "is being used by another application"))
+    {
+        return .device_busy;
+    }
+
+    if (containsAsciiIgnoreCase(stderr, "could not find video device") or
+        containsAsciiIgnoreCase(stderr, "no video devices found") or
+        containsAsciiIgnoreCase(stderr, "video source unavailable"))
+    {
+        return .video_source_unavailable;
+    }
+
+    if (variant == .with_audio and
+        (containsAsciiIgnoreCase(stderr, "could not find audio") or
+            containsAsciiIgnoreCase(stderr, "audio device") or
+            containsAsciiIgnoreCase(stderr, "unable to open audio") or
+            containsAsciiIgnoreCase(stderr, "no audio devices found")))
+    {
+        return .audio_source_unavailable;
+    }
+
+    return .none;
 }
 
 const ImageDimensions = struct {
@@ -941,6 +1271,35 @@ test "CameraClipFormat.fromString accepts mp4/webm" {
     try std.testing.expect(CameraClipFormat.fromString("mkv") == null);
 }
 
+test "formatDshowVideoInputAlloc escapes dshow separators" {
+    const allocator = std.testing.allocator;
+
+    const escaped = try formatDshowVideoInputAlloc(allocator, "Cam:USB\\Rear");
+    defer allocator.free(escaped);
+
+    try std.testing.expectEqualStrings("video=Cam\\:USB\\\\Rear", escaped);
+}
+
+test "formatDshowAudioInputAlloc uses requested device or defaults" {
+    const allocator = std.testing.allocator;
+
+    const named = try formatDshowAudioInputAlloc(allocator, "Microphone Array");
+    defer allocator.free(named);
+    try std.testing.expectEqualStrings("audio=Microphone Array", named);
+
+    const escaped = try formatDshowAudioInputAlloc(allocator, "Mic:USB\\Front");
+    defer allocator.free(escaped);
+    try std.testing.expectEqualStrings("audio=Mic\\:USB\\\\Front", escaped);
+
+    const blank = try formatDshowAudioInputAlloc(allocator, "   ");
+    defer allocator.free(blank);
+    try std.testing.expectEqualStrings("audio=default", blank);
+
+    const missing = try formatDshowAudioInputAlloc(allocator, null);
+    defer allocator.free(missing);
+    try std.testing.expectEqualStrings("audio=default", missing);
+}
+
 test "parsePngDimensions reads width/height from IHDR" {
     const png_bytes = [_]u8{
         0x89, 'P',  'N',  'G',  '\r', '\n', 0x1A, '\n',
@@ -951,6 +1310,49 @@ test "parsePngDimensions reads width/height from IHDR" {
     const dims = try parsePngDimensions(&png_bytes);
     try std.testing.expectEqual(@as(u32, 1280), dims.width);
     try std.testing.expectEqual(@as(u32, 720), dims.height);
+}
+
+test "buildFfmpegSingleFrameArgv enforces single-frame dshow capture for jpeg" {
+    const allocator = std.testing.allocator;
+
+    const argv = try buildFfmpegSingleFrameArgv(
+        allocator,
+        "ffmpeg",
+        .jpeg,
+        "video=Integrated Camera",
+        "C:/tmp/snap.jpg",
+    );
+    defer allocator.free(argv);
+
+    try std.testing.expect(argvContains(argv, "-f"));
+    try std.testing.expect(argvContains(argv, "dshow"));
+    try std.testing.expect(argvContains(argv, "-frames:v"));
+    try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(argvContains(argv, "-c:v"));
+    try std.testing.expect(argvContains(argv, "mjpeg"));
+    try std.testing.expect(argvContains(argv, "-q:v"));
+    try std.testing.expect(argvContains(argv, "-update"));
+    try std.testing.expect(argvContains(argv, "-y"));
+}
+
+test "buildFfmpegSingleFrameArgv omits jpeg quality flag for png" {
+    const allocator = std.testing.allocator;
+
+    const argv = try buildFfmpegSingleFrameArgv(
+        allocator,
+        "ffmpeg",
+        .png,
+        "video=Integrated Camera",
+        "C:/tmp/snap.png",
+    );
+    defer allocator.free(argv);
+
+    try std.testing.expect(argvContains(argv, "-frames:v"));
+    try std.testing.expect(argvContains(argv, "1"));
+    try std.testing.expect(argvContains(argv, "-c:v"));
+    try std.testing.expect(argvContains(argv, "png"));
+    try std.testing.expect(!argvContains(argv, "-q:v"));
+    try std.testing.expect(argvContains(argv, "-update"));
 }
 
 test "parseJpegDimensions reads width/height from SOF" {
@@ -983,6 +1385,28 @@ test "parseJpegDimensions reads width/height from SOF" {
     const dims = try parseJpegDimensions(&jpeg_bytes);
     try std.testing.expectEqual(@as(u32, 640), dims.width);
     try std.testing.expectEqual(@as(u32, 480), dims.height);
+}
+
+test "classifyClipFailureDiagnostic detects camera busy + permission + unavailable sources" {
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.device_busy,
+        classifyClipFailureDiagnostic("dshow @ ... device or resource busy", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.permission_denied,
+        classifyClipFailureDiagnostic("Error opening input: Permission denied", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.video_source_unavailable,
+        classifyClipFailureDiagnostic("Could not find video device with name", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.audio_source_unavailable,
+        classifyClipFailureDiagnostic("Could not find audio only device with name", .with_audio),
+    );
 }
 
 test "detectBackendSupport returns false on non-Windows targets" {
@@ -1022,6 +1446,24 @@ test "parseDevicesJson handles object/array/null payloads" {
     const empty = try parseDevicesJson(allocator, json_null);
     defer allocator.free(empty);
     try std.testing.expectEqual(@as(usize, 0), empty.len);
+}
+
+test "normalizePowershellJsonStdoutToUtf8Alloc converts UTF-16LE output" {
+    const allocator = std.testing.allocator;
+
+    // UTF-16LE BOM + "[]".
+    const utf16le_bom_bytes = &[_]u8{ 0xFF, 0xFE, '[', 0x00, ']', 0x00 };
+    const owned = try allocator.dupe(u8, utf16le_bom_bytes);
+    const normalized = try normalizePowershellJsonStdoutToUtf8Alloc(allocator, owned);
+    defer allocator.free(normalized);
+    try std.testing.expectEqualStrings("[]", normalized);
+
+    // Heuristic path (no BOM): UTF-16LE "null".
+    const utf16le_no_bom = &[_]u8{ 'n', 0x00, 'u', 0x00, 'l', 0x00, 'l', 0x00 };
+    const owned2 = try allocator.dupe(u8, utf16le_no_bom);
+    const normalized2 = try normalizePowershellJsonStdoutToUtf8Alloc(allocator, owned2);
+    defer allocator.free(normalized2);
+    try std.testing.expectEqualStrings("null", normalized2);
 }
 
 test "listCameras returns NotSupported on non-Windows targets" {

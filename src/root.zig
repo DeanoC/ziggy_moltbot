@@ -6,6 +6,8 @@ pub const protocol = struct {
     pub const requests = @import("protocol/requests.zig");
     pub const sessions = @import("protocol/sessions.zig");
     pub const chat = @import("protocol/chat.zig");
+    pub const nodes = @import("protocol/nodes.zig");
+    pub const ws_auth_pairing = @import("protocol/ws_auth_pairing.zig");
 };
 
 pub const client = struct {
@@ -70,6 +72,7 @@ pub const utils = struct {
 
 pub const node = struct {
     pub const node_context = @import("node/node_context.zig");
+    pub const command_router = @import("node/command_router.zig");
 };
 
 pub const windows = struct {
