@@ -9,6 +9,7 @@ const chat = @import("../protocol/chat.zig");
 const nodes_proto = @import("../protocol/nodes.zig");
 const approvals_proto = @import("../protocol/approvals.zig");
 const requests = @import("../protocol/requests.zig");
+const ws_auth_pairing = @import("../protocol/ws_auth_pairing.zig");
 const build_options = @import("build_options");
 
 pub const Options = struct {
@@ -435,7 +436,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     if (device_pair_approve_id) |request_id| {
-        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.approve", .{ .requestId = request_id }, 5000);
+        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.approve", ws_auth_pairing.PairingRequestIdParams{ .requestId = request_id }, 5000);
         defer allocator.free(payload);
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(payload);
@@ -448,7 +449,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     if (device_pair_reject_id) |request_id| {
-        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.reject", .{ .requestId = request_id }, 5000);
+        const payload = try requestAndAwaitJsonPayloadText(allocator, &ws_client, "device.pair.reject", ws_auth_pairing.PairingRequestIdParams{ .requestId = request_id }, 5000);
         defer allocator.free(payload);
         var stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.writeAll(payload);
