@@ -110,24 +110,24 @@ copy_or_fail() {
 copy_or_fail "${ROOT_DIR}/README.md" "${LINUX_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${LINUX_DIR}/LICENSE"
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client" "${LINUX_DIR}/"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${LINUX_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw" "${LINUX_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${LINUX_DIR}/"
 
 copy_or_fail "${ROOT_DIR}/README.md" "${CLI_LINUX_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_LINUX_DIR}/LICENSE"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${CLI_LINUX_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw" "${CLI_LINUX_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli" "${CLI_LINUX_DIR}/"
 
 copy_or_fail "${ROOT_DIR}/README.md" "${WINDOWS_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${WINDOWS_DIR}/LICENSE"
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.exe" "${WINDOWS_DIR}/"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${WINDOWS_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw.exe" "${WINDOWS_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${WINDOWS_DIR}/"
 if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.pdb" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-client.pdb" "${SYMBOLS_DIR}/"
+fi
+if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw.pdb" ]]; then
+  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw.pdb" "${SYMBOLS_DIR}/"
 fi
 if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" ]]; then
   cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.pdb" "${SYMBOLS_DIR}/"
@@ -135,9 +135,8 @@ fi
 
 copy_or_fail "${ROOT_DIR}/README.md" "${CLI_WINDOWS_DIR}/README.md"
 copy_or_fail "${ROOT_DIR}/LICENSE" "${CLI_WINDOWS_DIR}/LICENSE"
-if [[ -f "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" ]]; then
-  cp "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${CLI_WINDOWS_DIR}/"
-fi
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw.exe" "${CLI_WINDOWS_DIR}/"
+copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw-cli.exe" "${CLI_WINDOWS_DIR}/"
 
 copy_or_fail "${ROOT_DIR}/zig-out/bin/ziggystarclaw_android.apk" "${ANDROID_DIR}/"
 
