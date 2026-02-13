@@ -23,6 +23,41 @@ pub const OperatorCliOptions = struct {
     watch_pairing: bool = false,
 };
 
+fn consumedGlobalArgArity(arg: []const u8) ?usize {
+    // main_cli parses these options before delegating to operator mode and still forwards
+    // the full argv slice into parseOperatorOptions.
+    if (std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "--update-url") or
+        std.mem.eql(u8, arg, "--read-timeout-ms") or
+        std.mem.eql(u8, arg, "--session") or
+        std.mem.eql(u8, arg, "--node") or
+        std.mem.eql(u8, arg, "--node-service-mode") or
+        std.mem.eql(u8, arg, "--node-service-name") or
+        std.mem.eql(u8, arg, "--extract-wsz") or
+        std.mem.eql(u8, arg, "--extract-dest") or
+        std.mem.eql(u8, arg, "--mode") or
+        std.mem.eql(u8, arg, "--profile") or
+        std.mem.eql(u8, arg, "--auth-token") or
+        std.mem.eql(u8, arg, "--auth_token") or
+        std.mem.eql(u8, arg, "--gateway-token"))
+    {
+        return 1;
+    }
+
+    if (std.mem.eql(u8, arg, "--print-update-url") or
+        std.mem.eql(u8, arg, "--insecure") or
+        std.mem.eql(u8, arg, "--check-update-only") or
+        std.mem.eql(u8, arg, "--interactive") or
+        std.mem.eql(u8, arg, "--windows-service") or
+        std.mem.eql(u8, arg, "--node-mode") or
+        std.mem.eql(u8, arg, "--save-config"))
+    {
+        return 0;
+    }
+
+    return null;
+}
+
 pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const u8) !OperatorCliOptions {
     var opts = OperatorCliOptions{};
 
@@ -99,6 +134,9 @@ pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const 
                 logger.err("Unknown node action: {s}", .{action});
                 return error.InvalidArguments;
             }
+        } else if (consumedGlobalArgArity(arg)) |extra_arity| {
+            if (i + extra_arity >= args.len) return error.InvalidArguments;
+            i += extra_arity;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             const stdout = std.fs.File.stdout().deprecatedWriter();
             try markdown_help.writeMarkdownForStdout(stdout, allocator, usage);
@@ -110,6 +148,33 @@ pub fn parseOperatorOptions(allocator: std.mem.Allocator, args: []const []const 
     }
 
     return opts;
+}
+
+test "parseOperatorOptions ignores global flags consumed by main_cli" {
+    const args = [_][]const u8{
+        "--operator-mode",
+        "--config",
+        "zsc.json",
+        "--read-timeout-ms",
+        "15000",
+        "--insecure",
+        "device",
+        "list",
+    };
+
+    const opts = try parseOperatorOptions(std.testing.allocator, &args);
+    try std.testing.expect(opts.device_pair_list);
+}
+
+test "parseOperatorOptions still rejects unknown operator args" {
+    const args = [_][]const u8{
+        "--operator-mode",
+        "--definitely-unknown",
+        "device",
+        "list",
+    };
+
+    try std.testing.expectError(error.InvalidArguments, parseOperatorOptions(std.testing.allocator, &args));
 }
 
 fn sendRequestAwait(
