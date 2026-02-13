@@ -1404,6 +1404,10 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
+            if (comptime !cli_features.supports_operator_client) {
+                logger.err("Flag --operator-mode is not supported in node-only builds. Rebuild with -Dcli_operator=true.", .{});
+                return error.Unsupported;
+            }
             logger.warn("Flag --operator-mode is deprecated; operator actions are available without it.", .{});
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
