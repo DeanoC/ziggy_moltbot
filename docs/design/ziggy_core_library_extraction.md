@@ -76,11 +76,16 @@ Phase 2: Stable API (v1.0+)
 5. **Remove `libs/core/`** from main repo
 6. **CI/CD** for the library
 
-### Open Questions
+### Open Questions (Answered)
 
-1. Should profiler stay in core or move to ZSC-specific?
-2. How to handle build_options dependency cleanly?
-3. Package manager: git submodule vs zig package manager?
+1. **Should profiler stay in core or move to ZSC-specific?**
+   - ✅ Keep in core for now
+
+2. **How to handle build_options dependency cleanly?**
+   - ⚠️ TBD (needs investigation)
+
+3. **Package manager: git submodule vs zig package manager?**
+   - ✅ Use Zig package manager
 
 ## Benefits
 
