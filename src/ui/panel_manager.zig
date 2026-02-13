@@ -230,6 +230,11 @@ pub const PanelManager = struct {
                     if (panel.kind == .Settings) return panel;
                 }
             },
+            .Workboard => {
+                for (self.workspace.panels.items) |*panel| {
+                    if (panel.kind == .Workboard) return panel;
+                }
+            },
             .Showcase => {
                 for (self.workspace.panels.items) |*panel| {
                     if (panel.kind == .Showcase) return panel;
@@ -328,6 +333,10 @@ pub const PanelManager = struct {
             .Settings => {
                 const panel_data = workspace.PanelData{ .Settings = {} };
                 return try self.openPanel(.Settings, "Settings", panel_data);
+            },
+            .Workboard => {
+                const panel_data = workspace.PanelData{ .Workboard = {} };
+                return try self.openPanel(.Workboard, "Workboard", panel_data);
             },
             .CodeEditor => {
                 const file_id = "untitled.zig";
@@ -508,6 +517,14 @@ pub const PanelManager = struct {
                 const panel_data = workspace.PanelData{ .Settings = {} };
                 _ = try self.openPanel(.Settings, open.title orelse "Settings", panel_data);
             },
+            .Workboard => {
+                if (self.findReusablePanel(.Workboard, null)) |panel| {
+                    self.focusPanel(panel.id);
+                    return;
+                }
+                const panel_data = workspace.PanelData{ .Workboard = {} };
+                _ = try self.openPanel(.Workboard, open.title orelse "Workboard", panel_data);
+            },
             .Showcase => {
                 if (self.findReusablePanel(.Showcase, null)) |panel| {
                     self.focusPanel(panel.id);
@@ -593,6 +610,9 @@ pub const PanelManager = struct {
                 },
                 .Settings => {
                     if (panel.kind != .Settings) return false;
+                },
+                .Workboard => {
+                    if (panel.kind != .Workboard) return false;
                 },
                 .Showcase => {
                     if (panel.kind != .Showcase) return false;

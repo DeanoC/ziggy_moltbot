@@ -59,6 +59,7 @@ pub const ClientContext = struct {
     session_states: std.StringHashMap(ChatSessionState),
     current_node: ?[]const u8,
     nodes: std.ArrayList(types.Node),
+    workboard_items: std.ArrayList(types.WorkboardItem),
     node_describes: std.ArrayList(NodeDescribe),
     node_health: std.ArrayList(NodeHealthEntry),
     approvals: std.ArrayList(types.ExecApproval),
@@ -71,6 +72,7 @@ pub const ClientContext = struct {
     pending_send_session_key: ?[]const u8 = null,
     pending_send_message_id: ?[]const u8 = null,
     pending_nodes_request_id: ?[]const u8 = null,
+    pending_workboard_request_id: ?[]const u8 = null,
     pending_node_invoke_request_id: ?[]const u8 = null,
     pending_node_describe_request_id: ?[]const u8 = null,
     pending_agents_create_request_id: ?[]const u8 = null,
@@ -83,6 +85,7 @@ pub const ClientContext = struct {
     operator_notice: ?[]const u8 = null,
     node_result: ?[]const u8 = null,
     sessions_updated: bool = false,
+    workboard_updated: bool = false,
     update_state: update_checker.UpdateState = .{},
     gateway_identity: GatewayIdentity = .{},
     gateway_compatibility: GatewayCompatibilityMode = .unknown,
@@ -97,6 +100,7 @@ pub const ClientContext = struct {
             .session_states = std.StringHashMap(ChatSessionState).init(allocator),
             .current_node = null,
             .nodes = std.ArrayList(types.Node).empty,
+            .workboard_items = std.ArrayList(types.WorkboardItem).empty,
             .node_describes = std.ArrayList(NodeDescribe).empty,
             .node_health = std.ArrayList(NodeHealthEntry).empty,
             .approvals = std.ArrayList(types.ExecApproval).empty,
@@ -109,6 +113,7 @@ pub const ClientContext = struct {
             .pending_send_session_key = null,
             .pending_send_message_id = null,
             .pending_nodes_request_id = null,
+            .pending_workboard_request_id = null,
             .pending_node_invoke_request_id = null,
             .pending_node_describe_request_id = null,
             .pending_agents_create_request_id = null,
@@ -121,6 +126,7 @@ pub const ClientContext = struct {
             .operator_notice = null,
             .node_result = null,
             .sessions_updated = false,
+            .workboard_updated = false,
             .update_state = .{},
             .gateway_identity = .{},
             .gateway_compatibility = .unknown,
@@ -141,6 +147,7 @@ pub const ClientContext = struct {
         self.clearOperatorNotice();
         self.clearNodeResult();
         self.clearCurrentNode();
+        self.clearWorkboardItems();
         self.clearApprovals();
         self.clearNodeDescribes();
         self.clearNodeHealth();
@@ -157,6 +164,7 @@ pub const ClientContext = struct {
         }
         self.sessions.deinit(self.allocator);
         self.nodes.deinit(self.allocator);
+        self.workboard_items.deinit(self.allocator);
         self.node_describes.deinit(self.allocator);
         self.node_health.deinit(self.allocator);
         self.approvals.deinit(self.allocator);
@@ -203,6 +211,13 @@ pub const ClientContext = struct {
         clearNodesInternal(self);
         self.nodes.deinit(self.allocator);
         self.nodes = std.ArrayList(types.Node).fromOwnedSlice(nodes);
+    }
+
+    pub fn setWorkboardItemsOwned(self: *ClientContext, items: []types.WorkboardItem) void {
+        self.clearWorkboardItems();
+        self.workboard_items.deinit(self.allocator);
+        self.workboard_items = std.ArrayList(types.WorkboardItem).fromOwnedSlice(items);
+        self.workboard_updated = true;
     }
 
     pub fn findSessionState(self: *ClientContext, session_key: []const u8) ?*ChatSessionState {
@@ -517,6 +532,13 @@ pub const ClientContext = struct {
         clearNodesInternal(self);
     }
 
+    pub fn clearWorkboardItems(self: *ClientContext) void {
+        for (self.workboard_items.items) |*item| {
+            freeWorkboardItem(self.allocator, item);
+        }
+        self.workboard_items.clearRetainingCapacity();
+    }
+
     pub fn clearNodeDescribes(self: *ClientContext) void {
         for (self.node_describes.items) |*describe| {
             freeNodeDescribe(self.allocator, describe);
@@ -686,6 +708,20 @@ pub const ClientContext = struct {
         self.nodes_loading = false;
     }
 
+    pub fn setPendingWorkboardRequest(self: *ClientContext, id: []const u8) void {
+        if (self.pending_workboard_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_workboard_request_id = id;
+    }
+
+    pub fn clearPendingWorkboardRequest(self: *ClientContext) void {
+        if (self.pending_workboard_request_id) |pending| {
+            self.allocator.free(pending);
+        }
+        self.pending_workboard_request_id = null;
+    }
+
     pub fn setPendingNodeInvokeRequest(self: *ClientContext, id: []const u8) void {
         if (self.pending_node_invoke_request_id) |pending| {
             self.allocator.free(pending);
@@ -796,6 +832,7 @@ pub const ClientContext = struct {
         self.clearAllPendingHistoryRequests();
         self.clearPendingSendRequest();
         self.clearPendingNodesRequest();
+        self.clearPendingWorkboardRequest();
         self.clearPendingNodeInvokeRequest();
         self.clearPendingNodeDescribeRequest();
         self.clearPendingAgentsCreateRequest();
@@ -872,6 +909,10 @@ pub const ClientContext = struct {
             self.allocator.free(value);
             self.node_result = null;
         }
+    }
+
+    pub fn clearWorkboardUpdated(self: *ClientContext) void {
+        self.workboard_updated = false;
     }
 };
 
@@ -1070,6 +1111,19 @@ fn freeNode(allocator: std.mem.Allocator, node: *types.Node) void {
 fn freeNodeDescribe(allocator: std.mem.Allocator, describe: *NodeDescribe) void {
     allocator.free(describe.node_id);
     allocator.free(describe.payload_json);
+}
+
+fn freeWorkboardItem(allocator: std.mem.Allocator, item: *types.WorkboardItem) void {
+    allocator.free(item.id);
+    if (item.kind) |value| allocator.free(value);
+    if (item.status) |value| allocator.free(value);
+    if (item.title) |value| allocator.free(value);
+    if (item.summary) |value| allocator.free(value);
+    if (item.owner) |value| allocator.free(value);
+    if (item.agent_id) |value| allocator.free(value);
+    if (item.parent_id) |value| allocator.free(value);
+    if (item.cron_key) |value| allocator.free(value);
+    if (item.payload_json) |value| allocator.free(value);
 }
 
 fn freeApproval(allocator: std.mem.Allocator, approval: *types.ExecApproval) void {

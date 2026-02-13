@@ -35,6 +35,7 @@ const sessions_proto = @import("protocol/sessions.zig");
 const agents_proto = @import("protocol/agents.zig");
 const chat_proto = @import("protocol/chat.zig");
 const nodes_proto = @import("protocol/nodes.zig");
+const workboard_proto = @import("protocol/workboard.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
 const sdl = @import("platform/sdl3.zig").c;
@@ -381,6 +382,7 @@ fn parsePanelKindLabel(label: []const u8) ?workspace.PanelKind {
     if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
     if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
     if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
+    if (std.ascii.eqlIgnoreCase(label, "workboard") or std.ascii.eqlIgnoreCase(label, "board")) return .Workboard;
     if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
     if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
     if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;
@@ -587,6 +589,7 @@ fn defaultWindowSizeForPanelKind(kind: workspace.PanelKind) struct { w: c_int, h
         .Operator => .{ .w = 960, .h = 720 },
         .ApprovalsInbox => .{ .w = 960, .h = 720 },
         .Inbox => .{ .w = 960, .h = 720 },
+        .Workboard => .{ .w = 1080, .h = 720 },
         .Settings => .{ .w = 960, .h = 720 },
         .Showcase => .{ .w = 900, .h = 720 },
         .CodeEditor => .{ .w = 960, .h = 720 },
@@ -1364,6 +1367,33 @@ fn sendNodesListRequest(
     };
     allocator.free(request.payload);
     ctx.setPendingNodesRequest(request.id);
+}
+
+fn sendWorkboardListRequest(
+    allocator: std.mem.Allocator,
+    ctx: *client_state.ClientContext,
+    ws_client: *websocket_client.WebSocketClient,
+) void {
+    if (!ws_client.is_connected) return;
+    if (ctx.state != .connected) return;
+    if (ctx.pending_workboard_request_id != null) return;
+
+    const params = workboard_proto.WorkboardListParams{};
+    const request = requests.buildRequestPayload(allocator, "workboard.list", params) catch |err| {
+        logger.warn("Failed to build workboard.list request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    ws_client.send(request.payload) catch |err| {
+        logger.err("Failed to send workboard.list: {}", .{err});
+        return;
+    };
+    allocator.free(request.payload);
+    ctx.setPendingWorkboardRequest(request.id);
 }
 
 const chat_history_fetch_limit_default: u32 = 20;
@@ -2561,6 +2591,7 @@ pub fn main() !void {
     var reconnect_backoff_ms: u32 = 500;
     var next_reconnect_at_ms: i64 = 0;
     var next_ping_at_ms: i64 = 0;
+    var next_workboard_poll_at_ms: i64 = 0;
     defer {
         app_state_state.last_connected = auto_connect_enabled;
         const flags = sdl.SDL_GetWindowFlags(window);
@@ -2698,10 +2729,11 @@ pub fn main() !void {
             }
 
             logger.warn(
-                "WS error.TooLarge while pending: sessions={} nodes={} send={} node_invoke={} node_describe={} approval_resolve={} history_count={d} history_limit={d}",
+                "WS error.TooLarge while pending: sessions={} nodes={} workboard={} send={} node_invoke={} node_describe={} approval_resolve={} history_count={d} history_limit={d}",
                 .{
                     ctx.pending_sessions_request_id != null,
                     ctx.pending_nodes_request_id != null,
+                    ctx.pending_workboard_request_id != null,
                     ctx.pending_send_request_id != null,
                     ctx.pending_node_invoke_request_id != null,
                     ctx.pending_node_describe_request_id != null,
@@ -2770,6 +2802,9 @@ pub fn main() !void {
             if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
                 sendNodesListRequest(allocator, &ctx, &ws_client);
             }
+            if (ctx.workboard_items.items.len == 0 and ctx.pending_workboard_request_id == null) {
+                sendWorkboardListRequest(allocator, &ctx, &ws_client);
+            }
         }
 
         if (ctx.sessions_updated) {
@@ -2789,8 +2824,13 @@ pub fn main() !void {
                 };
                 next_ping_at_ms = now_ms + 10_000;
             }
+            if (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms) {
+                sendWorkboardListRequest(allocator, &ctx, &ws_client);
+                next_workboard_poll_at_ms = now_ms + 8_000;
+            }
         } else {
             next_ping_at_ms = 0;
+            next_workboard_poll_at_ms = 0;
         }
 
         const kb_focus = sdl.SDL_GetKeyboardFocus();
@@ -3744,12 +3784,14 @@ pub fn main() !void {
             ctx.clearPendingRequests();
             ctx.clearAllSessionStates();
             ctx.clearNodes();
+            ctx.clearWorkboardItems();
             ctx.clearCurrentNode();
             ctx.clearApprovals();
             ctx.clearNodeDescribes();
             ctx.clearNodeResult();
             ctx.clearOperatorNotice();
             next_ping_at_ms = 0;
+            next_workboard_poll_at_ms = 0;
         }
 
         if (ui_action.refresh_sessions) {
@@ -3828,6 +3870,9 @@ pub fn main() !void {
 
         if (ui_action.refresh_nodes) {
             sendNodesListRequest(allocator, &ctx, &ws_client);
+        }
+        if (ui_action.refresh_workboard) {
+            sendWorkboardListRequest(allocator, &ctx, &ws_client);
         }
 
         if (ui_action.open_session) |open| {
@@ -4022,10 +4067,12 @@ pub fn main() !void {
                 ctx.clearGatewayMethods();
                 ctx.clearError();
                 next_ping_at_ms = 0;
+                next_workboard_poll_at_ms = 0;
             } else if (result.ok) {
                 ctx.clearError();
                 ctx.state = .authenticating;
                 next_ping_at_ms = 0;
+                next_workboard_poll_at_ms = 0;
                 startReadThread(&read_loop, &read_thread) catch |err| {
                     logger.err("Failed to start read thread: {}", .{err});
                 };
