@@ -16,17 +16,23 @@ const widgets = @import("../widgets/widgets.zig");
 const workspace = @import("../workspace.zig");
 const surface_chrome = @import("../surface_chrome.zig");
 const session_presenter = @import("../session_presenter.zig");
+const debug_visibility = @import("../debug_visibility.zig");
 
 pub const ChatPanelAction = struct {
     send_message: ?[]u8 = null,
     select_session: ?[]u8 = null,
     select_session_id: ?[]u8 = null,
     new_chat_session_key: ?[]u8 = null,
+
+    open_activity_panel: bool = false,
+    open_approvals_panel: bool = false,
 };
 
 const HeaderAction = struct {
     picker_rect: ?draw_context.Rect = null,
     request_new_chat: bool = false,
+    open_activity_panel: bool = false,
+    open_approvals_panel: bool = false,
 };
 
 const SessionSelection = struct {
@@ -40,6 +46,52 @@ const CopyContextMenuAction = enum {
     copy_all,
 };
 
+fn countWarnErrorActivity(messages: []const types.ChatMessage, inbox: ?*const ui_command_inbox.UiCommandInbox) usize {
+    _ = inbox;
+    // Heuristic: scan recent tool messages and count warn/error-like entries.
+    var count: usize = 0;
+    var scanned: usize = 0;
+    var idx: usize = messages.len;
+    const max_scan: usize = 200;
+    while (idx > 0 and scanned < max_scan) {
+        idx -= 1;
+        scanned += 1;
+        const msg = messages[idx];
+        if (!isToolRole(msg.role)) continue;
+        if (looksWarnOrError(msg.content)) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
+fn isToolRole(role: []const u8) bool {
+    return std.mem.startsWith(u8, role, "tool") or std.mem.eql(u8, role, "toolResult");
+}
+
+fn looksWarnOrError(content: []const u8) bool {
+    return containsIgnoreCase(content, "error") or
+        containsIgnoreCase(content, "failed") or
+        containsIgnoreCase(content, "exception") or
+        containsIgnoreCase(content, "warning") or
+        containsIgnoreCase(content, "warn");
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
 pub fn draw(
     allocator: std.mem.Allocator,
     panel_state: *workspace.ChatPanel,
@@ -50,6 +102,7 @@ pub fn draw(
     agent_name: []const u8,
     sessions: []const types.Session,
     inbox: ?*const ui_command_inbox.UiCommandInbox,
+    pending_approvals_count: usize,
     rect_override: ?draw_context.Rect,
 ) ChatPanelAction {
     var action = ChatPanelAction{};
@@ -89,6 +142,11 @@ pub fn draw(
     const has_session = session_key != null;
     const messages = if (session_state) |state_val| state_val.messages.items else &[_]types.ChatMessage{};
     const stream_text = if (session_state) |state_val| state_val.stream_text else null;
+
+    const debug_tier = debug_visibility.current_tier;
+    const show_tool_output = debug_visibility.showToolOutput(debug_tier);
+    const activity_warn_error_count = countWarnErrorActivity(messages, inbox);
+
     const has_selection_select = chat_view.hasSelectCopySelection(&panel_state.view);
     const has_selection_custom = chat_view.hasSelection(&panel_state.view);
     const has_selection = if (panel_state.select_copy_mode) has_selection_select else has_selection_custom;
@@ -121,7 +179,9 @@ pub fn draw(
         panel_state.selected_session_id,
         has_session,
         &panel_state.select_copy_mode,
-        &panel_state.show_tool_output,
+        debug_tier,
+        activity_warn_error_count,
+        pending_approvals_count,
         &panel_state.session_picker_open,
         control_height,
     );
@@ -219,8 +279,9 @@ pub fn draw(
             inbox,
             .{
                 .select_copy_mode = panel_state.select_copy_mode,
-                .show_tool_output = panel_state.show_tool_output,
+                .show_tool_output = show_tool_output,
                 .assistant_label = agent_name,
+                .debug_tier = debug_tier,
             },
         );
     } else {
@@ -236,8 +297,9 @@ pub fn draw(
             inbox,
             .{
                 .select_copy_mode = panel_state.select_copy_mode,
-                .show_tool_output = panel_state.show_tool_output,
+                .show_tool_output = show_tool_output,
                 .assistant_label = agent_name,
+                .debug_tier = debug_tier,
             },
         );
     }
@@ -294,12 +356,12 @@ pub fn draw(
                 if (panel_state.select_copy_mode) {
                     chat_view.copySelectCopySelectionToClipboard(allocator, &panel_state.view);
                 } else {
-                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, panel_state.show_tool_output);
+                    chat_view.copySelectionToClipboard(allocator, &panel_state.view, messages, stream_text, inbox, show_tool_output);
                 }
                 panel_state.copy_context_menu_open = false;
             },
             .copy_all => {
-                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, panel_state.show_tool_output);
+                chat_view.copyAllToClipboard(allocator, messages, stream_text, inbox, show_tool_output);
                 panel_state.copy_context_menu_open = false;
             },
             .none => {},
@@ -353,6 +415,9 @@ pub fn draw(
         action.new_chat_session_key = resolveNewChatSessionKey(allocator, sessions, agent_id, session_key);
     }
 
+    action.open_activity_panel = header_action.open_activity_panel;
+    action.open_approvals_panel = header_action.open_approvals_panel;
+
     return action;
 }
 
@@ -371,7 +436,9 @@ fn drawHeader(
     current_session_id: ?[]const u8,
     has_session: bool,
     select_copy_mode_ref: *bool,
-    show_tool_output_ref: *bool,
+    debug_tier: debug_visibility.DebugVisibilityTier,
+    activity_warn_error_count: usize,
+    pending_approvals_count: usize,
     session_picker_open_ref: *bool,
     control_height: f32,
 ) HeaderAction {
@@ -401,35 +468,90 @@ fn drawHeader(
     const box_size = @min(control_height, row_h);
     const checkbox_spacing = t.spacing.xs;
     const item_spacing = t.spacing.xs;
+
+    const gap = t.spacing.sm;
+
+    // Left-side controls: Raw selection + debug visibility tier + Activity/Approvals badges.
     const select_label = "Raw";
     const select_width = box_size + checkbox_spacing + ctx.measureText(select_label, 0.0)[0];
-    const tool_label = "Tools";
-    const tool_width = box_size + checkbox_spacing + ctx.measureText(tool_label, 0.0)[0];
-    const pair_width = select_width + item_spacing + tool_width;
-    const controls_left = start_x;
-    var show_select = true;
-    var show_tools = true;
-    var controls_end = controls_left;
+
+    var vis_buf: [48]u8 = undefined;
+    const vis_label = std.fmt.bufPrint(&vis_buf, "Vis: {s}", .{debug_tier.label()}) catch "Vis";
+    const vis_w = ctx.measureText(vis_label, 0.0)[0] + t.spacing.sm * 2.0;
+
+    var activity_buf: [48]u8 = undefined;
+    const activity_label: []const u8 = if (activity_warn_error_count > 0)
+        (std.fmt.bufPrint(&activity_buf, "Activity {d}", .{activity_warn_error_count}) catch "Activity")
+    else
+        "Activity";
+    const activity_w = ctx.measureText(activity_label, 0.0)[0] + t.spacing.sm * 2.0;
+
+    var approvals_buf: [56]u8 = undefined;
+    const approvals_label: []const u8 = if (pending_approvals_count > 0)
+        (std.fmt.bufPrint(&approvals_buf, "Approvals {d}", .{pending_approvals_count}) catch "Approvals")
+    else
+        "Approvals";
+    const approvals_w = ctx.measureText(approvals_label, 0.0)[0] + t.spacing.sm * 2.0;
 
     const reserve_right: f32 = picker_w_min;
-    const gap = t.spacing.sm;
-    if (controls_left + pair_width + gap + reserve_right > right_bound) {
-        show_tools = false;
+
+    var show_raw = true;
+    var show_vis = true;
+    var show_activity = true;
+    var show_approvals = true;
+
+    // Hide left-side controls progressively on narrow widths.
+    const desired_all = select_width + item_spacing + vis_w + item_spacing + activity_w + item_spacing + approvals_w;
+    if (start_x + desired_all + gap + reserve_right > right_bound) {
+        show_approvals = false;
     }
-    const controls_width = if (show_select) (if (show_tools) pair_width else select_width) else 0.0;
-    if (controls_left + controls_width + gap + reserve_right > right_bound) {
-        show_select = false;
-        show_tools = false;
+    const desired_no_approvals = select_width + item_spacing + vis_w + item_spacing + activity_w;
+    if (start_x + desired_no_approvals + gap + reserve_right > right_bound) {
+        show_activity = false;
     }
-    if (show_select) {
-        const select_rect = draw_context.Rect.fromMinSize(.{ controls_left, controls_y }, .{ select_width, control_height });
+    const desired_no_activity = select_width + item_spacing + vis_w;
+    if (start_x + desired_no_activity + gap + reserve_right > right_bound) {
+        show_vis = false;
+    }
+    if (start_x + select_width + gap + reserve_right > right_bound) {
+        show_raw = false;
+        show_vis = false;
+        show_activity = false;
+        show_approvals = false;
+    }
+
+    var open_activity_panel = false;
+    var open_approvals_panel = false;
+
+    var controls_end = start_x;
+    if (show_raw) {
+        const select_rect = draw_context.Rect.fromMinSize(.{ controls_end, controls_y }, .{ select_width, control_height });
         _ = widgets.checkbox.draw(ctx, select_rect, select_label, select_copy_mode_ref, queue, .{ .disabled = !has_session });
         controls_end = select_rect.max[0];
-        if (show_tools) {
-            const tool_rect = draw_context.Rect.fromMinSize(.{ select_rect.max[0] + item_spacing, controls_y }, .{ tool_width, control_height });
-            _ = widgets.checkbox.draw(ctx, tool_rect, tool_label, show_tool_output_ref, queue, .{ .disabled = !has_session });
-            controls_end = tool_rect.max[0];
+    }
+
+    if (show_vis) {
+        const vis_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, start_y - t.spacing.xs * 0.2 }, .{ vis_w, picker_h });
+        if (widgets.button.draw(ctx, vis_rect, vis_label, queue, .{ .variant = .secondary })) {
+            debug_visibility.current_tier = debug_visibility.cycle(debug_visibility.current_tier);
         }
+        controls_end = vis_rect.max[0];
+    }
+
+    if (show_activity) {
+        const act_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, start_y - t.spacing.xs * 0.2 }, .{ activity_w, picker_h });
+        if (widgets.button.draw(ctx, act_rect, activity_label, queue, .{ .variant = .secondary })) {
+            open_activity_panel = true;
+        }
+        controls_end = act_rect.max[0];
+    }
+
+    if (show_approvals) {
+        const appr_rect = draw_context.Rect.fromMinSize(.{ controls_end + item_spacing, start_y - t.spacing.xs * 0.2 }, .{ approvals_w, picker_h });
+        if (widgets.button.draw(ctx, appr_rect, approvals_label, queue, .{ .variant = .secondary })) {
+            open_approvals_panel = true;
+        }
+        controls_end = appr_rect.max[0];
     }
 
     var right_cursor = right_bound;
@@ -481,6 +603,8 @@ fn drawHeader(
     return .{
         .picker_rect = picker_rect_opt,
         .request_new_chat = request_new_chat,
+        .open_activity_panel = open_activity_panel,
+        .open_approvals_panel = open_approvals_panel,
     };
 }
 

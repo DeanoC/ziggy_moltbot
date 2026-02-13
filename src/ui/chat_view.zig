@@ -10,10 +10,12 @@ const input_state = @import("input/input_state.zig");
 const text_editor = @import("widgets/text_editor.zig");
 const surface_chrome = @import("surface_chrome.zig");
 const profiler = @import("../utils/profiler.zig");
+const debug_visibility = @import("debug_visibility.zig");
 
 pub const ChatViewOptions = struct {
     select_copy_mode: bool = false,
     show_tool_output: bool = false,
+    debug_tier: debug_visibility.DebugVisibilityTier = .normal,
     assistant_label: ?[]const u8 = null,
 };
 
