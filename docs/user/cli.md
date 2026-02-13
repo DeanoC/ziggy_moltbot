@@ -2,6 +2,8 @@
 
 The CLI is useful for quick commands, automation, or remote workflows. It can also run in an interactive REPL mode.
 
+A staged TUI design plan for the CLI is tracked in [`docs/tui-plan.md`](../tui-plan.md).
+
 ## Canonical command reference (shared with `--help`)
 The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded directly by the CLI binary using `@embedFile`.
 

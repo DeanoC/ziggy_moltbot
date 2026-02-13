@@ -364,3 +364,60 @@ Out of scope for v1 (deferred until parity is stable):
 - This plan favors incremental, reviewable PR slices.
 - The first usable milestone is Phase 2 (core daily workflows).
 - Existing CLI remains fully usable; TUI is additive, not a breaking replacement.
+
+---
+
+## 12) Suggested PR slicing (no-auto-merge friendly)
+
+To keep review scope small and reduce merge risk, split implementation into the following PR sequence:
+
+1. **PR-A: TUI bootstrap + entrypoint**
+   - Add `src/main_tui.zig` and a minimal app loop.
+   - Wire `ziggystarclaw-cli tui` command entrypoint.
+   - Include keymap overlay + quit flow.
+
+2. **PR-B: Read-only views**
+   - Dashboard, Sessions list, Nodes list.
+   - Status line + error banner primitives.
+   - No mutating actions yet.
+
+3. **PR-C: Core mutating flows**
+   - Chat send, session/node select, approvals approve/deny.
+   - Basic node actions (`run`, `which`, `notify`).
+   - Add parity tests for command-to-action mapping.
+
+4. **PR-D: Advanced workflows**
+   - Process manager, device pairing, canvas wrappers.
+   - Windows-specific service/runner/tray helpers behind platform checks.
+
+5. **PR-E: Shared action refactor + hardening**
+   - Move remaining logic to shared `cli/actions` modules.
+   - Add regression tests and update user docs.
+
+This sequence supports manual, per-PR review while preserving a usable app at each milestone.
+
+---
+
+## 13) Terminal compatibility acceptance matrix
+
+Minimum matrix before calling the initial TUI release done:
+
+| Environment | Must-pass checks |
+| --- | --- |
+| Linux + default terminal (xterm/gnome-terminal/kitty equivalent) | launch, resize, focus switching, chat send, approvals flow |
+| Windows Terminal (PowerShell + cmd shells) | launch, keymap behavior, node actions, process list/poll, UTF-8 rendering |
+| macOS Terminal or iTerm2 | launch, navigation, command palette, error banners |
+
+Fallback behavior requirements when capabilities are limited:
+- no hard dependency on mouse support
+- reduced color mode still preserves focus/selection visibility
+- no ANSI artifacts when terminal lacks advanced styling support
+
+---
+
+## 14) Open design questions to resolve during implementation
+
+- Should REPL and TUI share one command history store, or remain separate?
+- Do we expose a compact mode for <= 100-column terminals in v1, or defer?
+- For long-running operations, should cancellation map to process stop, request abort, or both?
+- Should platform-specific views (service/runner/tray) be hidden entirely off-Windows, or shown as disabled with guidance?
