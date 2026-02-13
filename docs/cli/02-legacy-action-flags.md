@@ -2,7 +2,7 @@ Legacy action flags (deprecated)
 
 These legacy flag-style “action” options are still accepted for compatibility, but emit warnings with the noun-verb replacement.
 
-Prefer `ziggystarclaw-cli <noun> <verb> ...` commands.
+Prefer `ziggystarclaw <noun> <verb> ...` commands (`ziggystarclaw-cli` is still supported).
 
 Deprecated legacy action flags:
   --send <message>         Deprecated: use message send <message>

@@ -125,6 +125,32 @@ pub fn build(b: *std.Build) void {
 
         b.installArtifact(cli_exe);
 
+        const cli_alias_module = b.createModule(.{
+            .root_source_file = b.path("main_cli_entry.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+            },
+        });
+        if (enable_ztracy) {
+            cli_alias_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+        }
+
+        const cli_alias_exe = b.addExecutable(.{
+            .name = "ziggystarclaw",
+            .root_module = cli_alias_module,
+        });
+        cli_alias_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            cli_alias_exe.root_module.linkSystemLibrary("advapi32", .{});
+            cli_alias_exe.root_module.linkSystemLibrary("user32", .{});
+        }
+        if (enable_ztracy) {
+            cli_alias_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+        }
+        b.installArtifact(cli_alias_exe);
+
         const run_cli_step = b.step("run-cli", "Run the CLI client");
         const run_cli_cmd = b.addRunArtifact(cli_exe);
         run_cli_step.dependOn(&run_cli_cmd.step);
@@ -262,6 +288,33 @@ pub fn build(b: *std.Build) void {
         }
 
         b.installArtifact(cli_exe);
+
+        const cli_alias_module = b.createModule(.{
+            .root_source_file = b.path("main_cli_entry.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "websocket", .module = ws_native },
+            },
+        });
+
+        const cli_alias_exe = b.addExecutable(.{
+            .name = "ziggystarclaw",
+            .root_module = cli_alias_module,
+        });
+        cli_alias_exe.root_module.addOptions("build_options", build_options);
+        if (target.result.os.tag == .windows) {
+            // For named-pipe supervisor control channel security descriptor helpers.
+            cli_alias_exe.root_module.linkSystemLibrary("advapi32", .{});
+            // Windows screen monitor discovery uses user32 APIs.
+            cli_alias_exe.root_module.linkSystemLibrary("user32", .{});
+        }
+        if (enable_ztracy) {
+            cli_alias_module.addImport("ztracy", ztracy_pkg.?.module("root"));
+            cli_alias_exe.linkLibrary(ztracy_pkg.?.artifact("tracy"));
+        }
+
+        b.installArtifact(cli_alias_exe);
 
         // Windows-only tray app (MVP): status + start/stop/restart + open logs.
         if (target.result.os.tag == .windows) {
