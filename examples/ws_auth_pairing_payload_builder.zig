@@ -144,7 +144,14 @@ pub fn buildConnectRequestJson(
         },
     };
 
-    return std.json.Stringify.valueAlloc(allocator, req, .{ .whitespace = .indent_2 });
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        req,
+        .{
+            .whitespace = .indent_2,
+            .emit_null_optional_fields = false,
+        },
+    );
 }
 
 pub fn buildDevicePairApproveParamsJson(allocator: std.mem.Allocator, request_id: []const u8) ![]u8 {
