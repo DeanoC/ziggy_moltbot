@@ -8,18 +8,20 @@ ziggystarclaw --help
 
 # Backward-compatible binary name:
 ziggystarclaw-cli <noun> <verb> [args] [options]
+ziggystarclaw-cli --help
 ```
 
 ## Preferred command style (OpenClaw-style noun verb)
 
 - `message send <message>` (aliases: `chat`, `messages`)
-- `session list|use <key>` (alias: `sessions`)
-- `node list|use <id>|run <command>|which <name>|notify <title>` (alias: `nodes`)
-- `node process list|spawn <command>|poll <processId>|stop <processId>`
-- `node canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
-- `node approvals get|allow <command>|allow-file <path>`
-- `approval pending|list|approve <id>|deny <id>` (alias: `approvals`)
-- `device pending|list|approve <requestId>|reject <requestId>` (alias: `devices`)
+- `sessions list|use <key>` (alias: `session`)
+- `nodes list|use <id>|run <command>|which <name>|notify <title>` (alias: `node`)
+- `nodes process list|spawn <command>|poll <processId>|stop <processId>`
+- `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
+- `nodes approvals get|allow <command>|allow-file <path>`
+<<<<<<< HEAD
+- `approvals list|approve <id>|deny <id>` (alias: `approval`; `pending` is an alias for `list`)
+- `devices list|watch|approve <requestId>|reject <requestId>` (alias: `device`; `pending` is an alias for `list`)
 - `node service ...`
 - `node session ...`
 - `node runner ...`
@@ -28,8 +30,9 @@ ziggystarclaw-cli <noun> <verb> [args] [options]
 
 ## Notes
 
-- The CLI now enforces strict noun-verb commands.
-- Legacy action flags and tray shortcut aliases were removed.
+- Legacy flag-style action options have been removed.
+- Use strict noun-verb commands (`message send`, `sessions list`, `nodes run`, etc.).
+- Tray commands now require the explicit noun form: `tray startup <action>`.
 
 ## Design docs
 

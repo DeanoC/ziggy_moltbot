@@ -92,9 +92,9 @@ Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node session install {code
 ; Tray startup task installation:
 ; user-context only
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray uninstall-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldConfigureTrayStartup
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTrayStartup
-Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray install-startup"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldRetryTrayStartupInstall
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray startup install"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallTrayStartup
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray startup install"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated runasoriginaluser skipifdoesntexist; Check: ShouldInstallSessionTrayStartup
+Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "tray startup install"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist; Check: ShouldRetryTrayStartupInstall
 
 [UninstallRun]
 Filename: "{app}\ziggystarclaw-cli.exe"; Parameters: "node profile apply --profile client"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated skipifdoesntexist

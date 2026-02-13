@@ -643,6 +643,15 @@ fn writeHelpText(allocator: std.mem.Allocator, text: []const u8) !void {
     try markdown_help.writeMarkdownForStdout(stdout, allocator, text);
 }
 
+fn failRemovedLegacyFlag(flag: []const u8, replacement: []const u8) error{InvalidArguments}!void {
+    logger.err("Flag {s} was removed. Use `{s}`.", .{ flag, replacement });
+    return error.InvalidArguments;
+}
+
+fn failRemovedLegacyCommand(command: []const u8, replacement: []const u8) error{InvalidArguments}!void {
+    logger.err("Command `{s}` was removed. Use `{s}`.", .{ command, replacement });
+    return error.InvalidArguments;
+}
 const ReplCommand = enum {
     help,
     send,
@@ -714,6 +723,7 @@ pub fn main() !void {
     var device_pair_list = false;
     var device_pair_approve_id: ?[]const u8 = null;
     var device_pair_reject_id: ?[]const u8 = null;
+    var device_pair_watch = false;
     var check_update_only = false;
     var print_update_url = false;
     var interactive = false;
@@ -759,10 +769,8 @@ pub fn main() !void {
     var windows_service_run = false;
     // Pre-scan for mode flags so we can delegate argument parsing cleanly.
     var node_mode = false;
-    var operator_mode = false;
     for (args[1..]) |a| {
         if (std.mem.eql(u8, a, "--node-mode")) node_mode = true;
-        if (std.mem.eql(u8, a, "--operator-mode")) operator_mode = true;
         if (std.mem.eql(u8, a, "--node-register")) node_register_mode = true;
         if (std.mem.eql(u8, a, "--wait-for-approval")) node_register_wait = true;
         if (std.mem.eql(u8, a, "--windows-service")) windows_service_run = true;
@@ -773,8 +781,7 @@ pub fn main() !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help-legacy")) {
-            logger.err("Flag --help-legacy was removed. Use `--help`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--help-legacy", "--help");
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try writeHelpText(allocator, usage);
             return;
@@ -1083,6 +1090,10 @@ pub fn main() !void {
                 device_pair_list = true;
                 i += 1;
                 continue;
+            } else if (std.mem.eql(u8, action, "watch")) {
+                device_pair_watch = true;
+                i += 1;
+                continue;
             } else if (std.mem.eql(u8, action, "approve")) {
                 if (i + 2 >= args.len) return error.InvalidArguments;
                 device_pair_approve_id = args[i + 2];
@@ -1134,27 +1145,24 @@ pub fn main() !void {
                 continue;
             }
 
-            if (std.mem.eql(u8, noun_or_action, "install-startup")) {
-                logger.err("`tray install-startup` was removed. Use `tray startup install`.", .{});
-                return error.InvalidArguments;
-            } else if (std.mem.eql(u8, noun_or_action, "uninstall-startup")) {
-                logger.err("`tray uninstall-startup` was removed. Use `tray startup uninstall`.", .{});
-                return error.InvalidArguments;
-            } else if (std.mem.eql(u8, noun_or_action, "start")) {
-                logger.err("`tray start` was removed. Use `tray startup start`.", .{});
-                return error.InvalidArguments;
-            } else if (std.mem.eql(u8, noun_or_action, "stop")) {
-                logger.err("`tray stop` was removed. Use `tray startup stop`.", .{});
-                return error.InvalidArguments;
-            } else if (std.mem.eql(u8, noun_or_action, "status")) {
-                logger.err("`tray status` was removed. Use `tray startup status`.", .{});
-                return error.InvalidArguments;
-            } else if (std.mem.eql(u8, noun_or_action, "help") or std.mem.eql(u8, noun_or_action, "--help") or std.mem.eql(u8, noun_or_action, "-h")) {
+            if (std.mem.eql(u8, noun_or_action, "help") or std.mem.eql(u8, noun_or_action, "--help") or std.mem.eql(u8, noun_or_action, "-h")) {
                 try writeHelpText(allocator, usage);
                 return;
             }
 
-            logger.err("Unknown tray command: {s}", .{noun_or_action});
+            if (std.mem.eql(u8, noun_or_action, "install-startup")) {
+                try failRemovedLegacyCommand("tray install-startup", "tray startup install");
+            } else if (std.mem.eql(u8, noun_or_action, "uninstall-startup")) {
+                try failRemovedLegacyCommand("tray uninstall-startup", "tray startup uninstall");
+            } else if (std.mem.eql(u8, noun_or_action, "start")) {
+                try failRemovedLegacyCommand("tray start", "tray startup start");
+            } else if (std.mem.eql(u8, noun_or_action, "stop")) {
+                try failRemovedLegacyCommand("tray stop", "tray startup stop");
+            } else if (std.mem.eql(u8, noun_or_action, "status")) {
+                try failRemovedLegacyCommand("tray status", "tray startup status");
+            }
+
+            logger.err("Unknown tray subcommand: {s}", .{noun_or_action});
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
@@ -1192,82 +1200,130 @@ pub fn main() !void {
             if (i >= args.len) return error.InvalidArguments;
             read_timeout_ms = try std.fmt.parseInt(u32, args[i], 10);
         } else if (std.mem.eql(u8, arg, "--send")) {
-            logger.err("Flag --send was removed. Use `message send <message>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--send", "message send <message>");
         } else if (std.mem.eql(u8, arg, "--session")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             session_key = args[i];
         } else if (std.mem.eql(u8, arg, "--list-sessions")) {
-            logger.err("Flag --list-sessions was removed. Use `sessions list`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--list-sessions", "sessions list");
+            list_sessions = true;
         } else if (std.mem.eql(u8, arg, "--use-session")) {
-            logger.err("Flag --use-session was removed. Use `sessions use <key>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--use-session", "sessions use <key>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            use_session = args[i];
         } else if (std.mem.eql(u8, arg, "--list-nodes")) {
-            logger.err("Flag --list-nodes was removed. Use `nodes list`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--list-nodes", "nodes list");
+            list_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--nodes")) {
+            warnDeprecatedLegacyFlag("--nodes", "nodes list");
+            list_nodes = true;
+        } else if (std.mem.eql(u8, arg, "--pair-list")) {
+            warnDeprecatedLegacyFlag("--pair-list", "devices list");
+            device_pair_list = true;
+        } else if (std.mem.eql(u8, arg, "--pair-approve")) {
+            warnDeprecatedLegacyFlag("--pair-approve", "devices approve <requestId>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            device_pair_approve_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--pair-reject")) {
+            warnDeprecatedLegacyFlag("--pair-reject", "devices reject <requestId>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            device_pair_reject_id = args[i];
+        } else if (std.mem.eql(u8, arg, "--watch-pairing")) {
+            warnDeprecatedLegacyFlag("--watch-pairing", "devices watch");
+            device_pair_watch = true;
         } else if (std.mem.eql(u8, arg, "--node")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_id = args[i];
         } else if (std.mem.eql(u8, arg, "--use-node")) {
-            logger.err("Flag --use-node was removed. Use `nodes use <id>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--use-node", "nodes use <id>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            use_node = args[i];
         } else if (std.mem.eql(u8, arg, "--run")) {
-            logger.err("Flag --run was removed. Use `nodes run <command>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--run", "nodes run <command>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            run_command = args[i];
         } else if (std.mem.eql(u8, arg, "--which")) {
-            logger.err("Flag --which was removed. Use `nodes which <name>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--which", "nodes which <name>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            which_name = args[i];
         } else if (std.mem.eql(u8, arg, "--notify")) {
-            logger.err("Flag --notify was removed. Use `nodes notify <title>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--notify", "nodes notify <title>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            notify_title = args[i];
         } else if (std.mem.eql(u8, arg, "--ps")) {
-            logger.err("Flag --ps was removed. Use `nodes process list`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--ps", "nodes process list");
+            ps_list = true;
         } else if (std.mem.eql(u8, arg, "--spawn")) {
-            logger.err("Flag --spawn was removed. Use `nodes process spawn <command>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--spawn", "nodes process spawn <command>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            spawn_command = args[i];
         } else if (std.mem.eql(u8, arg, "--poll")) {
-            logger.err("Flag --poll was removed. Use `nodes process poll <processId>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--poll", "nodes process poll <processId>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            poll_process_id = args[i];
         } else if (std.mem.eql(u8, arg, "--stop")) {
-            logger.err("Flag --stop was removed. Use `nodes process stop <processId>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--stop", "nodes process stop <processId>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            stop_process_id = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-present")) {
-            logger.err("Flag --canvas-present was removed. Use `nodes canvas present`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--canvas-present", "nodes canvas present");
+            canvas_present = true;
         } else if (std.mem.eql(u8, arg, "--canvas-hide")) {
-            logger.err("Flag --canvas-hide was removed. Use `nodes canvas hide`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--canvas-hide", "nodes canvas hide");
+            canvas_hide = true;
         } else if (std.mem.eql(u8, arg, "--canvas-navigate")) {
-            logger.err("Flag --canvas-navigate was removed. Use `nodes canvas navigate <url>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--canvas-navigate", "nodes canvas navigate <url>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_navigate = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-eval")) {
-            logger.err("Flag --canvas-eval was removed. Use `nodes canvas eval <js>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--canvas-eval", "nodes canvas eval <js>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_eval = args[i];
         } else if (std.mem.eql(u8, arg, "--canvas-snapshot")) {
-            logger.err("Flag --canvas-snapshot was removed. Use `nodes canvas snapshot <path>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--canvas-snapshot", "nodes canvas snapshot <path>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            canvas_snapshot = args[i];
         } else if (std.mem.eql(u8, arg, "--exec-approvals-get")) {
-            logger.err("Flag --exec-approvals-get was removed. Use `nodes approvals get`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--exec-approvals-get", "nodes approvals get");
+            exec_approvals_get = true;
         } else if (std.mem.eql(u8, arg, "--exec-allow")) {
-            logger.err("Flag --exec-allow was removed. Use `nodes approvals allow <command>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--exec-allow", "nodes approvals allow <command>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            exec_allow_cmd = args[i];
         } else if (std.mem.eql(u8, arg, "--exec-allow-file")) {
-            logger.err("Flag --exec-allow-file was removed. Use `nodes approvals allow-file <path>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--exec-allow-file", "nodes approvals allow-file <path>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            exec_allow_file = args[i];
         } else if (std.mem.eql(u8, arg, "--list-approvals")) {
-            logger.err("Flag --list-approvals was removed. Use `approvals list`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--list-approvals", "approvals list");
+            list_approvals = true;
         } else if (std.mem.eql(u8, arg, "--approve")) {
-            logger.err("Flag --approve was removed. Use `approvals approve <id>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--approve", "approvals approve <id>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            approve_id = args[i];
         } else if (std.mem.eql(u8, arg, "--deny")) {
-            logger.err("Flag --deny was removed. Use `approvals deny <id>`.", .{});
-            return error.InvalidArguments;
+            try failRemovedLegacyFlag("--deny", "approvals deny <id>");
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            deny_id = args[i];
         } else if (std.mem.eql(u8, arg, "--check-update-only")) {
             check_update_only = true;
         } else if (std.mem.eql(u8, arg, "--interactive")) {
@@ -1277,6 +1333,12 @@ pub fn main() !void {
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-uninstall")) {
             logger.err("Flag --node-service-uninstall was removed. Use `node service uninstall`.", .{});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "--node-service-start")) {
+            logger.err("Flag --node-service-start was removed. Use `node service start`.", .{});
+            return error.InvalidArguments;
+        } else if (std.mem.eql(u8, arg, "--node-service-stop")) {
+            logger.err("Flag --node-service-stop was removed. Use `node service stop`.", .{});
             return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node-service-start")) {
             logger.err("Flag --node-service-start was removed. Use `node service start`.", .{});
@@ -1342,7 +1404,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
-            // handled by pre-scan
+            logger.warn("Flag --operator-mode is deprecated; operator actions are available without it.", .{});
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
         } else if (std.mem.eql(u8, arg, "--node-mode-help")) {
@@ -1353,7 +1415,7 @@ pub fn main() !void {
             return;
         } else {
             // When running a specialized mode, allow that mode to parse its own flags.
-            if (!(node_mode or operator_mode or node_register_mode or windows_service_run)) {
+            if (!(node_mode or node_register_mode or windows_service_run)) {
                 logger.warn("Unknown argument: {s}", .{arg});
             }
         }
@@ -1364,8 +1426,8 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
-        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or use_session != null or use_node != null or
-        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or operator_mode or windows_service_run or node_register_mode or save_config or
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or use_session != null or use_node != null or
+        extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
         node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
         node_runner_install or node_runner_start or node_runner_stop or node_runner_status or
@@ -1375,13 +1437,14 @@ pub fn main() !void {
         return;
     }
 
-    const operator_action_requested = operator_mode or list_sessions or list_nodes or list_approvals or
+    const operator_action_requested = list_sessions or list_nodes or list_approvals or
         send_message != null or session_key != null or use_session != null or node_id != null or use_node != null or
         run_command != null or which_name != null or notify_title != null or ps_list or spawn_command != null or
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
-        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or interactive;
+<<<<<<< HEAD
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or interactive;
 
     if (!cli_features.supports_operator_client and operator_action_requested) {
         logger.err("{s}", .{cli_features.operator_disabled_hint});
@@ -2146,16 +2209,8 @@ pub fn main() !void {
         return;
     }
 
-    // Handle operator mode
-    if (operator_mode) {
-        if (!cli_features.supports_operator_client) {
-            logger.err("{s}", .{cli_features.operator_disabled_hint});
-            return error.Unsupported;
-        }
-        const op_opts = try main_operator.parseOperatorOptions(allocator, args[1..]);
-        try main_operator.runOperatorMode(allocator, op_opts);
-        return;
-    }
+    // Deprecated: `--operator-mode` used to enable a legacy operator CLI. Operator actions
+    // are now available via the default noun-verb command surface.
 
     if (comptime cli_features.supports_operator_client) {
         try operator_chunk.run(allocator, .{
@@ -2194,6 +2249,7 @@ pub fn main() !void {
             .device_pair_list = device_pair_list,
             .device_pair_approve_id = device_pair_approve_id,
             .device_pair_reject_id = device_pair_reject_id,
+            .device_pair_watch = device_pair_watch,
             .check_update_only = check_update_only,
             .print_update_url = print_update_url,
             .interactive = interactive,
