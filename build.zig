@@ -320,6 +320,7 @@ pub fn build(b: *std.Build) void {
             "tests/node_context_windows_screen_caps_tests.zig",
             "tests/node_context_location_caps_tests.zig",
             "tests/command_router_location_tests.zig",
+            "tests/command_router_windows_surface_tests.zig",
         };
 
         for (test_files) |test_path| {
