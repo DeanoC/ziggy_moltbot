@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ws = @import("websocket");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
@@ -306,7 +307,10 @@ pub const Canvas = struct {
         const dirname = try std.fmt.allocPrint(self.allocator, "oc-canvas-{s}", .{suffix});
         defer self.allocator.free(dirname);
 
-        const full = try std.fs.path.join(self.allocator, &.{ "/tmp", dirname });
+        const temp_dir = try self.getSystemTempDirAlloc();
+        defer self.allocator.free(temp_dir);
+
+        const full = try std.fs.path.join(self.allocator, &.{ temp_dir, dirname });
         errdefer self.allocator.free(full);
 
         std.fs.cwd().makePath(full) catch |err| switch (err) {
@@ -315,6 +319,31 @@ pub const Canvas = struct {
         };
 
         return full;
+    }
+
+    fn getSystemTempDirAlloc(self: *Canvas) ![]u8 {
+        const envs = if (builtin.os.tag == .windows)
+            &[_][]const u8{ "TEMP", "TMP" }
+        else
+            &[_][]const u8{ "TMPDIR", "TMP", "TEMP" };
+
+        for (envs) |key| {
+            const value = std.process.getEnvVarOwned(self.allocator, key) catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            if (value) |dir| {
+                if (dir.len == 0) {
+                    self.allocator.free(dir);
+                    continue;
+                }
+                return dir;
+            }
+        }
+
+        // Prefer current working directory over hardcoded paths on Windows to avoid
+        // drive-root permission failures when TEMP/TMP are missing.
+        return self.allocator.dupe(u8, if (builtin.os.tag == .windows) "." else "/tmp");
     }
 
     fn waitForDevToolsPortAlloc(self: *Canvas, user_data_dir: []const u8) !u16 {
