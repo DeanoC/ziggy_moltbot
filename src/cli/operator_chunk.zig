@@ -48,6 +48,7 @@ pub const Options = struct {
     device_pair_list: bool,
     device_pair_approve_id: ?[]const u8,
     device_pair_reject_id: ?[]const u8,
+    device_pair_watch: bool,
     check_update_only: bool,
     print_update_url: bool,
     interactive: bool,
@@ -114,6 +115,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     const device_pair_list = options.device_pair_list;
     const device_pair_approve_id = options.device_pair_approve_id;
     const device_pair_reject_id = options.device_pair_reject_id;
+    const device_pair_watch = options.device_pair_watch;
     const check_update_only = options.check_update_only;
     const print_update_url = options.print_update_url;
     const interactive = options.interactive;
@@ -229,7 +231,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     // Handle --save-config without connecting
-    if (save_config and !check_update_only and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !device_pair_list and device_pair_approve_id == null and device_pair_reject_id == null and !interactive) {
+    if (save_config and !check_update_only and !list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and approve_id == null and deny_id == null and !device_pair_list and device_pair_approve_id == null and device_pair_reject_id == null and !device_pair_watch and !interactive) {
         try config.save(allocator, config_path, cfg);
         logger.info("Config saved to {s}", .{config_path});
         return;
@@ -347,8 +349,12 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
                 if (needs_nodes and have_nodes) break;
                 if (approve_id != null) break;
                 if (deny_id != null) break;
+                if (device_pair_list) break;
+                if (device_pair_approve_id != null) break;
+                if (device_pair_reject_id != null) break;
+                if (device_pair_watch) break;
                 if (interactive) break;
-                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and which_name == null and notify_title == null and !ps_list and spawn_command == null and poll_process_id == null and stop_process_id == null and !canvas_present and !canvas_hide and canvas_navigate == null and canvas_eval == null and canvas_snapshot == null and approve_id == null and deny_id == null and !interactive) break;
+                if (!list_sessions and !list_nodes and !list_approvals and send_message == null and run_command == null and which_name == null and notify_title == null and !ps_list and spawn_command == null and poll_process_id == null and stop_process_id == null and !canvas_present and !canvas_hide and canvas_navigate == null and canvas_eval == null and canvas_snapshot == null and approve_id == null and deny_id == null and !device_pair_list and device_pair_approve_id == null and device_pair_reject_id == null and !device_pair_watch and !interactive) break;
             }
         } else {
             std.Thread.sleep(50 * std.time.ns_per_ms);
@@ -358,6 +364,36 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     if (!connected) {
         logger.err("Failed to connect within timeout.", .{});
         return error.ConnectionTimeout;
+    }
+
+    if (device_pair_watch) {
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        while (ws_client.is_connected) {
+            const msg = ws_client.receive() catch |err| {
+                logger.warn("pairing watch recv failed: {s}", .{@errorName(err)});
+                break;
+            };
+            if (msg) |payload| {
+                defer allocator.free(payload);
+
+                var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
+                    continue;
+                };
+                defer parsed.deinit();
+                if (parsed.value != .object) continue;
+                const t = parsed.value.object.get("type") orelse continue;
+                if (t != .string or !std.mem.eql(u8, t.string, "event")) continue;
+                const ev = parsed.value.object.get("event") orelse continue;
+                if (ev != .string) continue;
+                if (std.mem.startsWith(u8, ev.string, "device.pair.")) {
+                    try stdout.writeAll(payload);
+                    try stdout.writeByte('\n');
+                }
+            } else {
+                std.Thread.sleep(100 * std.time.ns_per_ms);
+            }
+        }
+        return;
     }
 
     // Handle --list-sessions

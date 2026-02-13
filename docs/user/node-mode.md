@@ -65,9 +65,13 @@ ziggystarclaw-cli --node-mode --auto-approve-pairing
 3) Operator CLI approval:
 
 ```bash
-ziggystarclaw-cli --operator-mode device list
-ziggystarclaw-cli --operator-mode device approve <requestId>
+ziggystarclaw-cli devices list
+ziggystarclaw-cli devices approve <requestId>
+# (optional) stream pairing events:
+ziggystarclaw-cli devices watch
 ```
+
+Legacy flags like `--pair-list` / `--pair-approve` and the `--operator-mode` flag are deprecated; they still work for now but emit warnings.
 
 The pairing prompt respects `--pairing-timeout <sec>` (default: 120). If no response arrives before the timeout, the pending request is cleared and late input is ignored.
 
@@ -143,7 +147,7 @@ Get-Content (Join-Path $env:ProgramData 'ZiggyStarClaw\logs\node.log') -Tail 200
 ## Auth notes
 - WebSocket Authorization and `connect.auth.token` use `gateway.authToken` (they must match).
 - `node.nodeToken` (device token) is used in the device-auth signed payload, and is persisted back to config when the gateway issues/rotates it in `hello-ok`.
-- `gateway.authToken` is still used for operator-mode and can be used as a fallback for legacy node configs.
+- `gateway.authToken` is still used for operator commands and can be used as a fallback for legacy node configs.
 
 ## Security notes
 - Keep allowlists tight; prefer scripts over arbitrary shells.
