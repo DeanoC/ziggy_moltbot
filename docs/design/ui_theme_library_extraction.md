@@ -116,12 +116,19 @@ ziggy-ui/
 - Custom ZSC widgets
 - Main window shell
 
-## Open Questions
+## Open Questions (Answered)
 
-1. Should rendering be part of UI lib or separate?
-2. How to handle platform-specific code (Android, WASM)?
-3. Should input be a separate abstraction library?
-4. Package manager: git submodule vs zig package?
+1. **Should rendering be part of UI lib or separate?**
+   - ✅ Keep it part of the UI lib for now - can refactor out later if needed
+
+2. **How to handle platform-specific code (Android, WASM)?**
+   - ✅ Keep it behind platform configs
+
+3. **Should input be a separate abstraction library?**
+   - ✅ Like renderer, keep it in for now
+
+4. **Package manager: git submodule vs zig package?**
+   - ✅ Use Zig package manager
 
 ## Benefits
 
