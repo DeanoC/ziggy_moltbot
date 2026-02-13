@@ -47,11 +47,9 @@ Not yet implemented on Windows:
 
 ```json
 {
-  "backend": "powershell-cim",
   "devices": [
     {
       "id": "<PNPDeviceID>",
-      "deviceId": "<PNPDeviceID>",
       "name": "<Name>",
       "position": "front|back|external" // optional
     }
@@ -60,7 +58,7 @@ Not yet implemented on Windows:
 ```
 
 Notes:
-- `id` and `deviceId` are both emitted for compatibility with existing OpenClaw tooling.
+- `id` is the stable device identifier (mapped from `PNPDeviceID`) and is accepted by `camera.snap`/`camera.clip` (`id` or `deviceId` request keys).
 - `position` is best-effort and may be omitted when unknown.
 
 `camera.snap` request params (supported subset):
@@ -178,7 +176,7 @@ Status:
 ### 9f2 — Windows `camera.list` backend hardening
 
 Deliverables:
-- Keep stable payload shape (`backend`, `devices[*].id/deviceId/name`, optional `position`).
+- Keep stable payload shape (`devices[*].id/name`, optional `position`).
 - Actionable diagnostics when enumeration fails:
   - missing PowerShell executable
   - non-zero exit codes
