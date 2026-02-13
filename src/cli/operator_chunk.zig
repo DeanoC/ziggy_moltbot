@@ -196,7 +196,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
-        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or interactive;
+        device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or interactive;
     if (requires_connection and cfg.server_url.len == 0) {
         logger.err("Server URL is empty. Use --url or set it in {s}.", .{config_path});
         return error.InvalidArguments;
