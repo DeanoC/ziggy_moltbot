@@ -6,7 +6,7 @@ const requests = ziggy.protocol.requests;
 const ws_auth_pairing = @import("protocol/ws_auth_pairing.zig");
 const markdown_help = @import("cli/markdown_help.zig");
 
-pub const usage = @embedFile("../docs/cli/operator-mode.md");
+pub const usage = @embedFile("cli/docs/operator-mode.md");
 
 pub const OperatorCliOptions = struct {
     url: []const u8 = "ws://127.0.0.1:18789/ws",

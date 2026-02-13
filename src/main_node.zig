@@ -52,7 +52,7 @@ fn parseCanvasBackend(str: []const u8) canvas.CanvasBackend {
     return .chrome; // Default
 }
 
-pub const usage = @embedFile("../docs/cli/node-mode.md");
+pub const usage = @embedFile("cli/docs/node-mode.md");
 
 pub const NodeCliOptions = struct {
     gateway_url: ?[]const u8 = null,
