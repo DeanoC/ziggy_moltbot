@@ -250,6 +250,13 @@ pub const Canvas = struct {
 
         try child.spawn();
         self.chrome_process = child;
+        errdefer {
+            logger.warn("Canvas Chrome init failed; terminating spawned Chrome process", .{});
+            if (self.chrome_process) |*proc| {
+                _ = proc.kill() catch {};
+            }
+            self.chrome_process = null;
+        }
 
         // Wait for DevTools endpoint to become ready.
         const start_ms = node_platform.nowMs();
@@ -293,6 +300,11 @@ pub const Canvas = struct {
             "chromium",
             "chromium-browser",
             "chrome",
+            "google-chrome.exe",
+            "google-chrome-stable.exe",
+            "chromium.exe",
+            "chromium-browser.exe",
+            "chrome.exe",
         };
         for (command_candidates) |candidate| {
             if (try findCommandOnPathAlloc(self.allocator, candidate)) |resolved| {
