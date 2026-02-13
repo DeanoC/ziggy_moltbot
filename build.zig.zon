@@ -59,6 +59,7 @@
         "scripts",
         "tests",
         "deps",
+        "libs",
         "README.md",
         "LICENSE",
     },
