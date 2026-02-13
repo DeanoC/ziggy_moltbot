@@ -600,7 +600,9 @@ fn ensureRealCanvas(ctx: *NodeContext) ?*node_canvas.Canvas {
         .height = 720,
         .headless = true,
         .chrome_path = null,
-        .chrome_debug_port = 9222,
+        // Ask Chrome to auto-select a free CDP port to avoid colliding with
+        // other node/browser processes.
+        .chrome_debug_port = 0,
     }) catch |err| {
         logger.warn("Canvas initialization failed: {s}", .{@errorName(err)});
         return null;
