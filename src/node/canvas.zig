@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const ws = @import("websocket");
 const logger = @import("../utils/logger.zig");
 const node_platform = @import("node_platform.zig");
@@ -38,6 +39,8 @@ pub const Canvas = struct {
     // Backend-specific handles
     webkit_context: ?*WebKitContext = null,
     chrome_process: ?std.process.Child = null,
+    chrome_runtime_debug_port: ?u16 = null,
+    chrome_user_data_dir: ?[]const u8 = null,
 
     const WebKitContext = opaque {};
 
@@ -76,6 +79,11 @@ pub const Canvas = struct {
             .chrome => {
                 if (self.chrome_process) |*proc| {
                     _ = proc.kill() catch {};
+                }
+                if (self.chrome_user_data_dir) |dir| {
+                    std.fs.cwd().deleteTree(dir) catch {};
+                    self.allocator.free(dir);
+                    self.chrome_user_data_dir = null;
                 }
             },
             .none => {},
@@ -224,11 +232,21 @@ pub const Canvas = struct {
         const chrome_path = try self.resolveChromeExecutableAlloc();
         defer self.allocator.free(chrome_path);
 
+        const user_data_dir = try self.makeChromeUserDataDirAlloc();
+        self.chrome_user_data_dir = user_data_dir;
+        errdefer {
+            std.fs.cwd().deleteTree(user_data_dir) catch {};
+            self.allocator.free(user_data_dir);
+            self.chrome_user_data_dir = null;
+        }
+
         // Start Chrome in headless mode with remote debugging.
         const debug_port_arg = try std.fmt.allocPrint(self.allocator, "--remote-debugging-port={d}", .{self.config.chrome_debug_port});
         defer self.allocator.free(debug_port_arg);
         const window_size_arg = try std.fmt.allocPrint(self.allocator, "--window-size={d},{d}", .{ self.config.width, self.config.height });
         defer self.allocator.free(window_size_arg);
+        const user_data_dir_arg = try std.fmt.allocPrint(self.allocator, "--user-data-dir={s}", .{user_data_dir});
+        defer self.allocator.free(user_data_dir_arg);
 
         const args = &[_][]const u8{
             chrome_path,
@@ -237,6 +255,7 @@ pub const Canvas = struct {
             "--disable-gpu",
             "--disable-software-rasterizer",
             "--disable-dev-shm-usage",
+            user_data_dir_arg,
             "--remote-debugging-address=127.0.0.1",
             debug_port_arg,
             window_size_arg,
@@ -250,6 +269,20 @@ pub const Canvas = struct {
 
         try child.spawn();
         self.chrome_process = child;
+        errdefer {
+            logger.warn("Canvas Chrome init failed; terminating spawned Chrome process", .{});
+            if (self.chrome_process) |*proc| {
+                _ = proc.kill() catch {};
+            }
+            self.chrome_process = null;
+        }
+
+        // Port 0 means Chrome picks an available debugging port.
+        const debug_port = if (self.config.chrome_debug_port == 0)
+            try self.waitForDevToolsPortAlloc(user_data_dir)
+        else
+            self.config.chrome_debug_port;
+        self.chrome_runtime_debug_port = debug_port;
 
         // Wait for DevTools endpoint to become ready.
         const start_ms = node_platform.nowMs();
@@ -259,11 +292,103 @@ pub const Canvas = struct {
                 continue;
             };
             self.allocator.free(body);
-            logger.info("Chrome started on debug port {d}", .{self.config.chrome_debug_port});
+            logger.info("Chrome started on debug port {d}", .{debug_port});
             return;
         }
 
         logger.err("Chrome started but DevTools endpoint did not become ready", .{});
+        return error.Timeout;
+    }
+
+    fn makeChromeUserDataDirAlloc(self: *Canvas) ![]u8 {
+        var rand: [8]u8 = undefined;
+        std.crypto.random.bytes(&rand);
+        const suffix = std.fmt.bytesToHex(rand, .lower);
+        const dirname = try std.fmt.allocPrint(self.allocator, "oc-canvas-{s}", .{suffix});
+        defer self.allocator.free(dirname);
+
+        const temp_dir = try self.getSystemTempDirAlloc();
+        defer self.allocator.free(temp_dir);
+
+        const full = try std.fs.path.join(self.allocator, &.{ temp_dir, dirname });
+        errdefer self.allocator.free(full);
+
+        std.fs.cwd().makePath(full) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+
+        return full;
+    }
+
+    fn getSystemTempDirAlloc(self: *Canvas) ![]u8 {
+        const envs = if (builtin.os.tag == .windows)
+            &[_][]const u8{ "TEMP", "TMP" }
+        else
+            &[_][]const u8{ "TMPDIR", "TMP", "TEMP" };
+
+        for (envs) |key| {
+            const value = std.process.getEnvVarOwned(self.allocator, key) catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            if (value) |dir| {
+                if (dir.len == 0) {
+                    self.allocator.free(dir);
+                    continue;
+                }
+                return dir;
+            }
+        }
+
+        // Prefer current working directory over hardcoded paths on Windows to avoid
+        // drive-root permission failures when TEMP/TMP are missing.
+        return self.allocator.dupe(u8, if (builtin.os.tag == .windows) "." else "/tmp");
+    }
+
+    fn waitForDevToolsPortAlloc(self: *Canvas, user_data_dir: []const u8) !u16 {
+        const devtools_port_file = try std.fs.path.join(self.allocator, &.{ user_data_dir, "DevToolsActivePort" });
+        defer self.allocator.free(devtools_port_file);
+
+        const start_ms = node_platform.nowMs();
+        while (node_platform.nowMs() - start_ms < 10_000) {
+            const file = std.fs.cwd().openFile(devtools_port_file, .{}) catch {
+                node_platform.sleepMs(50);
+                continue;
+            };
+            defer file.close();
+
+            const contents = file.readToEndAlloc(self.allocator, 4 * 1024) catch {
+                node_platform.sleepMs(50);
+                continue;
+            };
+            defer self.allocator.free(contents);
+
+            var line_it = std.mem.splitScalar(u8, contents, '\n');
+            const line = line_it.next() orelse {
+                node_platform.sleepMs(50);
+                continue;
+            };
+
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            if (trimmed.len == 0) {
+                node_platform.sleepMs(50);
+                continue;
+            }
+
+            const port = std.fmt.parseInt(u16, trimmed, 10) catch {
+                node_platform.sleepMs(50);
+                continue;
+            };
+
+            if (port == 0) {
+                node_platform.sleepMs(50);
+                continue;
+            }
+
+            return port;
+        }
+
         return error.Timeout;
     }
 
@@ -293,6 +418,11 @@ pub const Canvas = struct {
             "chromium",
             "chromium-browser",
             "chrome",
+            "google-chrome.exe",
+            "google-chrome-stable.exe",
+            "chromium.exe",
+            "chromium-browser.exe",
+            "chrome.exe",
         };
         for (command_candidates) |candidate| {
             if (try findCommandOnPathAlloc(self.allocator, candidate)) |resolved| {
@@ -487,6 +617,16 @@ pub const Canvas = struct {
     fn snapshotChromeBase64(self: *Canvas, format_raw: []const u8, quality_raw: ?u8, max_width: ?u32) ![]u8 {
         var session = try self.openChromeCdpSession();
         defer session.client.deinit();
+        var metrics_overridden = false;
+        defer {
+            if (metrics_overridden) {
+                if (self.cdpSendCommandAlloc(&session, "Emulation.clearDeviceMetricsOverride", .{})) |clear_resp| {
+                    self.allocator.free(clear_resp);
+                } else |err| {
+                    logger.warn("Failed to clear Chrome device metrics override after snapshot: {any}", .{err});
+                }
+            }
+        }
 
         const format = if (std.ascii.eqlIgnoreCase(format_raw, "jpg") or std.ascii.eqlIgnoreCase(format_raw, "jpeg")) "jpeg" else "png";
 
@@ -504,6 +644,7 @@ pub const Canvas = struct {
                     .mobile = false,
                 });
                 self.allocator.free(emulation_resp);
+                metrics_overridden = true;
             }
         }
 
@@ -543,7 +684,8 @@ pub const Canvas = struct {
     }
 
     fn chromeHttpGetAlloc(self: *Canvas, path: []const u8) ![]u8 {
-        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ self.config.chrome_debug_port, path });
+        const debug_port = self.chrome_runtime_debug_port orelse self.config.chrome_debug_port;
+        const url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}{s}", .{ debug_port, path });
         defer self.allocator.free(url);
 
         var client = std.http.Client{ .allocator = self.allocator };
