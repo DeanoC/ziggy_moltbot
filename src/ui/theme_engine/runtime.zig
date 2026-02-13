@@ -19,7 +19,7 @@ pub const RenderDefaults = struct {
 };
 
 pub const WorkspaceLayoutPreset = struct {
-    panels: [8]workspace.PanelKind = undefined,
+    panels: [10]workspace.PanelKind = undefined,
     panels_len: u8 = 0,
     focused: ?workspace.PanelKind = null,
     close_others: bool = false,

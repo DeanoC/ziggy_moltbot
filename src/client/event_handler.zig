@@ -6,6 +6,7 @@ const messages = @import("../protocol/messages.zig");
 const sessions = @import("../protocol/sessions.zig");
 const chat = @import("../protocol/chat.zig");
 const nodes = @import("../protocol/nodes.zig");
+const workboard = @import("../protocol/workboard.zig");
 const requests = @import("../protocol/requests.zig");
 const logger = @import("../utils/logger.zig");
 
@@ -125,6 +126,8 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             std.mem.eql(u8, ctx.pending_send_request_id.?, response_id);
         const is_nodes = ctx.pending_nodes_request_id != null and
             std.mem.eql(u8, ctx.pending_nodes_request_id.?, response_id);
+        const is_workboard = ctx.pending_workboard_request_id != null and
+            std.mem.eql(u8, ctx.pending_workboard_request_id.?, response_id);
         const is_node_invoke = ctx.pending_node_invoke_request_id != null and
             std.mem.eql(u8, ctx.pending_node_invoke_request_id.?, response_id);
         const is_node_describe = ctx.pending_node_describe_request_id != null and
@@ -143,6 +146,7 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             if (is_history) ctx.clearPendingHistoryById(response_id);
             if (is_send) ctx.resolvePendingSendRequest(false);
             if (is_nodes) ctx.clearPendingNodesRequest();
+            if (is_workboard) ctx.clearPendingWorkboardRequest();
             if (is_node_invoke) ctx.clearPendingNodeInvokeRequest();
             if (is_node_describe) ctx.clearPendingNodeDescribeRequest();
             if (is_agents_create) ctx.clearPendingAgentsCreateRequest();
@@ -240,6 +244,14 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
                 return null;
             }
 
+            if (is_workboard) {
+                ctx.clearPendingWorkboardRequest();
+                handleWorkboardList(ctx, payload) catch |err| {
+                    logger.warn("workboard.list handling failed ({s})", .{@errorName(err)});
+                };
+                return null;
+            }
+
             if (is_node_invoke) {
                 ctx.clearPendingNodeInvokeRequest();
                 handleNodeInvokeResponse(ctx, payload) catch |err| {
@@ -281,9 +293,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             }
         }
 
-        // Some responses may omit a payload; ensure chat.send is still resolved.
+        // Some responses may omit a payload; ensure pending request IDs are still resolved.
         if (is_send) {
             ctx.resolvePendingSendRequest(true);
+        }
+        if (is_workboard) {
+            ctx.clearPendingWorkboardRequest();
         }
         if (is_agents_create) {
             ctx.clearPendingAgentsCreateRequest();
@@ -424,6 +439,46 @@ fn handleNodesList(ctx: *state.ClientContext, payload: std.json.Value) !void {
             ctx.clearCurrentNode();
         }
     }
+}
+
+fn handleWorkboardList(ctx: *state.ClientContext, payload: std.json.Value) !void {
+    var parsed = try messages.parsePayload(ctx.allocator, payload, workboard.WorkboardListResult);
+    defer parsed.deinit();
+
+    const items = parsed.value.items orelse parsed.value.rows orelse parsed.value.work orelse {
+        logger.warn("workboard.list payload missing items", .{});
+        return;
+    };
+
+    const list = try ctx.allocator.alloc(types.WorkboardItem, items.len);
+    var filled: usize = 0;
+    errdefer {
+        for (list[0..filled]) |*item| {
+            freeWorkboardItemOwned(ctx.allocator, item);
+        }
+        ctx.allocator.free(list);
+    }
+
+    for (items, 0..) |item, index| {
+        list[index] = .{
+            .id = try ctx.allocator.dupe(u8, item.id),
+            .kind = if (item.kind) |value| try ctx.allocator.dupe(u8, value) else null,
+            .status = if (item.status) |value| try ctx.allocator.dupe(u8, value) else null,
+            .title = if (item.title) |value| try ctx.allocator.dupe(u8, value) else null,
+            .summary = if (item.summary) |value| try ctx.allocator.dupe(u8, value) else null,
+            .owner = if (item.owner) |value| try ctx.allocator.dupe(u8, value) else null,
+            .agent_id = if (item.agentId) |value| try ctx.allocator.dupe(u8, value) else null,
+            .parent_id = if (item.parentId) |value| try ctx.allocator.dupe(u8, value) else null,
+            .cron_key = if (item.cronKey) |value| try ctx.allocator.dupe(u8, value) else null,
+            .created_at_ms = item.createdAtMs,
+            .updated_at_ms = item.updatedAtMs,
+            .due_at_ms = item.dueAtMs,
+            .payload_json = if (item.payload) |value| try stringifyJsonValue(ctx.allocator, value) else null,
+        };
+        filled = index + 1;
+    }
+
+    ctx.setWorkboardItemsOwned(list);
 }
 
 fn handleNodeInvokeResponse(ctx: *state.ClientContext, payload: std.json.Value) !void {
@@ -874,6 +929,19 @@ fn freeNodeOwned(allocator: std.mem.Allocator, node: *types.Node) void {
     freeStringList(allocator, node.commands);
     if (node.path_env) |path| allocator.free(path);
     if (node.permissions_json) |perm| allocator.free(perm);
+}
+
+fn freeWorkboardItemOwned(allocator: std.mem.Allocator, item: *types.WorkboardItem) void {
+    allocator.free(item.id);
+    if (item.kind) |value| allocator.free(value);
+    if (item.status) |value| allocator.free(value);
+    if (item.title) |value| allocator.free(value);
+    if (item.summary) |value| allocator.free(value);
+    if (item.owner) |value| allocator.free(value);
+    if (item.agent_id) |value| allocator.free(value);
+    if (item.parent_id) |value| allocator.free(value);
+    if (item.cron_key) |value| allocator.free(value);
+    if (item.payload_json) |value| allocator.free(value);
 }
 
 fn freeSessionOwned(allocator: std.mem.Allocator, session: *types.Session) void {

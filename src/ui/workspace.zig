@@ -18,6 +18,7 @@ pub const PanelKind = enum {
     Operator,
     ApprovalsInbox,
     Inbox,
+    Workboard,
     Settings,
     Showcase,
 };
@@ -102,6 +103,7 @@ pub const PanelData = union(enum) {
     Operator: void,
     ApprovalsInbox: void,
     Inbox: ControlPanel,
+    Workboard: void,
     Settings: void,
     Showcase: void,
 
@@ -146,6 +148,7 @@ pub const PanelData = union(enum) {
             .Inbox => |*ctrl| {
                 if (ctrl.selected_agent_id) |id| allocator.free(id);
             },
+            .Workboard => {},
             .Settings => {},
             .Showcase => {},
         }
@@ -545,6 +548,7 @@ fn panelToSnapshot(allocator: std.mem.Allocator, panel: Panel) !PanelSnapshot {
                 .selected_agent_id = if (ctrl.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
             };
         },
+        .Workboard => {},
         .Settings => {},
         .Showcase => {},
     }
@@ -690,6 +694,15 @@ fn panelFromSnapshot(allocator: std.mem.Allocator, snap: PanelSnapshot) !Panel {
                     .active_tab = .Inbox,
                     .selected_agent_id = if (ctrl_snap.selected_agent_id) |id| try allocator.dupe(u8, id) else null,
                 } },
+                .state = state_val,
+            };
+        },
+        .Workboard => {
+            return .{
+                .id = snap.id,
+                .kind = .Workboard,
+                .title = title_copy,
+                .data = .{ .Workboard = {} },
                 .state = state_val,
             };
         },
@@ -914,6 +927,17 @@ pub fn makeSettingsPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
         .kind = .Settings,
         .title = title,
         .data = .{ .Settings = {} },
+        .state = .{},
+    };
+}
+
+pub fn makeWorkboardPanel(allocator: std.mem.Allocator, id: PanelId) !Panel {
+    const title = try allocator.dupe(u8, "Workboard");
+    return .{
+        .id = id,
+        .kind = .Workboard,
+        .title = title,
+        .data = .{ .Workboard = {} },
         .state = .{},
     };
 }

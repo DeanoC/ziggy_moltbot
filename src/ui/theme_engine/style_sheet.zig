@@ -202,6 +202,7 @@ pub const DockRailIconsStyle = struct {
     operator: IconLabel = .{},
     approvals_inbox: IconLabel = .{},
     inbox: IconLabel = .{},
+    workboard: IconLabel = .{},
     settings: IconLabel = .{},
     showcase: IconLabel = .{},
     collapse_left: IconLabel = .{},
@@ -594,6 +595,7 @@ fn parseDockRailIcons(out: *DockRailIconsStyle, v: std.json.Value) void {
     parseIconLabel(&out.operator, obj.get("operator"));
     parseIconLabel(&out.approvals_inbox, obj.get("approvals_inbox"));
     parseIconLabel(&out.inbox, obj.get("inbox"));
+    parseIconLabel(&out.workboard, obj.get("workboard"));
     parseIconLabel(&out.settings, obj.get("settings"));
     parseIconLabel(&out.showcase, obj.get("showcase"));
     parseIconLabel(&out.collapse_left, obj.get("collapse_left"));

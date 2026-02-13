@@ -992,6 +992,7 @@ pub const ThemeEngine = struct {
         if (std.ascii.eqlIgnoreCase(label, "operator")) return .Operator;
         if (std.ascii.eqlIgnoreCase(label, "approvals") or std.ascii.eqlIgnoreCase(label, "approvals_inbox")) return .ApprovalsInbox;
         if (std.ascii.eqlIgnoreCase(label, "inbox")) return .Inbox;
+        if (std.ascii.eqlIgnoreCase(label, "workboard") or std.ascii.eqlIgnoreCase(label, "board")) return .Workboard;
         if (std.ascii.eqlIgnoreCase(label, "settings")) return .Settings;
         if (std.ascii.eqlIgnoreCase(label, "showcase")) return .Showcase;
         if (std.ascii.eqlIgnoreCase(label, "code_editor") or std.ascii.eqlIgnoreCase(label, "codeeditor")) return .CodeEditor;

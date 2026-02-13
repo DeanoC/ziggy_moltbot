@@ -1217,23 +1217,23 @@ pub fn main() !void {
             try failRemovedLegacyFlag("--list-nodes", "nodes list");
             list_nodes = true;
         } else if (std.mem.eql(u8, arg, "--nodes")) {
-            warnDeprecatedLegacyFlag("--nodes", "nodes list");
+            try failRemovedLegacyFlag("--nodes", "nodes list");
             list_nodes = true;
         } else if (std.mem.eql(u8, arg, "--pair-list")) {
-            warnDeprecatedLegacyFlag("--pair-list", "devices list");
+            try failRemovedLegacyFlag("--pair-list", "devices list");
             device_pair_list = true;
         } else if (std.mem.eql(u8, arg, "--pair-approve")) {
-            warnDeprecatedLegacyFlag("--pair-approve", "devices approve <requestId>");
+            try failRemovedLegacyFlag("--pair-approve", "devices approve <requestId>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             device_pair_approve_id = args[i];
         } else if (std.mem.eql(u8, arg, "--pair-reject")) {
-            warnDeprecatedLegacyFlag("--pair-reject", "devices reject <requestId>");
+            try failRemovedLegacyFlag("--pair-reject", "devices reject <requestId>");
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             device_pair_reject_id = args[i];
         } else if (std.mem.eql(u8, arg, "--watch-pairing")) {
-            warnDeprecatedLegacyFlag("--watch-pairing", "devices watch");
+            try failRemovedLegacyFlag("--watch-pairing", "devices watch");
             device_pair_watch = true;
         } else if (std.mem.eql(u8, arg, "--node")) {
             i += 1;
@@ -1404,6 +1404,10 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "--node-mode")) {
             // handled by pre-scan
         } else if (std.mem.eql(u8, arg, "--operator-mode")) {
+            if (comptime !cli_features.supports_operator_client) {
+                logger.err("This CLI build is node-only and cannot act as operator. Rebuild with -Dcli_operator=true.", .{});
+                return error.Unsupported;
+            }
             logger.warn("Flag --operator-mode is deprecated; operator actions are available without it.", .{});
         } else if (std.mem.eql(u8, arg, "--save-config")) {
             save_config = true;
@@ -1443,7 +1447,6 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
-<<<<<<< HEAD
         device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or interactive;
 
     if (!cli_features.supports_operator_client and operator_action_requested) {

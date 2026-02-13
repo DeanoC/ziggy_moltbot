@@ -30,6 +30,7 @@ const chat_proto = @import("protocol/chat.zig");
 const sessions_proto = @import("protocol/sessions.zig");
 const agents_proto = @import("protocol/agents.zig");
 const nodes_proto = @import("protocol/nodes.zig");
+const workboard_proto = @import("protocol/workboard.zig");
 const approvals_proto = @import("protocol/approvals.zig");
 const types = @import("protocol/types.zig");
 const identity = @import("client/device_identity_wasm.zig");
@@ -74,6 +75,7 @@ var connect_sent = false;
 var connect_nonce: ?[]u8 = null;
 var connect_started_ms: i64 = 0;
 var ws_opened_ms: i64 = 0;
+var next_workboard_poll_at_ms: i64 = 0;
 var use_device_identity = true;
 var device_identity: ?identity.DeviceIdentity = null;
 var last_state: ?client_state.ClientState = null;
@@ -689,6 +691,30 @@ fn sendNodesListRequest() void {
     if (sendWsText(request.payload)) {
         allocator.free(request.payload);
         ctx.setPendingNodesRequest(request.id);
+    } else {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+}
+
+fn sendWorkboardListRequest() void {
+    if (!ws_connected or ctx.state != .connected) return;
+    if (!ctx.supportsGatewayMethod("workboard.list")) return;
+    if (ctx.pending_workboard_request_id != null) return;
+
+    const params = workboard_proto.WorkboardListParams{};
+    const request = requests.buildRequestPayload(allocator, "workboard.list", params) catch |err| {
+        logger.warn("Failed to build workboard.list request: {}", .{err});
+        return;
+    };
+    errdefer {
+        allocator.free(request.payload);
+        allocator.free(request.id);
+    }
+
+    if (sendWsText(request.payload)) {
+        allocator.free(request.payload);
+        ctx.setPendingWorkboardRequest(request.id);
     } else {
         allocator.free(request.payload);
         allocator.free(request.id);
@@ -1484,6 +1510,7 @@ export fn molt_ws_on_close(code: c_int) void {
     clearPendingAgentFileOpen();
     clearConnectNonce();
     ws_opened_ms = 0;
+    next_workboard_poll_at_ms = 0;
     ctx.state = .disconnected;
     ctx.clearGatewayIdentity();
     ctx.clearGatewayMethods();
@@ -1498,6 +1525,7 @@ export fn molt_ws_on_error() void {
     connect_sent = false;
     clearPendingAgentFileOpen();
     ws_opened_ms = 0;
+    next_workboard_poll_at_ms = 0;
     ctx.state = .error_state;
     ctx.clearGatewayIdentity();
     ctx.clearGatewayMethods();
@@ -1609,12 +1637,24 @@ fn frame() callconv(.c) void {
     }
 
     if (ws_connected and ctx.state == .connected) {
+        const now_ms = std.time.milliTimestamp();
         if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
             sendSessionsListRequest();
         }
         if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
             sendNodesListRequest();
         }
+        // Bootstrap workboard only when poll timer allows (respects backoff)
+        if (ctx.workboard_items.items.len == 0 and ctx.pending_workboard_request_id == null and
+            (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms)) {
+            sendWorkboardListRequest();
+        }
+        if (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms) {
+            sendWorkboardListRequest();
+            next_workboard_poll_at_ms = now_ms + 8_000;
+        }
+    } else {
+        next_workboard_poll_at_ms = 0;
     }
 
     if (ctx.sessions_updated) {
@@ -1773,11 +1813,13 @@ fn frame() callconv(.c) void {
         ctx.clearPendingRequests();
         ctx.clearAllSessionStates();
         ctx.clearNodes();
+        ctx.clearWorkboardItems();
         ctx.clearCurrentNode();
         ctx.clearApprovals();
         ctx.clearNodeDescribes();
         ctx.clearNodeResult();
         ctx.clearOperatorNotice();
+        next_workboard_poll_at_ms = 0;
     }
 
     if (ui_action.refresh_sessions) {
@@ -1855,6 +1897,9 @@ fn frame() callconv(.c) void {
 
     if (ui_action.refresh_nodes) {
         sendNodesListRequest();
+    }
+    if (ui_action.refresh_workboard) {
+        sendWorkboardListRequest();
     }
 
     if (ui_action.open_session) |open| {

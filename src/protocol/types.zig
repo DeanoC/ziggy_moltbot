@@ -54,6 +54,22 @@ pub const Node = struct {
     paired: ?bool = null,
 };
 
+pub const WorkboardItem = struct {
+    id: []const u8,
+    kind: ?[]const u8 = null,
+    status: ?[]const u8 = null,
+    title: ?[]const u8 = null,
+    summary: ?[]const u8 = null,
+    owner: ?[]const u8 = null,
+    agent_id: ?[]const u8 = null,
+    parent_id: ?[]const u8 = null,
+    cron_key: ?[]const u8 = null,
+    created_at_ms: ?i64 = null,
+    updated_at_ms: ?i64 = null,
+    due_at_ms: ?i64 = null,
+    payload_json: ?[]const u8 = null,
+};
+
 pub const ExecApproval = struct {
     id: []const u8,
     payload_json: []const u8,

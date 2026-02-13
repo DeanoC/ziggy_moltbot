@@ -93,7 +93,6 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
-<<<<<<< HEAD
         assert (
             "message send <message>" in result.stdout
             or "message|messages|chat send <message>" in result.stdout
@@ -169,9 +168,8 @@ class TestCliHelp:
         assert "--mode service|session" in result.stderr
 
     @pytest.mark.parametrize(
-        ("legacy_args", "removed_fragment", "replacement"),
+        ("legacy_args", "replacement"),
         [
-<<<<<<< HEAD
             (["--send", "hello"], "message send <message>"),
             (["--list-sessions"], "sessions list"),
             (["--list-nodes"], "nodes list"),

@@ -48,6 +48,7 @@ pub const PanelDataPayload = union(enum) {
     Operator: void,
     ApprovalsInbox: void,
     Inbox: ControlPanelPayload,
+    Workboard: void,
     Settings: void,
     Showcase: void,
 
@@ -77,6 +78,7 @@ pub const PanelDataPayload = union(enum) {
             .Inbox => |*ctrl| {
                 if (ctrl.active_tab) |tab| allocator.free(tab);
             },
+            .Workboard => {},
             .Settings => {},
             .Showcase => {},
         }
@@ -185,6 +187,7 @@ fn parseOpen(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !?UiCommand 
             const active_tab = parseStringDupFrom(allocator, obj, payload_obj, "active_tab");
             break :blk PanelDataPayload{ .Inbox = .{ .active_tab = active_tab } };
         },
+        .Workboard => PanelDataPayload{ .Workboard = {} },
         .Settings => PanelDataPayload{ .Settings = {} },
         .Showcase => PanelDataPayload{ .Showcase = {} },
     };
@@ -292,6 +295,7 @@ fn parseDataPayloadForKind(
             if (!allow_partial and active_tab == null) return error.MissingPanelData;
             return .{ .Inbox = .{ .active_tab = active_tab } };
         },
+        .Workboard => return .{ .Workboard = {} },
         .Settings => return .{ .Settings = {} },
         .Showcase => return .{ .Showcase = {} },
     }
@@ -308,6 +312,7 @@ fn parsePanelKind(label: []const u8) ?workspace.PanelKind {
     if (std.mem.eql(u8, label, "ApprovalsInbox")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Approvals")) return .ApprovalsInbox;
     if (std.mem.eql(u8, label, "Inbox")) return .Inbox;
+    if (std.mem.eql(u8, label, "Workboard")) return .Workboard;
     if (std.mem.eql(u8, label, "Settings")) return .Settings;
     if (std.mem.eql(u8, label, "Showcase")) return .Showcase;
     return null;

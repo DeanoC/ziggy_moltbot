@@ -33,6 +33,7 @@ const tool_output_panel = @import("panels/tool_output_panel.zig");
 const control_panel = @import("panels/control_panel.zig");
 const agents_panel = @import("panels/agents_panel.zig");
 const inbox_panel = @import("panels/inbox_panel.zig");
+const workboard_panel = @import("panels/workboard_panel.zig");
 const settings_panel = @import("panels/settings_panel.zig");
 const operator_view = @import("operator_view.zig");
 const approvals_inbox_view = @import("approvals_inbox_view.zig");
@@ -109,6 +110,7 @@ const FullscreenPage = enum {
     agents,
     settings,
     chat,
+    workboard,
     showcase,
 };
 
@@ -158,6 +160,7 @@ pub const UiAction = struct {
     open_node_logs: bool = false,
 
     refresh_nodes: bool = false,
+    refresh_workboard: bool = false,
     select_node: ?[]u8 = null,
     invoke_node: ?@import("operator_view.zig").NodeInvokeAction = null,
     describe_node: ?[]u8 = null,
@@ -326,6 +329,7 @@ const window_panel_toggles = [_]WindowPanelToggle{
     .{ .label = "Operator", .kind = .Operator },
     .{ .label = "Approvals", .kind = .ApprovalsInbox },
     .{ .label = "Activity", .kind = .Inbox },
+    .{ .label = "Workboard", .kind = .Workboard },
     .{ .label = "Settings", .kind = .Settings },
     .{ .label = "Showcase", .kind = .Showcase },
 };
@@ -1815,6 +1819,14 @@ fn drawFullscreenHost(
             }
             nav_router.popScope();
         },
+        .workboard => {
+            nav_router.pushScope(6);
+            ensureOnlyPanelKind(manager, .Workboard);
+            if (selectPanelForKind(manager, .Workboard)) |panel| {
+                _ = drawPanelContents(allocator, ctx, cfg, registry, is_connected, app_version, panel, content_main_rect, inbox, manager, action, pending_attachment, win_state, installer_profile_only_mode);
+            }
+            nav_router.popScope();
+        },
     }
 
     drawControllerHints(dc, hints_rect, win_state.fullscreen_page != .home);
@@ -1882,20 +1894,20 @@ fn drawFullscreenHome(
     _ = manager;
     const t = dc.theme;
     const gap = t.spacing.lg;
-    const cols: usize = 2;
-    const rows: usize = 2;
+    const cols: usize = 3;
+    const cards = [_]struct { label: []const u8, page: FullscreenPage }{
+        .{ .label = "Agents", .page = .agents },
+        .{ .label = "Settings", .page = .settings },
+        .{ .label = "Chat", .page = .chat },
+        .{ .label = "Workboard", .page = .workboard },
+        .{ .label = "Showcase", .page = .showcase },
+    };
+    const rows: usize = (cards.len + cols - 1) / cols;
     const card_w = @max(1.0, (rect.size()[0] - gap * (@as(f32, @floatFromInt(cols - 1)))) / @as(f32, @floatFromInt(cols)));
     const card_h = @max(1.0, (rect.size()[1] - gap * (@as(f32, @floatFromInt(rows - 1)))) / @as(f32, @floatFromInt(rows)));
 
     const start_x = rect.min[0] + (rect.size()[0] - (card_w * @as(f32, @floatFromInt(cols)) + gap * @as(f32, @floatFromInt(cols - 1)))) * 0.5;
     const start_y = rect.min[1] + (rect.size()[1] - (card_h * @as(f32, @floatFromInt(rows)) + gap * @as(f32, @floatFromInt(rows - 1)))) * 0.5;
-
-    const cards = [_]struct { label: []const u8, page: FullscreenPage }{
-        .{ .label = "Agents", .page = .agents },
-        .{ .label = "Settings", .page = .settings },
-        .{ .label = "Chat", .page = .chat },
-        .{ .label = "Showcase", .page = .showcase },
-    };
 
     for (cards, 0..) |card, idx| {
         const col: f32 = @floatFromInt(idx % cols);
@@ -2161,6 +2173,10 @@ fn drawPanelContents(
                     manager.ensurePanel(.ApprovalsInbox);
                 }
             }
+        },
+        .Workboard => {
+            const wb_action = workboard_panel.draw(ctx, is_connected, panel_rect);
+            action.refresh_workboard = action.refresh_workboard or wb_action.refresh;
         },
         .Settings => {
             const settings_action = settings_panel.draw(
@@ -3300,6 +3316,7 @@ fn railIconForPanel(panel: *const workspace.Panel, icons: *const style_sheet.Doc
         .Operator => dockRailIconLabel(&icons.operator, "OP"),
         .ApprovalsInbox => dockRailIconLabel(&icons.approvals_inbox, "AP"),
         .Inbox => dockRailIconLabel(&icons.inbox, "AC"),
+        .Workboard => dockRailIconLabel(&icons.workboard, "WB"),
         .Settings => dockRailIconLabel(&icons.settings, "SE"),
         .Showcase => dockRailIconLabel(&icons.showcase, "S"),
     };
