@@ -13,6 +13,7 @@ Use this checklist to prepare and ship a ZiggyStarClaw release.
 - [ ] Run `scripts/package-release.sh`.
 - [ ] Verify `dist/ziggystarclaw_<version>_<date>/` exists.
 - [ ] Check `checksums.txt` and `update.json` are present.
+- [ ] Confirm node-only CLI bundles are present (`ziggystarclaw_cli_node_only_linux_*`, `ziggystarclaw_cli_node_only_windows_*`) unless explicitly skipped via `--skip-node-only`.
 
 ## Smoke Tests
 - [ ] Native Linux: launch `ziggystarclaw-client`, connect and send a message.

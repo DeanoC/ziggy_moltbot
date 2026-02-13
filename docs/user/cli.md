@@ -8,7 +8,8 @@ A staged TUI design plan for the CLI is tracked in [`docs/tui-plan.md`](../tui-p
 The source for CLI help text lives in [`docs/cli/`](../cli/) and is embedded directly by the CLI binary using `@embedFile`.
 
 Main sections:
-- [Overview](../cli/01-overview.md)
+- [Overview (full build)](../cli/01-overview.md)
+- [Overview (node-only build)](../cli/01-overview-node-only.md)
 - [Options (full build)](../cli/02-options.md)
 - [Options (node-only build)](../cli/02-options-node-only.md)
 - [Node runner (Windows)](../cli/03-node-runner.md)
@@ -28,10 +29,12 @@ Internally, the build is split into a core/local CLI chunk and an operator chunk
   ```bash
   zig build -Dclient=false
   ```
-- Node-only CLI (smaller binary; operator commands disabled):
+- Node-only CLI (smaller/isolated operator surface; operator commands disabled):
   ```bash
-  zig build -Dclient=false -Dcli_operator=false
+  zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
   ```
+
+Release packaging (`scripts/package-release.sh`) also emits node-only CLI bundles by default for Linux/Windows publish flows.
 
 ## Quick commands (preferred OpenClaw-style noun-verb)
 - Send a message:

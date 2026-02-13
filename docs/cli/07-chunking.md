@@ -8,6 +8,11 @@ To support smaller binaries, the CLI is split into separable chunks:
   - Service/session/tray/supervisor helpers
   - Platform-local runner management
 
+- **Node-only maintenance chunk** (`src/cli/node_only_chunk.zig`)
+  - Local config/env override handling for node-only builds
+  - Update-manifest inspection (`--print-update-url`) and check flow (`--check-update-only`)
+  - Config persistence path for `--save-config` when operator chunk is absent
+
 - **Operator chunk** (`src/cli/operator_chunk.zig`)
   - Gateway operator connection and auth profile
   - Session/chat/approvals/device-pair commands
@@ -20,6 +25,19 @@ To support smaller binaries, the CLI is split into separable chunks:
 - `-Dcli_operator=false`: excludes the operator chunk at compile time.
   - Result: node-only CLI that cannot act as operator.
   - Operator-only commands fail with the standard unsupported hint.
+
+Recommended local profile checks:
+
+```bash
+# Full profile
+zig build -Dclient=false
+python3 -m pytest tests/test_cli_unit.py -v
+
+# Node-only profile
+zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
+ZSC_NODE_ONLY_CLI=./zig-out/node-only/bin/ziggystarclaw-cli \
+  python3 -m pytest tests/test_cli_node_only.py -v
+```
 
 ## Why this split
 

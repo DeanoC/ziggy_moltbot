@@ -38,11 +38,19 @@ jobs:
         run: |
           pip install pytest pytest-asyncio requests websocket-client
       
-      - name: Build CLI
+      - name: Build CLI (full profile)
         run: zig build
-      
-      - name: Run unit tests
+
+      - name: Build CLI (node-only profile)
+        run: zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
+
+      - name: Run unit tests (full profile)
         run: python3 -m pytest tests/test_cli_unit.py -v
+
+      - name: Run unit tests (node-only profile)
+        run: python3 -m pytest tests/test_cli_node_only.py -v
+        env:
+          ZSC_NODE_ONLY_CLI: ${{ github.workspace }}/zig-out/node-only/bin/ziggystarclaw-cli
 
   test-integration:
     runs-on: ubuntu-latest
@@ -132,3 +140,9 @@ jobs:
           ./zig-out/bin/ziggystarclaw-cli --version
           ./zig-out/bin/ziggystarclaw-cli --help
           ./zig-out/bin/ziggystarclaw-cli --node-mode-help
+
+      - name: Check node-only profile binary
+        run: |
+          zig build -Dclient=false -Dcli_operator=false --prefix ./zig-out/node-only
+          ./zig-out/node-only/bin/ziggystarclaw-cli --help
+          ! ./zig-out/node-only/bin/ziggystarclaw-cli sessions list
