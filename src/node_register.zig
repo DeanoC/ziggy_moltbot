@@ -295,7 +295,7 @@ pub fn run(
         // Token is OPTIONAL in Tailscale Serve setups (gateway.auth.allowTailscale=true) because
         // the gateway can authenticate via identity headers injected by the proxy.
         // Keep prompting for it because direct WS/HTTP deployments still need it, but allow empty.
-        const secret_prompt = @import("utils/secret_prompt.zig");
+        const secret_prompt = ziggy.utils.secret_prompt;
         const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
         defer allocator.free(tok);
         logger.info("(received {d} chars)", .{tok.len});

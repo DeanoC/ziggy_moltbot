@@ -66,10 +66,12 @@ pub const platform = struct {
 };
 
 pub const utils = struct {
-    pub const allocator = @import("utils/allocator.zig");
+    pub const allocator = ziggy.utils.allocator;
     pub const logger = ziggy.utils.logger;
-    pub const json_helpers = @import("utils/json_helpers.zig");
-    pub const string_utils = @import("utils/string_utils.zig");
+    pub const profiler = @import("utils/profiler.zig");
+    pub const json_helpers = ziggy.utils.json_helpers;
+    pub const string_utils = ziggy.utils.string_utils;
+    pub const secret_prompt = ziggy.utils.secret_prompt;
 };
 
 pub const node = struct {
