@@ -279,9 +279,48 @@ fn isListWhitespace(ch: u8) bool {
     return ch == ' ' or ch == '\t';
 }
 
+fn markdownLinkDestinationClose(text: []const u8, destination_start: usize) ?usize {
+    var depth: usize = 0;
+    var idx = destination_start;
+
+    while (idx < text.len) : (idx += 1) {
+        const ch = text[idx];
+
+        if (ch == '\\') {
+            if (idx + 1 < text.len) idx += 1;
+            continue;
+        }
+
+        if (ch == '(') {
+            depth += 1;
+            continue;
+        }
+
+        if (ch == ')') {
+            if (depth == 0) return idx;
+            depth -= 1;
+        }
+    }
+
+    return null;
+}
+
 fn renderInline(writer: anytype, text: []const u8, mode: RenderMode) !void {
     var i: usize = 0;
     while (i < text.len) {
+        if (text[i] == '[') {
+            if (std.mem.indexOfScalarPos(u8, text, i + 1, ']')) |bracket_end| {
+                if (bracket_end + 1 < text.len and text[bracket_end + 1] == '(') {
+                    if (markdownLinkDestinationClose(text, bracket_end + 2)) |paren_end| {
+                        const label = text[i + 1 .. bracket_end];
+                        try renderInline(writer, label, mode);
+                        i = paren_end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+
         if (text[i] == '`') {
             if (std.mem.indexOfScalarPos(u8, text, i + 1, '`')) |end_idx| {
                 const inner = text[i + 1 .. end_idx];
@@ -436,6 +475,37 @@ test "markdown renderer closes fenced code blocks on CRLF fence lines" {
             "echo hi\r\n" ++
             "\n" ++
             "after\r\n",
+        out.items,
+    );
+}
+
+test "markdown renderer strips inline links while preserving label formatting" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input = "- See [**Zig**](https://ziglang.org) and [`docs`](./docs)\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "- See Zig and docs\n",
+        out.items,
+    );
+}
+
+test "markdown renderer strips inline links with parenthesized destinations" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+
+    const input =
+        "- [math](https://en.wikipedia.org/wiki/Function_(mathematics))\n" ++
+        "- [nested](https://example.com/a_(b_(c)))\n";
+
+    try writeMarkdown(out.writer(std.testing.allocator), input, .plain);
+
+    try std.testing.expectEqualStrings(
+        "- math\n" ++
+            "- nested\n",
         out.items,
     );
 }
