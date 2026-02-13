@@ -1637,16 +1637,18 @@ fn frame() callconv(.c) void {
     }
 
     if (ws_connected and ctx.state == .connected) {
+        const now_ms = std.time.milliTimestamp();
         if (ctx.sessions.items.len == 0 and ctx.pending_sessions_request_id == null) {
             sendSessionsListRequest();
         }
         if (ctx.nodes.items.len == 0 and ctx.pending_nodes_request_id == null) {
             sendNodesListRequest();
         }
-        if (ctx.workboard_items.items.len == 0 and ctx.pending_workboard_request_id == null) {
+        // Bootstrap workboard only when poll timer allows (respects backoff)
+        if (ctx.workboard_items.items.len == 0 and ctx.pending_workboard_request_id == null and
+            (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms)) {
             sendWorkboardListRequest();
         }
-        const now_ms = std.time.milliTimestamp();
         if (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms) {
             sendWorkboardListRequest();
             next_workboard_poll_at_ms = now_ms + 8_000;
