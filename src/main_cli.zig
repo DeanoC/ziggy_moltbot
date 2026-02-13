@@ -636,21 +636,9 @@ const usage_tail =
 
 const usage = usage_overview ++ "\n" ++ usage_options ++ "\n" ++ usage_tail;
 
-const usage_legacy = if (cli_features.supports_operator_client)
-    usage_overview ++ "\n" ++
-        usage_options ++ "\n" ++
-        @embedFile("../docs/cli/02-legacy-action-flags.md") ++ "\n" ++
-        usage_tail
-else
-    usage;
-
 fn writeHelpText(allocator: std.mem.Allocator, text: []const u8) !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     try markdown_help.writeMarkdownForStdout(stdout, allocator, text);
-}
-
-fn warnDeprecatedLegacyFlag(flag: []const u8, replacement: []const u8) void {
-    logger.warn("Legacy option {s} is deprecated; use `{s}`.", .{ flag, replacement });
 }
 
 const ReplCommand = enum {
@@ -783,8 +771,8 @@ pub fn main() !void {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help-legacy")) {
-            try writeHelpText(allocator, usage_legacy);
-            return;
+            logger.err("Flag --help-legacy was removed. Use `--help`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try writeHelpText(allocator, usage);
             return;
@@ -1144,35 +1132,28 @@ pub fn main() !void {
                 continue;
             }
 
-            // Backward compatibility aliases:
-            //   tray install-startup|uninstall-startup|start|stop|status
-            const legacy_action = noun_or_action;
-            if (std.mem.eql(u8, legacy_action, "install-startup")) {
-                logger.warn("`tray install-startup` is deprecated; use `tray startup install`.", .{});
-                tray_install_startup = true;
-            } else if (std.mem.eql(u8, legacy_action, "uninstall-startup")) {
-                logger.warn("`tray uninstall-startup` is deprecated; use `tray startup uninstall`.", .{});
-                tray_uninstall_startup = true;
-            } else if (std.mem.eql(u8, legacy_action, "start")) {
-                logger.warn("`tray start` is deprecated; use `tray startup start`.", .{});
-                tray_start_startup = true;
-            } else if (std.mem.eql(u8, legacy_action, "stop")) {
-                logger.warn("`tray stop` is deprecated; use `tray startup stop`.", .{});
-                tray_stop_startup = true;
-            } else if (std.mem.eql(u8, legacy_action, "status")) {
-                logger.warn("`tray status` is deprecated; use `tray startup status`.", .{});
-                tray_status_startup = true;
-            } else if (std.mem.eql(u8, legacy_action, "help") or std.mem.eql(u8, legacy_action, "--help") or std.mem.eql(u8, legacy_action, "-h")) {
+            if (std.mem.eql(u8, noun_or_action, "install-startup")) {
+                logger.err("`tray install-startup` was removed. Use `tray startup install`.", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, noun_or_action, "uninstall-startup")) {
+                logger.err("`tray uninstall-startup` was removed. Use `tray startup uninstall`.", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, noun_or_action, "start")) {
+                logger.err("`tray start` was removed. Use `tray startup start`.", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, noun_or_action, "stop")) {
+                logger.err("`tray stop` was removed. Use `tray startup stop`.", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, noun_or_action, "status")) {
+                logger.err("`tray status` was removed. Use `tray startup status`.", .{});
+                return error.InvalidArguments;
+            } else if (std.mem.eql(u8, noun_or_action, "help") or std.mem.eql(u8, noun_or_action, "--help") or std.mem.eql(u8, noun_or_action, "-h")) {
                 try writeHelpText(allocator, usage);
                 return;
-            } else {
-                logger.err("Unknown tray command: {s}", .{legacy_action});
-                return error.InvalidArguments;
             }
 
-            // Skip legacy "tray <action>".
-            i += 1;
-            continue;
+            logger.err("Unknown tray command: {s}", .{noun_or_action});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--config")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1208,117 +1189,83 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             read_timeout_ms = try std.fmt.parseInt(u32, args[i], 10);
-            // Transitional compatibility shim:
-            // keep legacy action-style flags working, but emit guidance toward strict noun-verb commands.
         } else if (std.mem.eql(u8, arg, "--send")) {
-            warnDeprecatedLegacyFlag("--send", "message send <message>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            send_message = args[i];
+            logger.err("Flag --send was removed. Use `message send <message>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--session")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             session_key = args[i];
         } else if (std.mem.eql(u8, arg, "--list-sessions")) {
-            warnDeprecatedLegacyFlag("--list-sessions", "sessions list");
-            list_sessions = true;
+            logger.err("Flag --list-sessions was removed. Use `sessions list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--use-session")) {
-            warnDeprecatedLegacyFlag("--use-session", "sessions use <key>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            use_session = args[i];
+            logger.err("Flag --use-session was removed. Use `sessions use <key>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--list-nodes")) {
-            warnDeprecatedLegacyFlag("--list-nodes", "nodes list");
-            list_nodes = true;
+            logger.err("Flag --list-nodes was removed. Use `nodes list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--node")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             node_id = args[i];
         } else if (std.mem.eql(u8, arg, "--use-node")) {
-            warnDeprecatedLegacyFlag("--use-node", "nodes use <id>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            use_node = args[i];
+            logger.err("Flag --use-node was removed. Use `nodes use <id>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--run")) {
-            warnDeprecatedLegacyFlag("--run", "nodes run <command>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            run_command = args[i];
+            logger.err("Flag --run was removed. Use `nodes run <command>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--which")) {
-            warnDeprecatedLegacyFlag("--which", "nodes which <name>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            which_name = args[i];
+            logger.err("Flag --which was removed. Use `nodes which <name>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--notify")) {
-            warnDeprecatedLegacyFlag("--notify", "nodes notify <title>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            notify_title = args[i];
+            logger.err("Flag --notify was removed. Use `nodes notify <title>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--ps")) {
-            warnDeprecatedLegacyFlag("--ps", "nodes process list");
-            ps_list = true;
+            logger.err("Flag --ps was removed. Use `nodes process list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--spawn")) {
-            warnDeprecatedLegacyFlag("--spawn", "nodes process spawn <command>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            spawn_command = args[i];
+            logger.err("Flag --spawn was removed. Use `nodes process spawn <command>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--poll")) {
-            warnDeprecatedLegacyFlag("--poll", "nodes process poll <processId>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            poll_process_id = args[i];
+            logger.err("Flag --poll was removed. Use `nodes process poll <processId>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--stop")) {
-            warnDeprecatedLegacyFlag("--stop", "nodes process stop <processId>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            stop_process_id = args[i];
+            logger.err("Flag --stop was removed. Use `nodes process stop <processId>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--canvas-present")) {
-            warnDeprecatedLegacyFlag("--canvas-present", "nodes canvas present");
-            canvas_present = true;
+            logger.err("Flag --canvas-present was removed. Use `nodes canvas present`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--canvas-hide")) {
-            warnDeprecatedLegacyFlag("--canvas-hide", "nodes canvas hide");
-            canvas_hide = true;
+            logger.err("Flag --canvas-hide was removed. Use `nodes canvas hide`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--canvas-navigate")) {
-            warnDeprecatedLegacyFlag("--canvas-navigate", "nodes canvas navigate <url>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            canvas_navigate = args[i];
+            logger.err("Flag --canvas-navigate was removed. Use `nodes canvas navigate <url>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--canvas-eval")) {
-            warnDeprecatedLegacyFlag("--canvas-eval", "nodes canvas eval <js>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            canvas_eval = args[i];
+            logger.err("Flag --canvas-eval was removed. Use `nodes canvas eval <js>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--canvas-snapshot")) {
-            warnDeprecatedLegacyFlag("--canvas-snapshot", "nodes canvas snapshot <path>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            canvas_snapshot = args[i];
+            logger.err("Flag --canvas-snapshot was removed. Use `nodes canvas snapshot <path>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--exec-approvals-get")) {
-            warnDeprecatedLegacyFlag("--exec-approvals-get", "nodes approvals get");
-            exec_approvals_get = true;
+            logger.err("Flag --exec-approvals-get was removed. Use `nodes approvals get`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--exec-allow")) {
-            warnDeprecatedLegacyFlag("--exec-allow", "nodes approvals allow <command>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            exec_allow_cmd = args[i];
+            logger.err("Flag --exec-allow was removed. Use `nodes approvals allow <command>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--exec-allow-file")) {
-            warnDeprecatedLegacyFlag("--exec-allow-file", "nodes approvals allow-file <path>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            exec_allow_file = args[i];
+            logger.err("Flag --exec-allow-file was removed. Use `nodes approvals allow-file <path>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--list-approvals")) {
-            warnDeprecatedLegacyFlag("--list-approvals", "approvals list");
-            list_approvals = true;
+            logger.err("Flag --list-approvals was removed. Use `approvals list`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--approve")) {
-            warnDeprecatedLegacyFlag("--approve", "approvals approve <id>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            approve_id = args[i];
+            logger.err("Flag --approve was removed. Use `approvals approve <id>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--deny")) {
-            warnDeprecatedLegacyFlag("--deny", "approvals deny <id>");
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            deny_id = args[i];
+            logger.err("Flag --deny was removed. Use `approvals deny <id>`.", .{});
+            return error.InvalidArguments;
         } else if (std.mem.eql(u8, arg, "--check-update-only")) {
             check_update_only = true;
         } else if (std.mem.eql(u8, arg, "--interactive")) {

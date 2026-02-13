@@ -8,7 +8,6 @@ Options (full build):
   --print-update-url       Print normalized update manifest URL and exit
   --insecure-tls           Disable TLS verification
   --read-timeout-ms <ms>   Socket read timeout in milliseconds (default: 15000)
-  --help-legacy            Show deprecated legacy action-flag reference
 
 Other actions:
   --session <key>          Target session for message send (uses default if not set)
@@ -18,4 +17,4 @@ Other actions:
   --node-mode              Run as a capability node (see --node-mode-help)
   --node-register          Interactive: pair as node (connect role=node and persist token)
   --wait-for-approval      With --node-register: keep retrying until approved
-  --operator-mode          Run as an operator client (pair/approve, list nodes, invoke)
+  --operator-mode          Run as an operator client (device/node noun-verb actions)

@@ -93,29 +93,11 @@ class TestCliHelp:
         )
         assert result.returncode == 0
         assert "ZiggyStarClaw CLI" in result.stdout
+        assert "message send <message>" in result.stdout
+        assert "session list|use <key>" in result.stdout or "sessions list|use <key>" in result.stdout
         assert (
-            "message send <message>" in result.stdout
-            or "message|messages|chat send <message>" in result.stdout
-            or "chat send <message>" in result.stdout
-            or "--send <message>" in result.stdout
-        )
-        # Accept either modern command docs or legacy option docs depending on which
-        # binary is present on the local machine.
-        assert (
-            "sessions list|use <key>" in result.stdout
-            or "session list|use <key>" in result.stdout
-            or "session|sessions list|use <key>" in result.stdout
-            or "sessions|session list|use <key>" in result.stdout
-            or "--list-sessions" in result.stdout
-        )
-        assert (
-            "devices list|approve <requestId>|reject <requestId>" in result.stdout
-            or "device list|approve <requestId>|reject <requestId>" in result.stdout
-            or "device|devices list|approve <requestId>|reject <requestId>" in result.stdout
-            or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout
-            or "device pending|list|approve <requestId>|reject <requestId>" in result.stdout
+            "device pending|list|approve <requestId>|reject <requestId>" in result.stdout
             or "devices pending|list|approve <requestId>|reject <requestId>" in result.stdout
-            or "--list-approvals" in result.stdout
         )
         assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
@@ -130,23 +112,16 @@ class TestCliHelp:
         assert "node service <action>" in result.stdout
         assert "--node-service-install" not in result.stdout
 
-    def test_cli_help_legacy_includes_deprecated_action_flags(self, cli):
-        """Preferred help should not list deprecated action flags; --help-legacy should."""
-        preferred = subprocess.run(
-            [str(cli), "--help"],
-            capture_output=True,
-            text=True,
-        )
-        assert preferred.returncode == 0
-        assert "--send <message>" not in preferred.stdout
-
-        legacy = subprocess.run(
+    def test_removed_help_legacy_flag_errors(self, cli):
+        """Removed --help-legacy should hard-fail with guidance."""
+        result = subprocess.run(
             [str(cli), "--help-legacy"],
             capture_output=True,
             text=True,
         )
-        assert legacy.returncode == 0
-        assert "--send <message>" in legacy.stdout
+        assert result.returncode != 0
+        assert "Flag --help-legacy was removed" in result.stderr
+        assert "--help" in result.stderr
 
     def test_removed_node_service_flag_errors(self, cli):
         """Removed legacy node-service flags should hard-fail with guidance"""
@@ -171,27 +146,45 @@ class TestCliHelp:
         assert "--mode service|session" in result.stderr
 
     @pytest.mark.parametrize(
-        ("legacy_args", "replacement"),
+        ("legacy_args", "removed_fragment", "replacement"),
         [
-            (["--send", "hello"], "message send <message>"),
-            (["--list-sessions"], "sessions list"),
-            (["--list-nodes"], "nodes list"),
-            (["--run", "echo hi"], "nodes run <command>"),
-            (["--canvas-present"], "nodes canvas present"),
-            (["--exec-approvals-get"], "nodes approvals get"),
-            (["--list-approvals"], "approvals list"),
+            (["--operator-mode", "--pair-list"], "Flag --pair-list was removed", "device list"),
+            (["--operator-mode", "--pair-approve", "req-1"], "Flag --pair-approve was removed", "device approve <requestId>"),
+            (["--operator-mode", "--watch-pairing"], "Flag --watch-pairing was removed", "device watch"),
         ],
     )
-    def test_deprecated_legacy_action_flags_warn(self, cli, legacy_args, replacement):
-        """Legacy action flags should warn with noun-verb replacement guidance."""
+    def test_removed_operator_pairing_flags_error(self, cli, legacy_args, removed_fragment, replacement):
+        """Operator-mode legacy pairing flags should hard-fail with noun-verb guidance."""
         result = subprocess.run(
-            [str(cli), *legacy_args, "--help"],
+            [str(cli), *legacy_args],
             capture_output=True,
             text=True,
         )
-        assert result.returncode == 0
-        assert "Legacy option" in result.stderr
-        assert "is deprecated" in result.stderr
+        assert result.returncode != 0
+        assert removed_fragment in result.stderr
+        assert replacement in result.stderr
+
+    @pytest.mark.parametrize(
+        ("legacy_args", "removed_fragment", "replacement"),
+        [
+            (["--send", "hello"], "Flag --send was removed", "message send <message>"),
+            (["--list-sessions"], "Flag --list-sessions was removed", "sessions list"),
+            (["--list-nodes"], "Flag --list-nodes was removed", "nodes list"),
+            (["--run", "echo hi"], "Flag --run was removed", "nodes run <command>"),
+            (["--canvas-present"], "Flag --canvas-present was removed", "nodes canvas present"),
+            (["--exec-approvals-get"], "Flag --exec-approvals-get was removed", "nodes approvals get"),
+            (["--list-approvals"], "Flag --list-approvals was removed", "approvals list"),
+        ],
+    )
+    def test_removed_legacy_action_flags_error(self, cli, legacy_args, removed_fragment, replacement):
+        """Removed legacy action flags should hard-fail with noun-verb guidance."""
+        result = subprocess.run(
+            [str(cli), *legacy_args],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert removed_fragment in result.stderr
         assert replacement in result.stderr
 
     @pytest.mark.parametrize(
@@ -217,15 +210,14 @@ class TestCliHelp:
             ["device", "approve", "request-id"],
         ],
     )
-    def test_modern_command_surface_parses_without_deprecation_warning(self, cli, modern_args):
-        """Modern noun-verb commands should parse without legacy deprecation warnings."""
+    def test_modern_command_surface_parses_cleanly(self, cli, modern_args):
+        """Modern noun-verb commands should parse cleanly."""
         result = subprocess.run(
             [str(cli), *modern_args, "--help"],
             capture_output=True,
             text=True,
         )
         assert result.returncode == 0
-        assert "Legacy option" not in result.stderr
 
     def test_plural_session_alias_parses_actions(self, cli):
         """`sessions` should behave like `session`"""
@@ -269,7 +261,7 @@ class TestCliHelp:
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="non-Windows parse-path check")
     def test_tray_startup_modern_and_legacy_aliases_parse(self, cli):
-        """Both modern and legacy tray startup forms should parse on non-Windows"""
+        """Modern tray startup parses; removed legacy alias fails with guidance."""
         modern = subprocess.run(
             [str(cli), "tray", "startup", "status"],
             capture_output=True,
@@ -284,7 +276,8 @@ class TestCliHelp:
             text=True
         )
         assert legacy.returncode != 0
-        assert "tray startup helpers are only supported on Windows" in legacy.stderr
+        assert "`tray status` was removed" in legacy.stderr
+        assert "tray startup status" in legacy.stderr
 
     def test_node_mode_help(self, cli):
         """Node mode help is available"""
