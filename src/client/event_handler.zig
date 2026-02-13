@@ -293,9 +293,12 @@ pub fn handleRawMessage(ctx: *state.ClientContext, raw: []const u8) !?AuthUpdate
             }
         }
 
-        // Some responses may omit a payload; ensure chat.send is still resolved.
+        // Some responses may omit a payload; ensure pending request IDs are still resolved.
         if (is_send) {
             ctx.resolvePendingSendRequest(true);
+        }
+        if (is_workboard) {
+            ctx.clearPendingWorkboardRequest();
         }
         if (is_agents_create) {
             ctx.clearPendingAgentsCreateRequest();

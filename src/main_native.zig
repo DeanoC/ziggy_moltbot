@@ -1376,6 +1376,7 @@ fn sendWorkboardListRequest(
 ) void {
     if (!ws_client.is_connected) return;
     if (ctx.state != .connected) return;
+    if (!ctx.supportsGatewayMethod("workboard.list")) return;
     if (ctx.pending_workboard_request_id != null) return;
 
     const params = workboard_proto.WorkboardListParams{};

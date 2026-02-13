@@ -699,6 +699,7 @@ fn sendNodesListRequest() void {
 
 fn sendWorkboardListRequest() void {
     if (!ws_connected or ctx.state != .connected) return;
+    if (!ctx.supportsGatewayMethod("workboard.list")) return;
     if (ctx.pending_workboard_request_id != null) return;
 
     const params = workboard_proto.WorkboardListParams{};
