@@ -114,22 +114,22 @@ openclaw nodes canvas present --node <your-node-id>
 |---------|--------|-----------|
 | canvas.present | ✅ Started | 🚧 Not implemented |
 | canvas.hide | ✅ No-op | 🚧 Not implemented |
-| canvas.navigate | ⚠️ CDP needed | 🚧 Not implemented |
-| canvas.eval | ⚠️ CDP needed | 🚧 Not implemented |
-| canvas.snapshot | ⚠️ CDP needed | 🚧 Not implemented |
+| canvas.navigate | ✅ CDP-backed | 🚧 Not implemented |
+| canvas.eval | ✅ CDP Runtime.evaluate | 🚧 Not implemented |
+| canvas.snapshot | ✅ CDP captureScreenshot | 🚧 Not implemented |
 
 **Legend:**
 - ✅ Implemented
-- ⚠️ Partial (Chrome started but needs DevTools Protocol)
 - 🚧 Not implemented
 
 ## DevTools Protocol
 
-Full Chrome support requires implementing Chrome DevTools Protocol (CDP):
-- WebSocket connection to `ws://localhost:9222/devtools/browser`
-- Send CDP commands for navigation, evaluation, screenshots
+Chrome canvas commands use Chrome DevTools Protocol (CDP):
+- Discover page targets via `http://127.0.0.1:9222/json/list`
+- Connect to target `webSocketDebuggerUrl`
+- Send `Page.navigate`, `Runtime.evaluate`, and `Page.captureScreenshot`
 
-This is the same protocol used by Puppeteer/Playwright.
+This is the same protocol family used by Puppeteer/Playwright.
 
 ## A2UI Support
 

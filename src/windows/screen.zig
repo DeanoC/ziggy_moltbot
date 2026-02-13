@@ -265,6 +265,13 @@ const ScreenRunOutcome = enum {
     success,
 };
 
+const ScreenFailureDiagnostic = enum {
+    none,
+    monitor_source_unavailable,
+    audio_source_unavailable,
+    permission_denied,
+};
+
 fn runFfmpegDesktopCapture(
     allocator: std.mem.Allocator,
     req: ScreenRecordRequest,
@@ -340,6 +347,12 @@ fn runFfmpegDesktopCapture(
                     "screen.record backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
                     .{ screen_backend_name, exe, audio_input_spec },
                 );
+                if (req.audioDeviceId) |audio_device_id| {
+                    logger.warn(
+                        "screen.record backend={s}: requested audioDeviceId appears unavailable or busy: {s}",
+                        .{ screen_backend_name, audio_device_id },
+                    );
+                }
             }
         }
 
@@ -516,6 +529,23 @@ fn runFfmpegDesktopCaptureVariant(
 
     const exit_code = childTermToExitCode(res.term);
     if (exit_code != 0) {
+        const diagnostic = classifyScreenFailureDiagnostic(res.stderr, variant, capture_target);
+        switch (diagnostic) {
+            .monitor_source_unavailable => logger.warn(
+                "screen.record backend={s}: requested monitor source unavailable (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .audio_source_unavailable => logger.warn(
+                "screen.record backend={s}: requested audio source unavailable (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .permission_denied => logger.warn(
+                "screen.record backend={s}: capture permission denied by OS/privacy settings (variant={s}, exe={s})",
+                .{ screen_backend_name, screenRunVariantName(variant), exe },
+            ),
+            .none => {},
+        }
+
         logger.warn("screen.record backend={s} failed via {s}: exit={d} stderr={s}", .{ screen_backend_name, exe, exit_code, res.stderr });
         allocator.free(res.stdout);
         allocator.free(res.stderr);
@@ -525,6 +555,46 @@ fn runFfmpegDesktopCaptureVariant(
     allocator.free(res.stdout);
     allocator.free(res.stderr);
     return .success;
+}
+
+fn screenRunVariantName(variant: ScreenRunVariant) []const u8 {
+    return switch (variant) {
+        .video_only => "video_only",
+        .with_audio => "with_audio",
+    };
+}
+
+fn classifyScreenFailureDiagnostic(
+    stderr: []const u8,
+    variant: ScreenRunVariant,
+    capture_target: CaptureTarget,
+) ScreenFailureDiagnostic {
+    if (containsAsciiIgnoreCase(stderr, "permission denied") or
+        containsAsciiIgnoreCase(stderr, "access is denied") or
+        containsAsciiIgnoreCase(stderr, "denied by system"))
+    {
+        return .permission_denied;
+    }
+
+    if (variant == .with_audio and
+        (containsAsciiIgnoreCase(stderr, "could not find audio") or
+            containsAsciiIgnoreCase(stderr, "audio device") or
+            containsAsciiIgnoreCase(stderr, "unable to open audio") or
+            containsAsciiIgnoreCase(stderr, "no audio devices found")))
+    {
+        return .audio_source_unavailable;
+    }
+
+    if (capture_target == .monitor and
+        (containsAsciiIgnoreCase(stderr, "capture area") or
+            containsAsciiIgnoreCase(stderr, "outside window area") or
+            containsAsciiIgnoreCase(stderr, "invalid capture area") or
+            containsAsciiIgnoreCase(stderr, "cannot open display")))
+    {
+        return .monitor_source_unavailable;
+    }
+
+    return .none;
 }
 
 fn listMonitors(allocator: std.mem.Allocator) MonitorListError![]ScreenMonitor {
@@ -817,6 +887,20 @@ fn formatDshowAudioInputAlloc(allocator: std.mem.Allocator, audio_device_id: ?[]
     return allocator.dupe(u8, "audio=default");
 }
 
+fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 fn hasWorkingFfmpeg(allocator: std.mem.Allocator) bool {
     for (ffmpegCandidates()) |exe| {
         const argv = &[_][]const u8{ exe, "-version" };
@@ -1020,6 +1104,35 @@ test "runFfmpegDesktopCaptureVariant places duration after audio input for with_
     try std.testing.expect(duration_idx.? > audio_input_idx.? + 1);
     try std.testing.expect(out_path_idx != null);
     try std.testing.expect(duration_idx.? < out_path_idx.?);
+}
+
+test "classifyScreenFailureDiagnostic detects monitor/audio/permission issues" {
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.monitor_source_unavailable,
+        classifyScreenFailureDiagnostic(
+            "gdigrab: Capture area ... outside window area",
+            .video_only,
+            .{ .monitor = .{ .x = 0, .y = 0, .width = 100, .height = 100 } },
+        ),
+    );
+
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.audio_source_unavailable,
+        classifyScreenFailureDiagnostic(
+            "Could not find audio only device with name",
+            .with_audio,
+            .desktop,
+        ),
+    );
+
+    try std.testing.expectEqual(
+        ScreenFailureDiagnostic.permission_denied,
+        classifyScreenFailureDiagnostic(
+            "Error opening input: Permission denied",
+            .video_only,
+            .desktop,
+        ),
+    );
 }
 
 test "ScreenRecordFormat.fromString accepts mp4" {

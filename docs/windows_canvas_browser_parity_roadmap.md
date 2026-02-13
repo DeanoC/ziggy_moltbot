@@ -18,14 +18,14 @@ while keeping each slice independently shippable.
 ## Current baseline
 
 Implemented today:
-- `canvas.present` / `canvas.hide` / `canvas.navigate` are available as logical node commands.
-- `canvas.snapshot` has a best-effort headless-browser fallback path for URL screenshots.
-- `canvas.eval` is still a placeholder and does not execute page JS through CDP.
+- `canvas.present` / `canvas.hide` initialize and manage a real Chrome headless canvas backend.
+- `canvas.navigate` uses CDP `Page.navigate` against the active page target.
+- `canvas.eval` uses CDP `Runtime.evaluate` and returns evaluated results.
+- `canvas.snapshot` uses CDP `Page.captureScreenshot` and returns OpenClaw-compatible base64 payloads.
 
 Gaps:
-- no persistent CDP target/session management on Windows node
-- no real JS evaluation result contract for `canvas.eval`
-- limited browser diagnostics/backoff behavior when browser startup fails
+- CDP websocket sessions are per-command (no long-lived multiplexed session yet)
+- browser diagnostics/backoff behavior can still be improved for flaky startup environments
 
 ---
 
@@ -41,7 +41,7 @@ Acceptance:
 - commands return stable payloads
 - failures are actionable and do not crash node loop
 
-### 9f-browser-2 — CDP session bootstrap (next)
+### 9f-browser-2 — CDP session bootstrap (shipped)
 
 Scope:
 - add reusable browser bootstrap + target discovery on Windows
@@ -51,7 +51,7 @@ Acceptance:
 - node can start browser, create/select target, and maintain lifecycle
 - reconnect/retry behavior is deterministic
 
-### 9f-browser-3 — Real `canvas.eval` + `canvas.snapshot` over CDP (next)
+### 9f-browser-3 — Real `canvas.eval` + `canvas.snapshot` over CDP (shipped)
 
 Scope:
 - implement `canvas.eval` via CDP `Runtime.evaluate`
