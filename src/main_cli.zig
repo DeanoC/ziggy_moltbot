@@ -794,11 +794,11 @@ pub fn main() !void {
             return;
         } else if (std.mem.eql(u8, arg, "node") or std.mem.eql(u8, arg, "nodes")) {
             // Modern noun-verb command surface (OpenClaw-style where possible):
-            //   ziggystarclaw-cli nodes list
-            //   ziggystarclaw-cli nodes run "uname -a"
-            //   ziggystarclaw-cli nodes process spawn "sleep 10"
-            //   ziggystarclaw-cli nodes canvas navigate "https://example.com"
-            //   ziggystarclaw-cli nodes service install
+            //   ziggystarclaw node list
+            //   ziggystarclaw node run "uname -a"
+            //   ziggystarclaw node process spawn "sleep 10"
+            //   ziggystarclaw node canvas navigate "https://example.com"
+            //   ziggystarclaw node service install
             if (i + 1 >= args.len) return error.InvalidArguments;
             const noun = args[i + 1];
 
@@ -1068,7 +1068,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "approvals") or std.mem.eql(u8, arg, "approval")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
-            if (std.mem.eql(u8, action, "list")) {
+            if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "pending")) {
                 list_approvals = true;
                 i += 1;
                 continue;
@@ -1089,7 +1089,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, arg, "device") or std.mem.eql(u8, arg, "devices")) {
             if (i + 1 >= args.len) return error.InvalidArguments;
             const action = args[i + 1];
-            if (std.mem.eql(u8, action, "list")) {
+            if (std.mem.eql(u8, action, "list") or std.mem.eql(u8, action, "pending")) {
                 device_pair_list = true;
                 i += 1;
                 continue;

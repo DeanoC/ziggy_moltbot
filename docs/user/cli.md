@@ -34,33 +34,35 @@ Internally, the build is split into a core/local CLI chunk and an operator chunk
   zig build -Dclient=false -Dcli_operator=false
   ```
 
-## Quick commands (preferred noun-verb style)
+## Quick commands (preferred OpenClaw-style noun-verb)
 - Send a message:
   ```bash
-  ziggystarclaw-cli message send "hello"
+  ziggystarclaw message send "hello"
   ```
-  (`chat send` and `messages send` are aliases)
+  (`chat send`, `message send`, and `messages send` are aliases)
 - List sessions:
   ```bash
-  ziggystarclaw-cli sessions list
+  ziggystarclaw session list
   ```
 - List nodes:
   ```bash
-  ziggystarclaw-cli nodes list
+  ziggystarclaw node list
   ```
 - Run a command on a node:
   ```bash
-  ziggystarclaw-cli --node <id> nodes run "uname -a"
+  ziggystarclaw --node <id> node run "uname -a"
   ```
+
+`ziggystarclaw-cli` remains fully supported as a backward-compatible executable name.
 
 Legacy flag-style action options are deprecated. They still work during transition, but now emit warnings with command-style replacements.
 
-Use `ziggystarclaw-cli --help-legacy` to see the deprecated legacy action flags.
+Use `ziggystarclaw --help-legacy` to see the deprecated legacy action flags.
 
 ## Connection setup (CLI)
 The CLI reads a config file by default (`ziggystarclaw_config.json`). You can also override values:
 ```bash
-ziggystarclaw-cli --url wss://example.com/ws --token <token> --save-config
+ziggystarclaw --url wss://example.com/ws --token <token> --save-config
 ```
 
 Environment variables (optional overrides):
@@ -72,7 +74,7 @@ Environment variables (optional overrides):
 ## Interactive mode (REPL)
 Start a REPL:
 ```bash
-ziggystarclaw-cli --interactive
+ziggystarclaw --interactive
 ```
 
 Commands:
@@ -91,43 +93,43 @@ Commands:
 
 ## Default session/node behavior
 - `message send` (and alias `chat send`) uses the default session if `--session` is not provided.
-- `nodes run` (alias `node run`) uses the default node if `--node` is not provided.
+- `node run` (alias `nodes run`) uses the default node if `--node` is not provided.
 - Set defaults with:
   ```bash
-  ziggystarclaw-cli sessions use <key> --save-config
-  ziggystarclaw-cli nodes use <id> --save-config
+  ziggystarclaw session use <key> --save-config
+  ziggystarclaw node use <id> --save-config
   ```
 
 ## Approvals
 If your server requires approval for certain actions:
 ```bash
-ziggystarclaw-cli approvals list
-ziggystarclaw-cli approvals approve <id>
-ziggystarclaw-cli approvals deny <id>
+ziggystarclaw approval pending
+ziggystarclaw approval approve <id>
+ziggystarclaw approval deny <id>
 ```
+(`approval`/`approvals` and `pending`/`list` are interchangeable aliases.)
 
 Device pairing approvals (operator scope):
 ```bash
-ziggystarclaw-cli devices list
-ziggystarclaw-cli devices approve <requestId>
-ziggystarclaw-cli devices reject <requestId>
-# singular aliases are also supported
-ziggystarclaw-cli device approve <requestId>
+ziggystarclaw device pending
+ziggystarclaw device approve <requestId>
+ziggystarclaw device reject <requestId>
 ```
+(`device`/`devices` and `pending`/`list` are interchangeable aliases.)
 
 Tray startup task management (Windows):
 ```bash
-ziggystarclaw-cli tray startup status
-ziggystarclaw-cli tray startup install
-ziggystarclaw-cli tray startup uninstall
+ziggystarclaw tray startup status
+ziggystarclaw tray startup install
+ziggystarclaw tray startup uninstall
 ```
 
 Legacy tray aliases (`tray install-startup`, `tray status`, etc.) still work but are deprecated.
 
 ## Common pitfalls
-- **No node specified for `nodes run`.**  
+- **No node specified for `node run`.**  
   Pass `--node <id>` or set a default node in the config.
 - **No sessions available.**  
-  Use `sessions list` (legacy: `--list-sessions`) to verify the server is providing sessions.
+  Use `session list` (legacy: `--list-sessions`) to verify the server is providing sessions.
 - **Token missing/expired.**  
   Re-set `--token` and `--save-config` or update the config file.

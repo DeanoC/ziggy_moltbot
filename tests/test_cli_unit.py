@@ -40,20 +40,50 @@ def _resolve_cli_binary() -> Path | None:
 ZIGGY_CLI = _resolve_cli_binary()
 
 
+def _resolve_cli_alias_binary(cli_path: Path | None) -> Path | None:
+    if cli_path is None:
+        return None
+
+    alias_name = "ziggystarclaw.exe" if cli_path.name.endswith(".exe") else "ziggystarclaw"
+    candidate = cli_path.with_name(alias_name)
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    if candidate.name.endswith(".exe"):
+        return candidate
+    return candidate if os.access(candidate, os.X_OK) else None
+
+
 class TestCliHelp:
     """Test CLI help and basic functionality"""
-    
+
     @pytest.fixture
     def cli(self):
         if ZIGGY_CLI is None:
             pytest.skip("CLI not found in zig-out/bin or ~/ZiggyStarClaw/zig-out/bin")
         return ZIGGY_CLI
-    
+
     def test_cli_exists(self, cli):
         """CLI binary exists"""
         assert cli.exists()
         assert cli.stat().st_size > 1000000  # At least 1MB
-    
+
+    def test_cli_primary_name_has_modern_alias(self, cli):
+        """The shorter `ziggystarclaw` binary name should be installed alongside `ziggystarclaw-cli`."""
+        alias = _resolve_cli_alias_binary(cli)
+        assert alias is not None
+
+    def test_cli_modern_alias_runs_help(self, cli):
+        """`ziggystarclaw --help` should behave like `ziggystarclaw-cli --help`."""
+        alias = _resolve_cli_alias_binary(cli)
+        assert alias is not None
+        result = subprocess.run(
+            [str(alias), "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "ZiggyStarClaw CLI" in result.stdout
+
     def test_cli_help(self, cli):
         """CLI shows help"""
         result = subprocess.run(
@@ -83,12 +113,14 @@ class TestCliHelp:
             or "device list|approve <requestId>|reject <requestId>" in result.stdout
             or "device|devices list|approve <requestId>|reject <requestId>" in result.stdout
             or "devices|device list|approve <requestId>|reject <requestId>" in result.stdout
+            or "device pending|list|approve <requestId>|reject <requestId>" in result.stdout
+            or "devices pending|list|approve <requestId>|reject <requestId>" in result.stdout
             or "--list-approvals" in result.stdout
         )
         assert "tray startup install|uninstall|start|stop|status" in result.stdout
 
-    def test_node_service_help_prefers_verb_noun(self, cli):
-        """Help text promotes node service verb-noun commands"""
+    def test_node_service_help_prefers_noun_verb(self, cli):
+        """Help text promotes node service noun-verb commands"""
         result = subprocess.run(
             [str(cli), "--help"],
             capture_output=True,
@@ -178,8 +210,11 @@ class TestCliHelp:
             ["nodes", "canvas", "present"],
             ["node", "approvals", "get"],
             ["nodes", "approvals", "get"],
+            ["approval", "pending"],
             ["approvals", "list"],
+            ["device", "pending"],
             ["devices", "list"],
+            ["device", "approve", "request-id"],
         ],
     )
     def test_modern_command_surface_parses_without_deprecation_warning(self, cli, modern_args):
@@ -265,13 +300,13 @@ class TestCliHelp:
 
 class TestNodeConfig:
     """Test node configuration"""
-    
+
     @pytest.fixture
     def cli(self):
         if ZIGGY_CLI is None:
             pytest.skip("CLI not found in zig-out/bin or ~/ZiggyStarClaw/zig-out/bin")
         return ZIGGY_CLI
-    
+
     def test_node_mode_without_gateway(self, cli):
         """Node mode fails gracefully without gateway"""
         result = subprocess.run(

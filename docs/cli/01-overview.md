@@ -3,21 +3,24 @@
 ## Usage
 
 ```text
+ziggystarclaw <noun> <verb> [args] [options]
+ziggystarclaw --help
+ziggystarclaw --help-legacy
+
+# Backward-compatible binary name:
 ziggystarclaw-cli <noun> <verb> [args] [options]
-ziggystarclaw-cli --help
-ziggystarclaw-cli --help-legacy
 ```
 
-## Preferred command style (noun verb)
+## Preferred command style (OpenClaw-style noun verb)
 
 - `message send <message>` (aliases: `chat`, `messages`)
-- `sessions list|use <key>` (alias: `session`)
-- `nodes list|use <id>|run <command>|which <name>|notify <title>` (alias: `node`)
-- `nodes process list|spawn <command>|poll <processId>|stop <processId>`
-- `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
-- `nodes approvals get|allow <command>|allow-file <path>`
-- `approvals list|approve <id>|deny <id>`
-- `devices list|approve <requestId>|reject <requestId>` (alias: `device`)
+- `session list|use <key>` (alias: `sessions`)
+- `node list|use <id>|run <command>|which <name>|notify <title>` (alias: `nodes`)
+- `node process list|spawn <command>|poll <processId>|stop <processId>`
+- `node canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
+- `node approvals get|allow <command>|allow-file <path>`
+- `approval pending|list|approve <id>|deny <id>` (alias: `approvals`)
+- `device pending|list|approve <requestId>|reject <requestId>` (alias: `devices`)
 - `node service ...`
 - `node session ...`
 - `node runner ...`
