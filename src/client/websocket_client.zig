@@ -4,6 +4,7 @@ const messages = @import("../protocol/messages.zig");
 const gateway = @import("../protocol/gateway.zig");
 const identity = @import("../client/device_identity.zig");
 const requests = @import("../protocol/requests.zig");
+const ws_auth_pairing = @import("../protocol/ws_auth_pairing.zig");
 const logger = @import("../utils/logger.zig");
 const builtin = @import("builtin");
 
@@ -359,7 +360,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         // as the connect auth token / WS Authorization token, not only here.
         const device_token = gateway_token;
 
-        const payload = try buildDeviceAuthPayload(self.allocator, .{
+        const payload = try ws_auth_pairing.buildDeviceAuthPayload(self.allocator, .{
             .device_id = ident.device_id,
             .client_id = client_id,
             .client_mode = client_mode,
@@ -407,29 +408,7 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         },
     );
 
-    const ConnectParamsExt = struct {
-        minProtocol: u32,
-        maxProtocol: u32,
-        client: gateway.ConnectClient,
-        caps: []const []const u8,
-        role: []const u8,
-        scopes: []const []const u8,
-        // Extra fields used by node sessions (gateway reads them dynamically)
-        commands: []const []const u8,
-        auth: ?gateway.ConnectAuth = null,
-        device: ?gateway.DeviceAuth = null,
-        locale: ?[]const u8 = null,
-        userAgent: ?[]const u8 = null,
-    };
-
-    const ConnectRequestFrameExt = struct {
-        type: []const u8 = "req",
-        id: []const u8,
-        method: []const u8 = "connect",
-        params: ConnectParamsExt,
-    };
-
-    const connect_params = ConnectParamsExt{
+    const connect_params = ws_auth_pairing.ConnectParams{
         .minProtocol = gateway.PROTOCOL_VERSION,
         .maxProtocol = gateway.PROTOCOL_VERSION,
         .client = .{
@@ -440,14 +419,14 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
             .mode = client_mode,
         },
         .caps = caps,
+        .commands = commands,
         .role = self.connect_role,
         .scopes = scopes,
-        .commands = commands,
         .auth = auth,
         .device = device,
     };
 
-    const request = ConnectRequestFrameExt{
+    const request = ws_auth_pairing.ConnectRequestFrame{
         .id = request_id,
         .params = connect_params,
     };
@@ -467,57 +446,6 @@ fn sendConnectRequest(self: *WebSocketClient, nonce: ?[]const u8) !void {
         try client.write(payload);
     }
     self.connect_sent = true;
-}
-
-fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
-    device_id: []const u8,
-    client_id: []const u8,
-    client_mode: []const u8,
-    role: []const u8,
-    scopes: []const []const u8,
-    signed_at_ms: i64,
-    token: []const u8,
-    nonce: ?[]const u8 = null,
-}) ![]u8 {
-    // Match OpenClaw's buildDeviceAuthPayload() exactly:
-    // base = [version, deviceId, clientId, clientMode, role, scopesCsv, signedAtMs, token]
-    // + nonce if v2
-    const scopes_joined = try std.mem.join(allocator, ",", params.scopes);
-    defer allocator.free(scopes_joined);
-
-    const version: []const u8 = if (params.nonce != null) "v2" else "v1";
-    if (params.nonce) |nonce| {
-        return std.fmt.allocPrint(
-            allocator,
-            "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
-            .{
-                version,
-                params.device_id,
-                params.client_id,
-                params.client_mode,
-                params.role,
-                scopes_joined,
-                params.signed_at_ms,
-                params.token,
-                nonce,
-            },
-        );
-    }
-
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}",
-        .{
-            version,
-            params.device_id,
-            params.client_id,
-            params.client_mode,
-            params.role,
-            scopes_joined,
-            params.signed_at_ms,
-            params.token,
-        },
-    );
 }
 
 fn parseConnectNonce(allocator: std.mem.Allocator, raw: []const u8) !?[]u8 {

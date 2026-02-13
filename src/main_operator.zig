@@ -2,6 +2,7 @@ const std = @import("std");
 const logger = @import("utils/logger.zig");
 const websocket_client = @import("client/websocket_client.zig");
 const requests = @import("protocol/requests.zig");
+const ws_auth_pairing = @import("protocol/ws_auth_pairing.zig");
 const markdown_help = @import("cli/markdown_help.zig");
 
 pub const usage = @embedFile("../docs/cli/operator-mode.md");
@@ -229,7 +230,7 @@ pub fn runOperatorMode(allocator: std.mem.Allocator, opts: OperatorCliOptions) !
             allocator,
             &ws_client,
             "device.pair.approve",
-            .{ .requestId = rid },
+            ws_auth_pairing.PairingRequestIdParams{ .requestId = rid },
             5000,
         );
         defer allocator.free(payload);

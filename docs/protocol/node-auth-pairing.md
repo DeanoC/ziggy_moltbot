@@ -21,8 +21,9 @@ This doc is a client-side mirror of the gateway’s WebSocket auth + pairing fie
   - `buildHeaders()` (WS `Authorization` header)
   - `parseConnectNonce()` / `handleConnectChallenge()`
   - `sendConnectRequest()` (`connect.params.auth` + `connect.params.device`)
-  - `buildDeviceAuthPayload()` (payload string shape)
+  - delegates device-auth payload string building to `protocol/ws_auth_pairing.zig`
 - `src/protocol/gateway.zig` (`ConnectAuth`, `DeviceAuth`, `ConnectParams`)
+- `src/protocol/ws_auth_pairing.zig` (mirrored field structs + example payload builders)
 - `src/client/device_identity.zig` (`signPayload()`)
 - `src/node/connection_manager_singlethread.zig` (node token invariants)
 - `src/main_node.zig` (node-mode connect + token persistence/reconnect)
@@ -131,59 +132,30 @@ Where:
 
 ## 5) Example payload builder (Zig, client-side)
 
+Implemented utility: `src/protocol/ws_auth_pairing.zig`
+
+- `buildDeviceAuthPayload(...)` → exact OpenClaw-compatible signature payload string
+- `buildExamplePayloadBundle(...)` → ready-to-print JSON examples for:
+  - `connect`
+  - `node.pair.request`
+  - `device.pair.approve`
+  - `device.pair.reject`
+
 ```zig
-fn buildDeviceAuthPayload(allocator: std.mem.Allocator, params: struct {
-    device_id: []const u8,
-    client_id: []const u8,
-    client_mode: []const u8,
-    role: []const u8,
-    scopes: []const []const u8,
-    signed_at_ms: i64,
-    token: []const u8,
-    nonce: ?[]const u8 = null,
-}) ![]u8 {
-    const scopes_joined = try std.mem.join(allocator, ",", params.scopes);
-    defer allocator.free(scopes_joined);
+const ws_auth_pairing = @import("src/protocol/ws_auth_pairing.zig");
 
-    const version: []const u8 = if (params.nonce != null) "v2" else "v1";
-    if (params.nonce) |nonce| {
-        return std.fmt.allocPrint(
-            allocator,
-            "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}|{s}",
-            .{
-                version,
-                params.device_id,
-                params.client_id,
-                params.client_mode,
-                params.role,
-                scopes_joined,
-                params.signed_at_ms,
-                params.token,
-                nonce,
-            },
-        );
-    }
+var bundle = try ws_auth_pairing.buildExamplePayloadBundle(allocator);
+defer bundle.deinit(allocator);
 
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}|{s}|{s}|{s}|{s}|{s}|{d}|{s}",
-        .{
-            version,
-            params.device_id,
-            params.client_id,
-            params.client_mode,
-            params.role,
-            scopes_joined,
-            params.signed_at_ms,
-            params.token,
-        },
-    );
-}
+std.debug.print("{s}\n", .{bundle.connect});
+std.debug.print("{s}\n", .{bundle.node_pair_request});
+std.debug.print("{s}\n", .{bundle.device_pair_approve});
+std.debug.print("{s}\n", .{bundle.device_pair_reject});
 ```
 
-Usage sketch:
+For production connect flows:
 
-1. Build payload with connect fields (including `token`, and `nonce` when present).
+1. Build device-auth payload with `buildDeviceAuthPayload(...)` (include nonce when present).
 2. Sign bytes via `device_identity.signPayload(...)`.
 3. Send signature/public key/device id in `connect.params.device`.
 
