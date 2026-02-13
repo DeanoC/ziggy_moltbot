@@ -168,7 +168,7 @@ class TestCliHelp:
         assert "--mode service|session" in result.stderr
 
     @pytest.mark.parametrize(
-        ("legacy_args", "removed_fragment", "replacement"),
+        ("legacy_args", "replacement"),
         [
             (["--send", "hello"], "message send <message>"),
             (["--list-sessions"], "sessions list"),
@@ -184,7 +184,7 @@ class TestCliHelp:
             (["--list-approvals"], "approvals list"),
         ],
     )
-    def test_removed_legacy_action_flags_error(self, cli, legacy_args, removed_fragment, replacement):
+    def test_removed_legacy_action_flags_error(self, cli, legacy_args, replacement):
         """Legacy action flags should hard-fail with noun-verb replacement guidance."""
         result = subprocess.run(
             [str(cli), *legacy_args],
