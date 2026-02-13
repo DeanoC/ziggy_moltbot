@@ -760,6 +760,14 @@ const ClipRunOutcome = enum {
     success,
 };
 
+const ClipFailureDiagnostic = enum {
+    none,
+    device_busy,
+    permission_denied,
+    video_source_unavailable,
+    audio_source_unavailable,
+};
+
 fn runFfmpegCameraClip(
     allocator: std.mem.Allocator,
     req: CameraClipRequest,
@@ -801,6 +809,12 @@ fn runFfmpegCameraClip(
                         "camera.clip backend={s}: includeAudio capture failed via {s} (input={s}); retrying video-only",
                         .{ clip_backend_name, exe, audio_input_spec },
                     );
+                    if (req.audioDeviceId) |audio_device_id| {
+                        logger.warn(
+                            "camera.clip backend={s}: requested audioDeviceId appears unavailable or busy: {s}",
+                            .{ clip_backend_name, audio_device_id },
+                        );
+                    }
                 },
             }
         }
@@ -971,6 +985,27 @@ fn runFfmpegCameraClipVariant(
 
     const exit_code = childTermToExitCode(res.term);
     if (exit_code != 0) {
+        const diagnostic = classifyClipFailureDiagnostic(res.stderr, variant);
+        switch (diagnostic) {
+            .device_busy => logger.warn(
+                "camera.clip backend={s}: source appears busy/in-use (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .permission_denied => logger.warn(
+                "camera.clip backend={s}: capture permission denied by OS/privacy settings (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .video_source_unavailable => logger.warn(
+                "camera.clip backend={s}: requested camera source unavailable (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .audio_source_unavailable => logger.warn(
+                "camera.clip backend={s}: requested audio source unavailable (variant={s}, exe={s})",
+                .{ clip_backend_name, clipRunVariantName(variant), exe },
+            ),
+            .none => {},
+        }
+
         logger.warn("camera.clip backend={s} failed via {s}: exit={d} stderr={s}", .{ clip_backend_name, exe, exit_code, res.stderr });
         allocator.free(res.stdout);
         allocator.free(res.stderr);
@@ -980,6 +1015,48 @@ fn runFfmpegCameraClipVariant(
     allocator.free(res.stdout);
     allocator.free(res.stderr);
     return .success;
+}
+
+fn clipRunVariantName(variant: ClipRunVariant) []const u8 {
+    return switch (variant) {
+        .video_only => "video_only",
+        .with_audio => "with_audio",
+    };
+}
+
+fn classifyClipFailureDiagnostic(stderr: []const u8, variant: ClipRunVariant) ClipFailureDiagnostic {
+    if (containsAsciiIgnoreCase(stderr, "permission denied") or
+        containsAsciiIgnoreCase(stderr, "access is denied") or
+        containsAsciiIgnoreCase(stderr, "denied by system"))
+    {
+        return .permission_denied;
+    }
+
+    if (containsAsciiIgnoreCase(stderr, "device or resource busy") or
+        containsAsciiIgnoreCase(stderr, "resource busy") or
+        containsAsciiIgnoreCase(stderr, "already in use") or
+        containsAsciiIgnoreCase(stderr, "is being used by another application"))
+    {
+        return .device_busy;
+    }
+
+    if (containsAsciiIgnoreCase(stderr, "could not find video device") or
+        containsAsciiIgnoreCase(stderr, "no video devices found") or
+        containsAsciiIgnoreCase(stderr, "video source unavailable"))
+    {
+        return .video_source_unavailable;
+    }
+
+    if (variant == .with_audio and
+        (containsAsciiIgnoreCase(stderr, "could not find audio") or
+            containsAsciiIgnoreCase(stderr, "audio device") or
+            containsAsciiIgnoreCase(stderr, "unable to open audio") or
+            containsAsciiIgnoreCase(stderr, "no audio devices found")))
+    {
+        return .audio_source_unavailable;
+    }
+
+    return .none;
 }
 
 const ImageDimensions = struct {
@@ -1308,6 +1385,28 @@ test "parseJpegDimensions reads width/height from SOF" {
     const dims = try parseJpegDimensions(&jpeg_bytes);
     try std.testing.expectEqual(@as(u32, 640), dims.width);
     try std.testing.expectEqual(@as(u32, 480), dims.height);
+}
+
+test "classifyClipFailureDiagnostic detects camera busy + permission + unavailable sources" {
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.device_busy,
+        classifyClipFailureDiagnostic("dshow @ ... device or resource busy", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.permission_denied,
+        classifyClipFailureDiagnostic("Error opening input: Permission denied", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.video_source_unavailable,
+        classifyClipFailureDiagnostic("Could not find video device with name", .video_only),
+    );
+
+    try std.testing.expectEqual(
+        ClipFailureDiagnostic.audio_source_unavailable,
+        classifyClipFailureDiagnostic("Could not find audio only device with name", .with_audio),
+    );
 }
 
 test "detectBackendSupport returns false on non-Windows targets" {
