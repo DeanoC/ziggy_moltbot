@@ -1,11 +1,12 @@
 const std = @import("std");
-const logger = @import("utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const websocket_client = @import("client/websocket_client.zig");
-const requests = @import("protocol/requests.zig");
+const requests = ziggy.protocol.requests;
 const ws_auth_pairing = @import("protocol/ws_auth_pairing.zig");
 const markdown_help = @import("cli/markdown_help.zig");
 
-pub const usage = @embedFile("../docs/cli/operator-mode.md");
+pub const usage = @embedFile("cli/docs/operator-mode.md");
 
 pub const OperatorCliOptions = struct {
     url: []const u8 = "ws://127.0.0.1:18789/ws",

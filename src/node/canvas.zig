@@ -1,7 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ws = @import("websocket");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const node_platform = @import("node_platform.zig");
 
 /// Canvas backend type

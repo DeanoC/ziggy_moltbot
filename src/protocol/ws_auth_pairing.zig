@@ -1,7 +1,8 @@
 const std = @import("std");
-const gateway = @import("gateway.zig");
-const messages = @import("messages.zig");
-const requests = @import("requests.zig");
+const ziggy = @import("ziggy-core");
+const gateway = ziggy.protocol.gateway;
+const messages = ziggy.protocol.messages;
+const requests = ziggy.protocol.requests;
 
 /// Mirror of OpenClaw gateway WS auth + pairing field docs for client-side use.
 ///

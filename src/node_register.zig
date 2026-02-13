@@ -3,7 +3,8 @@ const builtin = @import("builtin");
 const unified_config = @import("unified_config.zig");
 const node_platform = @import("node/node_platform.zig");
 const websocket_client = @import("client/websocket_client.zig");
-const logger = @import("utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 
 fn ensureParentDir(path: []const u8) void {
     if (std.fs.path.dirname(path)) |dir| {
@@ -294,7 +295,7 @@ pub fn run(
         // Token is OPTIONAL in Tailscale Serve setups (gateway.auth.allowTailscale=true) because
         // the gateway can authenticate via identity headers injected by the proxy.
         // Keep prompting for it because direct WS/HTTP deployments still need it, but allow empty.
-        const secret_prompt = @import("utils/secret_prompt.zig");
+        const secret_prompt = ziggy.utils.secret_prompt;
         const tok = try secret_prompt.readSecretAlloc(allocator, "Gateway auth token (optional for Tailscale Serve):");
         defer allocator.free(tok);
         logger.info("(received {d} chars)", .{tok.len});
@@ -317,7 +318,7 @@ pub fn run(
     defer allocator.free(ws_url);
 
     // Ensure identity exists, and use its device id as our node id (simple + stable).
-    const identity = try @import("client/device_identity.zig").loadOrCreate(allocator, cfg.node.deviceIdentityPath);
+    const identity = try ziggy.identity.loadOrCreate(allocator, cfg.node.deviceIdentityPath);
     defer {
         var ident = identity;
         ident.deinit(allocator);

@@ -2,7 +2,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const node_platform = @import("node_platform.zig");
 
 /// Process state

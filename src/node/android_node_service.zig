@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const websocket_client = @import("../client/websocket_client.zig");
-const identity = @import("../client/device_identity.zig");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
 const command_router = @import("command_router.zig");
@@ -9,8 +8,10 @@ const CommandRouter = command_router.CommandRouter;
 const SingleThreadConnectionManager = @import("connection_manager_singlethread.zig").SingleThreadConnectionManager;
 const health_reporter = @import("health_reporter.zig");
 const HealthReporter = health_reporter.HealthReporter;
-const messages = @import("../protocol/messages.zig");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const identity = ziggy.identity;
+const messages = ziggy.protocol.messages;
+const logger = ziggy.utils.logger;
 const node_platform = @import("node_platform.zig");
 
 pub const NodeHostConfig = struct {

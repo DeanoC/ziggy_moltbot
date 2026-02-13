@@ -3,7 +3,8 @@ const zgpu = @import("zgpu");
 const command_list = @import("command_list.zig");
 const image_cache = @import("../image_cache.zig");
 const font_system = @import("../font_system.zig");
-const logger = @import("../../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const profiler = @import("../../utils/profiler.zig");
 const c = @cImport({
     @cInclude("ft2build.h");

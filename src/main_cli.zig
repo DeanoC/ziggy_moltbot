@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const logger = @import("utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const build_options = @import("build_options");
 const cli_features = @import("cli/features.zig");
 const markdown_help = @import("cli/markdown_help.zig");
@@ -616,24 +617,24 @@ fn runNodeSupervisor(allocator: std.mem.Allocator, args: []const []const u8) !vo
 var cli_log_level: std.log.Level = .warn;
 
 const usage_overview = if (cli_features.supports_operator_client)
-    @embedFile("../docs/cli/01-overview.md")
+    @embedFile("cli/docs/01-overview.md")
 else
-    @embedFile("../docs/cli/01-overview-node-only.md");
+    @embedFile("cli/docs/01-overview-node-only.md");
 
 const usage_options = if (cli_features.supports_operator_client)
-    @embedFile("../docs/cli/02-options.md")
+    @embedFile("cli/docs/02-options.md")
 else
-    @embedFile("../docs/cli/02-options-node-only.md");
+    @embedFile("cli/docs/02-options-node-only.md");
 
 const usage_global_flags = if (cli_features.supports_operator_client)
-    @embedFile("../docs/cli/06-global-flags.md")
+    @embedFile("cli/docs/06-global-flags.md")
 else
-    @embedFile("../docs/cli/06-global-flags-node-only.md");
+    @embedFile("cli/docs/06-global-flags-node-only.md");
 
 const usage_tail =
-    @embedFile("../docs/cli/03-node-runner.md") ++ "\n" ++
-    @embedFile("../docs/cli/04-tray-startup.md") ++ "\n" ++
-    @embedFile("../docs/cli/05-node-service.md") ++ "\n" ++
+    @embedFile("cli/docs/03-node-runner.md") ++ "\n" ++
+    @embedFile("cli/docs/04-tray-startup.md") ++ "\n" ++
+    @embedFile("cli/docs/05-node-service.md") ++ "\n" ++
     usage_global_flags;
 
 const usage = usage_overview ++ "\n" ++ usage_options ++ "\n" ++ usage_tail;

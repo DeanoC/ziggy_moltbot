@@ -1,11 +1,13 @@
+const ziggy = @import("ziggy-core");
+
 pub const protocol = struct {
     pub const types = @import("protocol/types.zig");
-    pub const messages = @import("protocol/messages.zig");
-    pub const constants = @import("protocol/constants.zig");
-    pub const gateway = @import("protocol/gateway.zig");
-    pub const requests = @import("protocol/requests.zig");
+    pub const messages = ziggy.protocol.messages;
+    pub const constants = ziggy.protocol.constants;
+    pub const gateway = ziggy.protocol.gateway;
+    pub const requests = ziggy.protocol.requests;
     pub const sessions = @import("protocol/sessions.zig");
-    pub const chat = @import("protocol/chat.zig");
+    pub const chat = ziggy.protocol.chat;
     pub const nodes = @import("protocol/nodes.zig");
     pub const ws_auth_pairing = @import("protocol/ws_auth_pairing.zig");
 };
@@ -14,7 +16,7 @@ pub const client = struct {
     pub const state = @import("client/state.zig");
     pub const config = @import("client/config.zig");
     pub const event_handler = @import("client/event_handler.zig");
-    pub const device_identity = @import("client/device_identity.zig");
+    pub const device_identity = ziggy.identity;
     pub const update_checker = @import("client/update_checker.zig");
 };
 
@@ -64,10 +66,12 @@ pub const platform = struct {
 };
 
 pub const utils = struct {
-    pub const allocator = @import("utils/allocator.zig");
-    pub const logger = @import("utils/logger.zig");
-    pub const json_helpers = @import("utils/json_helpers.zig");
-    pub const string_utils = @import("utils/string_utils.zig");
+    pub const allocator = ziggy.utils.allocator;
+    pub const logger = ziggy.utils.logger;
+    pub const profiler = @import("utils/profiler.zig");
+    pub const json_helpers = ziggy.utils.json_helpers;
+    pub const string_utils = ziggy.utils.string_utils;
+    pub const secret_prompt = ziggy.utils.secret_prompt;
 };
 
 pub const node = struct {

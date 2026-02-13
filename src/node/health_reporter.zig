@@ -2,8 +2,9 @@ const std = @import("std");
 const node_context = @import("node_context.zig");
 const NodeContext = node_context.NodeContext;
 const websocket_client = @import("../client/websocket_client.zig");
-const messages = @import("../protocol/messages.zig");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const messages = ziggy.protocol.messages;
+const logger = ziggy.utils.logger;
 const node_platform = @import("node_platform.zig");
 
 /// Health reporter for node status updates

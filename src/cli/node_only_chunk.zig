@@ -2,7 +2,8 @@ const std = @import("std");
 const build_options = @import("build_options");
 const config = @import("../client/config.zig");
 const update_checker = @import("../client/update_checker.zig");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 
 pub const Options = struct {
     config_path: []const u8,

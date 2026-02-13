@@ -1,6 +1,7 @@
 const std = @import("std");
 const websocket_client = @import("../client/websocket_client.zig");
-const logger = @import("../utils/logger.zig");
+const ziggy = @import("ziggy-core");
+const logger = ziggy.utils.logger;
 const node_platform = @import("node_platform.zig");
 
 /// Reconnection strategy with exponential backoff
