@@ -153,7 +153,8 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
         }
 
         var stdout = std.fs.File.stdout().deprecatedWriter();
-        gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, &stdout) catch |err| {
+        const standalone_insecure_tls = override_insecure orelse false;
+        gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, standalone_insecure_tls, &stdout) catch |err| {
             logger.err("Gateway test failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1155,7 +1156,7 @@ fn runRepl(
                     }
                 }
 
-                gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, stdout) catch |err| {
+                gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, cfg.insecure_tls, stdout) catch |err| {
                     try stdout.print("Gateway test failed: {s}\n", .{@errorName(err)});
                     continue;
                 };

@@ -34,12 +34,13 @@ pub fn run(
     url: []const u8,
     agent_id: []const u8,
     timeout_ms: u32,
+    insecure_tls: bool,
     writer: anytype,
 ) !void {
     switch (verb) {
-        .ping => try ping(allocator, url, timeout_ms, writer),
-        .echo => try echo(allocator, url, agent_id, timeout_ms, writer),
-        .probe => try probe(allocator, url, agent_id, timeout_ms, writer),
+        .ping => try ping(allocator, url, timeout_ms, insecure_tls, writer),
+        .echo => try echo(allocator, url, agent_id, timeout_ms, insecure_tls, writer),
+        .probe => try probe(allocator, url, agent_id, timeout_ms, insecure_tls, writer),
         .unknown => {
             try writer.writeAll("Unknown gateway verb. Use: ping, echo, or probe\n");
             return error.InvalidArguments;
@@ -51,6 +52,7 @@ fn ping(
     allocator: std.mem.Allocator,
     url: []const u8,
     timeout_ms: u32,
+    insecure_tls: bool,
     writer: anytype,
 ) !void {
     try writer.print("Pinging {s}...\n", .{url});
@@ -59,7 +61,7 @@ fn ping(
         allocator,
         url,
         "",
-        true,
+        insecure_tls,
         null,
     );
     client.setReadTimeout(timeout_ms);
@@ -92,6 +94,7 @@ fn echo(
     url: []const u8,
     _agent_id: []const u8,
     timeout_ms: u32,
+    insecure_tls: bool,
     writer: anytype,
 ) !void {
     _ = _agent_id;
@@ -101,7 +104,7 @@ fn echo(
         allocator,
         url,
         "",
-        true,
+        insecure_tls,
         null,
     );
     client.setReadTimeout(timeout_ms);
@@ -197,6 +200,7 @@ fn probe(
     url: []const u8,
     _agent_id: []const u8,
     timeout_ms: u32,
+    insecure_tls: bool,
     writer: anytype,
 ) !void {
     _ = _agent_id;
@@ -206,7 +210,7 @@ fn probe(
         allocator,
         url,
         "",
-        true,
+        insecure_tls,
         null,
     );
     client.setReadTimeout(timeout_ms);
