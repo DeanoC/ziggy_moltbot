@@ -18,16 +18,14 @@ pub fn parseVerb(verb: []const u8) GatewayVerb {
 }
 
 pub fn printHelp(writer: anytype) !void {
-    try writer.writeAll(
-        "Gateway testing commands:\n" ++
+    try writer.writeAll("Gateway testing commands:\n" ++
         "  gateway ping <url>    Test WebSocket connectivity (handshake only)\n" ++
         "  gateway echo <url>    Full echo test: connect, send, verify response\n" ++
         "  gateway probe <url>   Probe for OpenClaw protocol compatibility\n" ++
         "\n" ++
         "Examples:\n" ++
         "  gateway ping ws://127.0.0.1:18790\n" ++
-        "  gateway echo ws://127.0.0.1:18790/v1/agents/test/stream\n"
-    );
+        "  gateway echo ws://127.0.0.1:18790/v1/agents/test/stream\n");
 }
 
 pub fn run(
@@ -221,8 +219,6 @@ fn probe(
 
     // Check protocol version (look for session.ack structure)
     const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    var checks_passed: u32 = 0;
-    var checks_total: u32 = 0;
 
     const checks = [_]struct {
         name: []const u8,
@@ -234,17 +230,22 @@ fn probe(
         .{ .name = "JSON-RPC framing", .check = .json_rpc },
     };
 
+    const checks_total: u32 = @intCast(checks.len);
+    var websocket_ok = false;
+    var session_ack_ok = false;
+    var agent_id_ok = false;
+    var json_rpc_ok = false;
+
     // WebSocket check
-    checks_total += 1;
     if (client.is_connected) {
-        checks_passed += 1;
+        websocket_ok = true;
         try writer.print("[✓] {s}\n", .{checks[0].name});
     } else {
         try writer.print("[✗] {s}\n", .{checks[0].name});
     }
 
     // Protocol checks
-    while (std.time.milliTimestamp() < deadline and checks_passed < checks.len) {
+    while (std.time.milliTimestamp() < deadline and !session_ack_ok) {
         const msg = client.receive() catch continue;
 
         if (msg) |payload| {
@@ -260,33 +261,30 @@ fn probe(
             if (msg_type != .string) continue;
 
             if (std.mem.eql(u8, msg_type.string, "session.ack")) {
-                checks_total += 1;
-                checks_passed += 1;
+                session_ack_ok = true;
                 try writer.print("[✓] {s}\n", .{checks[1].name});
 
                 if (frame.object.get("agentId")) |aid| {
                     if (aid == .string and aid.string.len > 0) {
-                        checks_total += 1;
-                        checks_passed += 1;
+                        agent_id_ok = true;
                         try writer.print("[✓] {s} (found: {s})\n", .{ checks[2].name, aid.string });
                     } else {
-                        checks_total += 1;
-                        try writer.print("[✗] {s} (empty or missing)\n", .{checks[2].name});
+                        try writer.print("[✗] {s} (empty or invalid)\n", .{checks[2].name});
                     }
                 } else {
-                    checks_total += 1;
                     try writer.print("[✗] {s} (missing)\n", .{checks[2].name});
                 }
 
                 // Check JSON-RPC structure
                 if (frame.object.get("sessionKey")) |sk| {
-                    checks_total += 1;
                     if (sk == .string and sk.string.len > 0) {
-                        checks_passed += 1;
+                        json_rpc_ok = true;
                         try writer.print("[✓] {s}\n", .{checks[3].name});
                     } else {
                         try writer.print("[✗] {s} (invalid sessionKey)\n", .{checks[3].name});
                     }
+                } else {
+                    try writer.print("[✗] {s} (missing sessionKey)\n", .{checks[3].name});
                 }
 
                 break;
@@ -294,6 +292,18 @@ fn probe(
         }
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
+
+    if (!session_ack_ok) {
+        try writer.print("[✗] {s} (not received before timeout)\n", .{checks[1].name});
+        try writer.print("[✗] {s} (no session.ack payload)\n", .{checks[2].name});
+        try writer.print("[✗] {s} (no session.ack payload)\n", .{checks[3].name});
+    }
+
+    var checks_passed: u32 = 0;
+    if (websocket_ok) checks_passed += 1;
+    if (session_ack_ok) checks_passed += 1;
+    if (agent_id_ok) checks_passed += 1;
+    if (json_rpc_ok) checks_passed += 1;
 
     const elapsed = std.time.milliTimestamp() - start;
 
