@@ -1479,6 +1479,7 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "approvals")) return .approvals;
     if (std.mem.eql(u8, cmd, "approve")) return .approve;
     if (std.mem.eql(u8, cmd, "deny")) return .deny;
+    if (std.mem.eql(u8, cmd, "profile")) return .profile;
     if (std.mem.eql(u8, cmd, "device")) return .device;
     if (std.mem.eql(u8, cmd, "devices")) return .devices;
     if (std.mem.eql(u8, cmd, "gateway")) return .gateway;
