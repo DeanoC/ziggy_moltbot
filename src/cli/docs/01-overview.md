@@ -20,6 +20,7 @@ ziggystarclaw-cli --help
 - `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
 - `nodes approvals get|allow <command>|allow-file <path>`
 - `devices list|watch|approve <requestId>|reject <requestId>` (alias: `device`; `pending` is an alias for `list`)
+- `gateway ping|echo|probe <url>` (gateway testing commands)
 
 ## Notes
 
