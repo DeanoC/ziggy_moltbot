@@ -19,11 +19,10 @@ ziggystarclaw-cli --help
 - `nodes process list|spawn <command>|poll <processId>|stop <processId>`
 - `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
 - `nodes approvals get|allow <command>|allow-file <path>`
-- `gateway ping|echo|probe <url>` (gateway testing commands)
 
 ## Notes
 
-- Legacy flag-style action options have been removed.
+- Legacy flag-style action options have been removed, except `--gateway-test <verb> <url>`.
 - Use strict noun-verb commands (`message send`, `sessions list`, `nodes run`, etc.).
 - Tray commands now require the explicit noun form: `tray startup <action>`.
 
