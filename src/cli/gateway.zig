@@ -103,6 +103,9 @@ fn echo(
     _ = _agent_id;
     try writer.print("Echo test to {s}...\n", .{url});
 
+    // Use longer timeout for AI responses (30 seconds)
+    const ai_timeout_ms = @max(timeout_ms, 30000);
+
     var client = websocket_client.WebSocketClient.init(
         allocator,
         url,
@@ -110,7 +113,7 @@ fn echo(
         insecure_tls,
         null,
     );
-    client.setReadTimeout(timeout_ms);
+    client.setReadTimeout(ai_timeout_ms);
     defer client.deinit();
 
     const start = std.time.milliTimestamp();
@@ -119,7 +122,7 @@ fn echo(
     defer client.disconnect();
 
     // Wait for session.ack
-    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
+    const deadline = std.time.milliTimestamp() + @as(i64, @intCast(ai_timeout_ms));
     var got_ack = false;
     var session_key: ?[]u8 = null;
     defer if (session_key) |s| allocator.free(s);
@@ -166,9 +169,9 @@ fn echo(
     try client.send(test_payload);
     try writer.writeAll("✓ Sent test message\n");
 
-    // Wait for echo response
-    const echo_deadline = std.time.milliTimestamp() + @as(i64, @intCast(timeout_ms));
-    var got_echo = false;
+    // Wait for response (echo or AI response)
+    const echo_deadline = std.time.milliTimestamp() + @as(i64, @intCast(ai_timeout_ms));
+    var got_response = false;
 
     while (std.time.milliTimestamp() < echo_deadline) {
         const msg = client.receive() catch |err| {
@@ -179,9 +182,13 @@ fn echo(
         if (msg) |payload| {
             defer allocator.free(payload);
 
-            if (std.mem.containsAtLeast(u8, payload, 1, "Echo:")) {
-                got_echo = true;
-                try writer.print("✓ Received echo: {s}\n", .{payload});
+            // Check for any valid response (echo, session.receive, or AI response)
+            if (std.mem.containsAtLeast(u8, payload, 1, "Echo:") or
+                std.mem.containsAtLeast(u8, payload, 1, "session.receive") or
+                std.mem.containsAtLeast(u8, payload, 1, "content"))
+            {
+                got_response = true;
+                try writer.print("✓ Received response: {s}\n", .{payload});
                 break;
             }
         }
@@ -190,10 +197,10 @@ fn echo(
 
     const elapsed = std.time.milliTimestamp() - start;
 
-    if (got_echo) {
+    if (got_response) {
         try writer.print("✓ Echo test passed in {d}ms\n", .{elapsed});
     } else {
-        try writer.writeAll("✗ No echo response received\n");
+        try writer.writeAll("✗ No response received (AI may be slow or no API key configured)\n");
         return error.NoEcho;
     }
 }
