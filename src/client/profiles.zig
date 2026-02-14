@@ -1,5 +1,6 @@
 const std = @import("std");
-const Config = @import("config.zig");
+const config_mod = @import("config.zig");
+const Config = config_mod.Config;
 
 /// Profile represents a single gateway configuration
 pub const Profile = struct {
@@ -234,12 +235,9 @@ pub const Profiles = struct {
     }
 
     fn addDefaultProfiles(self: *Profiles) !void {
-        // Main (OpenClaw) profile - empty, will use existing config
-        try self.add("main", "", "");
-        try self.setActive("main");
-
-        // Spiderweb (local dev)
+        // Spiderweb (local dev gateway)
         try self.add("spiderweb", "ws://127.0.0.1:18790", "");
+        try self.setActive("spiderweb");
     }
 
     // JSON serialization structs

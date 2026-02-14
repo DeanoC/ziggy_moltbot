@@ -199,41 +199,34 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
         return;
     }
 
-    var cfg = try config.loadOrDefault(allocator, config_path);
-    defer cfg.deinit(allocator);
+    // Load config: either from profile or default
+    var cfg: config.Config = blk: {
+        if (profile_name) |name| {
+            const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+            defer allocator.free(profiles_path);
 
-    // Apply profile settings if specified
-    if (profile_name) |name| {
-        const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
-        defer allocator.free(profiles_path);
+            var profiles = profiles_mod.Profiles.init(allocator);
+            defer profiles.deinit();
 
-        var profiles = profiles_mod.Profiles.init(allocator);
-        defer profiles.deinit();
+            profiles.load(profiles_path) catch |err| {
+                logger.err("Failed to load profiles: {s}", .{@errorName(err)});
+                return err;
+            };
 
-        profiles.load(profiles_path) catch |err| {
-            logger.err("Failed to load profiles: {s}", .{@errorName(err)});
-            return err;
-        };
+            const profile = profiles.get(name) orelse {
+                logger.err("Profile not found: {s}", .{name});
+                return error.ProfileNotFound;
+            };
 
-        const profile = profiles.get(name) orelse {
-            logger.err("Profile not found: {s}", .{name});
-            return error.ProfileNotFound;
-        };
+            logger.info("Using profile: {s} ({s})", .{ name, profile.server_url });
 
-        // Override config with profile settings
-        allocator.free(cfg.server_url);
-        cfg.server_url = try allocator.dupe(u8, profile.server_url);
-        allocator.free(cfg.token);
-        cfg.token = try allocator.dupe(u8, profile.token);
-        cfg.insecure_tls = profile.insecure_tls;
-        if (cfg.connect_host_override) |old| allocator.free(old);
-        cfg.connect_host_override = if (profile.connect_host_override) |v|
-            try allocator.dupe(u8, v)
-        else
-            null;
-
-        logger.info("Using profile: {s} ({s})", .{ name, cfg.server_url });
-    }
+            // Convert profile to config
+            break :blk try profile.toConfig(allocator);
+        } else {
+            // Load default config
+            break :blk try config.loadOrDefault(allocator, config_path);
+        }
+    };
     defer cfg.deinit(allocator);
 
     if (override_url) |url| {
