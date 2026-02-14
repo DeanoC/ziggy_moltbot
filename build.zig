@@ -84,6 +84,7 @@ pub fn build(b: *std.Build) void {
     });
     const ziggy_ui_module = ziggy_ui_dep.module("ziggy-ui");
     const ziggy_ui_src = ziggy_ui_dep.path("src");
+    ziggy_ui_module.addIncludePath(ziggy_ui_src);
 
     const core_module = b.addModule("ziggy-core", .{
         .root_source_file = b.path("libs/core/root.zig"),
@@ -91,6 +92,27 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     core_module.addImport("websocket", ws_native);
+    ziggy_ui_module.addImport("ziggy-core", core_module);
+
+    const sdl3_bridge_dep = b.dependency("sdl3", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zgpu_bridge_dep = b.dependency("zgpu", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const zsc_bridge_module = b.addModule("zsc_bridge", .{
+        .root_source_file = b.path("libs/zsc_bridge/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zsc_bridge_module.addImport("ziggy-core", core_module);
+    zsc_bridge_module.addIncludePath(sdl3_bridge_dep.path("include"));
+
+    ziggy_ui_module.addImport("zgpu", zgpu_bridge_dep.module("root"));
+    ziggy_ui_module.addImport("zsc", zsc_bridge_module);
 
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
@@ -129,6 +151,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
         cli_main_module.addOptions("build_options", build_options);
@@ -181,6 +204,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -283,6 +307,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -312,6 +337,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -439,6 +465,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -605,6 +632,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "ziggy-core", .module = core_module },
+                    .{ .name = "ziggy-ui", .module = ziggy_ui_module },
                 },
             });
             const freetype_android = addFreetype(b, android_target, optimize, null);

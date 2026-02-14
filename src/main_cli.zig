@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const ziggy = @import("ziggy-core");
+const zui = @import("ziggy-ui");
 const logger = ziggy.utils.logger;
 const build_options = @import("build_options");
 const cli_features = @import("cli/features.zig");
@@ -39,7 +40,7 @@ const win_console_window = if (builtin.os.tag == .windows) @import("windows/cons
 const linux_service = @import("linux/systemd_service.zig");
 const node_register = @import("node_register.zig");
 const unified_config = @import("unified_config.zig");
-const winamp_import = @import("ui/theme_engine/winamp_import.zig");
+const winamp_import = zui.ui.theme_engine.winamp_import;
 
 pub const std_options = std.Options{
     .logFn = cliLogFn,

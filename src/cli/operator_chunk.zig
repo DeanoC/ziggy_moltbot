@@ -1,5 +1,6 @@
 const std = @import("std");
-const client_state = @import("../client/state.zig");
+const zui = @import("ziggy-ui");
+const client_state = zui.client.state;
 const config = @import("../client/config.zig");
 const profiles_mod = @import("../client/profiles.zig");
 const event_handler = @import("../client/event_handler.zig");
@@ -1262,22 +1263,22 @@ fn runRepl(
                     // List all profiles
                     const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
                     defer allocator.free(profiles_path);
-                    
+
                     var profiles = profiles_mod.Profiles.init(allocator);
                     defer profiles.deinit();
-                    
+
                     profiles.load(profiles_path) catch |err| {
                         try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     const active = profiles.active orelse "(none)";
                     try stdout.print("Profiles (active: {s}):\n", .{active});
-                    
+
                     for (profiles.profiles.items) |profile| {
-                        const marker = if (profiles.active) |a| 
+                        const marker = if (profiles.active) |a|
                             (if (std.mem.eql(u8, a, profile.name)) " *" else "")
-                        else 
+                        else
                             "";
                         try stdout.print("  {s}{s}: {s}\n", .{ profile.name, marker, profile.server_url });
                     }
@@ -1286,28 +1287,28 @@ fn runRepl(
                         try stdout.writeAll("Usage: profile use <name>\n");
                         continue;
                     };
-                    
+
                     const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
                     defer allocator.free(profiles_path);
-                    
+
                     var profiles = profiles_mod.Profiles.init(allocator);
                     defer profiles.deinit();
-                    
+
                     profiles.load(profiles_path) catch |err| {
                         try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     profiles.setActive(name) catch |err| {
                         try stdout.print("Failed to set active profile: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     profiles.save(profiles_path) catch |err| {
                         try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     try stdout.print("Switched to profile: {s}\n", .{name});
                     try stdout.writeAll("Note: Restart ZSC to use the new profile.\n");
                 } else if (std.mem.eql(u8, profile_cmd, "add")) {
@@ -1320,47 +1321,47 @@ fn runRepl(
                         continue;
                     };
                     const token = parts.rest();
-                    
+
                     const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
                     defer allocator.free(profiles_path);
-                    
+
                     var profiles = profiles_mod.Profiles.init(allocator);
                     defer profiles.deinit();
-                    
+
                     profiles.load(profiles_path) catch {};
-                    
+
                     try profiles.add(name, url, token);
-                    
+
                     profiles.save(profiles_path) catch |err| {
                         try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     try stdout.print("Added profile: {s} ({s})\n", .{ name, url });
                 } else if (std.mem.eql(u8, profile_cmd, "remove")) {
                     const name = parts.next() orelse {
                         try stdout.writeAll("Usage: profile remove <name>\n");
                         continue;
                     };
-                    
+
                     const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
                     defer allocator.free(profiles_path);
-                    
+
                     var profiles = profiles_mod.Profiles.init(allocator);
                     defer profiles.deinit();
-                    
+
                     profiles.load(profiles_path) catch |err| {
                         try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     profiles.remove(name);
-                    
+
                     profiles.save(profiles_path) catch |err| {
                         try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
                         continue;
                     };
-                    
+
                     try stdout.print("Removed profile: {s}\n", .{name});
                 } else {
                     try stdout.writeAll("Usage: profile <list|use|add|remove> [args...]\n");
