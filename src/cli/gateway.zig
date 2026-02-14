@@ -32,15 +32,16 @@ pub fn run(
     allocator: std.mem.Allocator,
     verb: GatewayVerb,
     url: []const u8,
+    auth_token: []const u8,
     agent_id: []const u8,
     timeout_ms: u32,
     insecure_tls: bool,
     writer: anytype,
 ) !void {
     switch (verb) {
-        .ping => try ping(allocator, url, timeout_ms, insecure_tls, writer),
-        .echo => try echo(allocator, url, agent_id, timeout_ms, insecure_tls, writer),
-        .probe => try probe(allocator, url, agent_id, timeout_ms, insecure_tls, writer),
+        .ping => try ping(allocator, url, auth_token, timeout_ms, insecure_tls, writer),
+        .echo => try echo(allocator, url, auth_token, agent_id, timeout_ms, insecure_tls, writer),
+        .probe => try probe(allocator, url, auth_token, agent_id, timeout_ms, insecure_tls, writer),
         .unknown => {
             try writer.writeAll("Unknown gateway verb. Use: ping, echo, or probe\n");
             return error.InvalidArguments;
@@ -51,6 +52,7 @@ pub fn run(
 fn ping(
     allocator: std.mem.Allocator,
     url: []const u8,
+    auth_token: []const u8,
     timeout_ms: u32,
     insecure_tls: bool,
     writer: anytype,
@@ -60,7 +62,7 @@ fn ping(
     var client = websocket_client.WebSocketClient.init(
         allocator,
         url,
-        "",
+        auth_token,
         insecure_tls,
         null,
     );
@@ -92,6 +94,7 @@ fn ping(
 fn echo(
     allocator: std.mem.Allocator,
     url: []const u8,
+    auth_token: []const u8,
     _agent_id: []const u8,
     timeout_ms: u32,
     insecure_tls: bool,
@@ -103,7 +106,7 @@ fn echo(
     var client = websocket_client.WebSocketClient.init(
         allocator,
         url,
-        "",
+        auth_token,
         insecure_tls,
         null,
     );
@@ -198,6 +201,7 @@ fn echo(
 fn probe(
     allocator: std.mem.Allocator,
     url: []const u8,
+    auth_token: []const u8,
     _agent_id: []const u8,
     timeout_ms: u32,
     insecure_tls: bool,
@@ -209,7 +213,7 @@ fn probe(
     var client = websocket_client.WebSocketClient.init(
         allocator,
         url,
-        "",
+        auth_token,
         insecure_tls,
         null,
     );
@@ -317,5 +321,6 @@ fn probe(
         try writer.writeAll("\n✓ OpenClaw protocol compatible\n");
     } else {
         try writer.writeAll("\n✗ Not fully compatible (may be a custom gateway or old version)\n");
+        return error.IncompatibleGateway;
     }
 }

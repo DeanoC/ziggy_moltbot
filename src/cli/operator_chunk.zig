@@ -152,9 +152,44 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
             }
         }
 
+        var standalone_cfg = try config.loadOrDefault(allocator, config_path);
+        defer standalone_cfg.deinit(allocator);
+
+        var env_token_to_free: ?[]u8 = null;
+        defer if (env_token_to_free) |value| allocator.free(value);
+
+        const standalone_token: []const u8 = blk: {
+            if (override_token_set) break :blk (override_token orelse "");
+
+            const env_token = std.process.getEnvVarOwned(allocator, "MOLT_TOKEN") catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            if (env_token) |token| {
+                env_token_to_free = token;
+                break :blk token;
+            }
+
+            break :blk standalone_cfg.token;
+        };
+
+        const standalone_insecure_tls = blk: {
+            if (override_insecure) |value| break :blk value;
+
+            const env_insecure = std.process.getEnvVarOwned(allocator, "MOLT_INSECURE_TLS") catch |err| switch (err) {
+                error.EnvironmentVariableNotFound => null,
+                else => return err,
+            };
+            if (env_insecure) |value| {
+                defer allocator.free(value);
+                break :blk parseBool(value);
+            }
+
+            break :blk standalone_cfg.insecure_tls;
+        };
+
         var stdout = std.fs.File.stdout().deprecatedWriter();
-        const standalone_insecure_tls = override_insecure orelse false;
-        gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, standalone_insecure_tls, &stdout) catch |err| {
+        gateway_cmd.run(allocator, verb, url, standalone_token, agent_id, read_timeout_ms, standalone_insecure_tls, &stdout) catch |err| {
             logger.err("Gateway test failed: {s}", .{@errorName(err)});
             return err;
         };
@@ -1156,7 +1191,7 @@ fn runRepl(
                     }
                 }
 
-                gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, cfg.insecure_tls, stdout) catch |err| {
+                gateway_cmd.run(allocator, verb, url, cfg.token, agent_id, read_timeout_ms, cfg.insecure_tls, stdout) catch |err| {
                     try stdout.print("Gateway test failed: {s}\n", .{@errorName(err)});
                     continue;
                 };
