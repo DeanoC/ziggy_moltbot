@@ -1,6 +1,7 @@
 const std = @import("std");
 const client_state = @import("../client/state.zig");
 const config = @import("../client/config.zig");
+const profiles_mod = @import("../client/profiles.zig");
 const event_handler = @import("../client/event_handler.zig");
 const update_checker = @import("../client/update_checker.zig");
 const websocket_client = @import("../openclaw_transport.zig").websocket;
@@ -57,6 +58,7 @@ pub const Options = struct {
     save_config: bool,
     gateway_verb: ?[]const u8,
     gateway_url: ?[]const u8,
+    profile_name: ?[]const u8,
 };
 
 const ReplCommand = enum {
@@ -127,6 +129,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     const save_config = options.save_config;
     const gateway_verb = options.gateway_verb;
     const gateway_url = options.gateway_url;
+    const profile_name = options.profile_name;
 
     // Handle standalone gateway test (no main connection needed)
     if (gateway_verb) |verb_str| {
@@ -197,6 +200,40 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     }
 
     var cfg = try config.loadOrDefault(allocator, config_path);
+    defer cfg.deinit(allocator);
+
+    // Apply profile settings if specified
+    if (profile_name) |name| {
+        const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+        defer allocator.free(profiles_path);
+
+        var profiles = profiles_mod.Profiles.init(allocator);
+        defer profiles.deinit();
+
+        profiles.load(profiles_path) catch |err| {
+            logger.err("Failed to load profiles: {s}", .{@errorName(err)});
+            return err;
+        };
+
+        const profile = profiles.get(name) orelse {
+            logger.err("Profile not found: {s}", .{name});
+            return error.ProfileNotFound;
+        };
+
+        // Override config with profile settings
+        allocator.free(cfg.server_url);
+        cfg.server_url = try allocator.dupe(u8, profile.server_url);
+        allocator.free(cfg.token);
+        cfg.token = try allocator.dupe(u8, profile.token);
+        cfg.insecure_tls = profile.insecure_tls;
+        if (cfg.connect_host_override) |old| allocator.free(old);
+        cfg.connect_host_override = if (profile.connect_host_override) |v|
+            try allocator.dupe(u8, v)
+        else
+            null;
+
+        logger.info("Using profile: {s} ({s})", .{ name, cfg.server_url });
+    }
     defer cfg.deinit(allocator);
 
     if (override_url) |url| {

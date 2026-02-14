@@ -695,6 +695,7 @@ pub fn main() !void {
     var override_token_set = false;
     var override_update_url: ?[]const u8 = null;
     var override_insecure: ?bool = null;
+    var profile_name: ?[]const u8 = null;
     var read_timeout_ms: u32 = 15_000;
     var send_message: ?[]const u8 = null;
     var session_key: ?[]const u8 = null;
@@ -1172,6 +1173,10 @@ pub fn main() !void {
             if (i >= args.len) return error.InvalidArguments;
             config_path = args[i];
             config_path_set = true;
+        } else if (std.mem.eql(u8, arg, "--zsc-profile")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            profile_name = args[i];
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -2271,6 +2276,7 @@ pub fn main() !void {
             .save_config = save_config,
             .gateway_verb = gateway_test_verb,
             .gateway_url = gateway_test_url,
+            .profile_name = profile_name,
         });
     } else {
         try node_only_chunk.run(allocator, .{
