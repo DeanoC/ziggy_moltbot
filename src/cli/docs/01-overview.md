@@ -19,18 +19,11 @@ ziggystarclaw-cli --help
 - `nodes process list|spawn <command>|poll <processId>|stop <processId>`
 - `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
 - `nodes approvals get|allow <command>|allow-file <path>`
-<<<<<<< HEAD
-- `approvals list|approve <id>|deny <id>` (alias: `approval`; `pending` is an alias for `list`)
 - `devices list|watch|approve <requestId>|reject <requestId>` (alias: `device`; `pending` is an alias for `list`)
-- `node service ...`
-- `node session ...`
-- `node runner ...`
-- `node profile apply --profile <client|service|session>`
-- `tray startup install|uninstall|start|stop|status`
 
 ## Notes
 
-- Legacy flag-style action options have been removed.
+- Legacy flag-style action options have been removed, except `--gateway-test <verb> <url>`.
 - Use strict noun-verb commands (`message send`, `sessions list`, `nodes run`, etc.).
 - Tray commands now require the explicit noun form: `tray startup <action>`.
 

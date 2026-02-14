@@ -695,6 +695,7 @@ pub fn main() !void {
     var override_token_set = false;
     var override_update_url: ?[]const u8 = null;
     var override_insecure: ?bool = null;
+    var profile_name: ?[]const u8 = null;
     var read_timeout_ms: u32 = 15_000;
     var send_message: ?[]const u8 = null;
     var session_key: ?[]const u8 = null;
@@ -732,6 +733,8 @@ pub fn main() !void {
     var node_register_wait = false;
     var extract_wsz: ?[]const u8 = null;
     var extract_dest: ?[]const u8 = null;
+    var gateway_test_verb: ?[]const u8 = null;
+    var gateway_test_url: ?[]const u8 = null;
 
     // Node service helpers
     var node_service_install = false;
@@ -1170,6 +1173,10 @@ pub fn main() !void {
             if (i >= args.len) return error.InvalidArguments;
             config_path = args[i];
             config_path_set = true;
+        } else if (std.mem.eql(u8, arg, "--zsc-profile")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            profile_name = args[i];
         } else if (std.mem.eql(u8, arg, "--url")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1373,6 +1380,13 @@ pub fn main() !void {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             extract_dest = args[i];
+        } else if (std.mem.eql(u8, arg, "--gateway-test")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            gateway_test_verb = args[i];
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            gateway_test_url = args[i];
         } else if (std.mem.eql(u8, arg, "--mode")) {
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
@@ -1433,6 +1447,7 @@ pub fn main() !void {
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
         device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or use_session != null or use_node != null or
         extract_wsz != null or check_update_only or print_update_url or interactive or node_mode or windows_service_run or node_register_mode or save_config or
+        gateway_test_verb != null or
         node_service_install or node_service_uninstall or node_service_start or node_service_stop or node_service_status or
         node_session_install or node_session_uninstall or node_session_start or node_session_stop or node_session_status or
         node_runner_install or node_runner_start or node_runner_stop or node_runner_status or
@@ -1448,6 +1463,7 @@ pub fn main() !void {
         poll_process_id != null or stop_process_id != null or canvas_present or canvas_hide or
         canvas_navigate != null or canvas_eval != null or canvas_snapshot != null or exec_approvals_get or
         exec_allow_cmd != null or exec_allow_file != null or approve_id != null or deny_id != null or
+        gateway_test_verb != null or
         device_pair_list or device_pair_approve_id != null or device_pair_reject_id != null or device_pair_watch or interactive;
 
     if (!cli_features.supports_operator_client and operator_action_requested) {
@@ -2258,6 +2274,9 @@ pub fn main() !void {
             .print_update_url = print_update_url,
             .interactive = interactive,
             .save_config = save_config,
+            .gateway_verb = gateway_test_verb,
+            .gateway_url = gateway_test_url,
+            .profile_name = profile_name,
         });
     } else {
         try node_only_chunk.run(allocator, .{
