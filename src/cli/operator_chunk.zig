@@ -232,6 +232,40 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     };
     defer cfg.deinit(allocator);
 
+    // Apply profile settings if specified
+    if (profile_name) |name| {
+        const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+        defer allocator.free(profiles_path);
+
+        var profiles = profiles_mod.Profiles.init(allocator);
+        defer profiles.deinit();
+
+        profiles.load(profiles_path) catch |err| {
+            logger.err("Failed to load profiles: {s}", .{@errorName(err)});
+            return err;
+        };
+
+        const profile = profiles.get(name) orelse {
+            logger.err("Profile not found: {s}", .{name});
+            return error.ProfileNotFound;
+        };
+
+        // Override config with profile settings
+        allocator.free(cfg.server_url);
+        cfg.server_url = try allocator.dupe(u8, profile.server_url);
+        allocator.free(cfg.token);
+        cfg.token = try allocator.dupe(u8, profile.token);
+        cfg.insecure_tls = profile.insecure_tls;
+        if (cfg.connect_host_override) |old| allocator.free(old);
+        cfg.connect_host_override = if (profile.connect_host_override) |v|
+            try allocator.dupe(u8, v)
+        else
+            null;
+
+        logger.info("Using profile: {s} ({s})", .{ name, cfg.server_url });
+    }
+    defer cfg.deinit(allocator);
+
     if (override_url) |url| {
         allocator.free(cfg.server_url);
         cfg.server_url = try allocator.dupe(u8, url);
