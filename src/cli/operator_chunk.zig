@@ -12,6 +12,7 @@ const approvals_proto = @import("../protocol/approvals.zig");
 const requests = ziggy.protocol.requests;
 const ws_auth_pairing = @import("../protocol/ws_auth_pairing.zig");
 const build_options = @import("build_options");
+const gateway_cmd = @import("gateway.zig");
 
 pub const Options = struct {
     config_path: []const u8,
@@ -54,6 +55,8 @@ pub const Options = struct {
     print_update_url: bool,
     interactive: bool,
     save_config: bool,
+    gateway_verb: ?[]const u8,
+    gateway_url: ?[]const u8,
 };
 
 const ReplCommand = enum {
@@ -74,6 +77,7 @@ const ReplCommand = enum {
     approvals,
     approve,
     deny,
+    gateway,
     quit,
     exit,
     save,
@@ -121,6 +125,40 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
     const print_update_url = options.print_update_url;
     const interactive = options.interactive;
     const save_config = options.save_config;
+    const gateway_verb = options.gateway_verb;
+    const gateway_url = options.gateway_url;
+
+    // Handle standalone gateway test (no main connection needed)
+    if (gateway_verb) |verb_str| {
+        const url = gateway_url orelse {
+            logger.err("Usage: --gateway-test <verb> <url>", .{});
+            return error.InvalidArguments;
+        };
+
+        const verb = gateway_cmd.parseVerb(verb_str);
+        if (verb == .unknown) {
+            logger.err("Unknown gateway verb: {s}. Use: ping, echo, or probe", .{verb_str});
+            const stdout = std.fs.File.stdout().deprecatedWriter();
+            try gateway_cmd.printHelp(stdout);
+            return error.InvalidArguments;
+        }
+
+        // Parse agent_id from URL path (e.g., /v1/agents/test/stream -> test)
+        var agent_id: []const u8 = "test";
+        if (std.mem.indexOf(u8, url, "/agents/")) |start| {
+            const after_agent = start + 8; // "/agents/" len
+            if (std.mem.indexOfPos(u8, url, after_agent, "/")) |end| {
+                agent_id = url[after_agent..end];
+            }
+        }
+
+        var stdout = std.fs.File.stdout().deprecatedWriter();
+        gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, &stdout) catch |err| {
+            logger.err("Gateway test failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        return;
+    }
 
     var cfg = try config.loadOrDefault(allocator, config_path);
     defer cfg.deinit(allocator);
@@ -732,7 +770,7 @@ pub fn run(allocator: std.mem.Allocator, options: Options) !void {
 
     // Handle --interactive
     if (interactive) {
-        try runRepl(allocator, &ws_client, &ctx, &cfg, config_path);
+        try runRepl(allocator, &ws_client, &ctx, &cfg, config_path, read_timeout_ms);
         return;
     }
 
@@ -784,6 +822,7 @@ fn runRepl(
     ctx: *client_state.ClientContext,
     cfg: *config.Config,
     config_path: []const u8,
+    read_timeout_ms: u32,
 ) !void {
     var stdout = std.fs.File.stdout().deprecatedWriter();
     var stdin = std.fs.File.stdin().deprecatedReader();
@@ -830,6 +869,7 @@ fn runRepl(
                     "  approvals               List pending approvals\n" ++
                     "  approve <id>            Approve request by ID\n" ++
                     "  deny <id>               Deny request by ID\n" ++
+                    "  gateway <verb> [url]   Gateway test: ping|echo|probe ws://host:port\n" ++
                     "  save                    Save current session/node to config\n" ++
                     "  quit/exit               Exit interactive mode\n");
             },
@@ -1084,6 +1124,42 @@ fn runRepl(
                 try resolveApproval(allocator, ws_client, id, "deny");
                 try stdout.writeAll("Denial sent.\n");
             },
+            .gateway => {
+                const verb_str = parts.next() orelse "";
+                const url = parts.rest();
+
+                if (verb_str.len == 0) {
+                    try gateway_cmd.printHelp(stdout);
+                    continue;
+                }
+
+                const verb = gateway_cmd.parseVerb(verb_str);
+                if (verb == .unknown) {
+                    try stdout.print("Unknown verb: {s}\n", .{verb_str});
+                    try gateway_cmd.printHelp(stdout);
+                    continue;
+                }
+
+                if (url.len == 0) {
+                    try stdout.writeAll("Usage: gateway <verb> <url>\n");
+                    try gateway_cmd.printHelp(stdout);
+                    continue;
+                }
+
+                // Parse agent_id from URL path (e.g., /v1/agents/test/stream -> test)
+                var agent_id: []const u8 = "test";
+                if (std.mem.indexOf(u8, url, "/agents/")) |start| {
+                    const after_agent = start + 8; // "/agents/" len
+                    if (std.mem.indexOfPos(u8, url, after_agent, "/")) |end| {
+                        agent_id = url[after_agent..end];
+                    }
+                }
+
+                gateway_cmd.run(allocator, verb, url, agent_id, read_timeout_ms, stdout) catch |err| {
+                    try stdout.print("Gateway test failed: {s}\n", .{@errorName(err)});
+                    continue;
+                };
+            },
             .quit, .exit => {
                 try stdout.writeAll("Goodbye!\n");
                 break;
@@ -1154,6 +1230,7 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "approvals")) return .approvals;
     if (std.mem.eql(u8, cmd, "approve")) return .approve;
     if (std.mem.eql(u8, cmd, "deny")) return .deny;
+    if (std.mem.eql(u8, cmd, "gateway")) return .gateway;
     if (std.mem.eql(u8, cmd, "quit")) return .quit;
     if (std.mem.eql(u8, cmd, "exit")) return .exit;
     if (std.mem.eql(u8, cmd, "save")) return .save;

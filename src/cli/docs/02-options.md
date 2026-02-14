@@ -17,5 +17,3 @@ Other actions:
   --node-mode              Run as a capability node (see --node-mode-help)
   --node-register          Interactive: pair as node (connect role=node and persist token)
   --wait-for-approval      With --node-register: keep retrying until approved
-<<<<<<< HEAD
-  --operator-mode          Deprecated (no-op): operator actions are available without it

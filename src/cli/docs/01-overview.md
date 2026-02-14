@@ -19,14 +19,7 @@ ziggystarclaw-cli --help
 - `nodes process list|spawn <command>|poll <processId>|stop <processId>`
 - `nodes canvas present|hide|navigate <url>|eval <js>|snapshot <path>`
 - `nodes approvals get|allow <command>|allow-file <path>`
-<<<<<<< HEAD
-- `approvals list|approve <id>|deny <id>` (alias: `approval`; `pending` is an alias for `list`)
-- `devices list|watch|approve <requestId>|reject <requestId>` (alias: `device`; `pending` is an alias for `list`)
-- `node service ...`
-- `node session ...`
-- `node runner ...`
-- `node profile apply --profile <client|service|session>`
-- `tray startup install|uninstall|start|stop|status`
+- `gateway ping|echo|probe <url>` (gateway testing commands)
 
 ## Notes
 
