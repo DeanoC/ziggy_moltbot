@@ -1,36 +1,37 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ui = @import("ui/main_window.zig");
-const input_router = @import("ui/input/input_router.zig");
-const operator_view = @import("ui/operator_view.zig");
-const theme = @import("ui/theme.zig");
-const theme_engine = @import("ui/theme_engine/theme_engine.zig");
-const profile = @import("ui/theme_engine/profile.zig");
-const panel_manager = @import("ui/panel_manager.zig");
-const dock_transfer = @import("ui/dock_transfer.zig");
-const workspace_store = @import("ui/workspace_store.zig");
-const workspace = @import("ui/workspace.zig");
-const dock_graph = @import("ui/layout/dock_graph.zig");
-const dock_drop = @import("ui/layout/dock_drop.zig");
-const dock_detach = @import("ui/layout/dock_detach.zig");
-const draw_context = @import("ui/draw_context.zig");
-const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-const image_cache = @import("ui/image_cache.zig");
-const attachment_cache = @import("ui/attachment_cache.zig");
-const client_state = @import("client/state.zig");
-const agent_registry = @import("client/agent_registry.zig");
-const session_keys = @import("client/session_keys.zig");
-const session_kind = @import("client/session_kind.zig");
-const config = @import("client/config.zig");
+const zui = @import("ziggy-ui");
+const ui = zui.ui.main_window;
+const input_router = zui.ui.input.input_router;
+const operator_view = zui.ui.operator_view;
+const theme = zui.ui.theme;
+const theme_engine = zui.ui.theme_engine.theme_engine;
+const profile = zui.ui.theme_engine.profile;
+const panel_manager = zui.ui.panel_manager;
+const dock_transfer = zui.ui.dock_transfer;
+const workspace_store = zui.ui.workspace_store;
+const workspace = zui.ui.workspace;
+const dock_graph = zui.ui.layout.dock_graph;
+const dock_drop = zui.ui.layout.dock_drop;
+const dock_detach = zui.ui.layout.dock_detach;
+const draw_context = zui.ui.draw_context;
+const ui_command_inbox = zui.ui.ui_command_inbox;
+const image_cache = zui.ui.image_cache;
+const attachment_cache = zui.ui.attachment_cache;
+const client_state = zui.client.state;
+const agent_registry = zui.client.agent_registry;
+const session_keys = zui.client.session_keys;
+const session_kind = zui.client.session_kind;
+const config = zui.client.config;
 const unified_config = @import("unified_config.zig");
 const app_state = @import("client/app_state.zig");
 const event_handler = @import("client/event_handler.zig");
 const websocket_client = @import("openclaw_transport.zig").websocket;
-const update_checker = @import("client/update_checker.zig");
+const update_checker = zui.client.update_checker;
 const build_options = @import("build_options");
 const ziggy = @import("ziggy-core");
 const logger = ziggy.utils.logger;
-const profiler = @import("utils/profiler.zig");
+const profiler = zui.bridge_utils.profiler;
 const requests = ziggy.protocol.requests;
 const sessions_proto = @import("protocol/sessions.zig");
 const agents_proto = @import("protocol/agents.zig");
@@ -38,17 +39,17 @@ const chat_proto = ziggy.protocol.chat;
 const nodes_proto = @import("protocol/nodes.zig");
 const workboard_proto = @import("protocol/workboard.zig");
 const approvals_proto = @import("protocol/approvals.zig");
-const types = @import("protocol/types.zig");
-const sdl = @import("platform/sdl3.zig").c;
-const input_backend = @import("ui/input/input_backend.zig");
-const sdl_input_backend = @import("ui/input/sdl_input_backend.zig");
-const text_input_backend = @import("ui/input/text_input_backend.zig");
-const command_queue = @import("ui/render/command_queue.zig");
-const input_state = @import("ui/input/input_state.zig");
-const ui_commands = @import("ui/render/command_list.zig");
+const types = zui.protocol.types;
+const sdl = zui.zsc.platform.sdl3.c;
+const input_backend = zui.ui.input.input_backend;
+const sdl_input_backend = zui.ui.input.sdl_input_backend;
+const text_input_backend = zui.ui.input.text_input_backend;
+const command_queue = zui.ui.render.command_queue;
+const input_state = zui.ui.input.input_state;
+const ui_commands = zui.ui.render.command_list;
 
 const multi_renderer = @import("client/multi_window_renderer.zig");
-const font_system = @import("ui/font_system.zig");
+const font_system = zui.ui.font_system;
 
 const icon = @cImport({
     @cInclude("icon_loader.h");
@@ -2808,7 +2809,8 @@ pub fn main() !void {
             }
             // Bootstrap workboard only when poll timer allows (respects backoff)
             if (ctx.workboard_items.items.len == 0 and ctx.pending_workboard_request_id == null and
-                (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms)) {
+                (next_workboard_poll_at_ms == 0 or now_ms >= next_workboard_poll_at_ms))
+            {
                 sendWorkboardListRequest(allocator, &ctx, &ws_client);
             }
         }

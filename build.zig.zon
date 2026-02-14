@@ -46,6 +46,10 @@
             .url = "https://github.com/zig-gamedev/ztracy/archive/refs/heads/main.zip",
             .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
         },
+        .ziggy_ui = .{
+            .url = "https://github.com/DeanoC/ziggy-ui/archive/refs/heads/main.tar.gz",
+            .hash = "ziggy_ui-0.1.0-dS4PqOb_8AESOQ-DcwxxvYNQFdAcYnzeENOEMzIhfeqO",
+        },
     },
     .paths = .{
         "build.zig",

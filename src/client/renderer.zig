@@ -1,8 +1,9 @@
 const std = @import("std");
 const zgpu = @import("zgpu");
-const command_queue = @import("../ui/render/command_queue.zig");
-const ui_wgpu_renderer = @import("../ui/render/wgpu_renderer.zig");
-const sdl = @import("../platform/sdl3.zig").c;
+const zui = @import("ziggy-ui");
+const command_queue = zui.ui.render.command_queue;
+const ui_wgpu_renderer = zui.ui.render.wgpu_renderer;
+const sdl = zui.zsc.platform.sdl3.c;
 const profiler = @import("../utils/profiler.zig");
 
 pub const depth_format_undefined: u32 = @intFromEnum(zgpu.wgpu.TextureFormat.undef);
@@ -132,14 +133,14 @@ fn sdlGetTime() f64 {
 fn sdlGetFramebufferSize(window_ptr: *const anyopaque) [2]u32 {
     var w: c_int = 0;
     var h: c_int = 0;
-    _ = sdl.SDL_GetWindowSizeInPixels(@constCast(@ptrCast(window_ptr)), &w, &h);
+    _ = sdl.SDL_GetWindowSizeInPixels(@ptrCast(@constCast(window_ptr)), &w, &h);
     const w_u32: u32 = @intCast(if (w > 0) w else 1);
     const h_u32: u32 = @intCast(if (h > 0) h else 1);
     return .{ w_u32, h_u32 };
 }
 
 fn sdlGetWin32Window(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
-    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const props = sdl.SDL_GetWindowProperties(@ptrCast(@constCast(window_ptr)));
     return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WIN32_HWND_POINTER, null) orelse unreachable;
 }
 
@@ -148,7 +149,7 @@ fn sdlGetX11Display() callconv(.c) *anyopaque {
 }
 
 fn sdlGetX11Window(window_ptr: *const anyopaque) callconv(.c) u32 {
-    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const props = sdl.SDL_GetWindowProperties(@ptrCast(@constCast(window_ptr)));
     const value = sdl.SDL_GetNumberProperty(props, sdl.SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
     return @intCast(value);
 }
@@ -158,16 +159,16 @@ fn sdlGetWaylandDisplay() callconv(.c) *anyopaque {
 }
 
 fn sdlGetWaylandSurface(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
-    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const props = sdl.SDL_GetWindowProperties(@ptrCast(@constCast(window_ptr)));
     return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_WAYLAND_SURFACE_POINTER, null) orelse unreachable;
 }
 
 fn sdlGetCocoaWindow(window_ptr: *const anyopaque) callconv(.c) ?*anyopaque {
-    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const props = sdl.SDL_GetWindowProperties(@ptrCast(@constCast(window_ptr)));
     return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, null);
 }
 
 fn sdlGetAndroidNativeWindow(window_ptr: *const anyopaque) callconv(.c) *anyopaque {
-    const props = sdl.SDL_GetWindowProperties(@constCast(@ptrCast(window_ptr)));
+    const props = sdl.SDL_GetWindowProperties(@ptrCast(@constCast(window_ptr)));
     return sdl.SDL_GetPointerProperty(props, sdl.SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, null) orelse unreachable;
 }

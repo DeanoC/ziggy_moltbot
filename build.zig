@@ -77,19 +77,51 @@ pub fn build(b: *std.Build) void {
     });
     const ws_native = websocket_dep.module("websocket");
 
+    // ziggy-ui for UI components
+    const ziggy_ui_dep = b.dependency("ziggy_ui", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const ziggy_ui_module = ziggy_ui_dep.module("ziggy-ui");
+    const ziggy_ui_src = ziggy_ui_dep.path("src");
+    ziggy_ui_module.addIncludePath(ziggy_ui_src);
+
     const core_module = b.addModule("ziggy-core", .{
         .root_source_file = b.path("libs/core/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     core_module.addImport("websocket", ws_native);
+    ziggy_ui_module.addImport("ziggy-core", core_module);
+
+    const sdl3_bridge_dep = b.dependency("sdl3", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zgpu_bridge_dep = b.dependency("zgpu", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const zsc_bridge_module = b.addModule("zsc_bridge", .{
+        .root_source_file = b.path("libs/zsc_bridge/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zsc_bridge_module.addImport("ziggy-core", core_module);
+    zsc_bridge_module.addIncludePath(sdl3_bridge_dep.path("include"));
+
+    ziggy_ui_module.addImport("zgpu", zgpu_bridge_dep.module("root"));
+    ziggy_ui_module.addImport("zsc", zsc_bridge_module);
 
     const app_module = b.addModule("ziggystarclaw", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
     });
     app_module.addImport("ziggy-core", core_module);
+    app_module.addImport("ziggy-ui", ziggy_ui_module);
     app_module.addIncludePath(b.path("src"));
+    app_module.addIncludePath(ziggy_ui_src);
     app_module.addOptions("build_options", build_options);
     app_module.addImport("websocket", ws_native);
 
@@ -119,9 +151,11 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
         cli_main_module.addOptions("build_options", build_options);
+        cli_main_module.addIncludePath(ziggy_ui_src);
         if (enable_ztracy) {
             cli_main_module.addImport("ztracy", ztracy_pkg.?.module("root"));
         }
@@ -170,6 +204,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
         native_module.addEmbedPath(b.path("assets/icons"));
@@ -186,6 +221,7 @@ pub fn build(b: *std.Build) void {
         });
 
         native_exe.root_module.addIncludePath(b.path("src"));
+        native_exe.root_module.addIncludePath(ziggy_ui_src);
         native_exe.root_module.addIncludePath(sdl3_pkg.path("include"));
         native_exe.root_module.addCSourceFile(.{
             .file = b.path("src/icon_loader.c"),
@@ -271,6 +307,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -279,6 +316,7 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_module,
         });
         cli_exe.root_module.addOptions("build_options", build_options);
+        cli_exe.root_module.addIncludePath(ziggy_ui_src);
         if (target.result.os.tag == .windows) {
             // For named-pipe supervisor control channel security descriptor helpers.
             cli_exe.root_module.linkSystemLibrary("advapi32", .{});
@@ -299,6 +337,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "websocket", .module = ws_native },
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -307,6 +346,7 @@ pub fn build(b: *std.Build) void {
             .root_module = cli_alias_module,
         });
         cli_alias_exe.root_module.addOptions("build_options", build_options);
+        cli_alias_exe.root_module.addIncludePath(ziggy_ui_src);
         if (target.result.os.tag == .windows) {
             // For named-pipe supervisor control channel security descriptor helpers.
             cli_alias_exe.root_module.linkSystemLibrary("advapi32", .{});
@@ -390,6 +430,7 @@ pub fn build(b: *std.Build) void {
                 },
             });
             test_mod.addIncludePath(b.path("src"));
+            test_mod.addIncludePath(ziggy_ui_src);
             const tests = b.addTest(.{ .root_module = test_mod });
             tests.addCSourceFile(.{ .file = b.path("src/icon_loader.c"), .flags = &.{} });
             if (enable_ztracy) {
@@ -424,6 +465,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "ziggy-core", .module = core_module },
+                .{ .name = "ziggy-ui", .module = ziggy_ui_module },
             },
         });
 
@@ -436,6 +478,7 @@ pub fn build(b: *std.Build) void {
 
         wasm.root_module.addSystemIncludePath(.{ .cwd_relative = emsdk_sysroot_include });
         wasm.root_module.addIncludePath(b.path("src"));
+        wasm.root_module.addIncludePath(ziggy_ui_src);
 
         const zgpu_pkg = b.dependency("zgpu", .{
             .target = wasm_target,
@@ -589,6 +632,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
                 .imports = &.{
                     .{ .name = "ziggy-core", .module = core_module },
+                    .{ .name = "ziggy-ui", .module = ziggy_ui_module },
                 },
             });
             const freetype_android = addFreetype(b, android_target, optimize, null);
@@ -601,6 +645,7 @@ pub fn build(b: *std.Build) void {
             });
             android_lib.root_module.addOptions("build_options", build_options);
             android_lib.root_module.addIncludePath(b.path("src"));
+            android_lib.root_module.addIncludePath(ziggy_ui_src);
             android_lib.root_module.link_libc = true;
             android_lib.root_module.addSystemIncludePath(.{ .cwd_relative = apk.ndk.include_path });
             android_lib.root_module.addCSourceFile(.{

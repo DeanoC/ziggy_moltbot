@@ -131,21 +131,14 @@ pub const Profiles = struct {
     pub fn save(self: Profiles, path: []const u8) !void {
         // Ensure directory exists
         if (std.fs.path.dirname(path)) |dir| {
-            std.fs.cwd().makeDir(dir) catch |err| {
+            std.fs.cwd().makePath(dir) catch |err| {
                 if (err != error.PathAlreadyExists) return err;
             };
         }
 
         // Build JSON struct
         var json_profiles = try self.allocator.alloc(JsonProfile, self.profiles.items.len);
-        defer {
-            for (json_profiles) |*jp| {
-                if (jp.connect_host_override) |v| self.allocator.free(v);
-                if (jp.default_session) |v| self.allocator.free(v);
-                if (jp.default_node) |v| self.allocator.free(v);
-            }
-            self.allocator.free(json_profiles);
-        }
+        defer self.allocator.free(json_profiles);
 
         for (self.profiles.items, 0..) |profile, i| {
             json_profiles[i] = .{
@@ -273,7 +266,7 @@ test "Profiles add and get" {
     defer profiles.deinit();
 
     try profiles.add("test", "ws://test.com", "token123");
-    
+
     const p = profiles.get("test").?;
     try std.testing.expectEqualStrings("test", p.name);
     try std.testing.expectEqualStrings("ws://test.com", p.server_url);
@@ -286,8 +279,40 @@ test "Profiles active" {
 
     try profiles.add("main", "ws://main.com", "");
     try profiles.add("dev", "ws://dev.com", "");
-    
+
     try profiles.setActive("dev");
     const active = profiles.getActiveProfile().?;
     try std.testing.expectEqualStrings("dev", active.name);
+}
+
+test "Profiles save preserves profile-owned optional fields" {
+    const allocator = std.testing.allocator;
+
+    var profiles = Profiles.init(allocator);
+    defer profiles.deinit();
+
+    try profiles.add("main", "ws://main.com", "token");
+
+    profiles.profiles.items[0].connect_host_override = try allocator.dupe(u8, "gateway.local");
+    profiles.profiles.items[0].default_session = try allocator.dupe(u8, "session-1");
+    profiles.profiles.items[0].default_node = try allocator.dupe(u8, "node-1");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const cwd = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(cwd);
+
+    const tmp_root = try std.fs.path.join(allocator, &.{ cwd, ".zig-cache", "tmp", tmp.sub_path[0..] });
+    defer allocator.free(tmp_root);
+
+    const profiles_path = try std.fs.path.join(allocator, &.{ tmp_root, "profiles.json" });
+    defer allocator.free(profiles_path);
+
+    try profiles.save(profiles_path);
+
+    const saved = profiles.get("main").?;
+    try std.testing.expectEqualStrings("gateway.local", saved.connect_host_override.?);
+    try std.testing.expectEqualStrings("session-1", saved.default_session.?);
+    try std.testing.expectEqualStrings("node-1", saved.default_node.?);
 }

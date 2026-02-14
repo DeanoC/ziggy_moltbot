@@ -1,7 +1,8 @@
 const ziggy = @import("ziggy-core");
+const zui = @import("ziggy-ui");
 
 pub const protocol = struct {
-    pub const types = @import("protocol/types.zig");
+    pub const types = zui.protocol.types;
     pub const messages = ziggy.protocol.messages;
     pub const constants = ziggy.protocol.constants;
     pub const gateway = ziggy.protocol.gateway;
@@ -13,11 +14,11 @@ pub const protocol = struct {
 };
 
 pub const client = struct {
-    pub const state = @import("client/state.zig");
-    pub const config = @import("client/config.zig");
+    pub const state = zui.client.state;
+    pub const config = zui.client.config;
     pub const event_handler = @import("client/event_handler.zig");
     pub const device_identity = ziggy.identity;
-    pub const update_checker = @import("client/update_checker.zig");
+    pub const update_checker = zui.client.update_checker;
 };
 
 pub const transport = struct {
@@ -30,31 +31,31 @@ pub const websocket = transport.websocket;
 pub const WebSocketClient = transport.WebSocketClient;
 
 pub const ui = struct {
-    pub const main_window = @import("ui/main_window.zig");
-    pub const chat_view = @import("ui/chat_view.zig");
-    pub const input_panel = @import("ui/input_panel.zig");
-    pub const settings_view = @import("ui/settings_view.zig");
-    pub const status_bar = @import("ui/status_bar.zig");
-    pub const draw_context = @import("ui/draw_context.zig");
-    pub const theme = @import("ui/theme.zig");
-    pub const theme_engine = @import("ui/theme_engine/theme_engine.zig");
-    pub const text_buffer = @import("ui/text_buffer.zig");
-    pub const data_uri = @import("ui/data_uri.zig");
-    pub const image_cache = @import("ui/image_cache.zig");
-    pub const workspace = @import("ui/workspace.zig");
-    pub const panel_manager = @import("ui/panel_manager.zig");
-    pub const dock_transfer = @import("ui/dock_transfer.zig");
-    pub const ui_command = @import("ui/ui_command.zig");
-    pub const ui_command_inbox = @import("ui/ui_command_inbox.zig");
-    pub const workspace_store = @import("ui/workspace_store.zig");
-    pub const components = @import("ui/components/components.zig");
-    pub const widgets = @import("ui/widgets/widgets.zig");
+    pub const main_window = zui.ui.main_window;
+    pub const chat_view = zui.ui.chat_view;
+    pub const input_panel = zui.ui.input_panel;
+    pub const settings_view = zui.ui.settings_view;
+    pub const status_bar = zui.ui.status_bar;
+    pub const draw_context = zui.ui.draw_context;
+    pub const theme = zui.ui.theme;
+    pub const theme_engine = zui.ui.theme_engine.theme_engine;
+    pub const text_buffer = zui.ui.text_buffer;
+    pub const data_uri = zui.ui.data_uri;
+    pub const image_cache = zui.ui.image_cache;
+    pub const workspace = zui.ui.workspace;
+    pub const panel_manager = zui.ui.panel_manager;
+    pub const dock_transfer = zui.ui.dock_transfer;
+    pub const ui_command = zui.ui.ui_command;
+    pub const ui_command_inbox = zui.ui.ui_command_inbox;
+    pub const workspace_store = zui.ui.workspace_store;
+    pub const components = zui.ui.components;
+    pub const widgets = zui.ui.widgets;
     pub const layout = struct {
-        pub const custom_layout = @import("ui/layout/custom_layout.zig");
-        pub const dock_graph = @import("ui/layout/dock_graph.zig");
-        pub const dock_drop = @import("ui/layout/dock_drop.zig");
-        pub const dock_detach = @import("ui/layout/dock_detach.zig");
-        pub const dock_rail = @import("ui/layout/dock_rail.zig");
+        pub const custom_layout = zui.ui.layout.custom_layout;
+        pub const dock_graph = zui.ui.layout.dock_graph;
+        pub const dock_drop = zui.ui.layout.dock_drop;
+        pub const dock_detach = zui.ui.layout.dock_detach;
+        pub const dock_rail = zui.ui.layout.dock_rail;
     };
 };
 
@@ -68,7 +69,7 @@ pub const platform = struct {
 pub const utils = struct {
     pub const allocator = ziggy.utils.allocator;
     pub const logger = ziggy.utils.logger;
-    pub const profiler = @import("utils/profiler.zig");
+    pub const profiler = zui.bridge_utils.profiler;
     pub const json_helpers = ziggy.utils.json_helpers;
     pub const string_utils = ziggy.utils.string_utils;
     pub const secret_prompt = ziggy.utils.secret_prompt;
