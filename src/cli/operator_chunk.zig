@@ -79,7 +79,10 @@ const ReplCommand = enum {
     approvals,
     approve,
     deny,
+    device,
+    devices,
     gateway,
+    profile,
     quit,
     exit,
     save,
@@ -935,7 +938,12 @@ fn runRepl(
                     "  approvals               List pending approvals\n" ++
                     "  approve <id>            Approve request by ID\n" ++
                     "  deny <id>               Deny request by ID\n" ++
+                    "  devices                 List pending device pairings\n" ++
+                    "  device approve <id>     Approve device pairing by ID\n" ++
+                    "  device reject <id>      Reject device pairing by ID\n" ++
+                    "  device watch            Watch for new device pairing requests\n" ++
                     "  gateway <verb> <url>   Gateway test: ping|echo|probe ws://host:port\n" ++
+                    "  profile <cmd> [args]   Manage profiles: list|use|add|remove [name] [url]\n" ++
                     "  save                    Save current session/node to config\n" ++
                     "  quit/exit               Exit interactive mode\n");
             },
@@ -1190,6 +1198,146 @@ fn runRepl(
                 try resolveApproval(allocator, ws_client, id, "deny");
                 try stdout.writeAll("Denial sent.\n");
             },
+            .device, .devices => {
+                const device_cmd = parts.next() orelse "list";
+                if (std.mem.eql(u8, device_cmd, "list") or std.mem.eql(u8, device_cmd, "pending")) {
+                    try listDevicePairings(allocator, ws_client, ctx);
+                } else if (std.mem.eql(u8, device_cmd, "approve")) {
+                    const id = parts.next() orelse {
+                        try stdout.writeAll("Usage: device approve <id>\n");
+                        continue;
+                    };
+                    try resolveDevicePairing(allocator, ws_client, id, "approve");
+                    try stdout.writeAll("Device approved.\n");
+                } else if (std.mem.eql(u8, device_cmd, "reject")) {
+                    const id = parts.next() orelse {
+                        try stdout.writeAll("Usage: device reject <id>\n");
+                        continue;
+                    };
+                    try resolveDevicePairing(allocator, ws_client, id, "reject");
+                    try stdout.writeAll("Device rejected.\n");
+                } else if (std.mem.eql(u8, device_cmd, "watch")) {
+                    try watchDevicePairings(allocator, ws_client, ctx);
+                } else {
+                    try stdout.writeAll("Usage: device [list|approve <id>|reject <id>|watch]\n");
+                }
+            },
+            .profile => {
+                const profile_cmd = parts.next() orelse "";
+                if (std.mem.eql(u8, profile_cmd, "list")) {
+                    // List all profiles
+                    const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+                    defer allocator.free(profiles_path);
+                    
+                    var profiles = profiles_mod.Profiles.init(allocator);
+                    defer profiles.deinit();
+                    
+                    profiles.load(profiles_path) catch |err| {
+                        try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    const active = profiles.active orelse "(none)";
+                    try stdout.print("Profiles (active: {s}):\n", .{active});
+                    
+                    for (profiles.profiles.items) |profile| {
+                        const marker = if (profiles.active) |a| 
+                            (if (std.mem.eql(u8, a, profile.name)) " *" else "")
+                        else 
+                            "";
+                        try stdout.print("  {s}{s}: {s}\n", .{ profile.name, marker, profile.server_url });
+                    }
+                } else if (std.mem.eql(u8, profile_cmd, "use")) {
+                    const name = parts.next() orelse {
+                        try stdout.writeAll("Usage: profile use <name>\n");
+                        continue;
+                    };
+                    
+                    const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+                    defer allocator.free(profiles_path);
+                    
+                    var profiles = profiles_mod.Profiles.init(allocator);
+                    defer profiles.deinit();
+                    
+                    profiles.load(profiles_path) catch |err| {
+                        try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    profiles.setActive(name) catch |err| {
+                        try stdout.print("Failed to set active profile: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    profiles.save(profiles_path) catch |err| {
+                        try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    try stdout.print("Switched to profile: {s}\n", .{name});
+                    try stdout.writeAll("Note: Restart ZSC to use the new profile.\n");
+                } else if (std.mem.eql(u8, profile_cmd, "add")) {
+                    const name = parts.next() orelse {
+                        try stdout.writeAll("Usage: profile add <name> <url> [token]\n");
+                        continue;
+                    };
+                    const url = parts.next() orelse {
+                        try stdout.writeAll("Usage: profile add <name> <url> [token]\n");
+                        continue;
+                    };
+                    const token = parts.rest();
+                    
+                    const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+                    defer allocator.free(profiles_path);
+                    
+                    var profiles = profiles_mod.Profiles.init(allocator);
+                    defer profiles.deinit();
+                    
+                    profiles.load(profiles_path) catch {};
+                    
+                    try profiles.add(name, url, token);
+                    
+                    profiles.save(profiles_path) catch |err| {
+                        try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    try stdout.print("Added profile: {s} ({s})\n", .{ name, url });
+                } else if (std.mem.eql(u8, profile_cmd, "remove")) {
+                    const name = parts.next() orelse {
+                        try stdout.writeAll("Usage: profile remove <name>\n");
+                        continue;
+                    };
+                    
+                    const profiles_path = try profiles_mod.defaultProfilesPath(allocator);
+                    defer allocator.free(profiles_path);
+                    
+                    var profiles = profiles_mod.Profiles.init(allocator);
+                    defer profiles.deinit();
+                    
+                    profiles.load(profiles_path) catch |err| {
+                        try stdout.print("Failed to load profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    profiles.remove(name);
+                    
+                    profiles.save(profiles_path) catch |err| {
+                        try stdout.print("Failed to save profiles: {s}\n", .{@errorName(err)});
+                        continue;
+                    };
+                    
+                    try stdout.print("Removed profile: {s}\n", .{name});
+                } else {
+                    try stdout.writeAll("Usage: profile <list|use|add|remove> [args...]\n");
+                    try stdout.writeAll("\n");
+                    try stdout.writeAll("Examples:\n");
+                    try stdout.writeAll("  profile list                    Show all profiles\n");
+                    try stdout.writeAll("  profile use spiderweb           Switch to spiderweb profile\n");
+                    try stdout.writeAll("  profile add mygate ws://host:port [token]\n");
+                    try stdout.writeAll("  profile remove mygate           Remove a profile\n");
+                }
+            },
             .gateway => {
                 const verb_str = parts.next() orelse "";
                 const url = parts.rest();
@@ -1296,6 +1444,8 @@ fn parseReplCommand(cmd: []const u8) ReplCommand {
     if (std.mem.eql(u8, cmd, "approvals")) return .approvals;
     if (std.mem.eql(u8, cmd, "approve")) return .approve;
     if (std.mem.eql(u8, cmd, "deny")) return .deny;
+    if (std.mem.eql(u8, cmd, "device")) return .device;
+    if (std.mem.eql(u8, cmd, "devices")) return .devices;
     if (std.mem.eql(u8, cmd, "gateway")) return .gateway;
     if (std.mem.eql(u8, cmd, "quit")) return .quit;
     if (std.mem.eql(u8, cmd, "exit")) return .exit;
@@ -1802,4 +1952,42 @@ fn parseBool(value: []const u8) bool {
         std.ascii.eqlIgnoreCase(value, "true") or
         std.ascii.eqlIgnoreCase(value, "yes") or
         std.ascii.eqlIgnoreCase(value, "on");
+}
+
+fn listDevicePairings(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+) !void {
+    _ = ctx;
+    const payload = try requestAndAwaitJsonPayloadText(allocator, ws_client, "device.pair.list", .{}, 5000);
+    defer allocator.free(payload);
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+    try stdout.writeAll(payload);
+    try stdout.writeByte('\n');
+}
+
+fn resolveDevicePairing(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    request_id: []const u8,
+    decision: []const u8,
+) !void {
+    const method = if (std.mem.eql(u8, decision, "approve")) "device.pair.approve" else "device.pair.reject";
+    const payload = try requestAndAwaitJsonPayloadText(allocator, ws_client, method, ws_auth_pairing.PairingRequestIdParams{ .requestId = request_id }, 5000);
+    defer allocator.free(payload);
+    logger.info("Device pairing {s}d: {s}", .{ decision, request_id });
+}
+
+fn watchDevicePairings(
+    allocator: std.mem.Allocator,
+    ws_client: *websocket_client.WebSocketClient,
+    ctx: *client_state.ClientContext,
+) !void {
+    _ = allocator;
+    _ = ws_client;
+    _ = ctx;
+    var stdout = std.fs.File.stdout().deprecatedWriter();
+    try stdout.writeAll("Watching for device pairings... (press Ctrl+C to stop)\n");
+    // TODO: Implement actual watch functionality
 }
