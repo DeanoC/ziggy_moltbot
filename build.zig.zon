@@ -47,8 +47,7 @@
             .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
         },
         .ziggy_ui = .{
-            .url = "https://github.com/DeanoC/ziggy-ui/archive/refs/tags/v0.1.0.tar.gz",
-            .hash = "ziggy_ui-0.1.0-5ZqCvWmIAwBqx6pB_EEvTp7cSlSsldWbA3vx_YDc5asI",
+            .path = "../ziggy-ui",
         },
     },
     .paths = .{
