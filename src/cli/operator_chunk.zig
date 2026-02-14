@@ -905,7 +905,7 @@ fn runRepl(
                     "  approvals               List pending approvals\n" ++
                     "  approve <id>            Approve request by ID\n" ++
                     "  deny <id>               Deny request by ID\n" ++
-                    "  gateway <verb> [url]   Gateway test: ping|echo|probe ws://host:port\n" ++
+                    "  gateway <verb> <url>   Gateway test: ping|echo|probe ws://host:port\n" ++
                     "  save                    Save current session/node to config\n" ++
                     "  quit/exit               Exit interactive mode\n");
             },
