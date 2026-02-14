@@ -131,7 +131,7 @@ pub const Profiles = struct {
     pub fn save(self: Profiles, path: []const u8) !void {
         // Ensure directory exists
         if (std.fs.path.dirname(path)) |dir| {
-            std.fs.cwd().makeDir(dir) catch |err| {
+            std.fs.cwd().makePath(dir) catch |err| {
                 if (err != error.PathAlreadyExists) return err;
             };
         }
